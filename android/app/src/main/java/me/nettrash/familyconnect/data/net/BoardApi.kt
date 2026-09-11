@@ -14,6 +14,7 @@ package me.nettrash.familyconnect.data.net
 import me.nettrash.familyconnect.data.net.dto.BoardChangesResponse
 import me.nettrash.familyconnect.data.net.dto.BoardResponse
 import me.nettrash.familyconnect.data.net.dto.CreateNoteRequest
+import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.NoteResponse
 import me.nettrash.familyconnect.data.net.dto.PatchNoteRequest
 import javax.inject.Inject
@@ -41,6 +42,8 @@ interface BoardApi {
         startsAt: String? = null,
         endsAt: String? = null,
         place: String? = null,
+        /** The members the text names (docs/protocol.md, "Board"). */
+        mentions: List<MentionDto> = emptyList(),
     ): ApiResult<NoteResponse>
 
     /**
@@ -62,6 +65,11 @@ interface BoardApi {
         font: String?,
         x: Double?,
         y: Double?,
+        /**
+         * REPLACES the names, and rides with a text edit — null on a move,
+         * which leaves them alone (docs/protocol.md, "Board").
+         */
+        mentions: List<MentionDto>? = null,
     ): ApiResult<NoteResponse>
 
     suspend fun deleteNote(id: Long): ApiResult<Unit>
@@ -92,6 +100,7 @@ class DefaultBoardApi @Inject constructor(
         startsAt: String?,
         endsAt: String?,
         place: String?,
+        mentions: List<MentionDto>,
     ): ApiResult<NoteResponse> =
         client.post(
             "/families/mine/board/notes",
@@ -106,6 +115,7 @@ class DefaultBoardApi @Inject constructor(
                 startsAt = startsAt,
                 endsAt = endsAt,
                 place = place,
+                mentions = mentions.ifEmpty { null },
             ),
         )
 
@@ -124,10 +134,14 @@ class DefaultBoardApi @Inject constructor(
         font: String?,
         x: Double?,
         y: Double?,
+        mentions: List<MentionDto>?,
     ): ApiResult<NoteResponse> =
         client.patch(
             "/families/mine/board/notes/$id",
-            PatchNoteRequest(text, color, size, x, y, font),
+            PatchNoteRequest(
+                text, color, size, x, y, font,
+                mentions = mentions?.ifEmpty { null },
+            ),
         )
 
     override suspend fun deleteNote(id: Long): ApiResult<Unit> =

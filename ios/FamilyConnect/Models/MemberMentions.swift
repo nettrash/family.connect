@@ -27,6 +27,7 @@
 //
 
 import Foundation
+import SwiftUI
 
 /// A member a message names: the id, and the display name AS TYPED after
 /// the `@`, so a bubble can find the token to highlight without knowing
@@ -195,9 +196,57 @@ nonisolated enum MemberMentions {
         }
     }
 
+    /// The names in a note that CANNOT be doors: every member it says who
+    /// is not somebody this reader could open a chat with — their own name,
+    /// a member they blocked, a member who has left or deleted their
+    /// account (docs/protocol.md, "Board").
+    ///
+    /// `openTo` is whoever a composer would offer for a bare `@`, which is
+    /// the same question asked from the other side — so the two can never
+    /// disagree about which names are live.
+    static func closedNames(in mentions: [MentionDTO], openTo: [MentionDTO]) -> Set<Int64> {
+        let open = Set(openTo.map(\.userID))
+        return Set(mentions.map(\.userID)).subtracting(open)
+    }
+
     /// The draft with the trailing `@prefix` replaced by `@Name `.
     static func accept(draft: String, name: String) -> String {
         guard let at = draft.lastIndex(of: "@") else { return draft + "@" + name + " " }
         return String(draft[..<at]) + "@" + name + " "
+    }
+}
+extension MemberMentions {
+
+    /// A board note's text with the names it says drawn as names
+    /// (docs/protocol.md, "Board").
+    ///
+    /// BOLD, in the note's own ink, and never a colour of its own — a
+    /// sticker's pastel is a ground like any other, and a tint on it is the
+    /// mention that cannot be read. `linking` decides whether each name is
+    /// also a door: it is in the note somebody has OPENED, and it is not on
+    /// the sticker, whose whole face is a drag handle.
+    static func noteText(
+        _ text: String,
+        mentions: [MentionDTO],
+        linking: Bool,
+        excluding: Set<Int64> = []
+    ) -> AttributedString {
+        var attributed = AttributedString(text)
+        guard !mentions.isEmpty else { return attributed }
+        for (range, member) in tokens(in: text, mentions: mentions) {
+            guard let target = Range(range, in: attributed) else { continue }
+            attributed[target].inlinePresentationIntent = .stronglyEmphasized
+            if linking, !excluding.contains(member.userID),
+               let url = url(for: member.userID) {
+                attributed[target].link = url
+                // A link run is drawn in the accent colour unless somebody
+                // says otherwise, and the accent is a pastel's enemy: the
+                // ink is the note's own (docs/protocol.md, "Mentioning a
+                // member").
+                attributed[target].foregroundColor = .black.opacity(0.85)
+                attributed[target].underlineStyle = nil
+            }
+        }
+        return attributed
     }
 }

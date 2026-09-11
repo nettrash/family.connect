@@ -26,6 +26,62 @@
 
 import SwiftUI
 
+/// The wall's own look: a cork ground, and a pin through every note.
+///
+/// Decoration, and nowhere on the wire (docs/protocol.md, "Board"): where a
+/// pin sits is not a fact about the note, and a client that draws neither
+/// is not wrong. The colours are fixed rather than taken from the
+/// appearance — a corkboard is a corkboard with the lamp on or off, which
+/// is the same reason the pastels on top are fixed light colours and the
+/// ink on them is forced dark.
+///
+/// Web counterpart: `.board-wall` and `.sticker::after` in web/styles.css.
+/// Android counterpart: `BoardGround` in ui/board/BoardScreen.kt.
+struct BoardGround: View {
+    @Environment(\.colorScheme) private var scheme
+
+    private var cork: Color {
+        scheme == .dark
+            ? Color(red: 0.357, green: 0.290, blue: 0.212)
+            : Color(red: 0.796, green: 0.702, blue: 0.569)
+    }
+
+    private var shade: Color {
+        scheme == .dark
+            ? Color(red: 0.298, green: 0.239, blue: 0.173)
+            : Color(red: 0.749, green: 0.639, blue: 0.510)
+    }
+
+    var body: some View {
+        // Lit from the top-left, the way a wall in a room is.
+        LinearGradient(
+            colors: [cork, cork, shade],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing)
+    }
+}
+
+/// The pin, drawn over a note's top edge.
+struct NotePin: View {
+    var body: some View {
+        Circle()
+            .fill(
+                RadialGradient(
+                    colors: [
+                        Color(red: 0.847, green: 0.325, blue: 0.298),
+                        Color(red: 0.478, green: 0.102, blue: 0.082),
+                    ],
+                    center: UnitPoint(x: 0.35, y: 0.3),
+                    startRadius: 0,
+                    endRadius: 9))
+            .frame(width: 10, height: 10)
+            .shadow(color: .black.opacity(0.35), radius: 1, y: 1)
+            // It is not a control and not content: a reader is told about
+            // the note, never about its pin.
+            .accessibilityHidden(true)
+    }
+}
+
 /// How the wall itself is sized (docs/protocol.md, "Board").
 ///
 /// The wall is TALLER than the window and it scrolls: a wall the size of
@@ -53,6 +109,24 @@ nonisolated enum BoardWall {
     /// The wall's own size, for the fractions to be read against.
     static func size(visible: CGSize) -> CGSize {
         CGSize(width: visible.width, height: height(visible: visible.height))
+    }
+}
+
+/// How much of a task list a STICKER draws (docs/protocol.md, "Board").
+///
+/// One number for all four clients, like `BoardWall.screens`, and for the
+/// same reason: a list that ran to a different point on the phone and on
+/// the Mac would be a different list. The note itself always has them all.
+///
+/// Web counterpart: `fc_text::board::WALL_TASK_LINES`.
+nonisolated enum BoardTasks {
+    static let onWall = 5
+
+    /// The lines a sticker draws, and how many it had to leave — `left` is
+    /// zero on a list that fits.
+    static func drawn(of total: Int) -> (shown: Int, left: Int) {
+        let shown = min(total, onWall)
+        return (shown, total - shown)
     }
 }
 

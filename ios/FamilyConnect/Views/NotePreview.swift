@@ -62,6 +62,13 @@ enum NoteText {
     /// characters" — scalars again, as the server counts them.
     static let maxPlaceLength = 200
 
+    /// The longest one line of a task list may be, and the most lines one
+    /// list may hold — the server's own numbers, so a client never lets
+    /// somebody write a list whose save fails for a reason nobody can see
+    /// (docs/protocol.md, "Board").
+    static let maxTaskItemLength = 100
+    static let maxTaskItems = 20
+
     /// `text` cut to `limit` scalars. `capped(_:)` is this at the note's own
     /// limit; a place's is 200. Counting graphemes here would let a place
     /// that looks under the limit be refused by the server.

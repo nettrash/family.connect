@@ -20,7 +20,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use fc_text::board::{self as rules, Answer, Font, Kind, Size};
-use fc_text::i18n::{t, t1, t2, tn};
+use fc_text::i18n::{t, t1, t2, tn, tn1};
+use fc_text::mentions;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
@@ -28,9 +29,9 @@ use web_sys::{DataTransfer, Element, File, HtmlElement, HtmlInputElement, HtmlTe
 use yew::prelude::*;
 
 use crate::actions::{random_color, Action};
-use crate::api::{NewNote, NotePatch};
+use crate::api::{NewNote, NotePatch, TaskLine};
 use crate::media::use_media;
-use crate::model::{Attachment, Note};
+use crate::model::{Attachment, Member, Mention, Note, TaskItem};
 use crate::time;
 
 /// What the pane's sheet is showing.
@@ -50,6 +51,10 @@ pub struct BoardProps {
     pub loaded: bool,
     pub my_user_id: i64,
     pub names: HashMap<i64, String>,
+    /// The LIVE roster: who a note may name, and who a name may open a
+    /// chat with (docs/protocol.md, "Board"). `names` is wider — it holds
+    /// former members too, so that an old note still says who wrote it.
+    pub members: Vec<Member>,
     pub blocked: HashSet<i64>,
     /// Hidden notes peeked at.
     pub revealed: HashSet<i64>,
@@ -178,6 +183,29 @@ pub fn board_pane(props: &BoardProps) -> Html {
 
     let (width, height) = *size;
     let compact = rules::is_compact(width);
+    // Who a name may open a chat with: WHOEVER THE STRIP WOULD OFFER —
+    // the live roster, never the reader themself, never somebody they
+    // blocked, and never a former or deleted account (docs/protocol.md,
+    // "Board"). `names` would have been the easy answer and the wrong one:
+    // it holds former members so an old note can still say who wrote it,
+    // and a door onto one of those leads nowhere. An `Rc` so every sticker
+    // shares one set rather than a copy.
+    let open_ids = use_memo(
+        (
+            props.members.clone(),
+            props.blocked.clone(),
+            props.my_user_id,
+        ),
+        |(members, blocked, me)| {
+            members
+                .iter()
+                .filter(|member| {
+                    !member.deleted && member.id != *me && !blocked.contains(&member.id)
+                })
+                .map(|member| member.id)
+                .collect::<HashSet<i64>>()
+        },
+    );
 
     // One picture onto the wall, at a fraction of it.
     let pin = {
@@ -397,6 +425,8 @@ pub fn board_pane(props: &BoardProps) -> Html {
                 {mine}
                 author={AttrValue::from(author)}
                 my_user_id={props.my_user_id}
+                members={props.members.clone()}
+                open_ids={open_ids.clone()}
                 {compact}
                 now_minute={props.now_minute}
                 on_close={close.clone()}
@@ -416,6 +446,7 @@ pub fn board_pane(props: &BoardProps) -> Html {
                 <div class="board-actions">
                     <button class="secondary" onclick={open_new(Kind::Text)} title={t("Add a note")}>{ t("Add Note") }</button>
                     <button class="secondary" onclick={open_new(Kind::Event)} title={t("Add an event")}>{ t("Add Event") }</button>
+                    <button class="secondary" onclick={open_new(Kind::Tasks)} title={t("Add a task list")}>{ t("Add List") }</button>
                     <button class="secondary" onclick={pick_photo} disabled={busy} aria-busy={busy.then_some("true")} title={t("Pin a photo")}>
                         { if busy { t("Pinning…") } else { t("Pin a Photo") } }
                     </button>
@@ -964,7 +995,14 @@ fn sticker(props: &StickerProps) -> Html {
             if hidden {
                 <FittedText text={t("Hidden — blocked member")} font={note.font()} {size} class={classes!("note-hidden")} />
             } else if kind != Kind::Photo || !caption.is_empty() {
-                <FittedText text={AttrValue::from(note.text().to_string())} font={note.font()} {size} />
+                <FittedText
+                    text={AttrValue::from(note.text().to_string())}
+                    font={note.font()}
+                    {size}
+                    mentions={note.mentions.clone().unwrap_or_default()}
+                    items={note.items.clone().unwrap_or_default()}
+                    on_action={props.on_action.clone()}
+                />
             }
             // No author line at all while hidden — not an empty one, which
             // would still say a note came from somebody. And none on a
@@ -985,6 +1023,31 @@ pub struct FittedProps {
     pub size: Size,
     #[prop_or_default]
     pub class: Classes,
+    /// The members the text names, drawn as highlights inside it
+    /// (docs/protocol.md, "Board"). The fitting is unchanged: these are
+    /// spans in the same box, and the box is what is measured.
+    #[prop_or_default]
+    pub mentions: Vec<Mention>,
+    /// Whom this reader could open a chat with. A name outside it — their
+    /// own, somebody they blocked, a member who has left — is highlighted
+    /// like any other and simply does not open (docs/protocol.md,
+    /// "Board").
+    #[prop_or_default]
+    pub member_ids: Rc<HashSet<i64>>,
+    #[prop_or_default]
+    pub on_action: Callback<Action>,
+    /// Whether a name is a DOOR here. It is in the note somebody has
+    /// opened, and it is not on the sticker: a sticker's whole face is a
+    /// drag handle, and a name that took that tap would make the wall hard
+    /// to tidy (docs/protocol.md, "Board").
+    #[prop_or_default]
+    pub names_open_chats: bool,
+    /// A task list's lines, drawn UNDER its title inside the same box — so
+    /// the fitting scales the two together and the whole note is inside
+    /// its card, which is what the fitting rule promises. The first five,
+    /// and then how many are left (docs/protocol.md, "Board").
+    #[prop_or_default]
+    pub items: Vec<TaskItem>,
 }
 
 /// A note's text, FITTED to its card (docs/protocol.md, "Board"): drawn at
@@ -1019,9 +1082,113 @@ pub fn fitted_text(props: &FittedProps) -> Html {
             class={classes!("note-text", props.class.clone())}
             style={format!("font-family:{};font-size:{base}px;", props.font.css_family())}
         >
-            { props.text.clone() }
+            { for named_runs(props) }
+            { wall_list(&props.items) }
         </div>
     }
+}
+
+/// One line's box, in the sheet where a tap on it means something.
+///
+/// A line that has never been saved has no id, so there is nothing to tick
+/// yet: the box is there — the row would jump when it appeared — and it is
+/// disabled, which is also what says why.
+fn tick_box(id: Option<i64>, done: Option<bool>, tick: &Callback<(i64, bool)>, text: &str) -> Html {
+    let done = done.unwrap_or(false);
+    let tick = tick.clone();
+    html! {
+        <input
+            type="checkbox"
+            class="task-box"
+            checked={done}
+            disabled={id.is_none()}
+            aria-label={if text.trim().is_empty() { t("Done").to_string() } else { text.trim().to_string() }}
+            onchange={Callback::from(move |_: Event| {
+                if let Some(id) = id {
+                    tick.emit((id, !done));
+                }
+            })}
+        />
+    }
+}
+
+/// A task list as the WALL draws it: the first lines with their state, and
+/// then how many are left (docs/protocol.md, "Board").
+///
+/// Nothing here takes a tap. A sticker's whole face is a drag handle, and a
+/// row of small boxes on it would be a wall nobody could tidy — the tick is
+/// one tap further on, in the note somebody has opened.
+fn wall_list(items: &[TaskItem]) -> Html {
+    if items.is_empty() {
+        return Html::default();
+    }
+    let (shown, left) = rules::wall_task_lines(items.len());
+    html! {
+        <ul class="note-tasks" aria-hidden="true">
+            { for items.iter().take(shown).map(|item| html! {
+                <li class={classes!("note-task", item.done.then_some("is-done"))}>
+                    <span class="note-task-box">{ if item.done { "☑" } else { "☐" } }</span>
+                    <span class="note-task-text">{ item.text.clone() }</span>
+                </li>
+            }) }
+            if left > 0 {
+                <li class="note-task note-task-more">{ tn1("+%lld more", left as i64, &left.to_string()) }</li>
+            }
+        </ul>
+    }
+}
+
+/// A note's text, split into the plain stretches and the names it says
+/// (docs/protocol.md, "Board").
+///
+/// The same grammar the chat draws mentions by (`fc_text::mentions`), so a
+/// `@Name` means the same thing in a bubble and on a sticker. A name is
+/// BOLD and keeps the note's own ink — never a colour of its own, for the
+/// reason "Mentioning a member" gives: a tint on a tinted ground is
+/// invisible, and a sticker's pastel is a ground like any other.
+fn named_runs(props: &FittedProps) -> Vec<Html> {
+    let text = props.text.as_str();
+    if props.mentions.is_empty() {
+        return vec![html! { { text.to_string() } }];
+    }
+    let members: Vec<mentions::Member> = props
+        .mentions
+        .iter()
+        .map(|mention| mentions::Member {
+            user_id: mention.user_id,
+            name: &mention.name,
+        })
+        .collect();
+    let mut runs: Vec<Html> = Vec::new();
+    let mut at = 0usize;
+    for token in mentions::tokens(text, &members) {
+        if token.range.start > at {
+            runs.push(html! { { text[at..token.range.start].to_string() } });
+        }
+        let said = text[token.range.clone()].to_string();
+        let user_id = token.member.user_id;
+        // Tappable only where there is a door, which `member_ids` is the
+        // single answer to (see the memo that builds it).
+        if props.names_open_chats && props.member_ids.contains(&user_id) {
+            let on_action = props.on_action.clone();
+            runs.push(html! {
+                <button class="mention" title={t("Message them")}
+                    onclick={Callback::from(move |event: MouseEvent| {
+                        // The note's own click opens the editor; a tap on a
+                        // name opens the chat instead.
+                        event.stop_propagation();
+                        on_action.emit(Action::OpenDirect { user_id });
+                    })}>{ said }</button>
+            });
+        } else {
+            runs.push(html! { <span class="mention">{ said }</span> });
+        }
+        at = token.range.end;
+    }
+    if at < text.len() {
+        runs.push(html! { { text[at..].to_string() } });
+    }
+    runs
 }
 
 /// A textarea's value held to `max` scalars, cut at the caret
@@ -1149,6 +1316,14 @@ struct SheetProps {
     mine: bool,
     author: AttrValue,
     my_user_id: i64,
+    /// The live roster: who the text may name, resolved at save
+    /// (docs/protocol.md, "Board").
+    members: Vec<Member>,
+    /// Whom this reader could actually open a chat with — what the strip
+    /// offers, and what a name in an open note opens. Narrower than
+    /// [`members`], which is what a name may NAME: somebody blocked can
+    /// still be named, they just cannot be a door.
+    open_ids: Rc<HashSet<i64>>,
     compact: bool,
     now_minute: i64,
     on_close: Callback<()>,
@@ -1168,6 +1343,10 @@ struct Draft {
     has_end: bool,
     ends: String,
     place: String,
+    /// A task list's lines as the author is writing them: the id says "the
+    /// line you already have", which is what carries its TICK through the
+    /// rewrite (docs/protocol.md, "Board"). Empty on every other kind.
+    lines: Vec<TaskLine>,
 }
 
 impl Draft {
@@ -1188,6 +1367,16 @@ impl Draft {
             has_end: false,
             ends: time::local_input(&ends),
             place: String::new(),
+            // A list starts with one empty line, so the first thing to do
+            // is one tap away rather than two.
+            lines: if kind == Kind::Tasks {
+                vec![TaskLine {
+                    id: None,
+                    text: String::new(),
+                }]
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -1209,6 +1398,16 @@ impl Draft {
             has_end: note.ends_at.is_some(),
             ends: time::local_input(&ends),
             place: note.place.clone().unwrap_or_default(),
+            lines: note
+                .items
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|item| TaskLine {
+                    id: Some(item.id),
+                    text: item.text,
+                })
+                .collect(),
         }
     }
 
@@ -1229,9 +1428,13 @@ impl Draft {
 
     /// Why this cannot be saved as it stands, if it cannot.
     fn problem(&self, kind: Kind) -> Option<&'static str> {
-        // A photo's caption may be empty; a note and an event's title not.
+        // A photo's caption may be empty; a note, an event's title and a
+        // list's title not.
         if kind != Kind::Photo && self.text.trim().is_empty() {
             return Some("");
+        }
+        if kind == Kind::Tasks && self.lines.len() > rules::MAX_TASK_ITEMS {
+            return Some(t("That's more things than one list holds."));
         }
         if kind == Kind::Event {
             let starts = time::from_local_input(&self.starts).and_then(|at| time::instant(&at));
@@ -1253,9 +1456,15 @@ impl Draft {
     }
 
     /// A new note of `kind`, dropped at `at`.
-    fn new_note(&self, kind: Kind, at: (f64, f64)) -> NewNote {
+    ///
+    /// The names are resolved FROM THE TEXT against the roster, exactly as
+    /// a message's are (docs/protocol.md, "Board"): a name typed by hand
+    /// names somebody, and a name deleted after being picked from the
+    /// strip names nobody.
+    fn new_note(&self, kind: Kind, at: (f64, f64), members: &[Member]) -> NewNote {
         let event = kind == Kind::Event;
         let place = self.place.trim();
+        let named = crate::views::composer::resolve_mentions(&self.text, members, true);
         NewNote {
             text: self.text.clone(),
             color: self.color.clone(),
@@ -1263,7 +1472,9 @@ impl Draft {
             font: self.font.name().to_string(),
             x: at.0,
             y: at.1,
-            kind: event.then(|| Kind::Event.name().to_string()),
+            // Named unless it is a plain note, which is what an absent
+            // kind means — and what a client that predates kinds sends.
+            kind: (kind != Kind::Text).then(|| kind.name().to_string()),
             attachment_id: None,
             starts_at: event
                 .then(|| time::from_local_input(&self.starts))
@@ -1272,16 +1483,43 @@ impl Draft {
                 .then(|| time::from_local_input(&self.ends))
                 .flatten(),
             place: (event && !place.is_empty()).then(|| place.to_string()),
+            mentions: (!named.is_empty()).then_some(named),
+            // Only on a list, and only the lines that say something: an
+            // empty row is somebody who started typing and stopped, not a
+            // thing to do (and the server would refuse it).
+            items: (kind == Kind::Tasks).then(|| self.written_lines()),
         }
+    }
+
+    /// The lines that say something, trimmed — what a save sends.
+    fn written_lines(&self) -> Vec<TaskLine> {
+        self.lines
+            .iter()
+            .filter(|line| !line.text.trim().is_empty())
+            .map(|line| TaskLine {
+                id: line.id,
+                text: line.text.trim().to_string(),
+            })
+            .collect()
     }
 
     /// What changed against `note` — and nothing else, so a size or a face
     /// this client does not know is not written back as its default, and a
     /// save that changed nothing sends nothing.
-    fn patch(&self, note: &Note) -> NotePatch {
+    fn patch(&self, note: &Note, members: &[Member]) -> NotePatch {
         let mut patch = NotePatch::default();
         if self.text.trim() != note.text().trim() {
             patch.text = Some(self.text.clone());
+            // Re-decided with every edit, and sent WITH the text: a text
+            // patch that carried no names would clear them, which is right
+            // when the words no longer say any and wrong when they do
+            // (docs/protocol.md, "Board").
+            // Sent only when the new words name SOMEBODY: a text patch
+            // that carries no names clears them, which is exactly what is
+            // wanted when they name nobody (docs/protocol.md, "Board"), and
+            // it keeps a plain edit's patch as small as it was.
+            let named = crate::views::composer::resolve_mentions(&self.text, members, true);
+            patch.mentions = (!named.is_empty()).then_some(named);
         }
         if Some(self.color.as_str()) != note.color.as_deref() {
             patch.color = Some(self.color.clone());
@@ -1312,6 +1550,25 @@ impl Draft {
                 patch.place = Some(self.place.trim().to_string());
             }
         }
+        if note.kind() == Kind::Tasks {
+            let written = self.written_lines();
+            let held: Vec<TaskLine> = note
+                .items
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|item| TaskLine {
+                    id: Some(item.id),
+                    text: item.text,
+                })
+                .collect();
+            // Sent only when they differ, like every other field here: the
+            // list is the AUTHOR's, and a patch that carried it unchanged
+            // would make opening a note to read it an edit.
+            if written != held {
+                patch.items = Some(written);
+            }
+        }
         patch
     }
 }
@@ -1334,6 +1591,12 @@ struct Editing {
     answering: Option<Option<Answer>>,
     answer_sending: bool,
     answer_queued: Option<Option<Answer>>,
+    /// Ticks on their way: the item and the state being sent, so a box
+    /// answers the tap at once and goes back to the note's own truth when
+    /// the answer — or the refusal — lands. One entry per LINE, because
+    /// ticking two lines is two independent facts (unlike an event's
+    /// answer, where the second replaces the first).
+    ticking: HashMap<i64, bool>,
 }
 
 /// Send one answer; when it is in, send the one that waited behind it, or
@@ -1410,6 +1673,7 @@ fn note_sheet(props: &SheetProps) -> Html {
             answering: None,
             answer_sending: false,
             answer_queued: None,
+            ticking: HashMap::new(),
         })
     };
     let redraw = use_force_update();
@@ -1594,12 +1858,65 @@ fn note_sheet(props: &SheetProps) -> Html {
     };
     let now = cell.borrow().clone();
     let problem = now.draft.problem(kind);
+    // The names a half-typed `@` could mean (docs/protocol.md, "Board").
+    // Chips rather than the chat's keyboard-driven list: this is a dialog
+    // whose Tab moves between fields, and a picker that stole the arrow
+    // keys here would fight the editor. Typing the name in full works
+    // without ever touching them — the names are resolved from the text.
+    let offered: Vec<Member> = match mentions::query(&now.draft.text) {
+        Some(query) if editable => {
+            // Exactly whom a name in an open note may open: the reader
+            // themself, anyone they blocked and every former account are
+            // already out of `open_ids` (docs/protocol.md, "Board"), so
+            // there is nothing left for `excluding` to say.
+            let roster: Vec<mentions::Member> = props
+                .members
+                .iter()
+                .filter(|member| props.open_ids.contains(&member.id))
+                .map(|member| mentions::Member {
+                    user_id: member.id,
+                    name: &member.display_name,
+                })
+                .collect();
+            let names: HashSet<i64> = mentions::candidates(&roster, query, &[])
+                .into_iter()
+                .map(|member| member.user_id)
+                .collect();
+            props
+                .members
+                .iter()
+                .filter(|member| names.contains(&member.id))
+                .cloned()
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    let accept_name = {
+        let cell = cell.clone();
+        let redraw = redraw.clone();
+        let field = field.clone();
+        Callback::from(move |name: String| {
+            {
+                let mut editing = cell.borrow_mut();
+                editing.draft.text = mentions::accept(&editing.draft.text, &name);
+            }
+            redraw.force_update();
+            // Back to the words: picking a name is not leaving the field.
+            if let Some(area) = field.cast::<HtmlTextAreaElement>() {
+                let _ = area.focus();
+            }
+        })
+    };
+
     let save = {
         let cell = cell.clone();
         let redraw = redraw.clone();
         let sheet = props.sheet;
         let on_action = props.on_action.clone();
         let done = done.clone();
+        // Cloned into the callback: the roster is what the names are
+        // resolved against, and `props` does not outlive this render.
+        let members = props.members.clone();
         Callback::from(move |()| {
             // A reader's sheet has nothing to save — not even by Ctrl+Enter.
             if !editable {
@@ -1619,12 +1936,12 @@ fn note_sheet(props: &SheetProps) -> Html {
                 } else {
                     match (sheet, &note) {
                         (Sheet::New(kind), _) => Some(Action::CreateNote {
-                            note: editing.draft.new_note(kind, scattered()),
+                            note: editing.draft.new_note(kind, scattered(), &members),
                             done: done.clone(),
                         }),
                         (Sheet::Open(note_id), Some(note)) => Some(Action::UpdateNote {
                             note_id,
-                            patch: editing.draft.patch(note),
+                            patch: editing.draft.patch(note, &members),
                             done: done.clone(),
                         }),
                         (Sheet::Open(_), None) => None,
@@ -1693,16 +2010,196 @@ fn note_sheet(props: &SheetProps) -> Html {
 
     let title = match (props.sheet, kind, editable) {
         (Sheet::New(Kind::Event), _, _) => t("New Event"),
+        (Sheet::New(Kind::Tasks), _, _) => t("New List"),
         (Sheet::New(_), _, _) => t("New Note"),
         (_, Kind::Event, _) => t("Event"),
+        (_, Kind::Tasks, _) => t("List"),
         (_, Kind::Photo, _) => t("Photo"),
         _ => t("Note"),
     };
     let field_label = match kind {
-        Kind::Event => t("Title"),
+        Kind::Event | Kind::Tasks => t("Title"),
         Kind::Photo => t("Caption"),
         Kind::Text => t("Note"),
     };
+
+    // Ticking is its own act too, and the same kind of act as answering:
+    // ANY member may, so it is outside every author gate and is not part
+    // of the save (docs/protocol.md, "Board"). The author sees the same
+    // boxes, because the author is a member — their extra power is the
+    // WORDS, which is the input beside each box.
+    let tick = {
+        let on_action = props.on_action.clone();
+        let cell = cell.clone();
+        let redraw = redraw.clone();
+        let sheet = props.sheet;
+        Callback::from(move |(item_id, done_now): (i64, bool)| {
+            let Sheet::Open(note_id) = sheet else {
+                return;
+            };
+            {
+                let mut editing = cell.borrow_mut();
+                // One request per line at a time: a second tap on the same
+                // box while the first is in flight is the tap that would
+                // undo it, and the state it asks for is what the first one
+                // is already asking for.
+                if editing.ticking.contains_key(&item_id) {
+                    return;
+                }
+                editing.ticking.insert(item_id, done_now);
+            }
+            redraw.force_update();
+            let done = {
+                let cell = cell.clone();
+                let redraw = redraw.clone();
+                Callback::from(move |()| {
+                    cell.borrow_mut().ticking.remove(&item_id);
+                    redraw.force_update();
+                })
+            };
+            on_action.emit(Action::TickTask {
+                note_id,
+                item_id,
+                done_now,
+                done,
+            });
+        })
+    };
+    let write_line = {
+        let cell = cell.clone();
+        let redraw = redraw.clone();
+        Callback::from(move |(at, value): (usize, String)| {
+            {
+                let mut editing = cell.borrow_mut();
+                if let Some(line) = editing.draft.lines.get_mut(at) {
+                    line.text = value;
+                }
+            }
+            redraw.force_update();
+        })
+    };
+    let drop_line = {
+        let cell = cell.clone();
+        let redraw = redraw.clone();
+        Callback::from(move |at: usize| {
+            {
+                let mut editing = cell.borrow_mut();
+                if at < editing.draft.lines.len() {
+                    editing.draft.lines.remove(at);
+                }
+            }
+            redraw.force_update();
+        })
+    };
+    let add_line = {
+        let cell = cell.clone();
+        let redraw = redraw.clone();
+        Callback::from(move |_: MouseEvent| {
+            {
+                let mut editing = cell.borrow_mut();
+                // Held to the server's ceiling here, where somebody can
+                // see why: a twenty-first line typed and then refused is a
+                // save that fails for a reason nobody was shown.
+                if editing.draft.lines.len() >= rules::MAX_TASK_ITEMS {
+                    return;
+                }
+                editing.draft.lines.push(TaskLine {
+                    id: None,
+                    text: String::new(),
+                });
+            }
+            redraw.force_update();
+        })
+    };
+
+    // The LIST: the same block for the author and for everybody else,
+    // because the boxes are everybody's. What `editable` adds is the words
+    // beside each box, the remove and the add.
+    let list = (kind == Kind::Tasks && !props.gone).then(|| {
+        let held = props.note.as_ref().and_then(|note| note.items.clone()).unwrap_or_default();
+        let state = |id: Option<i64>| {
+            id.map(|id| {
+                // The tap's own answer first, then the note's: a box that
+                // waited for the round trip would feel broken on a phone
+                // connection.
+                now.ticking
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_else(|| held.iter().any(|item| item.id == id && item.done))
+            })
+        };
+        let rows: Vec<Html> = if editable {
+            now.draft
+                .lines
+                .iter()
+                .enumerate()
+                .map(|(at, line)| {
+                    let done = state(line.id);
+                    let write = write_line.clone();
+                    let drop = drop_line.clone();
+                    let ticked = tick.clone();
+                    let id = line.id;
+                    html! {
+                        <li class="task-row">
+                            { tick_box(id, done, &ticked, &line.text) }
+                            <input
+                                class="task-line"
+                                type="text"
+                                value={line.text.clone()}
+                                aria-label={t("Thing to do")}
+                                oninput={Callback::from(move |event: InputEvent| {
+                                    if event.is_composing() {
+                                        return;
+                                    }
+                                    if let Some(input) = event.target_dyn_into::<HtmlInputElement>() {
+                                        write.emit((at, capped_input(&input, rules::MAX_TASK_ITEM_CHARS)));
+                                    }
+                                })}
+                            />
+                            <button type="button" class="task-drop" title={t("Remove")}
+                                aria-label={t("Remove")}
+                                onclick={Callback::from(move |_: MouseEvent| drop.emit(at))}>
+                                { "×" }
+                            </button>
+                        </li>
+                    }
+                })
+                .collect()
+        } else {
+            held.iter()
+                .map(|item| {
+                    let done = state(Some(item.id));
+                    html! {
+                        <li class={classes!("task-row", done.unwrap_or(false).then_some("is-done"))}>
+                            { tick_box(Some(item.id), done, &tick, &item.text) }
+                            <span class="task-line-text">{ item.text.clone() }</span>
+                        </li>
+                    }
+                })
+                .collect()
+        };
+        let total = held.len();
+        let ticked_off = held.iter().filter(|item| state(Some(item.id)).unwrap_or(false)).count();
+        html! {
+            <fieldset class="task-list">
+                <legend>{ t("Things to do") }</legend>
+                if rows.is_empty() {
+                    <p class="footnote">{ t("Nothing on this list yet.") }</p>
+                } else {
+                    <ul class="task-rows">{ for rows }</ul>
+                }
+                if total > 0 {
+                    <p class="footnote">{ t2("%lld of %lld done", &ticked_off.to_string(), &total.to_string()) }</p>
+                }
+                if editable {
+                    <button type="button" class="secondary" onclick={add_line.clone()}
+                        disabled={now.draft.lines.len() >= rules::MAX_TASK_ITEMS}>
+                        { t("Add a thing") }
+                    </button>
+                }
+            </fieldset>
+        }
+    });
 
     // Answering is its own act: ANY member may, so it is not part of the
     // author's save, and it sits outside every author gate.
@@ -1848,6 +2345,7 @@ fn note_sheet(props: &SheetProps) -> Html {
             match kind {
                 Kind::Photo => String::new(),
                 Kind::Event => t("Your event").to_string(),
+                Kind::Tasks => t("Your list").to_string(),
                 Kind::Text => t("Your note").to_string(),
             }
         } else {
@@ -1870,12 +2368,27 @@ fn note_sheet(props: &SheetProps) -> Html {
                         placeholder={if kind == Kind::Photo { t("Say something about it (optional)") } else { "" }}
                     />
                 </label>
+                if !offered.is_empty() {
+                    <div class="note-names" role="group" aria-label={t("Members")}>
+                        { for offered.iter().map(|member| {
+                            let name = member.display_name.clone();
+                            let pick = accept_name.clone();
+                            html! {
+                                <button type="button" class="note-name"
+                                    onclick={Callback::from(move |_: MouseEvent| pick.emit(name.clone()))}>
+                                    { format!("@{}", member.display_name) }
+                                </button>
+                            }
+                        }) }
+                    </div>
+                }
                 if rules::shows_counter(&draft_now.text) {
                     <p class={classes!("footnote", (rules::remaining(&draft_now.text) == 0).then_some("danger"))}>
                         { tn("%lld characters left", rules::remaining(&draft_now.text) as i64) }
                     </p>
                 }
                 { when_fields.unwrap_or_default() }
+                { list.clone().unwrap_or_default() }
                 <fieldset>
                     <legend>{ t("Colour") }</legend>
                     <div class="swatches" role="radiogroup" aria-label={t("Colour")}>
@@ -1953,8 +2466,26 @@ fn note_sheet(props: &SheetProps) -> Html {
                 { picture.unwrap_or_default() }
                 { event.unwrap_or_default() }
                 if !note.text().trim().is_empty() {
-                    <p class="sheet-text" style={format!("font-family:{}", note.font().css_family())}>{ note.text().to_string() }</p>
+                    <p class="sheet-text" style={format!("font-family:{}", note.font().css_family())}>
+                        // The names again, and this is where a tap on one
+                        // is most likely: the reader has the note open.
+                        { for named_runs(&FittedProps {
+                            text: AttrValue::from(note.text().to_string()),
+                            font: note.font(),
+                            size: note.size(),
+                            class: Classes::new(),
+                            mentions: note.mentions.clone().unwrap_or_default(),
+                            member_ids: props.open_ids.clone(),
+                            on_action: props.on_action.clone(),
+                            names_open_chats: true,
+                            // The sheet draws the LINES itself, tickable:
+                            // this is the title's own text and nothing
+                            // else (docs/protocol.md, "Board").
+                            items: Vec::new(),
+                        }) }
+                    </p>
                 }
+                { list.unwrap_or_default() }
                 <p class="footnote">{ t1("Written by %@", &props.author) }</p>
                 { answering.unwrap_or_default() }
             </>
@@ -2041,6 +2572,7 @@ mod tests {
     fn props(notes: Vec<Note>, blocked: &[i64], log: &Log) -> BoardProps {
         let sink = log.clone();
         BoardProps {
+            members: Vec::new(),
             notes,
             loaded: true,
             my_user_id: ME,
@@ -2126,6 +2658,27 @@ mod tests {
         init.set_key(name);
         let event = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict(kind, &init).unwrap();
         target.dispatch_event(&event).unwrap();
+    }
+
+    /// Type into a text field the way a person does: the value, then the
+    /// `input` event the component listens for.
+    fn type_in(target: &Element, value: &str) {
+        if let Some(input) = target.dyn_ref::<HtmlInputElement>() {
+            input.set_value(value);
+        } else if let Some(area) = target.dyn_ref::<HtmlTextAreaElement>() {
+            area.set_value(value);
+        }
+        let init = web_sys::EventInit::new();
+        init.set_bubbles(true);
+        target
+            .dispatch_event(
+                &web_sys::InputEvent::new_with_event_init_dict(
+                    "input",
+                    &init.clone().unchecked_into(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
     }
 
     fn click(target: &Element) {
@@ -2949,13 +3502,13 @@ mod tests {
         let draft = Draft::of(&stored);
         assert_eq!(draft.size, Size::Medium);
         assert!(
-            draft.patch(&stored).is_empty(),
+            draft.patch(&stored, &[]).is_empty(),
             "nothing changed, nothing sent"
         );
         let mut edited = draft.clone();
         edited.text = "Milk and eggs".into();
         assert_eq!(
-            edited.patch(&stored),
+            edited.patch(&stored, &[]),
             NotePatch {
                 text: Some("Milk and eggs".into()),
                 ..NotePatch::default()
@@ -2964,10 +3517,10 @@ mod tests {
         // Trailing space is not a change: the server trims.
         let mut padded = draft.clone();
         padded.text = "Milk  ".into();
-        assert!(padded.patch(&stored).is_empty());
+        assert!(padded.patch(&stored, &[]).is_empty());
         let mut bigger = draft;
         bigger.size = Size::Large;
-        assert_eq!(bigger.patch(&stored).size.as_deref(), Some("large"));
+        assert_eq!(bigger.patch(&stored, &[]).size.as_deref(), Some("large"));
 
         // An event: its end taken off is a null, its place cleared an empty
         // string, and a start that did not move is not sent.
@@ -2977,18 +3530,18 @@ mod tests {
         ));
         let draft = Draft::of(&event);
         assert!(draft.has_end);
-        assert!(draft.patch(&event).is_empty());
+        assert!(draft.patch(&event, &[]).is_empty());
         let mut cleared = draft.clone();
         cleared.has_end = false;
         cleared.place = "  ".into();
-        let patch = cleared.patch(&event);
+        let patch = cleared.patch(&event, &[]);
         assert_eq!(patch.ends_at, Some(None));
         assert_eq!(patch.place.as_deref(), Some(""));
         assert_eq!(patch.starts_at, None);
         // A text note never sends an event's fields.
         let mut plain = Draft::of(&stored);
         plain.place = "Somewhere".into();
-        assert!(plain.patch(&stored).place.is_none());
+        assert!(plain.patch(&stored, &[]).place.is_none());
     }
 
     /// A photo's caption may be empty; a note's text and an event's title
@@ -3015,7 +3568,7 @@ mod tests {
             place: " The park ".into(),
             ..event
         }
-        .new_note(Kind::Event, (0.3, 0.4));
+        .new_note(Kind::Event, (0.3, 0.4), &[]);
         assert_eq!(new.kind.as_deref(), Some("event"));
         assert!(new.starts_at.is_some());
         assert_eq!(new.ends_at, None, "no end, none sent");
@@ -3133,6 +3686,484 @@ mod tests {
         // Both are still notes: the picture, the slot and the tap are the
         // same, and only the chrome differs.
         assert_eq!(all(&root, ".note-picture").len(), 2);
+        handle.destroy();
+        root.remove();
+    }
+    /// A note that NAMES a member: the name is drawn as a highlight, and a
+    /// tap on it opens the chat with them rather than the note
+    /// (docs/protocol.md, "Board").
+    #[wasm_bindgen_test]
+    async fn a_note_names_a_member_and_the_name_opens_their_chat() {
+        let log = Log::default();
+        let mut named = note(6, ANNA, "@Anna your kit is in the hall", 0.2, 0.2);
+        named.mentions = Some(vec![crate::model::Mention {
+            user_id: ANNA,
+            name: "Anna".into(),
+        }]);
+        let mut mine = note(7, ME, "@Me remember the bins", 0.6, 0.2);
+        mine.mentions = Some(vec![crate::model::Mention {
+            user_id: ME,
+            name: "Me".into(),
+        }]);
+        let mut props = props(vec![named, mine], &[], &log);
+        props.members = vec![
+            crate::model::Member {
+                id: ANNA,
+                display_name: "Anna".into(),
+                ..Default::default()
+            },
+            crate::model::Member {
+                id: ME,
+                display_name: "Me".into(),
+                ..Default::default()
+            },
+        ];
+        let (root, handle) = render(props).await;
+        TimeoutFuture::new(30).await;
+
+        // On the STICKER a name is a highlight and nothing more: the
+        // sticker's face is a drag handle, and a tap on it opens the note
+        // (docs/protocol.md, "Board").
+        assert_eq!(
+            all(&root, ".sticker .mention").len(),
+            2,
+            "both names are drawn as names"
+        );
+        assert!(
+            all(&root, ".sticker button.mention").is_empty(),
+            "and neither is a door on the wall"
+        );
+
+        // Opened, the name IS a door — and the reader's own still is not.
+        let sticker = &all(&root, ".sticker")[0];
+        key(sticker, "keydown", "Enter");
+        TimeoutFuture::new(30).await;
+        let anna = one(&root, ".note-sheet button.mention");
+        assert_eq!(anna.text_content().unwrap_or_default(), "@Anna");
+        anna.click();
+        TimeoutFuture::new(30).await;
+        let opened: Vec<i64> = log
+            .borrow()
+            .iter()
+            .filter_map(|action| match action {
+                Action::OpenDirect { user_id } => Some(*user_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(opened, vec![ANNA]);
+        handle.destroy();
+        root.remove();
+    }
+
+    fn task_note(id: i64, author: i64, title: &str, lines: &[(i64, &str, bool)]) -> Note {
+        Note {
+            kind: Some("tasks".into()),
+            items: Some(
+                lines
+                    .iter()
+                    .map(|(item_id, text, done)| crate::model::TaskItem {
+                        id: *item_id,
+                        text: (*text).into(),
+                        done: *done,
+                        done_by: done.then_some(ANNA),
+                    })
+                    .collect(),
+            ),
+            ..note(id, author, title, 0.2, 0.2)
+        }
+    }
+
+    /// The WALL draws the first lines of a list with their state, and says
+    /// how many are left — and takes no tap: the tick is one tap further
+    /// on, in the note somebody has opened (docs/protocol.md, "Board").
+    #[wasm_bindgen_test]
+    async fn a_sticker_shows_a_list_and_the_note_ticks_it() {
+        let log = Log::default();
+        let lines: Vec<(i64, &str, bool)> = vec![
+            (1, "Milk", true),
+            (2, "Bread", false),
+            (3, "Eggs", false),
+            (4, "Wine", false),
+            (5, "Cheese", false),
+            (6, "Apples", false),
+            (7, "Tea", false),
+        ];
+        let list = task_note(8, ANNA, "Saturday", &lines);
+        let (root, handle) = render(props(vec![list], &[], &log)).await;
+        TimeoutFuture::new(30).await;
+
+        let drawn = all(&root, ".sticker .note-task");
+        // Five lines and the "+2 more" that says what it could not show.
+        assert_eq!(drawn.len(), 6, "five lines and the remainder");
+        let texts: Vec<String> = all(&root, ".sticker .note-task-text")
+            .iter()
+            .map(|line| line.text_content().unwrap_or_default())
+            .collect();
+        assert_eq!(texts, vec!["Milk", "Bread", "Eggs", "Wine", "Cheese"]);
+        assert!(
+            all(&root, ".sticker .note-task")[0]
+                .class_list()
+                .contains("is-done"),
+            "what is done is drawn done"
+        );
+        assert!(one(&root, ".sticker .note-task-more")
+            .text_content()
+            .unwrap_or_default()
+            .contains('2'));
+        assert!(
+            all(&root, ".sticker input").is_empty() && all(&root, ".sticker button").is_empty(),
+            "nothing on the sticker takes a tap: its whole face is a drag handle"
+        );
+
+        // Opened, the boxes are real — and this reader is not the author,
+        // so there is nothing here to rewrite.
+        let sticker = &all(&root, ".sticker")[0];
+        key(sticker, "keydown", "Enter");
+        TimeoutFuture::new(30).await;
+        let boxes = all(&root, ".note-sheet .task-box");
+        assert_eq!(boxes.len(), 7, "every line, not just the five on the wall");
+        assert!(
+            all(&root, ".note-sheet .task-line").is_empty(),
+            "only the author writes the lines"
+        );
+        assert!(
+            one(&root, ".note-sheet .task-list")
+                .text_content()
+                .unwrap_or_default()
+                .contains("1 of 7"),
+            "how much of it is done"
+        );
+
+        // A tick is a STATE, and the box answers the tap before the server
+        // does.
+        let second = &boxes[1];
+        second.click();
+        TimeoutFuture::new(30).await;
+        let ticked: Vec<(i64, i64, bool)> = log
+            .borrow()
+            .iter()
+            .filter_map(|action| match action {
+                Action::TickTask {
+                    note_id,
+                    item_id,
+                    done_now,
+                    ..
+                } => Some((*note_id, *item_id, *done_now)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ticked, vec![(8, 2, true)]);
+        assert!(
+            all(&root, ".note-sheet .task-box")[1]
+                .dyn_ref::<HtmlInputElement>()
+                .unwrap()
+                .checked(),
+            "lit at once, before the answer lands"
+        );
+        // Ticking the line that is already done asks for false, not for a
+        // toggle of whatever the client last saw.
+        all(&root, ".note-sheet .task-box")[0].click();
+        TimeoutFuture::new(30).await;
+        let asked: Vec<bool> = log
+            .borrow()
+            .iter()
+            .filter_map(|action| match action {
+                Action::TickTask { done_now, .. } => Some(*done_now),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(asked, vec![true, false]);
+        handle.destroy();
+        root.remove();
+    }
+
+    /// The author writes the lines, and a save carries the ids so a tick
+    /// survives a rewrite (docs/protocol.md, "Board").
+    #[wasm_bindgen_test]
+    async fn a_list_is_written_and_its_lines_keep_their_ids() {
+        let log = Log::default();
+        let (root, handle) = render(props(Vec::new(), &[], &log)).await;
+        // The third button on the bar is the list.
+        click(&all(&root, ".board-actions button")[2]);
+        TimeoutFuture::new(30).await;
+        assert!(one(&root, "#note-sheet-title")
+            .text_content()
+            .unwrap_or_default()
+            .contains("List"));
+        // A new list opens with one empty line, and nothing to tick yet.
+        assert_eq!(all(&root, ".note-sheet .task-line").len(), 1);
+        assert!(
+            all(&root, ".note-sheet .task-box")[0].has_attribute("disabled"),
+            "a line nobody has saved cannot be ticked"
+        );
+
+        type_in(&one(&root, ".note-sheet textarea"), "Saturday");
+        TimeoutFuture::new(20).await;
+        type_in(&all(&root, ".note-sheet .task-line")[0], "Milk");
+        TimeoutFuture::new(20).await;
+        click(&one(&root, ".note-sheet .task-list button.secondary"));
+        TimeoutFuture::new(20).await;
+        assert_eq!(all(&root, ".note-sheet .task-line").len(), 2);
+        type_in(&all(&root, ".note-sheet .task-line")[1], "Bread");
+        TimeoutFuture::new(20).await;
+        // A third line, typed and then removed: what is not on the list
+        // when it is saved is not on the list.
+        click(&one(&root, ".note-sheet .task-list button.secondary"));
+        TimeoutFuture::new(20).await;
+        type_in(&all(&root, ".note-sheet .task-line")[2], "Wine");
+        TimeoutFuture::new(20).await;
+        click(&all(&root, ".note-sheet .task-drop")[2]);
+        TimeoutFuture::new(20).await;
+        // And a line added and never typed into: somebody who started and
+        // stopped, not a thing to do — and a line the server would refuse.
+        click(&one(&root, ".note-sheet .task-list button.secondary"));
+        TimeoutFuture::new(20).await;
+        assert_eq!(all(&root, ".note-sheet .task-line").len(), 3);
+
+        click(&one(&root, ".note-sheet .dialog-actions .primary"));
+        TimeoutFuture::new(30).await;
+        let created: Vec<NewNote> = log
+            .borrow()
+            .iter()
+            .filter_map(|action| match action {
+                Action::CreateNote { note, .. } => Some(note.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(created.len(), 1);
+        let new = &created[0];
+        assert_eq!(new.kind.as_deref(), Some("tasks"));
+        assert_eq!(new.text, "Saturday");
+        let items = new.items.clone().expect("a list sends its lines");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].text, "Milk");
+        assert_eq!(items[1].text, "Bread");
+        assert!(
+            items.iter().all(|line| line.id.is_none()),
+            "ids are the server's"
+        );
+        handle.destroy();
+        root.remove();
+    }
+
+    /// A rewrite sends the ids it keeps, which is what carries a tick
+    /// through it (docs/protocol.md, "Board").
+    #[wasm_bindgen_test]
+    async fn a_rewrite_keeps_the_ids_of_the_lines_it_keeps() {
+        let log = Log::default();
+        let list = task_note(
+            8,
+            ME,
+            "Saturday",
+            &[(11, "Bred", true), (12, "Eggs", false)],
+        );
+        let (root, handle) = render(props(vec![list], &[], &log)).await;
+        TimeoutFuture::new(30).await;
+        key(&all(&root, ".sticker")[0], "keydown", "Enter");
+        TimeoutFuture::new(30).await;
+
+        // The author's own list: the words are editable here.
+        let lines = all(&root, ".note-sheet .task-line");
+        assert_eq!(lines.len(), 2);
+        type_in(&lines[0], "Bread");
+        TimeoutFuture::new(20).await;
+        click(&all(&root, ".note-sheet .task-drop")[1]);
+        TimeoutFuture::new(20).await;
+        click(&one(&root, ".note-sheet .dialog-actions .primary"));
+        TimeoutFuture::new(30).await;
+
+        let patched: Vec<NotePatch> = log
+            .borrow()
+            .iter()
+            .filter_map(|action| match action {
+                Action::UpdateNote { patch, .. } => Some(patch.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(patched.len(), 1);
+        let items = patched[0].items.clone().expect("the lines");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, Some(11), "the line it kept carries its id");
+        assert_eq!(items[0].text, "Bread");
+        // The title did not change, so nothing else did either.
+        assert!(patched[0].text.is_none());
+        handle.destroy();
+        root.remove();
+    }
+
+    /// A name is a door only where there is somebody to open it with
+    /// (docs/protocol.md, "Board"): a member who has LEFT is still named
+    /// — an old note says what it said — and so is somebody the reader
+    /// blocked, but neither opens anything.
+    #[wasm_bindgen_test]
+    async fn a_name_with_nobody_behind_it_is_highlighted_and_not_a_door() {
+        const GONE: i64 = 55;
+        const BOB: i64 = 66;
+        let log = Log::default();
+        let mut left = note(6, ANNA, "@Gran left it with @Bob", 0.2, 0.2);
+        left.mentions = Some(vec![
+            crate::model::Mention {
+                user_id: GONE,
+                name: "Gran".into(),
+            },
+            crate::model::Mention {
+                user_id: BOB,
+                name: "Bob".into(),
+            },
+        ]);
+        let mut props = props(vec![left], &[BOB], &log);
+        // Gran is in `names` and not on the roster: she has left, so her
+        // old notes still say who wrote them and her name still reads as a
+        // name. Bob is here, and blocked.
+        props.names.insert(GONE, "Gran".to_string());
+        props.names.insert(BOB, "Bob".to_string());
+        props.members = vec![
+            crate::model::Member {
+                id: ANNA,
+                display_name: "Anna".into(),
+                ..Default::default()
+            },
+            crate::model::Member {
+                id: BOB,
+                display_name: "Bob".into(),
+                ..Default::default()
+            },
+            crate::model::Member {
+                id: ME,
+                display_name: "Me".into(),
+                ..Default::default()
+            },
+        ];
+        let (root, handle) = render(props).await;
+        TimeoutFuture::new(30).await;
+
+        let sticker = &all(&root, ".sticker")[0];
+        key(sticker, "keydown", "Enter");
+        TimeoutFuture::new(30).await;
+
+        assert_eq!(
+            all(&root, ".note-sheet .mention").len(),
+            2,
+            "both names are drawn as names"
+        );
+        assert!(
+            all(&root, ".note-sheet button.mention").is_empty(),
+            "and neither is a door: one has left, the other is blocked"
+        );
+        handle.destroy();
+        root.remove();
+    }
+
+    /// Saving a note RESOLVES the names from its text, and an edit
+    /// re-decides them (docs/protocol.md, "Board").
+    #[wasm_bindgen_test]
+    fn the_names_are_resolved_from_the_text_at_save() {
+        let roster = vec![
+            crate::model::Member {
+                id: ANNA,
+                display_name: "Anna".into(),
+                ..Default::default()
+            },
+            crate::model::Member {
+                id: 99,
+                display_name: "Gran".into(),
+                ..Default::default()
+            },
+        ];
+        let mut draft = Draft::blank(Kind::Text, 0.0);
+        draft.text = "@Anna the kit is in the hall".into();
+        let new = draft.new_note(Kind::Text, (0.1, 0.2), &roster);
+        let named = new.mentions.expect("the note names somebody");
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].user_id, ANNA);
+        assert_eq!(named[0].name, "Anna");
+
+        // A name nobody on the roster answers to names nobody.
+        let mut stranger = Draft::blank(Kind::Text, 0.0);
+        stranger.text = "@Nobody hello".into();
+        assert!(stranger
+            .new_note(Kind::Text, (0.1, 0.2), &roster)
+            .mentions
+            .is_none());
+
+        // An EDIT sends the list with the text — re-decided, so rewriting
+        // the words to name somebody else names them, and rewriting them
+        // to name nobody clears the list.
+        let stored = note(6, ME, "@Anna the kit", 0.1, 0.2);
+        let mut moved_on = Draft::blank(Kind::Text, 0.0);
+        moved_on.text = "@Gran the kit".into();
+        let patch = moved_on.patch(&stored, &roster);
+        assert_eq!(patch.text.as_deref(), Some("@Gran the kit"));
+        let named = patch.mentions.expect("sent with the text");
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].user_id, 99);
+
+        let mut nobody = Draft::blank(Kind::Text, 0.0);
+        nobody.text = "the kit is in the hall".into();
+        let patch = nobody.patch(&stored, &roster);
+        assert!(
+            patch.mentions.is_none(),
+            "no names to send — and a text patch without them is what \
+             clears the note's old ones"
+        );
+    }
+    /// Typing `@An` in the note editor OFFERS the members it could mean,
+    /// and picking one writes the whole name into the text — which is what
+    /// makes the resolution at save find somebody (docs/protocol.md,
+    /// "Board").
+    #[wasm_bindgen_test]
+    async fn the_note_editor_offers_the_names_a_half_typed_at_could_mean() {
+        let log = Log::default();
+        let mut board = props(Vec::new(), &[], &log);
+        board.members = vec![
+            crate::model::Member {
+                id: ANNA,
+                display_name: "Anna".into(),
+                ..Default::default()
+            },
+            crate::model::Member {
+                id: 99,
+                display_name: "Gran".into(),
+                ..Default::default()
+            },
+        ];
+        let (root, handle) = render(board).await;
+        click(&all(&root, ".board-actions button")[0]);
+        TimeoutFuture::new(30).await;
+        let area = one(&root, ".note-sheet textarea");
+        let typed = |text: &str| {
+            area.dyn_ref::<HtmlTextAreaElement>()
+                .unwrap()
+                .set_value(text);
+            let init = web_sys::EventInit::new();
+            init.set_bubbles(true);
+            area.dispatch_event(
+                &web_sys::InputEvent::new_with_event_init_dict(
+                    "input",
+                    &init.clone().unchecked_into(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        };
+
+        assert!(all(&root, ".note-name").is_empty(), "nothing offered yet");
+        typed("kit for @An");
+        TimeoutFuture::new(30).await;
+        let names: Vec<String> = all(&root, ".note-name")
+            .iter()
+            .map(|chip| chip.text_content().unwrap_or_default())
+            .collect();
+        assert_eq!(names, vec!["@Anna".to_string()], "only who it could mean");
+
+        click(&one(&root, ".note-name"));
+        TimeoutFuture::new(30).await;
+        let written = area.dyn_ref::<HtmlTextAreaElement>().unwrap().value();
+        assert_eq!(written, "kit for @Anna ", "the whole name, and a space");
+        assert!(
+            all(&root, ".note-name").is_empty(),
+            "and nothing left to offer"
+        );
         handle.destroy();
         root.remove();
     }

@@ -329,6 +329,22 @@ pub struct NewNote {
     pub ends_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub place: Option<String>,
+    /// The members the text names (docs/protocol.md, "Board").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<Vec<crate::model::Mention>>,
+    /// A task list's lines. Sent only on a `tasks` note, where the text is
+    /// the title (docs/protocol.md, "Board").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<TaskLine>>,
+}
+
+/// One line the author is writing. `id` says "the line you already have",
+/// which is what carries its TICK through a rewrite; absent, it is new.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskLine {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<i64>,
+    pub text: String,
 }
 
 /// A change to a note. Only what changed is sent, and WHICH fields are sent
@@ -358,6 +374,16 @@ pub struct NotePatch {
     /// Sent empty to clear it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub place: Option<String>,
+    /// REPLACES the note's names, and is sent with every text edit — a
+    /// note's names are re-decided on every edit, and a text patch without
+    /// them clears them (docs/protocol.md, "Board").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<Vec<crate::model::Mention>>,
+    /// REPLACES a task list's lines: a line that carries its id keeps its
+    /// TICK, one without an id is new, and a line left out is gone
+    /// (docs/protocol.md, "Board").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<TaskLine>>,
 }
 
 impl NotePatch {
@@ -1216,6 +1242,28 @@ pub async fn answer_event(
         }
     };
     Ok(response.note)
+}
+
+/// `PUT …/notes/{id}/tasks/{item_id}` — tick or untick one line. Anyone in
+/// the family may; ticking is not authorship, and it is a STATE rather than
+/// a toggle so two phones cannot undo each other (docs/protocol.md,
+/// "Board").
+pub async fn tick_task(
+    token: &str,
+    note_id: i64,
+    item_id: i64,
+    done: bool,
+) -> Result<Note, ApiError> {
+    let url = path(&format!(
+        "/families/mine/board/notes/{note_id}/tasks/{item_id}"
+    ));
+    let response: NoteResponse = with_body(Request::put(&url), token, &TaskDone { done }).await?;
+    Ok(response.note)
+}
+
+#[derive(Debug, Serialize)]
+struct TaskDone {
+    done: bool,
 }
 
 /// `DELETE /families/mine/board/notes/{id}` — the author's; idempotent.

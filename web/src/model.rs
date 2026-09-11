@@ -372,6 +372,21 @@ pub struct Rsvp {
     pub answer: String,
 }
 
+/// One line of a task list (docs/protocol.md, "Board").
+///
+/// `id` is the server's and stable for the life of the line, which is what
+/// a tick refers to and what carries a tick through the author's rewrite.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct TaskItem {
+    pub id: i64,
+    pub text: String,
+    pub done: bool,
+    /// Who ticked it — absent while it is not done, and absent on a tick
+    /// whose account has since been deleted.
+    #[serde(default)]
+    pub done_by: Option<i64>,
+}
+
 /// A sticker on the family board (docs/protocol.md, "Objects" and "Board").
 ///
 /// A TOMBSTONE carries only `id`, `deleted` and `board_seq`, which is why
@@ -410,6 +425,14 @@ pub struct Note {
     /// Present, possibly empty, on every event; absent on every other kind.
     #[serde(default)]
     pub rsvps: Option<Vec<Rsvp>>,
+    /// The things to do, in the author's order. Present (possibly empty)
+    /// on every task list; absent on every other kind.
+    #[serde(default)]
+    pub items: Option<Vec<TaskItem>>,
+    /// The members this note NAMES, in the author's order
+    /// (docs/protocol.md, "Board"). Absent when it names nobody.
+    #[serde(default)]
+    pub mentions: Option<Vec<Mention>>,
     #[serde(default)]
     pub x: Option<f64>,
     #[serde(default)]

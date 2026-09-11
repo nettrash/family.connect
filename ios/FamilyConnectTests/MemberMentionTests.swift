@@ -184,4 +184,73 @@ struct MemberMentionTests {
             #expect(marked.foregroundColor == (isMine ? .white : .primary))
         }
     }
+
+    /// A BOARD NOTE's names (docs/protocol.md, "Board"): bold in the note's
+    /// own ink, a door only where the note is open, and never the reader's
+    /// own name.
+    ///
+    /// Web counterpart: `board.rs`'s
+    /// `a_note_names_a_member_and_the_name_opens_their_chat`.
+    @Test("a note's names are bold, and doors only when it is open")
+    func noteNames() throws {
+        let anna = MentionDTO(userID: 8, name: "Anna")
+        let me = MentionDTO(userID: 7, name: "Me")
+        let text = "@Anna and @Me — the kit"
+
+        // On the sticker: bold, and nothing is a link.
+        let sticker = MemberMentions.noteText(text, mentions: [anna, me], linking: false)
+        let emphasised = sticker.runs.filter {
+            $0.inlinePresentationIntent == .stronglyEmphasized
+        }
+        #expect(emphasised.count == 2, "both names are drawn as names")
+        #expect(sticker.runs.allSatisfy { $0.link == nil }, "and neither is a door")
+
+        // Opened: a door for somebody else, not for the reader.
+        let opened = MemberMentions.noteText(
+            text, mentions: [anna, me], linking: true, excluding: [me.userID])
+        let links = opened.runs.compactMap { run -> Int64? in
+            run.link.flatMap(MemberMentions.userID(from:))
+        }
+        #expect(links == [anna.userID])
+        // And the ink is the note's own: a link run would otherwise be
+        // drawn in the accent, which on a pastel is the mention nobody
+        // can read.
+        let door = try #require(opened.runs.first { $0.link != nil })
+        #expect(door.foregroundColor != nil)
+        #expect(door.underlineStyle == nil)
+
+        // A note that names nobody is left exactly as it was.
+        let plain = MemberMentions.noteText("the kit is in the hall", mentions: [], linking: true)
+        #expect(plain.runs.allSatisfy {
+            $0.inlinePresentationIntent == nil && $0.link == nil
+        })
+    }
+
+    /// Which names an open note may open, decided from the one set a
+    /// composer would offer (docs/protocol.md, "Board").
+    @Test("A name is a door only where there is somebody to open it with")
+    func noteDoors() {
+        let anna = MentionDTO(userID: 8, name: "Anna")
+        let me = MentionDTO(userID: 7, name: "Me")
+        let gran = MentionDTO(userID: 5, name: "Gran")
+        let bob = MentionDTO(userID: 6, name: "Bob")
+        let roster = [anna, me, gran, bob]
+        // What the strip offers: never the reader, never the blocked, and
+        // Gran has left, so she is not on the live roster at all.
+        let offered = MemberMentions.candidates(
+            in: roster.filter { $0.userID != gran.userID },
+            matching: "",
+            excluding: [me.userID, bob.userID])
+
+        let closed = MemberMentions.closedNames(
+            in: [anna, me, gran, bob], openTo: offered)
+
+        #expect(closed == [me.userID, gran.userID, bob.userID])
+        #expect(!closed.contains(anna.userID), "Anna is here and not blocked: her name opens")
+
+        // A note that names nobody closes nothing — there is nothing to
+        // close, and an `excluding` set built the wrong way round would
+        // quietly shut every door instead.
+        #expect(MemberMentions.closedNames(in: [], openTo: offered).isEmpty)
+    }
 }

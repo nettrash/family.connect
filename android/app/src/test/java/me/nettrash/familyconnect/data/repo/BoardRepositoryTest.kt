@@ -20,8 +20,11 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.NoteDao
+import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
+import me.nettrash.familyconnect.data.net.dto.MentionDto
+import me.nettrash.familyconnect.data.net.dto.NoteMentionsCodec
 import me.nettrash.familyconnect.data.net.dto.RsvpDto
 import me.nettrash.familyconnect.data.net.dto.RsvpCodec
 import me.nettrash.familyconnect.testutil.FakeAttachmentApi
@@ -68,7 +71,7 @@ class BoardRepositoryTest {
     /** The collector runs for the life of the app scope — see the note in
      *  [[kotlin-coroutines-test-gotchas]]: it belongs on backgroundScope. */
     private fun kotlinx.coroutines.test.TestScope.repository() =
-        BoardRepository(boardApi, noteDao, settings, socket, backgroundScope)
+        BoardRepository(boardApi, noteDao, db.memberDao(), settings, socket, backgroundScope)
 
     @Test
     fun `a note is created then updated in place`() = runTest(dispatcher) {
@@ -545,5 +548,99 @@ class BoardRepositoryTest {
         val marks = settings.state.first().badgeMarks()
         assertThat(BoardBadge.unreadCount(noteDao.observeNotes().first().marks(), marks))
             .isEqualTo(1)
+    }
+
+    // MARK: - the members a note names (docs/protocol.md, "Board")
+
+    private suspend fun roster() = db.memberDao().upsertAll(
+        listOf(
+            MemberEntity(userId = 2L, username = "anna", displayName = "Anna", role = "member"),
+            MemberEntity(userId = 3L, username = "bob", displayName = "Bob", role = "member"),
+            MemberEntity(
+                userId = 4L, username = "gone", displayName = "Junior", role = "member",
+                hasLeft = true,
+            ),
+        ),
+    )
+
+    @Test
+    fun `a note sends the names its text says`() = runTest(dispatcher) {
+        val repository = repository()
+        roster()
+
+        repository.addNote("Milk please @Anna", "yellow", "medium", "plain", 0.1, 0.2)
+        runCurrent()
+
+        assertThat(boardApi.created.last().mentions)
+            .isEqualTo(listOf(MentionDto(2L, "Anna")))
+    }
+
+    @Test
+    fun `a note that names nobody sends no names at all`() = runTest(dispatcher) {
+        val repository = repository()
+        roster()
+
+        // Absent, not an empty list: absence is what the wire means by
+        // "nobody", and it is also what a PATCH uses to clear.
+        repository.addNote("Milk please", "yellow", "medium", "plain", 0.1, 0.2)
+        // A name nobody here answers to is text, and a member who has LEFT
+        // is not on the roster a name resolves against.
+        repository.addNote("Ask @Nobody and @Junior", "yellow", "medium", "plain", 0.1, 0.2)
+        runCurrent()
+
+        assertThat(boardApi.created.map { it.mentions }).containsExactly(null, null)
+    }
+
+    @Test
+    fun `an edit re-decides the names and a text edit naming nobody clears them`() =
+        runTest(dispatcher) {
+            val repository = repository()
+            roster()
+
+            repository.updateNote(1L, text = "Hi @Bob")
+            repository.updateNote(1L, text = "Hi everybody")
+            runCurrent()
+
+            assertThat(boardApi.patched[0].second.mentions)
+                .isEqualTo(listOf(MentionDto(3L, "Bob")))
+            // Empty, not absent: absent from a text edit is what CLEARS on
+            // the server, and an empty list says the same thing out loud.
+            assertThat(boardApi.patched[1].second.mentions).isEmpty()
+        }
+
+    @Test
+    fun `a move carries no names`() = runTest(dispatcher) {
+        val repository = repository()
+        roster()
+
+        // Null, so the server leaves the names alone: a note that was
+        // dragged says exactly what it said, and anyone may drag one —
+        // sending a list here would make a move an author's act.
+        repository.updateNote(1L, x = 0.4, y = 0.5)
+        runCurrent()
+
+        assertThat(boardApi.patched.last().second.mentions).isNull()
+    }
+
+    @Test
+    fun `the names a note arrives with are stored with it`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.applyNote(
+            noteDto(id = 1, text = "Hi @Anna", boardSeq = 10, mentions = listOf(MentionDto(2L, "Anna"))),
+        )
+        runCurrent()
+        val stored = noteDao.observeNotes().first().single()
+        assertThat(NoteMentionsCodec.decode(stored.mentionsJson))
+            .isEqualTo(listOf(MentionDto(2L, "Anna")))
+
+        // A server from before note mentions sends nothing, and this
+        // device then draws no names: the same answer `rsvps` gets, and a
+        // server that HAS the column always sends a list, `[]` included —
+        // so nothing real is lost, and nothing is invented either.
+        repository.applyNote(noteDto(id = 1, text = "Hi @Anna", boardSeq = 11))
+        runCurrent()
+        assertThat(NoteMentionsCodec.decode(noteDao.observeNotes().first().single().mentionsJson))
+            .isEmpty()
     }
 }

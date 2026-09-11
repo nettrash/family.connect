@@ -962,6 +962,8 @@ final class ChatSyncCoordinator {
             existing.endsAt = dto.endsAt
             existing.place = dto.place
             existing.rsvpsJSON = dto.rsvps.flatMap(RsvpCodec.encode)
+            existing.mentionsJSON = dto.mentions.flatMap(MentionCodec.encode)
+            existing.itemsJSON = dto.items.flatMap(TaskCodec.encode)
             existing.x = x
             existing.y = y
             existing.updatedAt = dto.updatedAt ?? existing.updatedAt
@@ -983,6 +985,8 @@ final class ChatSyncCoordinator {
                 endsAt: dto.endsAt,
                 place: dto.place,
                 rsvpsJSON: dto.rsvps.flatMap(RsvpCodec.encode),
+                mentionsJSON: dto.mentions.flatMap(MentionCodec.encode),
+                itemsJSON: dto.items.flatMap(TaskCodec.encode),
                 x: x,
                 y: y,
                 createdAt: dto.createdAt ?? Date(),
@@ -1059,6 +1063,21 @@ final class ChatSyncCoordinator {
         }
     }
 
+    /// The members a note's text names (docs/protocol.md, "Board").
+    ///
+    /// Resolved HERE rather than in each board view, because both of them
+    /// would otherwise do it and the two would drift: the names are read
+    /// off the text against the live roster, exactly as a message's are, so
+    /// a name typed by hand names somebody and a name deleted after being
+    /// picked from the strip names nobody.
+    func namedMembers(in text: String) -> [MentionDTO] {
+        guard text.contains("@") else { return [] }
+        let roster = (try? modelContext.fetch(FetchDescriptor<MemberEntity>()))?
+            .filter { !$0.hasLeft && !$0.accountDeleted }
+            .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) } ?? []
+        return MemberMentions.resolve(body: text, roster: roster)
+    }
+
     func addNote(
         text: String,
         color: String,
@@ -1073,19 +1092,26 @@ final class ChatSyncCoordinator {
         /// An event's own three. `startsAt` is what makes this an event.
         startsAt: Date? = nil,
         endsAt: Date? = nil,
-        place: String? = nil
+        place: String? = nil,
+        /// A task list's lines — what makes this a list, the way `startsAt`
+        /// makes a note an event (docs/protocol.md, "Board"). Empty is
+        /// still a list; nil is not one.
+        items: [APIClient.TaskLineRequest]? = nil
     ) async -> Bool {
         let kind: String? = if startsAt != nil {
             NoteKind.event.name
         } else if attachmentID != nil {
             NoteKind.photo.name
+        } else if items != nil {
+            NoteKind.tasks.name
         } else {
             nil
         }
         guard let dto = try? await api.createNote(
             text: text, color: color, size: size, font: font, x: x, y: y,
             kind: kind, attachmentID: attachmentID,
-            startsAt: startsAt, endsAt: endsAt, place: place)
+            startsAt: startsAt, endsAt: endsAt, place: place,
+            mentions: namedMembers(in: text), items: items)
         else {
             return false
         }
@@ -1169,11 +1195,20 @@ final class ChatSyncCoordinator {
         /// it alone, `.some(nil)` clears it (docs/protocol.md, "Board").
         startsAt: Date? = nil,
         endsAt: Date?? = nil,
-        place: String? = nil
+        place: String? = nil,
+        /// REPLACES a task list's lines, and the author's like its title: a
+        /// line carrying its id keeps its TICK (docs/protocol.md, "Board").
+        items: [APIClient.TaskLineRequest]? = nil
     ) async -> Bool {
+        // A text edit carries the names again — they are re-decided on
+        // every one, and a text patch without them clears them
+        // (docs/protocol.md, "Board"). A move sends none, so a note that
+        // was only dragged keeps the names it had.
+        let named = text.map { namedMembers(in: $0) }
         guard let dto = try? await api.patchNote(
             id: id, text: text, color: color, size: size, font: font, x: x, y: y,
-            startsAt: startsAt, endsAt: endsAt, place: place)
+            startsAt: startsAt, endsAt: endsAt, place: place, mentions: named,
+            items: items)
         else {
             return false
         }
@@ -1196,6 +1231,18 @@ final class ChatSyncCoordinator {
         // (docs/protocol.md, "Board"): it says nothing about another note's
         // lower seq, and REST works while the socket is down — exactly when
         // the frames carrying those were missed.
+        applyNote(dto)
+        saveContext()
+        return true
+    }
+
+    /// Tick or untick one line of a task list. ANY member may, which is
+    /// why this is not `updateNote` — ticking is not authorship, and it is
+    /// a STATE rather than a toggle (docs/protocol.md, "Board").
+    @discardableResult
+    func tickTask(noteID: Int64, itemID: Int64, done: Bool) async -> Bool {
+        guard let dto = try? await api.tickTask(noteID: noteID, itemID: itemID, done: done)
+        else { return false }
         applyNote(dto)
         saveContext()
         return true

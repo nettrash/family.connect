@@ -402,7 +402,12 @@ fun AppNavHost(
         }
 
         composable(Routes.BOARD) {
-            BoardScreen(onBack = { navController.popBackStack() })
+            BoardScreen(
+                onBack = { navController.popBackStack() },
+                // A name in an open note is a door (docs/protocol.md,
+                // "Board"), and it leads where a name in a message does.
+                onOpenChat = { chatId -> navController.navigate(Routes.chat(chatId)) },
+            )
         }
 
         composable(

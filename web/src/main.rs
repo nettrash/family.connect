@@ -596,6 +596,7 @@ fn app() -> Html {
                         loaded={store.board.loaded}
                         my_user_id={store.my_user_id}
                         names={store.names.clone()}
+                        members={store.members.clone()}
                         blocked={store.blocked.clone()}
                         revealed={store.board.revealed.clone()}
                         pinning={store.board.pinning}

@@ -234,17 +234,44 @@ pub fn mention_notification(
 /// Title `"<Family> — <Author>"`, body the note's text — governed by the
 /// SAME `include_message_body` switch as a message, because a note is family
 /// content in exactly the way a message is.
-pub fn board_note_notification(
-    include_body: bool,
-    family_name: &str,
-    author_name: &str,
-    family_id: i64,
-    note_id: i64,
-    text: &str,
-    badge: i64,
-) -> Notification {
+///
+/// A member the note NAMES gets `"<Family> — <Author> mentioned you"`
+/// instead, exactly as a mentioned member does in the family chat
+/// (protocol.md, "Board"). It is the same notification with a different
+/// title, never a second one: naming somebody does not push twice.
+/// One board-note alert's ingredients. A struct rather than eight
+/// arguments — the codebase carries no `allow` attributes, and "who wrote
+/// it, on whose board, and does it name this reader" reads better named
+/// than positional.
+pub struct BoardNoteAlert<'a> {
+    pub include_body: bool,
+    pub family_name: &'a str,
+    pub author_name: &'a str,
+    pub family_id: i64,
+    pub note_id: i64,
+    pub text: &'a str,
+    pub badge: i64,
+    /// Whether THIS reader is one of the members the note names.
+    pub mentioned: bool,
+}
+
+pub fn board_note_notification(alert: BoardNoteAlert<'_>) -> Notification {
+    let BoardNoteAlert {
+        include_body,
+        family_name,
+        author_name,
+        family_id,
+        note_id,
+        text,
+        badge,
+        mentioned,
+    } = alert;
     Notification {
-        title: format!("{family_name} — {author_name}"),
+        title: if mentioned {
+            format!("{family_name} — {author_name} mentioned you")
+        } else {
+            format!("{family_name} — {author_name}")
+        },
         body: if include_body {
             text.to_string()
         } else {
@@ -792,7 +819,16 @@ mod tests {
     fn only_message_pushes_carry_a_notification_count() {
         let cases = [
             fcm_message(
-                &board_note_notification(true, "The Smiths", "Junior", 7, 3, "Milk", 0),
+                &board_note_notification(BoardNoteAlert {
+                    include_body: true,
+                    family_name: "The Smiths",
+                    author_name: "Junior",
+                    family_id: 7,
+                    note_id: 3,
+                    text: "Milk",
+                    badge: 0,
+                    mentioned: false,
+                }),
                 "t",
             ),
             fcm_message(

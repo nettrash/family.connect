@@ -482,11 +482,14 @@ struct ChatListView: View {
             // gives it the screen. The phone keeps its sheet, which is
             // full-height there anyway. The idiom never changes while the
             // app runs, so the other presenter is simply never armed.
+            // A name in a note is a door: the board hands the chat back to
+            // the list that presented it, which is the one surface that
+            // knows how to open one (docs/protocol.md, "Board").
             .sheet(isPresented: usesSplitView ? .constant(false) : $showsBoard) {
-                BoardView()
+                BoardView(onOpenChat: openChatFromBoard)
             }
             .fullScreenCover(isPresented: usesSplitView ? $showsBoard : .constant(false)) {
-                BoardView()
+                BoardView(onOpenChat: openChatFromBoard)
             }
             // Fires on both transitions, which is exactly what is wanted:
             // opening clears what is already pinned, closing catches
@@ -602,6 +605,19 @@ struct ChatListView: View {
     /// RootView and cannot present over one of them. The share picker
     /// too — its dismissal discards the parked share, which is the lesser
     /// loss against a call that starts with no screen.
+    /// A name tapped in an open board note: close the board and open the
+    /// one-to-one chat with that member (docs/protocol.md, "Board"). The
+    /// same dance the call route does, and for the same reason — the list
+    /// is the surface that knows how to open a chat.
+    private func openChatFromBoard(_ userID: Int64) {
+        dismissSheets()
+        Task {
+            if let chatID = try? await coordinator.openDirectChat(with: userID) {
+                path = [chatID]
+            }
+        }
+    }
+
     private func dismissSheets() {
         showsNewChat = false
         showsSettings = false

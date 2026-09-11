@@ -412,6 +412,9 @@ Note      {"id": 12, "author_id": 7, "kind": "text", "text": "Milk", "color": "y
           — plus "starts_at", optional "ends_at", optional "place", optional "attachment"
             (the backdrop) and "rsvps": [{user_id, answer}] on an "event" note, whose
             "text" is its title — see "Board"
+          — plus "items": [{id, text, done, done_by?}] on a "tasks" note, whose "text" is
+            the list's title; the items are in the author's order, "done_by" is whoever
+            ticked the item and is absent while it is not done — see "Board"
           — plus "deleted": true INSTEAD of the content fields on a tombstone; see "Board"
           — "content_seq" is the board_seq of the last change to what the note SAYS; a
             move, a resize, a recolour and a change of font leave it alone. It is what a
@@ -421,7 +424,7 @@ Note      {"id": 12, "author_id": 7, "kind": "text", "text": "Milk", "color": "y
             with a system face of its own. Always present on a live note; a reader that
             finds it missing (an older server) draws the note plain, which is what every
             note was before the field existed — see "Board"
-          — "kind" is "text", "photo" or "event". Always present on a live note; a reader that
+          — "kind" is "text", "photo", "event" or "tasks". Always present on a live note; a reader that
             finds it missing (an older server) reads "text", which is what every note
             was. A client that does not know a kind draws the note as a text one — see
             "Board"
@@ -848,6 +851,41 @@ rejected — a drag that ends past the edge should stick to the edge, not fail. 
 `yellow`, `pink`, `blue`, `green`, `orange`, `purple`; anything else is `invalid_note_color`.
 `text` is trimmed, non-empty and at most 280 characters.
 
+**A note may NAME MEMBERS**, and it works the way a message's mentions do
+(see "Mentioning a member"): `mentions: [{user_id, name}]` rides on the note and the `@name` is
+drawn highlighted in its text. Where the tap goes is the one thing that differs: **on the sticker
+the name is a highlight and nothing more, and it is tappable in the note somebody has OPENED.** A
+sticker's whole face is a drag handle and a tap on it opens the note; a name that took that tap
+would make a wall hard to tidy and a note hard to read, for the sake of a door that is one tap
+further on anyway. A name is a door only where there is somebody to open it with, which is the
+composer's own rule read the other way: **the reader's own name, a member they have blocked, and a
+member who has left or deleted their account are highlighted like any other and simply do not
+open** — the same set a client offers while an `@` is being typed. The same grammar decides what counts — the whole name at a boundary — and the same limits apply: at most 20 names on
+a note, each a member of THIS family, each named at most once, and each `name` a name the text
+actually says after an `@`. Anything else is `validation`.
+
+Three differences from a message, each for a reason:
+
+- **The list is re-decided on every EDIT.** A message fixes its list at send because a list that
+  could be rewritten would be a way to wake somebody twice; an edit to a note notifies nobody at
+  all (only creation does — see above), so re-reading the names off the new text cannot wake
+  anyone. A note is a living thing on a wall: an author who rewrites it to name somebody else
+  should get a note that names them. Omitting `mentions` from a `PATCH` that changes `text` clears
+  the list, exactly as it clears nothing else — the names are part of what the note says.
+- **Only CREATION notifies**, as with any note, and a named member's devices get the title
+  `"<Family> — <Author> mentioned you"` instead of `"<Family> — <Author>"`. The body is the note's
+  text or `"New note"`, under the same `include_message_body` switch. One push per device either
+  way: naming somebody does not add a second notification, it changes the title of the one that was
+  already going.
+- **`@ai` in a note is just text.** The assistant does not read the board — its two doors are its
+  own chat and a mention in the family chat — so a client draws no assistant token on a note and
+  the server acts on none. A member called by a name that happens to be `ai` is still a member
+  mention like any other, because that is decided by the roster and not by the token.
+
+A mention is drawn on every kind: a text note, a photo note's caption, an event's title. Blocking
+is unchanged — a hidden note's text is hidden, names included, and the placeholder says nothing
+about who it names.
+
 **The wall is TALLER than the window, and it scrolls.** `x` and `y` stay fractions of the WALL, so
 a note keeps its relative place; what changes is that the wall is not one screenful. A wall the size
 of the window is a wall that fills up, and a family whose wall is full has to delete something to
@@ -885,7 +923,8 @@ nothing. Resizing takes a `board_seq` like any other mutation and does not notif
 and, like a move, it leaves `content_seq` alone and raises no badge: a note that got bigger is not
 a note with something new in it.
 
-**A note has a KIND.** `kind` is `text`, `photo` or `event`; anything else is `invalid_note_kind`, and a
+**A note has a KIND.** `kind` is `text`, `photo`, `event` or `tasks`; anything else is
+`invalid_note_kind`, and a
 note created without one is `text` — what every note on every wall was before the field existed. A
 `photo` note is a picture pinned to the wall, and it is a NOTE in every other respect: it takes a
 slot and a position anyone may move, it counts against the same ceiling, it rides the same change
@@ -933,6 +972,76 @@ There is no calendar on this wire and no `.ics`. A client that can put an event 
 calendar builds it locally out of the title, the times and the place; the server neither generates
 one nor knows whether anybody kept it. That is deliberate — a calendar entry is a copy, and a copy
 the server maintained would be a second source of truth for something the family already has.
+
+**A TASK LIST is the fourth kind**: something the family has to get done, on the wall where the
+family looks. Its `text` is the list's TITLE and is required, as an event's is, and it carries
+`items` — the things to do.
+
+`items` is a list of `{id, text, done, done_by?}`, in the author's order, present on every `tasks`
+note and `[]` on one whose author has not written anything into it yet (pinning "Saturday" and
+filling it in later is exactly how a list gets made). `id` is the SERVER's, stable for the life of
+the item, and it is what a tick refers to — a position would move under somebody's finger the
+moment the author inserted a line above it. `text` is trimmed, non-empty and at most 100
+characters; a list holds at most 20 items (`max_task_items`), and over either is `validation`.
+`done_by` is whoever ticked the item, and is absent while the item is not done.
+
+**The author writes the list; anyone ticks it.** This is the same split as an event's, for the same
+reason: a chore list only one person may tick is not a list the family can use, and a list anyone
+may rewrite is not the author's note. So `items` on a `POST` or a `PATCH` is the AUTHOR's — it
+REPLACES the list, which is how an item is added, rewritten, reordered or removed — and ticking is
+its own request that any member may send.
+
+A replacement carries back the ids it wants to keep: `items: [{id?, text}]`, where an entry with an
+`id` the note already holds is that item, rewritten and moved to wherever it now sits, and an entry
+without one is a new item. An item the author leaves out is gone. **An item that keeps its id keeps
+its tick**, which is the whole point of sending ids at all: fixing a typo in "Bred" must not
+untick it and must not tell the family that nobody bought the bread. An `id` that is not this
+note's is `validation` — a client sending somebody else's item id has a bug, and silently treating
+it as new would hide it. A `done` sent here is IGNORED, the way every unknown field on this wire
+is: ticking is not authorship, and an author who could set it in a rewrite could untick what
+another member ticked without ever being the one to say so.
+
+A tick is `PUT /families/mine/board/notes/{id}/tasks/{item_id}` with `{done}` — an idempotent
+state-set, not a toggle, for exactly the reason the RSVP is one: two phones tapping the same item
+must not undo each other, and a client that has been offline is asking for a state rather than for
+a flip. Re-sending the state the item already holds is a no-op: no new seq, no fan-out.
+
+A tick takes a `board_seq` like every other change, so it reaches the other devices through the one
+feed. It does NOT notify and it leaves `content_seq` alone — the list says exactly what it said
+before, and a badge claiming there is something to READ would be a lie, the same rule an answer, a
+move, a resize, a recolour and a change of font follow. The author's own changes to `items` DO move
+`content_seq`, because they are what the note says: a line added to the shopping list is something
+to read, and it is the one thing on a task list worth a badge.
+
+`done_by` keeps the member's id, not their name, and it keeps it after they leave: a name comes
+from the roster like every other name on this wire, and a former member's resolves the way it does
+everywhere else. Ticking is not authorship, so an item ticked by somebody who has since left stays
+ticked — the milk was still bought.
+
+Mentions on a task list are read from its `text`, like any note's, and NOT from the items. The
+names rule is about what the note says in its own words; scanning twenty lines for names would
+make one note a way to wake the family twenty times, and the title is where a list says who it is
+for.
+
+**The sticker SHOWS what is done; the tick happens where the note is OPEN.** This is a drawing
+rule and not a wire one, but all four clients must agree about it for the same reason they agree
+about the bare photo: a sticker's whole face is a drag handle, and a row of small boxes on it would
+be a wall nobody could tidy — a tap would tick when it meant to move. So the wall draws the lines
+with their state, struck through or ticked, and the tap that ticks is one tap further on: in the
+note a member has opened, or — on a platform where a reader cannot open somebody else's note — in
+the sticker's own menu, beside the event's "Are you coming?", which is there for exactly this
+reason. Ticking is the shared act, so it must be reachable by every member on every client, and
+never only by the author.
+
+A sticker draws **at most the first five lines**, and then how many more there are
+(`fc_text::board::WALL_TASK_LINES`); the note itself has all of them. One number rather than "as
+many as fit" for the reason the wall's height is one factor: a list that ran to a different point
+on the phone and on the Mac would be a different list, and the type-fitting rule already scales
+what is drawn until it is inside the card. A list of five or fewer says nothing extra.
+
+A client that has never heard of `tasks` draws it as a text note with its title, which is the
+forgiveness `kind` already promises — the slot is the family's shared layout, and a hole in it
+would be worse than a sticker that says "Saturday" and nothing else.
 
 Deleting a photo note takes its picture with it. The note tombstones as any note does, and the
 attachment row and its bytes go — there is nothing left that could show them, and a picture no
@@ -3445,9 +3554,10 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 |---|---|
 | `GET /families/mine/board` | → `200 {notes: [Note], max_board_seq: 88}`. The whole board as it now stands, tombstones excluded, newest `board_seq` first. `max_board_seq` is `0` for a board nothing has ever been written to, and is read BEFORE the notes, so it is never above a change they missed; a client REPLACES what it holds with this read (see "Board"). Error: `not_in_family`. |
 | `GET /families/mine/board/changes` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {notes: [Note]}` ordered by `board_seq` ascending, INCLUDING tombstones — the board catch-up, looped until a short page. Errors: `not_in_family`, `invalid_pagination`. |
-| `POST /families/mine/board/notes` | `{text, color, x, y, size?, font?, kind?, attachment_id?, starts_at?, ends_at?, place?}` → `201 {note: Note}`. Caller becomes the author. `size` defaults to `medium`, `font` to `plain` and `kind` to `text` when absent. `attachment_id` claims one photo this caller uploaded: REQUIRED by `kind: "photo"` (whose `text` may then be empty), optional on `kind: "event"` (the backdrop), refused on a text note. `starts_at` is required by — and only accepted on — an event, with `ends_at` and `place` optional there and nowhere else. Errors: `validation` (text empty on a text note or > 280; an `attachment_id` without the kind, or the kind without one), `invalid_note_kind`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `invalid_attachment` (not a photo), `attachment_not_found`, `attachment_already_used`, `attachment_expired`, `board_full` (409, over the note ceiling), `not_in_family`. An event also answers `validation` for a missing or unparseable `starts_at`, an `ends_at` before it, a `place` over 200 characters, or any of the three on a note that is not an event. |
-| `PATCH /families/mine/board/notes/{id}` | `{text?, color?, size?, font?, x?, y?, starts_at?, ends_at?, place?}` → `200 {note: Note}`. A note's KIND and its picture are fixed at creation: neither is patchable, and a photo note's caption may be set to empty here. An event's `starts_at`, `ends_at` and `place` are the AUTHOR'S, like its title — `place` may be sent empty to clear it, `ends_at` null to clear it — and are refused on any other kind. Any member may send `x`/`y`; only the author may send `text`, `color`, `size` or `font` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `validation`, `not_in_family`. |
+| `POST /families/mine/board/notes` | `{text, color, x, y, size?, font?, kind?, attachment_id?, starts_at?, ends_at?, place?, mentions?, items?}` → `201 {note: Note}`. `mentions: [{user_id, name}]` names members of this family, at most 20, each once, each a name the `text` says after an `@` — the same rules and the same grammar as a message's (`validation` otherwise, see "Board"). Caller becomes the author. `size` defaults to `medium`, `font` to `plain` and `kind` to `text` when absent. `attachment_id` claims one photo this caller uploaded: REQUIRED by `kind: "photo"` (whose `text` may then be empty), optional on `kind: "event"` (the backdrop), refused on a text note. `starts_at` is required by — and only accepted on — an event, with `ends_at` and `place` optional there and nowhere else. Errors: `validation` (text empty on a text note or > 280; an `attachment_id` without the kind, or the kind without one), `invalid_note_kind`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `invalid_attachment` (not a photo), `attachment_not_found`, `attachment_already_used`, `attachment_expired`, `board_full` (409, over the note ceiling), `not_in_family`. An event also answers `validation` for a missing or unparseable `starts_at`, an `ends_at` before it, a `place` over 200 characters, or any of the three on a note that is not an event. `items: [{text}]` is the TASK LIST's lines, accepted on — and only on — `kind: "tasks"`, whose `text` is its title: at most 20, each trimmed, non-empty and at most 100 characters, `validation` otherwise. An `id` on a created item is refused: ids are the server's. |
+| `PATCH /families/mine/board/notes/{id}` | `{text?, color?, size?, font?, x?, y?, starts_at?, ends_at?, place?, mentions?, items?}` → `200 {note: Note}`. `mentions` REPLACES the list — a note's names are re-decided on every edit, unlike a message's, because an edit to a note notifies nobody (see "Board"); sending `text` without `mentions` clears them. A note's KIND and its picture are fixed at creation: neither is patchable, and a photo note's caption may be set to empty here. An event's `starts_at`, `ends_at` and `place` are the AUTHOR'S, like its title — `place` may be sent empty to clear it, `ends_at` null to clear it — and are refused on any other kind. `items` REPLACES a task list's lines and is the author's too (refused on any other kind): an entry `{id, text}` whose `id` the note holds is that item, rewritten and moved, and KEEPS ITS TICK; an entry `{text}` is new; an item left out is gone; an `id` that is not this note's is `validation`, and a `done` sent here is ignored (see "Board"). Any member may send `x`/`y`; only the author may send `text`, `color`, `size` or `font` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `validation`, `not_in_family`. |
 | `PUT /families/mine/board/notes/{id}/rsvp` | `{answer}` → `200 {note: Note}`. Records the caller as `going`, `maybe` or `no` on an event — an idempotent state-set, not a toggle, and ANY member may send it. Re-sending the answer already held is a no-op: no new seq, no fan-out. Errors: `invalid_rsvp` (400 — not one of the three, or the note is not an event), `note_not_found` (404), `not_in_family`. |
+| `PUT /families/mine/board/notes/{id}/tasks/{item_id}` | `{done}` → `200 {note: Note}`. Ticks or unticks one line of a task list — an idempotent state-set, not a toggle, and ANY member may send it; the server records who. Re-sending the state already held is a no-op: no new seq, no fan-out. Errors: `invalid_task` (400 — the note is not a task list, or the item is not one of its lines), `note_not_found` (404), `not_in_family`. |
 | `DELETE /families/mine/board/notes/{id}/rsvp` | → `200 {note: Note}`. Retracts the caller's answer; idempotent (retracting nothing returns the event unchanged and burns no seq). Errors: `invalid_rsvp` (the note is not an event), `note_not_found`, `not_in_family`. |
 | `DELETE /families/mine/board/notes/{id}` | → `204`. Author only. Idempotent: deleting an already-deleted note is still `204` and takes no new seq. A photo note's picture goes with it. Errors: `note_not_found`, `not_note_author`, `not_in_family`. |
 

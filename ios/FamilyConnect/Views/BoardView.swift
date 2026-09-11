@@ -68,12 +68,24 @@ private struct NoteDraft: Identifiable {
     /// card in the editor.
     var myAnswer: String?
     var rsvps: [RsvpDTO] = []
+    /// The members the note names (docs/protocol.md, "Board") — for the
+    /// reader's view of it, where a name IS a door.
+    var mentions: [MentionDTO] = []
+    /// The things to do, as stored: the ids a rewrite keeps and the ticks
+    /// the boxes draw (docs/protocol.md, "Board").
+    var items: [TaskItemDTO] = []
     var x: Double
     var y: Double
     var authorID: Int64
 }
 
 struct BoardView: View {
+    /// Where a name in an open note goes: the chat with that member. Nil
+    /// where there is no such door — the board is then read-only about
+    /// names, which is what the protocol allows (docs/protocol.md,
+    /// "Board").
+    var onOpenChat: ((Int64) -> Void)?
+
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \NoteEntity.boardSeq) private var notes: [NoteEntity]
@@ -101,7 +113,7 @@ struct BoardView: View {
                 let wall = BoardWall.size(visible: geometry.size)
                 ScrollView(.vertical) {
                 ZStack(alignment: .topLeading) {
-                    Color(.systemGroupedBackground)
+                    BoardGround()
 
                     if notes.isEmpty {
                         ContentUnavailableView(
@@ -133,7 +145,7 @@ struct BoardView: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
             }
-            .background(Color(.systemGroupedBackground))
+            .background(BoardGround())
             .navigationTitle("Board")
             .navigationBarTitleDisplayMode(.inline)
             .photosPicker(
@@ -180,6 +192,14 @@ struct BoardView: View {
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
+                        editing = newListDraft()
+                    } label: {
+                        Image(systemName: "checklist")
+                    }
+                    .accessibilityLabel("Add a task list")
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
                         pickedPhoto = nil
                         showPhotoPicker = true
                     } label: {
@@ -197,19 +217,7 @@ struct BoardView: View {
                 }
             }
             .sheet(item: $editing) { draft in
-                NoteEditor(
-                    draft: draft,
-                    canEdit: draft.noteID == nil || draft.authorID == currentUserID,
-                    authorName: displayName(for: draft.authorID),
-                    onSave: { text, color, size, font, event in
-                        save(
-                            draft: draft, text: text, color: color, size: size, font: font,
-                            event: event)
-                    },
-                    onAnswer: { noteID, answer in
-                        Task { await coordinator.answerEvent(id: noteID, answer: answer) }
-                    },
-                    onDelete: draft.noteID.map { id in { delete(id: id) } })
+                editor(for: draft)
             }
             .task { await coordinator.loadBoard() }
             .refreshable { await coordinator.loadBoard() }
@@ -228,10 +236,17 @@ struct BoardView: View {
         color: String,
         size: NoteSize,
         font: NoteFont,
-        event: EventEdit
+        event: EventEdit,
+        lines: [DraftTaskLine]
     ) {
         editing = nil
         let isEvent = draft.kind == .event
+        let isList = draft.kind == .tasks
+        // Only a list's, and sent only when they DIFFER from what the note
+        // holds: `items` is the author's field, and one sent unchanged
+        // would make opening a list to read it an edit.
+        let written = DraftTaskLine.written(lines)
+        let held = draft.items.map { APIClient.TaskLineRequest(id: $0.id, text: $0.text) }
         Task {
             if let id = draft.noteID {
                 await coordinator.updateNote(
@@ -242,14 +257,18 @@ struct BoardView: View {
                     // refuses all three on any other kind.
                     startsAt: isEvent ? event.startsAt : nil,
                     endsAt: isEvent ? .some(event.endsAt) : nil,
-                    place: isEvent ? event.place : nil)
+                    place: isEvent ? event.place : nil,
+                    items: isList && written != held ? written : nil)
             } else {
                 _ = await coordinator.addNote(
                     text: text, color: color, size: size.name, font: font.name,
                     x: draft.x, y: draft.y,
                     startsAt: isEvent ? event.startsAt : nil,
                     endsAt: isEvent ? event.endsAt : nil,
-                    place: isEvent && !event.place.isEmpty ? event.place : nil)
+                    place: isEvent && !event.place.isEmpty ? event.place : nil,
+                    // Empty is still a list — it is what makes the note
+                    // one (docs/protocol.md, "Board").
+                    items: isList ? written : nil)
             }
         }
     }
@@ -260,6 +279,43 @@ struct BoardView: View {
     /// fourteen-argument literal nested inside a closure inside a `ForEach`
     /// inside a `GeometryReader` is more than the type-checker will do in
     /// reasonable time, and it says so rather than being slow.
+    /// The note editor, built in a function of its own: a literal this
+    /// long inside a view body is more than the type-checker will do in
+    /// reasonable time, and it says so rather than being slow.
+    private func editor(for draft: NoteDraft) -> NoteEditor {
+        NoteEditor(
+            draft: draft,
+            canEdit: draft.noteID == nil || draft.authorID == currentUserID,
+            authorName: displayName(for: draft.authorID),
+            onSave: { text, color, size, font, event, lines in
+                save(
+                    draft: draft, text: text, color: color, size: size, font: font,
+                    event: event, lines: lines)
+            },
+            onAnswer: { noteID, answer in
+                Task { await coordinator.answerEvent(id: noteID, answer: answer) }
+            },
+            onTick: { noteID, itemID, done in
+                Task { await coordinator.tickTask(noteID: noteID, itemID: itemID, done: done) }
+            },
+            onDelete: draft.noteID.map { id in { delete(id: id) } },
+            currentUserID: currentUserID,
+            onOpenChat: onOpenChat,
+            mentionCandidates: mentionCandidates(matching:))
+    }
+
+    /// What the editor's strip offers for a half-typed name: the live
+    /// roster, never the reader themself, never the blocked — the chat's
+    /// own rule (docs/protocol.md, "Mentioning a member").
+    private func mentionCandidates(matching query: String) -> [MentionDTO] {
+        let roster = members
+            .filter { !$0.hasLeft && !$0.accountDeleted }
+            .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) }
+        return MemberMentions.candidates(
+            in: roster, matching: query,
+            excluding: coordinator.blockedUserIDs.union([currentUserID]))
+    }
+
     private func draft(for note: NoteEntity) -> NoteDraft {
         NoteDraft(
             noteID: note.noteID,
@@ -275,6 +331,8 @@ struct BoardView: View {
             place: note.place ?? "",
             myAnswer: note.myAnswer(currentUserID),
             rsvps: note.rsvpList,
+            mentions: note.mentionList,
+            items: note.taskList,
             x: note.x,
             y: note.y,
             authorID: note.authorID)
@@ -318,6 +376,27 @@ struct BoardView: View {
             // The next round hour: a family event is planned, not stamped
             // at the instant somebody tapped a button.
             startsAt: Date().nextRoundHour,
+            x: 0.12 + slot * 0.03,
+            y: 0.10 + slot * 0.06,
+            authorID: currentUserID)
+    }
+
+    /// A blank task list, dropped where a new note lands.
+    ///
+    /// Its own function for the reason the other two blanks are: a
+    /// literal this long inside a `Button` inside a `ToolbarItem` is more
+    /// than the type-checker will do in reasonable time.
+    private func newListDraft() -> NoteDraft {
+        let slot = Double(notes.count % 6)
+        return NoteDraft(
+            noteID: nil,
+            text: "",
+            color: "green",
+            size: .medium,
+            storedSize: nil,
+            font: .plain,
+            storedFont: nil,
+            kind: .tasks,
             x: 0.12 + slot * 0.03,
             y: 0.10 + slot * 0.06,
             authorID: currentUserID)
@@ -447,7 +526,14 @@ private struct StickyNote: View {
                     maybe: note.answerCount(RsvpAnswer.maybe.name))
             }
             if !isBarePicture {
-            (isHidden ? Text("Hidden — blocked member") : Text(note.text))
+            // The names the note says are drawn as names — bold, in the
+            // note's own ink, and NOT doors here: a sticker's face is a
+            // drag handle, and the door is in the note when it is opened
+            // (docs/protocol.md, "Board").
+            (isHidden
+                ? Text("Hidden — blocked member")
+                : Text(MemberMentions.noteText(
+                    note.text, mentions: note.mentionList, linking: false)))
                 // The hand the author chose (docs/protocol.md, "Board").
                 // A hidden note keeps it, like its colour and its tilt:
                 // nothing about the shape of a note is the blocked
@@ -480,6 +566,10 @@ private struct StickyNote: View {
             isBarePicture ? Color.clear : NoteColor.swiftUI(note.color),
             in: RoundedRectangle(cornerRadius: isBarePicture ? 4 : 10))
         .shadow(color: .black.opacity(drag == .zero ? 0.12 : 0.25), radius: drag == .zero ? 3 : 10, y: 2)
+        // THE PIN, over the card's top edge: an overlay, so it takes none
+        // of the room the words need — the wall's promise is that the text
+        // fits the note (docs/protocol.md, "Board").
+        .overlay(alignment: .top) { NotePin().offset(y: -4) }
         .rotationEffect(.degrees(Self.tilt(for: note.noteID)))
         .scaleEffect(drag == .zero ? 1 : 1.04)
         // `position` places the CENTRE; the stored fraction is the corner.
@@ -537,13 +627,31 @@ private struct NoteEditor: View {
     let draft: NoteDraft
     let canEdit: Bool
     let authorName: String
-    let onSave: (String, String, NoteSize, NoteFont, EventEdit) -> Void
+    let onSave: (String, String, NoteSize, NoteFont, EventEdit, [DraftTaskLine]) -> Void
     /// Answering is its own act — any member may, so it does not go
     /// through `onSave`, which is the author's.
     var onAnswer: (Int64, String?) -> Void = { _, _ in }
+    /// Ticking a line is its own act too, and for the same reason: any
+    /// member may, so it does not go through `onSave` either
+    /// (docs/protocol.md, "Board").
+    var onTick: (Int64, Int64, Bool) -> Void = { _, _, _ in }
     let onDelete: (() -> Void)?
+    /// Who is reading, and where a name goes — see the reader's view
+    /// below (docs/protocol.md, "Board").
+    var currentUserID: Int64 = -1
+    var onOpenChat: ((Int64) -> Void)?
+    /// The members a half-typed `@` could mean, and what picking one
+    /// writes into the text.
+    var mentionCandidates: (String) -> [MentionDTO] = { _ in [] }
 
     @Environment(\.dismiss) private var dismiss
+
+    /// The names this reader cannot open a chat with: whoever the STRIP
+    /// would offer for a bare `@` is whoever a name may open.
+    private var closedNames: Set<Int64> {
+        MemberMentions.closedNames(in: draft.mentions, openTo: mentionCandidates(""))
+    }
+
     @State private var text: String
     @State private var color: String
     @State private var size: NoteSize
@@ -554,21 +662,40 @@ private struct NoteEditor: View {
     @State private var endsAt: Date
     @State private var place: String
     @State private var confirmDelete = false
+    /// A task list's lines as the author is writing them.
+    @State private var lines: [DraftTaskLine]
+    /// Ticks on their way: the line and the state being sent, so a box
+    /// answers the tap at once and goes back to the note's own truth when
+    /// the answer — or the refusal — lands.
+    @State private var ticking: [Int64: Bool] = [:]
 
     init(
         draft: NoteDraft,
         canEdit: Bool,
         authorName: String,
-        onSave: @escaping (String, String, NoteSize, NoteFont, EventEdit) -> Void,
+        onSave: @escaping (String, String, NoteSize, NoteFont, EventEdit, [DraftTaskLine]) -> Void,
         onAnswer: @escaping (Int64, String?) -> Void = { _, _ in },
-        onDelete: (() -> Void)?
+        onTick: @escaping (Int64, Int64, Bool) -> Void = { _, _, _ in },
+        onDelete: (() -> Void)?,
+        currentUserID: Int64 = -1,
+        onOpenChat: ((Int64) -> Void)? = nil,
+        mentionCandidates: @escaping (String) -> [MentionDTO] = { _ in [] }
     ) {
         self.draft = draft
         self.canEdit = canEdit
         self.authorName = authorName
         self.onSave = onSave
         self.onAnswer = onAnswer
+        self.onTick = onTick
         self.onDelete = onDelete
+        self.currentUserID = currentUserID
+        self.onOpenChat = onOpenChat
+        self.mentionCandidates = mentionCandidates
+        // A new list opens with one empty line, so the first thing to do
+        // is one tap away rather than two.
+        _lines = State(initialValue: draft.kind == .tasks && draft.items.isEmpty && draft.noteID == nil
+            ? [DraftTaskLine()]
+            : draft.items.map { DraftTaskLine(itemID: $0.id, text: $0.text) })
         _text = State(initialValue: draft.text)
         _color = State(initialValue: draft.color)
         _size = State(initialValue: draft.size)
@@ -583,6 +710,35 @@ private struct NoteEditor: View {
     }
 
     private var isEvent: Bool { draft.kind == .event }
+    private var isList: Bool { draft.kind == .tasks }
+
+    private var navigationTitle: LocalizedStringKey {
+        switch (draft.kind, draft.noteID == nil) {
+        case (.tasks, true): "New List"
+        case (.tasks, false): "List"
+        case (.event, true): "New Event"
+        case (.event, false): "Event"
+        case (_, true): "New Note"
+        case (_, false): "Note"
+        }
+    }
+
+    /// What a box draws: the tap's own answer while one is in flight, and
+    /// the note's own truth otherwise.
+    private func isDone(_ itemID: Int64?) -> Bool {
+        guard let itemID else { return false }
+        if let sending = ticking[itemID] { return sending }
+        return draft.items.first { $0.id == itemID }?.done ?? false
+    }
+
+    /// Tick or untick, and show it at once. One request per line at a
+    /// time: a second tap while the first is in flight is the tap that
+    /// would undo it.
+    private func tick(_ itemID: Int64, to done: Bool) {
+        guard let noteID = draft.noteID, ticking[itemID] == nil else { return }
+        ticking[itemID] = done
+        onTick(noteID, itemID, done)
+    }
 
     /// This reader's answer, kept locally so the picker moves at once —
     /// the note itself comes back through the board feed.
@@ -605,6 +761,59 @@ private struct NoteEditor: View {
         return String(localized: "\(going) going · \(maybe) maybe · \(no) can't")
     }
 
+    /// The lines of a task list: a box everybody may tap, and — for the
+    /// author — the words, the remove and the add.
+    ///
+    /// Its own property for the reason the drafts are functions: a Form
+    /// section this long inside the body is more than the type-checker
+    /// will do in reasonable time.
+    @ViewBuilder
+    private var taskSection: some View {
+        Section("Things to do") {
+            if lines.isEmpty {
+                Text("Nothing on this list yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach($lines) { $line in
+                NoteTaskRow(
+                    itemID: line.itemID,
+                    done: isDone(line.itemID),
+                    canEdit: canEdit,
+                    onTick: { done in
+                        if let itemID = line.itemID { tick(itemID, to: done) }
+                    },
+                    onRemove: canEdit
+                        ? { lines.removeAll { $0.id == line.id } }
+                        : nil,
+                    text: $line.text)
+                    // The cap where the typing is, as the title has it: a
+                    // line the server would refuse never becomes a save
+                    // that fails (docs/protocol.md, "Board").
+                    .onChange(of: line.text) { _, new in
+                        let capped = NoteText.capped(new, to: NoteText.maxTaskItemLength)
+                        if capped != new { line.text = capped }
+                    }
+            }
+            if canEdit {
+                Button {
+                    lines.append(DraftTaskLine())
+                } label: {
+                    Label("Add a thing", systemImage: "plus.circle")
+                }
+                // Held to the server's ceiling here, where somebody can
+                // see why: a twenty-first line typed and then refused is
+                // a save that fails for a reason nobody was shown.
+                .disabled(lines.count >= NoteText.maxTaskItems)
+            }
+            if !draft.items.isEmpty {
+                Text("\(draft.items.count { isDone($0.id) }) of \(draft.items.count) done")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -619,13 +828,44 @@ private struct NoteEditor: View {
                                 let capped = NoteText.capped(new)
                                 if capped != new { text = capped }
                             }
+                        // The names a half-typed `@` could mean
+                        // (docs/protocol.md, "Board"): the chat's own strip,
+                        // under the words being written.
+                        if let query = MemberMentions.query(in: text) {
+                            let offered = mentionCandidates(query)
+                            if !offered.isEmpty {
+                                MentionSuggestions(candidates: offered) { name in
+                                    text = MemberMentions.accept(draft: text, name: name)
+                                }
+                            }
+                        }
                         if NoteText.shouldShowCounter(text) {
                             Text("\(NoteText.remaining(text)) characters left")
                                 .font(.caption)
                                 .foregroundStyle(NoteText.remaining(text) == 0 ? .red : .secondary)
                         }
                     } else {
-                        Text(draft.text)
+                        // A name in an OPEN note is a door (docs/protocol.md,
+                        // "Board") — but only where there is somebody to
+                        // open it with, which the STRIP already answers:
+                        // whoever it would offer for a bare `@` is whoever
+                        // a name may open. So the reader's own name, a
+                        // member they blocked, and one who has left or
+                        // deleted their account are highlighted like any
+                        // other and simply do not open.
+                        Text(MemberMentions.noteText(
+                            draft.text,
+                            mentions: draft.mentions,
+                            linking: onOpenChat != nil,
+                            excluding: closedNames))
+                        .environment(\.openURL, OpenURLAction { url in
+                            guard let userID = MemberMentions.userID(from: url) else {
+                                return .systemAction
+                            }
+                            dismiss()
+                            onOpenChat?(userID)
+                            return .handled
+                        })
                         Text("Written by \(authorName)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -659,6 +899,13 @@ private struct NoteEditor: View {
                             Text(draft.place).foregroundStyle(.secondary)
                         }
                     }
+                }
+                // THE LIST. One section for the author and for everybody
+                // else, because the boxes are everybody's: what `canEdit`
+                // adds is the words beside each box, the remove and the
+                // add (docs/protocol.md, "Board").
+                if isList {
+                    taskSection
                 }
                 if isEvent, let noteID = draft.noteID {
                     Section("Are you coming?") {
@@ -765,7 +1012,7 @@ private struct NoteEditor: View {
                     }
                 }
             }
-            .navigationTitle(draft.noteID == nil ? "New Note" : "Note")
+            .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -780,7 +1027,8 @@ private struct NoteEditor: View {
                                 EventEdit(
                                     startsAt: isEvent ? startsAt : nil,
                                     endsAt: isEvent && hasEnd ? endsAt : nil,
-                                    place: isEvent ? place : ""))
+                                    place: isEvent ? place : ""),
+                                lines)
                         }
                             .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }

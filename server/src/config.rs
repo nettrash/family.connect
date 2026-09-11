@@ -982,6 +982,13 @@ pub struct LimitsConfig {
     #[serde(default = "default_max_board_notes")]
     pub max_board_notes: i64,
 
+    /// Most lines one task list may hold. A runaway guard in the same
+    /// sense as `max_board_notes`, and the number the protocol states: a
+    /// sticker a family cannot read from across the room is not a list
+    /// (protocol.md, "Board").
+    #[serde(default = "default_max_task_items")]
+    pub max_task_items: i64,
+
     /// The CEILING on what a family owner may set as their own
     /// `max_members`, and the cap that binds at the join door for a family
     /// that has set none. It is an operator's runaway guard, in the sense
@@ -1256,6 +1263,7 @@ impl Default for LimitsConfig {
             max_poll_options: default_max_poll_options(),
             max_poll_option_chars: default_max_poll_option_chars(),
             max_board_notes: default_max_board_notes(),
+            max_task_items: default_max_task_items(),
             max_family_members: default_max_family_members(),
             max_attachment_bytes: default_max_attachment_bytes(),
             max_attachments_per_message: default_max_attachments_per_message(),
@@ -1662,6 +1670,10 @@ fn default_retention_days() -> i64 {
 
 fn default_max_board_notes() -> i64 {
     500
+}
+
+fn default_max_task_items() -> i64 {
+    20
 }
 
 fn default_max_family_members() -> i64 {

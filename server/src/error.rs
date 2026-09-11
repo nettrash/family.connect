@@ -73,6 +73,11 @@ pub mod codes {
     pub const INVALID_NOTE_FONT: &str = "invalid_note_font";
     pub const INVALID_NOTE_KIND: &str = "invalid_note_kind";
     pub const INVALID_RSVP: &str = "invalid_rsvp";
+    /// The note is not a task list, or the item is not one of its lines.
+    /// A 400 rather than a 404, for the reason `invalid_rsvp` is one: the
+    /// note is right there, and "no such note" would send a client looking
+    /// for a sync bug it does not have.
+    pub const INVALID_TASK: &str = "invalid_task";
     pub const INVALID_LANGUAGE: &str = "invalid_language";
     pub const BOARD_FULL: &str = "board_full";
     pub const INVALID_EMOJI: &str = "invalid_emoji";

@@ -1322,6 +1322,14 @@ nonisolated struct NoteDTO: Codable, Equatable, Sendable {
     /// Who is planning to come. `[]` on an event nobody has answered,
     /// nil on every other kind — the difference is the point.
     let rsvps: [RsvpDTO]?
+    /// The things to do, in the author's order. `[]` on a task list
+    /// nothing has been written into yet, nil on every other kind — the
+    /// difference is the point, as with `rsvps` (docs/protocol.md,
+    /// "Board").
+    let items: [TaskItemDTO]?
+    /// The members this note NAMES, in the author's order
+    /// (docs/protocol.md, "Board"). Absent when it names nobody.
+    let mentions: [MentionDTO]?
     let x: Double?
     let y: Double?
     let createdAt: Date?
@@ -1348,6 +1356,8 @@ nonisolated struct NoteDTO: Codable, Equatable, Sendable {
         case endsAt = "ends_at"
         case place
         case rsvps
+        case items
+        case mentions
         case x
         case y
         case createdAt = "created_at"
@@ -1369,6 +1379,26 @@ nonisolated struct RsvpDTO: Codable, Equatable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
         case answer
+    }
+}
+
+/// One line of a task list (docs/protocol.md, "Board").
+///
+/// `id` is the server's and stable for the life of the line: it is what a
+/// tick refers to, and what carries a tick through the author's rewrite.
+nonisolated struct TaskItemDTO: Codable, Equatable, Hashable, Sendable {
+    let id: Int64
+    let text: String
+    let done: Bool
+    /// Who ticked it — nil while it is not done, and nil on a tick whose
+    /// account has since been deleted.
+    let doneBy: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case text
+        case done
+        case doneBy = "done_by"
     }
 }
 

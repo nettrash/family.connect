@@ -133,6 +133,16 @@ async fn deliver_board_note_inner(
         _ => String::new(),
     };
 
+    // Who the note NAMES: their alert says so in its title, and it is the
+    // same alert, never a second one (protocol.md, "Board").
+    let named: std::collections::HashSet<i64> = note
+        .mentions
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|mention| mention.user_id)
+        .collect();
+
     let mut by_user: BTreeMap<i64, Vec<DevicePush>> = BTreeMap::new();
     for device in devices {
         by_user.entry(device.user_id).or_default().push(device);
@@ -143,15 +153,16 @@ async fn deliver_board_note_inner(
         // message and must not inflate it (protocol.md keeps notes out of
         // unread entirely). The board's own count is drawn by the client.
         let badge = unread_badge(&state.pool, user_id).await?;
-        let notification = push_payload::board_note_notification(
-            state.cfg.push.include_message_body,
-            &family_name,
-            &author_name,
+        let notification = push_payload::board_note_notification(push_payload::BoardNoteAlert {
+            include_body: state.cfg.push.include_message_body,
+            family_name: &family_name,
+            author_name: &author_name,
             family_id,
-            note.id,
-            &text,
+            note_id: note.id,
+            text: &text,
             badge,
-        );
+            mentioned: named.contains(&user_id),
+        });
         batch.push((user_devices, notification));
     }
     spawn_notify(state, batch);

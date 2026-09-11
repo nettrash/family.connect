@@ -37,6 +37,9 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -118,6 +121,19 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.withLink
+import androidx.compose.ui.text.withStyle
+import me.nettrash.familyconnect.data.net.dto.MentionDto
+import me.nettrash.familyconnect.data.net.dto.NoteMentionsCodec
+import me.nettrash.familyconnect.ui.chat.MentionSuggestionsRow
+import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.data.net.dto.RsvpCodec
 import me.nettrash.familyconnect.ui.components.rememberAttachmentImage
 import me.nettrash.familyconnect.ui.components.EmptyState
@@ -572,6 +588,108 @@ object NoteFonts {
 }
 
 /**
+ * A board note's text with the names it says drawn as names
+ * (docs/protocol.md, "Board").
+ *
+ * BOLD, in the note's own ink, and never a colour of its own: a sticker's
+ * pastel is a ground like any other, and a tint on it is the mention that
+ * cannot be read. Whether a name is also a DOOR is the caller's — it is in
+ * the note somebody has opened, and it is not on the sticker, whose whole
+ * face is a drag handle.
+ *
+ * Web counterpart: `named_runs` in web/src/views/board.rs.
+ * Apple counterpart: `MemberMentions.noteText` in Models/MemberMentions.swift.
+ */
+object NoteNames {
+
+    private val HIGHLIGHT = SpanStyle(fontWeight = FontWeight.Bold)
+
+    /** What the WALL draws: the names marked, and no door anywhere. */
+    fun annotate(text: String, mentions: List<MentionDto>): AnnotatedString =
+        build(text, mentions, doors = emptySet(), onOpen = {})
+
+    /**
+     * What an OPEN note draws: the same marks, and a door on every name in
+     * [doors] — the members this reader could actually message.
+     */
+    fun reader(
+        text: String,
+        mentions: List<MentionDto>,
+        doors: Set<Long>,
+        onOpen: (Long) -> Unit,
+    ): AnnotatedString = build(text, mentions, doors, onOpen)
+
+    private fun build(
+        text: String,
+        mentions: List<MentionDto>,
+        doors: Set<Long>,
+        onOpen: (Long) -> Unit,
+    ): AnnotatedString {
+        if (mentions.isEmpty()) return AnnotatedString(text)
+        val tokens = MemberMention.tokens(text, mentions)
+        if (tokens.isEmpty()) return AnnotatedString(text)
+        return buildAnnotatedString {
+            var at = 0
+            for ((range, member) in tokens) {
+                // Walked in order, and a token that would step backwards is
+                // dropped: the offsets index THIS string, and one applied
+                // out of order would mark somebody else's words.
+                if (range.first < at || range.last >= text.length) continue
+                if (range.first > at) append(text.substring(at, range.first))
+                val said = text.substring(range.first, range.last + 1)
+                // The highlight is the same whether there is a door behind
+                // it or not, and it is a SPAN rather than the link's own
+                // `TextLinkStyles`: a name must read as a name on a pastel
+                // even where nothing opens, and link styling is resolved
+                // per state at draw time — one more thing that could take
+                // the weight away.
+                withStyle(HIGHLIGHT) {
+                    if (member.userId in doors) {
+                        // A real link annotation rather than a tap
+                        // detector: this one gets the platform's own link
+                        // semantics, so TalkBack finds the door without a
+                        // hand-written custom action.
+                        withLink(
+                            LinkAnnotation.Clickable(
+                                tag = MemberMention.url(member.userId),
+                            ) { onOpen(member.userId) },
+                        ) { append(said) }
+                    } else {
+                        append(said)
+                    }
+                }
+                at = range.last + 1
+            }
+            if (at < text.length) append(text.substring(at))
+        }
+    }
+}
+
+/**
+ * The wall's own look: a cork ground, and a pin through every note.
+ *
+ * Decoration, and nowhere on the wire (docs/protocol.md, "Board"): where a
+ * pin sits is not a fact about the note, and a client that draws neither is
+ * not wrong. The colours are fixed rather than taken from the theme — a
+ * corkboard is a corkboard in both appearances, and the pastels on top are
+ * fixed light colours too, which is why the ink on them is forced dark.
+ *
+ * Web counterpart: `.board-wall` and `.sticker::after` in web/styles.css.
+ * Apple counterpart: `BoardGround` / `NotePin` in Views/NoteSize.swift.
+ */
+object BoardGround {
+    private val cork = Color(0xFFCBB391)
+    private val corkDark = Color(0xFF5B4A36)
+
+    /** The ground: cork, lit from the top-left the way a wall in a room is. */
+    fun brush(isDark: Boolean): Brush = Brush.linearGradient(
+        0f to (if (isDark) corkDark else cork),
+        0.55f to (if (isDark) corkDark else cork),
+        1f to (if (isDark) Color(0xFF4C3D2C) else Color(0xFFBFA382)),
+    )
+}
+
+/**
  * How the wall itself is sized (docs/protocol.md, "Board").
  *
  * The wall is TALLER than the window and it scrolls: a wall the size of the
@@ -680,6 +798,12 @@ data class NoteDraft(
     val kind: String = NoteKinds.TEXT,
     /** What this reader answered, on an event. Null when they have not. */
     val myAnswer: String? = null,
+    /**
+     * The members the note NAMES, as stored (docs/protocol.md, "Board").
+     * Held so the opened note can draw them — the editor re-decides them
+     * from the text on save, and never from this.
+     */
+    val mentions: List<MentionDto> = emptyList(),
     val x: Double,
     val y: Double,
     val authorId: Long,
@@ -689,12 +813,15 @@ data class NoteDraft(
 @Composable
 fun BoardScreen(
     onBack: () -> Unit,
+    /** Where a name in an open note leads (docs/protocol.md, "Board"). */
+    onOpenChat: (Long) -> Unit = {},
     viewModel: BoardViewModel = hiltViewModel(),
 ) {
     val notes by viewModel.notes.collectAsStateWithLifecycle()
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
     val blockedUserIds by viewModel.blockedUserIds.collectAsStateWithLifecycle()
     val memberNames by viewModel.memberNames.collectAsStateWithLifecycle()
+    val mentionRoster by viewModel.mentionRoster.collectAsStateWithLifecycle()
     var editing by remember { mutableStateOf<NoteDraft?>(null) }
 
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -787,11 +914,14 @@ fun BoardScreen(
             }
         },
     ) { padding ->
+        val darkGround = isSystemInDarkTheme()
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .background(MaterialTheme.colorScheme.surfaceContainerLowest),
+                // Cork, not the theme's surface: a wall is a wall
+                // (docs/protocol.md, "Board").
+                .background(BoardGround.brush(darkGround)),
         ) {
             val density = LocalDensity.current
             val boardWidthPx = with(density) { maxWidth.roundToPx() }
@@ -842,6 +972,7 @@ fun BoardScreen(
                             kind = note.kind,
                             myAnswer = RsvpCodec.decode(note.rsvpsJson)
                                 .firstOrNull { it.userId == myUserId }?.answer,
+                            mentions = NoteMentionsCodec.decode(note.mentionsJson),
                             x = note.x,
                             y = note.y,
                             authorId = note.authorId,
@@ -891,6 +1022,13 @@ fun BoardScreen(
             },
             onAnswer = { answer -> draft.noteId?.let { viewModel.answerEvent(it, answer) } },
             myAnswer = draft.myAnswer,
+            roster = mentionRoster,
+            onOpenChat = { userId ->
+                // The note closes first: the chat it opens is what the
+                // reader asked for, and a dialog still over it is not.
+                editing = null
+                viewModel.openDirectChat(userId, onOpenChat)
+            },
             onDelete = draft.noteId?.let { id ->
                 {
                     editing = null
@@ -922,7 +1060,9 @@ fun BoardScreen(
  * instead; drawn equals origin in that case, so nothing jumps.
  */
 @Composable
-private fun StickyNote(
+// internal, not private: the wall's own drawing is pinned by
+// StickyNoteTest — see it for what must stay true of a sticker.
+internal fun StickyNote(
     note: NoteEntity,
     authorName: String,
     /**
@@ -999,7 +1139,11 @@ private fun StickyNote(
             // The offset draws it and drag-end reports it from the same
             // arithmetic, so the two cannot disagree.
             .offset { IntOffset(geometry.drawnX(dragX), geometry.drawnY(dragY)) }
-            .size(side)
+            .size(side),
+    ) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
             .shadow(
                 if (dragX == 0f && dragY == 0f) 2.dp else 8.dp,
                 RoundedCornerShape(if (isBarePicture) 4.dp else 10.dp),
@@ -1076,8 +1220,23 @@ private fun StickyNote(
                 Spacer(Modifier.size(4.dp))
             }
             if (!isBarePicture) {
+            // The names the note says, bold and in its own ink — and not
+            // doors here: a sticker's face is a drag handle
+            // (docs/protocol.md, "Board").
+            //
+            // Remembered, because this function re-runs on every frame of
+            // a drag and decoding the note's names each time would spend a
+            // gesture's worth of work on a string that cannot change while
+            // the finger is down.
+            val drawnText = remember(isHidden, hiddenLabel, note.text, note.mentionsJson) {
+                if (isHidden) {
+                    AnnotatedString(hiddenLabel)
+                } else {
+                    NoteNames.annotate(note.text, NoteMentionsCodec.decode(note.mentionsJson))
+                }
+            }
             Text(
-                text = if (isHidden) hiddenLabel else note.text,
+                text = drawnText,
                 style = NoteSizes.textStyle(note.size, MaterialTheme.typography)
                     // The hand the author chose (docs/protocol.md, "Board").
                     // A hidden note keeps it, like its colour and its slot:
@@ -1110,6 +1269,24 @@ private fun StickyNote(
                 )
             }
         }
+    }
+    // THE PIN, over the card's top edge — drawn in the outer box, not the
+    // card, because the card is clipped and a pin inside it would either be
+    // cut or take a line of the words. Decoration only: it takes no room
+    // and no touches (docs/protocol.md, "Board").
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .offset(y = (-4).dp)
+            .size(10.dp)
+            .clip(CircleShape)
+            .background(
+                Brush.radialGradient(
+                    colors = listOf(Color(0xFFD8534C), Color(0xFF7A1A15)),
+                    center = Offset(0.35f, 0.3f),
+                ),
+            ),
+    )
     }
 }
 
@@ -1169,9 +1346,20 @@ internal fun NoteDialog(
      */
     onAnswer: (String?) -> Unit = {},
     myAnswer: String? = null,
+    /**
+     * Everybody a name may mean, and everybody a name may OPEN — the one
+     * set, because they are the same question (docs/protocol.md, "Board").
+     */
+    roster: List<MentionDto> = emptyList(),
+    onOpenChat: (Long) -> Unit = {},
     onDelete: (() -> Unit)?,
 ) {
-    var text by remember(draft.noteId) { mutableStateOf(draft.text) }
+    // A TextFieldValue, not a String: accepting a name off the strip
+    // rewrites the tail, and the caret has to follow it to the end or the
+    // next keystroke lands in the middle of the name just picked.
+    var text by remember(draft.noteId) {
+        mutableStateOf(TextFieldValue(draft.text, TextRange(draft.text.length)))
+    }
     var color by remember(draft.noteId) { mutableStateOf(draft.color) }
     // Held RAW, like the colour: a name this client does not know is
     // drawn as medium, and the picker says so below, but Save must hand
@@ -1247,24 +1435,48 @@ internal fun NoteDialog(
                         // server would refuse never becomes a save that
                         // fails, which on this screen used to fail SILENTLY
                         // (docs/protocol.md, "Board").
-                        onValueChange = { text = NoteText.capped(it) },
+                        onValueChange = { value ->
+                            val capped = NoteText.capped(value.text)
+                            // A cut moves the end, so the caret is put
+                            // there rather than left past it.
+                            text = if (capped == value.text) {
+                                value
+                            } else {
+                                TextFieldValue(capped, TextRange(capped.length))
+                            }
+                        },
                         label = { Text(stringResource(R.string.s_note)) },
                         minLines = 3,
                         maxLines = 8,
-                        supportingText = if (NoteText.shouldShowCounter(text)) {
+                        supportingText = if (NoteText.shouldShowCounter(text.text)) {
                             {
                                 Text(
                                     stringResource(
                                         R.string.s_note_characters_left,
-                                        NoteText.remaining(text),
+                                        NoteText.remaining(text.text),
                                     ),
                                 )
                             }
                         } else {
                             null
                         },
-                        isError = NoteText.remaining(text) == 0,
+                        isError = NoteText.remaining(text.text) == 0,
                     )
+                    // The names a half-typed `@` could mean
+                    // (docs/protocol.md, "Board") — the chat composer's own
+                    // strip, under the words being written.
+                    val offered = MemberMention.query(text.text)
+                        ?.let { query -> MemberMention.candidates(roster, query, excluding = emptySet()) }
+                        .orEmpty()
+                    if (offered.isNotEmpty()) {
+                        MentionSuggestionsRow(
+                            candidates = offered,
+                            onPick = { name ->
+                                val accepted = MemberMention.accept(text.text, name)
+                                text = TextFieldValue(accepted, TextRange(accepted.length))
+                            },
+                        )
+                    }
                     Spacer(Modifier.size(16.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         NoteColors.palette.forEach { name ->
@@ -1363,14 +1575,25 @@ internal fun NoteDialog(
                         contentAlignment = Alignment.Center,
                     ) {
                         NotePreview(
-                            text = text.ifEmpty { stringResource(R.string.s_your_note) },
+                            text = text.text.ifEmpty { stringResource(R.string.s_your_note) },
                             color = color,
                             size = size,
                             font = font,
                         )
                     }
                 } else {
-                    Text(draft.text)
+                    // A name in an OPEN note is a door (docs/protocol.md,
+                    // "Board"): bold on the sticker, tappable here — and
+                    // only where there is somebody to open it with, which
+                    // is what `roster` already answers.
+                    Text(
+                        NoteNames.reader(
+                            text = draft.text,
+                            mentions = draft.mentions,
+                            doors = roster.map { it.userId }.toSet(),
+                            onOpen = onOpenChat,
+                        ),
+                    )
                     Spacer(Modifier.size(8.dp))
                     Text(
                         text = stringResource(R.string.s_written_by, authorName),
@@ -1383,8 +1606,8 @@ internal fun NoteDialog(
         confirmButton = {
             if (canEdit) {
                 TextButton(
-                    onClick = { onSave(text, color, size, font) },
-                    enabled = text.isNotBlank(),
+                    onClick = { onSave(text.text, color, size, font) },
+                    enabled = text.text.isNotBlank(),
                 ) {
                     Text(stringResource(R.string.s_save))
                 }
