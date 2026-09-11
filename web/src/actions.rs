@@ -252,6 +252,20 @@ pub enum Action {
     LoadStats {
         done: Callback<Result<crate::model::Stats, ApiError>>,
     },
+    /// Ring somebody: the direct chat, and whether it is a video call —
+    /// decided here and fixed for the call's life.
+    PlaceCall {
+        chat_id: i64,
+        video: bool,
+    },
+    /// Take the call this tab is ringing with.
+    AnswerCall,
+    /// Refuse it — which ends it on every device of theirs.
+    DeclineCall,
+    /// Hang up, or cancel one still ringing: the stage decides the reason.
+    EndCall,
+    ToggleMute,
+    ToggleCamera,
 }
 
 /// How an account or family change came back to the dialog that asked:
@@ -327,6 +341,8 @@ pub struct Actions {
     /// The media cache, for a picture this tab has just pinned: drawn from
     /// the bytes it sent rather than fetched back.
     pub media: MediaLoader,
+    /// The call this tab could be on (calls.rs).
+    pub calls: crate::calls::Calls,
 }
 
 impl Actions {
@@ -1056,6 +1072,25 @@ impl Actions {
                     }
                 });
             }
+            Action::PlaceCall { chat_id, video } => {
+                // A call lives in a direct chat, and rings its other
+                // member (docs/protocol.md, "Voice calls").
+                let peer_user_id = live.read(|state| {
+                    state
+                        .store
+                        .item(chat_id)
+                        .filter(|item| item.chat.is_direct())
+                        .and_then(|item| item.chat.peer_user_id)
+                });
+                if let Some(peer_user_id) = peer_user_id {
+                    this.calls.place(token, chat_id, peer_user_id, video);
+                }
+            }
+            Action::AnswerCall => this.calls.answer(),
+            Action::DeclineCall => this.calls.decline(),
+            Action::EndCall => this.calls.end(),
+            Action::ToggleMute => this.calls.toggle_mute(),
+            Action::ToggleCamera => this.calls.toggle_camera(),
             Action::LoadStats { done } => {
                 spawn_local(async move {
                     match api::stats(&token).await {
@@ -1575,7 +1610,8 @@ mod tests {
             channels: Rc::new(RefCell::new(None)),
             sign_out: Callback::noop(),
             last_typing: Rc::new(RefCell::new(HashMap::new())),
-            media: MediaLoader::new(live),
+            media: MediaLoader::new(live.clone()),
+            calls: crate::calls::Calls::new(live, crate::calls::Wire::new()),
         }
     }
 

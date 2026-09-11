@@ -170,6 +170,12 @@ pub struct AuthResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct IceResponse {
+    #[serde(default)]
+    ice_servers: Vec<crate::model::IceServer>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ChatsResponse {
     chats: Vec<ChatListItem>,
 }
@@ -701,6 +707,15 @@ pub async fn delete_account(token: &str, password: &str) -> Result<(), ApiError>
         Some(&serde_json::json!({ "password": password })),
     )
     .await
+}
+
+/// `GET /calls/ice` — the STUN and TURN servers for one call, with the
+/// credentials the operator minted for this caller. Fetched at the start of
+/// every call and never kept: a stale credential is a call that silently
+/// cannot relay (docs/protocol.md, "Where the servers come from").
+pub async fn ice_servers(token: &str) -> Result<Vec<crate::model::IceServer>, ApiError> {
+    let response: IceResponse = get(token, "/calls/ice").await?;
+    Ok(response.ice_servers)
 }
 
 /// `PUT /me/avatar` — the picture, as raw JPEG bytes.

@@ -159,6 +159,7 @@ pub fn start_session(
     token: String,
     channels: &Shared<Option<Channels>>,
     sign_out: &Callback<bool>,
+    calls: &crate::calls::Calls,
 ) {
     let session = live.session();
     let (frames, frames_out) = mpsc::unbounded();
@@ -180,13 +181,16 @@ pub fn start_session(
         spawn_local(async move { resync(&live, session, &token, &expired, None).await });
     }
     spawn_local(keep_socket(
-        live.clone(),
-        session,
-        token.clone(),
+        Wiring {
+            live: live.clone(),
+            session,
+            token: token.clone(),
+            wake,
+            expired: expired.clone(),
+            calls: calls.clone(),
+        },
         frames_out,
         redial_in,
-        wake,
-        expired.clone(),
     ));
     let upload_token = token.clone();
     spawn_local(outbox::drain(
@@ -662,18 +666,31 @@ pub async fn report_read(live: &Live, session: u64, token: &str) {
     let _ = api::post_read(token, chat_id, newest).await;
 }
 
+/// What a socket needs for as long as it runs, and what every frame it
+/// reads is applied through. One value rather than seven parameters.
+struct Wiring {
+    live: Live,
+    session: u64,
+    token: String,
+    wake: mpsc::UnboundedSender<Wake>,
+    expired: Rc<dyn Fn()>,
+    calls: crate::calls::Calls,
+}
+
 /// The socket, for as long as `session` is the session: dial, run, and
 /// dial again. A browser tab lives for days, and a socket that dropped once
 /// and stayed dropped is a chat that silently stops arriving.
 async fn keep_socket(
-    live: Live,
-    session: u64,
-    token: String,
+    wiring: Wiring,
     mut frames: mpsc::UnboundedReceiver<ClientFrame>,
     mut redial: mpsc::UnboundedReceiver<()>,
-    wake: mpsc::UnboundedSender<Wake>,
-    expired: Rc<dyn Fn()>,
 ) {
+    let (live, token, calls) = (
+        wiring.live.clone(),
+        wiring.token.clone(),
+        wiring.calls.clone(),
+    );
+    let session = wiring.session;
     // Waits in a row. A socket that opened and later dropped starts the
     // count again, so the first dial after a drop is quick and only a
     // server that keeps refusing is left longer and longer alone.
@@ -681,9 +698,25 @@ async fn keep_socket(
     while live.is_live(session) {
         let url = socket::url_for(&crate::session::origin());
         let protocols = socket::protocols_for(&token);
-        let opened = match WebSocket::open_with_protocols(&url, &protocols) {
-            Ok(ws) => run_socket(ws, &live, session, &token, &mut frames, &wake, &expired).await,
-            Err(_) => false,
+        // Built here rather than by gloo, so the raw socket can be kept
+        // beside it: a closing tab's `call_end` has to go synchronously,
+        // and nothing polls a task after the page is gone (calls.rs).
+        let opened = match dial(&url, &protocols) {
+            Some((ws, raw)) => {
+                calls.wire().hold(Some(raw));
+                let ran = run_socket(ws, &wiring, &mut frames).await;
+                calls.wire().hold(None);
+                // A CALL IS NOT ENDED HERE. Its audio is peer to peer and
+                // outlives any number of reconnects, and the server
+                // deliberately does not end one over a dropped socket — "a
+                // momentary network change would otherwise hang up a
+                // perfectly good conversation" (docs/protocol.md, "The
+                // sequence"). The redial below is seconds away, the frames
+                // that matter are retried, and a call whose media really
+                // has died is ended by the peer connection saying so.
+                ran
+            }
+            None => false,
         };
         failures = if opened {
             1
@@ -714,15 +747,33 @@ fn encode(frame: &ClientFrame) -> WsMessage {
 /// task: two tasks would have to share the socket halves through a
 /// `RefCell` held across an await, which is a borrow panic waiting for the
 /// first time anything re-enters. `select!` needs neither.
+/// One socket, and the raw one beside it. `gloo` wraps a `web_sys` socket
+/// and hands back no way to reach it, so this client makes both.
+fn dial(url: &str, protocols: &[String; 2]) -> Option<(WebSocket, web_sys::WebSocket)> {
+    let list = js_sys::Array::new();
+    for protocol in protocols {
+        list.push(&wasm_bindgen::JsValue::from_str(protocol));
+    }
+    let raw = web_sys::WebSocket::new_with_str_sequence(url, &list).ok()?;
+    let wrapped = WebSocket::try_from(raw.clone()).ok()?;
+    Some((wrapped, raw))
+}
+
 async fn run_socket(
     mut ws: WebSocket,
-    live: &Live,
-    session: u64,
-    token: &str,
+    wiring: &Wiring,
     frames: &mut mpsc::UnboundedReceiver<ClientFrame>,
-    wake: &mpsc::UnboundedSender<Wake>,
-    expired: &Rc<dyn Fn()>,
 ) -> bool {
+    let Wiring {
+        live,
+        session,
+        token,
+        wake,
+        expired,
+        ..
+    } = wiring;
+    let session = *session;
+    let token = token.as_str();
     // The handshake. gloo's sink is ready once the socket has left
     // CONNECTING, which it leaves either open or refused — and the server
     // refuses a bad token BEFORE the upgrade, so OPEN means authenticated
@@ -766,7 +817,7 @@ async fn run_socket(
                 };
                 heard_at = now_ms();
                 let Some(frame) = socket::decode(&text) else { continue };
-                if let Some(answer) = apply_frame(live, session, token, expired, frame) {
+                if let Some(answer) = apply_frame(wiring, frame) {
                     if write.send(encode(&answer)).await.is_err() {
                         break;
                     }
@@ -827,13 +878,17 @@ async fn opened(
 /// One frame from the server, into the state. Returns a frame to answer
 /// with, if any: a message landing in the chat somebody is reading has been
 /// read, and says so.
-fn apply_frame(
-    live: &Live,
-    session: u64,
-    token: &str,
-    expired: &Rc<dyn Fn()>,
-    frame: ServerFrame,
-) -> Option<ClientFrame> {
+fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
+    let Wiring {
+        live,
+        session,
+        token,
+        expired,
+        calls,
+        ..
+    } = wiring;
+    let session = *session;
+    let token = token.as_str();
     let refresh = || {
         let live = live.clone();
         let token = token.to_string();
@@ -1006,6 +1061,46 @@ fn apply_frame(
         }
         ServerFrame::BoardNote { note } => {
             live.update(session, |state| state.store.board.apply_frame(note));
+            None
+        }
+        // A call's signalling. Every one of these is for the call this tab
+        // HOLDS and no other (calls.rs), which is what lets one person be
+        // signed in on several devices without the server tracking them.
+        ServerFrame::CallOffer {
+            call_id,
+            chat_id,
+            from_user_id,
+            sdp,
+            video,
+        } => {
+            // A call is only ever offered in a direct chat, and only a
+            // member's is worth ringing for: a blocked member's is hidden
+            // by the server, which never delivers it.
+            calls.offered(call_id, chat_id, from_user_id, sdp, video);
+            None
+        }
+        ServerFrame::CallRinging { call_id } => {
+            calls.ringing(&call_id);
+            None
+        }
+        ServerFrame::CallAnswer { call_id, sdp } => {
+            calls.answered(call_id, sdp);
+            None
+        }
+        ServerFrame::CallIce { call_id, candidate } => {
+            calls.candidate(&call_id, candidate);
+            None
+        }
+        ServerFrame::CallEnd { call_id, reason } => {
+            calls.ended(&call_id, &reason);
+            None
+        }
+        // A refusal. Only the ones that answer a call frame belong to
+        // anything on screen; the rest are for the log the browser keeps.
+        ServerFrame::Error { code, call_id, .. } => {
+            if let Some(call_id) = call_id {
+                calls.refused(&call_id, &code);
+            }
             None
         }
         // Everything this client has not learned yet, `pong` included —
