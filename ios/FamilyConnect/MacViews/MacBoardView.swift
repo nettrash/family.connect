@@ -61,19 +61,29 @@ struct MacBoardView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack(alignment: .topLeading) {
-                Color(nsColor: .underPageBackgroundColor)
-                ForEach(notes) { note in
-                    sticker(for: note, board: geometry.size)
+            // THE WALL SCROLLS: it is taller than the window
+            // (docs/protocol.md, "Board"), so a family can pin something
+            // without taking something down. The fractions are read
+            // against the WALL, which is why the notes are given its size
+            // and not the window's.
+            let wall = BoardWall.size(visible: geometry.size)
+            ScrollView(.vertical) {
+                ZStack(alignment: .topLeading) {
+                    Color(nsColor: .underPageBackgroundColor)
+                    ForEach(notes) { note in
+                        sticker(for: note, board: wall)
+                    }
+                    if notes.isEmpty {
+                        ContentUnavailableView(
+                            "The board is empty",
+                            systemImage: "square.grid.2x2",
+                            description: Text("Add a note — everyone in the family sees it."))
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                    }
                 }
-                if notes.isEmpty {
-                    ContentUnavailableView(
-                        "The board is empty",
-                        systemImage: "square.grid.2x2",
-                        description: Text("Add a note — everyone in the family sees it."))
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                }
+                .frame(width: wall.width, height: wall.height, alignment: .topLeading)
             }
+            .scrollBounceBehavior(.basedOnSize)
         }
         .frame(minWidth: 480, minHeight: 360)
         .navigationTitle("Board")
@@ -269,6 +279,13 @@ fileprivate struct MacNoteView: View {
             y: min(max(point.y, 0), max(board.height - size.height, 0)))
     }
 
+    /// A PHOTO WITH NO CAPTION IS THE BARE PICTURE (docs/protocol.md,
+    /// "Board") — the same rule the phone follows: no paper behind it, no
+    /// padding around it, no author line under it.
+    private var isBarePicture: Bool {
+        !isHidden && NoteKind(name: note.kind) == .photo && note.text.isEmpty
+    }
+
     var body: some View {
         let noteSize = NoteSize(name: note.size)
         let size = noteSize.frame
@@ -301,6 +318,7 @@ fileprivate struct MacNoteView: View {
                     going: note.answerCount(RsvpAnswer.going.name),
                     maybe: note.answerCount(RsvpAnswer.maybe.name))
             }
+            if !isBarePicture {
             (isHidden ? Text("Hidden — blocked member") : Text(note.text))
                 // The hand the author chose (docs/protocol.md, "Board").
                 .font(NoteFont(name: note.font).font(for: noteSize))
@@ -314,17 +332,20 @@ fileprivate struct MacNoteView: View {
                 .lineLimit(noteSize.fittedLineLimit)
                 .minimumScaleFactor(noteSize.minimumTextScale)
             Spacer(minLength: 0)
-            // No author line at all while hidden — not an empty one, which
-            // would still say a note came from somebody.
-            if !isHidden {
+            }
+            // No author line at all while hidden — nor on a bare picture,
+            // which has no paper under it to write one on.
+            if !isHidden && !isBarePicture {
                 Text(authorName)
                     .font(.caption2)
                     .foregroundStyle(.black.opacity(0.5))
             }
         }
-        .padding(10)
+        .padding(isBarePicture ? 0 : 10)
         .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .background(NoteColor.swiftUI(note.color), in: RoundedRectangle(cornerRadius: 8))
+        .background(
+            isBarePicture ? Color.clear : NoteColor.swiftUI(note.color),
+            in: RoundedRectangle(cornerRadius: isBarePicture ? 4 : 8))
         // Lifted off the wall while it is in hand — the same cue the phone
         // gives, and the only feedback a cursor drag has.
         .shadow(color: .black.opacity(isDragging ? 0.28 : 0.12),

@@ -38,6 +38,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -569,6 +571,29 @@ object NoteFonts {
     }
 }
 
+/**
+ * How the wall itself is sized (docs/protocol.md, "Board").
+ *
+ * The wall is TALLER than the window and it scrolls: a wall the size of the
+ * window is a wall that fills up, and then a family has to take something
+ * down before it can say anything. `x` and `y` stay fractions of the WALL,
+ * so making it taller moves nothing relative to anything else.
+ *
+ * The factor is the same on all four clients even though the wire says
+ * nothing about it — a note two thirds of the way down should be two thirds
+ * of the way down on the phone and on the Mac.
+ *
+ * Web counterpart: `fc_text::board::WALL_SCREENS`.
+ * Apple counterpart: `BoardWall` in Views/NoteSize.swift.
+ */
+object BoardWall {
+    const val SCREENS = 1.6f
+
+    /** Never shorter than the window, or fractions of the wall would sit
+     *  behind its edges. */
+    fun heightPx(visiblePx: Int): Int = maxOf((visiblePx * SCREENS).toInt(), visiblePx)
+}
+
 object NoteSizes {
     const val SMALL = "small"
     const val MEDIUM = "medium"
@@ -770,7 +795,13 @@ fun BoardScreen(
         ) {
             val density = LocalDensity.current
             val boardWidthPx = with(density) { maxWidth.roundToPx() }
-            val boardHeightPx = with(density) { maxHeight.roundToPx() }
+            // THE WALL SCROLLS, because it is taller than the window
+            // (docs/protocol.md, "Board"). The fractions are read against
+            // the WALL, so nothing moves relative to anything else — the
+            // bottom of it is simply below the fold.
+            val visibleHeightPx = with(density) { maxHeight.roundToPx() }
+            val boardHeightPx = BoardWall.heightPx(visibleHeightPx)
+            val wallHeight = with(density) { boardHeightPx.toDp() }
 
             if (notes.isEmpty()) {
                 EmptyState(
@@ -781,6 +812,12 @@ fun BoardScreen(
                 )
             }
 
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(wallHeight)
+                    .verticalScroll(rememberScrollState()),
+            ) {
             notes.forEach { note ->
                 StickyNote(
                     note = note,
@@ -811,6 +848,7 @@ fun BoardScreen(
                         )
                     },
                 )
+            }
             }
         }
     }
@@ -911,6 +949,11 @@ private fun StickyNote(
     // recomposition cannot carry a reveal onto a different one.
     var isRevealed by remember(note.id) { mutableStateOf(false) }
     val isHidden = isHiddenByBlock && !isRevealed
+    // A PHOTO WITH NO CAPTION IS THE BARE PICTURE (docs/protocol.md,
+    // "Board"): no paper behind it, no padding around it and no author
+    // line under it — a picture pinned to a wall. A caption brings the
+    // card back, because the words need paper to sit on.
+    val isBarePicture = !isHidden && NoteKinds.isPhoto(note.kind) && note.text.isBlank()
     val hiddenLabel = stringResource(R.string.s_hidden_blocked_member)
     // Resolved out here: a semantics block is not a composable context.
     // TalkBack gets the SAME masking the screen does — this label
@@ -957,9 +1000,12 @@ private fun StickyNote(
             // arithmetic, so the two cannot disagree.
             .offset { IntOffset(geometry.drawnX(dragX), geometry.drawnY(dragY)) }
             .size(side)
-            .shadow(if (dragX == 0f && dragY == 0f) 2.dp else 8.dp, RoundedCornerShape(10.dp))
-            .clip(RoundedCornerShape(10.dp))
-            .background(NoteColors.compose(note.color))
+            .shadow(
+                if (dragX == 0f && dragY == 0f) 2.dp else 8.dp,
+                RoundedCornerShape(if (isBarePicture) 4.dp else 10.dp),
+            )
+            .clip(RoundedCornerShape(if (isBarePicture) 4.dp else 10.dp))
+            .background(if (isBarePicture) Color.Transparent else NoteColors.compose(note.color))
             .pointerInput(note.id) {
                 detectDragGestures(
                     onDrag = { change, delta ->
@@ -999,7 +1045,7 @@ private fun StickyNote(
                 contentDescription = noteDescription
                 role = Role.Button
             }
-            .padding(10.dp),
+            .padding(if (isBarePicture) 0.dp else 10.dp),
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // A pinned picture fills the sticker, with the caption under it
@@ -1010,11 +1056,17 @@ private fun StickyNote(
                 AttachmentsCodec.decode(note.attachmentJson)?.firstOrNull()?.let { picture ->
                     NotePicture(
                         attachment = picture,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(84.dp),
+                        modifier = if (isBarePicture) {
+                            // Nothing else on the card: the picture IS the
+                            // card.
+                            Modifier.fillMaxSize()
+                        } else {
+                            Modifier
+                                .fillMaxWidth()
+                                .height(84.dp)
+                        },
                     )
-                    Spacer(Modifier.size(6.dp))
+                    if (!isBarePicture) Spacer(Modifier.size(6.dp))
                 }
             }
             // An event says WHEN before it says what: the date is the
@@ -1023,6 +1075,7 @@ private fun StickyNote(
                 NoteEventBlock(note = note)
                 Spacer(Modifier.size(4.dp))
             }
+            if (!isBarePicture) {
             Text(
                 text = if (isHidden) hiddenLabel else note.text,
                 style = NoteSizes.textStyle(note.size, MaterialTheme.typography)
@@ -1043,11 +1096,13 @@ private fun StickyNote(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            }
             // The byline keeps its small style at every size: it is who
             // wrote the note, not part of what they wrote. While hidden
             // there is no byline at all — not an empty one, which would
-            // still say a note came from somebody.
-            if (!isHidden) {
+            // still say a note came from somebody. Nor on a bare picture,
+            // which has no paper under it to write one on.
+            if (!isHidden && !isBarePicture) {
                 Text(
                     text = authorName,
                     style = MaterialTheme.typography.labelSmall,

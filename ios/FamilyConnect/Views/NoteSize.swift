@@ -26,6 +26,36 @@
 
 import SwiftUI
 
+/// How the wall itself is sized (docs/protocol.md, "Board").
+///
+/// The wall is TALLER than the window and it scrolls: a wall the size of
+/// the window is a wall that fills up, and then a family has to take
+/// something down before it can say anything. `x` and `y` stay fractions
+/// of the WALL, so making it taller moves nothing relative to anything
+/// else.
+///
+/// The factor is the same on all four clients even though the wire says
+/// nothing about it — a note two thirds of the way down should be two
+/// thirds of the way down on the phone and on the Mac.
+///
+/// Web counterpart: `fc_text::board::WALL_SCREENS`.
+/// Android counterpart: `BoardWall.screens` in ui/board/BoardScreen.kt.
+nonisolated enum BoardWall {
+    static let screens: CGFloat = 1.6
+
+    /// The wall's height for a window of `visible` height — never shorter
+    /// than the window, or fractions of the wall would sit behind its
+    /// edges.
+    static func height(visible: CGFloat) -> CGFloat {
+        max(visible * screens, visible)
+    }
+
+    /// The wall's own size, for the fractions to be read against.
+    static func size(visible: CGSize) -> CGSize {
+        CGSize(width: visible.width, height: height(visible: visible.height))
+    }
+}
+
 /// Ordered small → large, which is the order a picker shows them in.
 nonisolated enum NoteSize: String, CaseIterable, Identifiable, Sendable {
     case small

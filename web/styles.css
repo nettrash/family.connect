@@ -807,16 +807,39 @@ button.mention { cursor: pointer; }
 .board-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 .board-actions .secondary { background: transparent; color: var(--tint); padding: 6px 10px; }
 
+/* The wall SCROLLS: it is taller than the window (docs/protocol.md,
+ * "Board"), so a family can pin something without taking something down.
+ * The ground is a quiet paper — two soft washes and a fine weave, no
+ * asset — and the pastels on top keep their contrast in both appearances. */
 .board-wall {
     position: relative;
     flex: 1;
     min-height: 0;
-    overflow: hidden;
-    background: var(--soft);
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    background-color: #cbb391;
+    background-image:
+        radial-gradient(120% 90% at 15% 0%, rgb(255 255 255 / 26%), transparent 60%),
+        radial-gradient(90% 70% at 85% 100%, rgb(0 0 0 / 14%), transparent 55%),
+        repeating-linear-gradient(38deg, rgb(0 0 0 / 4%) 0 1px, transparent 1px 4px),
+        repeating-linear-gradient(-52deg, rgb(255 255 255 / 5%) 0 1px, transparent 1px 5px);
     /* The stickers' z-indexes rank them against each other and nothing
      * else: without a stacking context of its own, the twentieth note
      * painted over the note sheet and took its clicks. */
     isolation: isolate;
+}
+@media (prefers-color-scheme: dark) {
+    /* Cork in the dark, the same board with the lamp off. */
+    .board-wall { background-color: #5b4a36; }
+}
+
+/* Nothing to see: the box that gives the wall its height, since every
+ * sticker on it is positioned and adds none. */
+.board-extent {
+    width: 1px;
+    height: 160%;
+    pointer-events: none;
 }
 .board-wall.is-drop-target { outline: 3px solid var(--tint); outline-offset: -3px; }
 .board-empty {
@@ -848,10 +871,43 @@ button.mention { cursor: pointer; }
     user-select: none;
     -webkit-user-select: none;
     touch-action: none;
-    overflow: hidden;
+    /* VISIBLE, so the pin can sit over the card's top edge the way a real
+     * one does — the picture and the text each clip themselves, so nothing
+     * else leaks out. Taking room from the text for the pin would have
+     * cost a line of the words, which the wall's whole promise is against
+     * (docs/protocol.md, "Board": the text fits the note). */
+    overflow: visible;
     transition: left .2s ease, top .2s ease, box-shadow .12s ease, transform .12s ease;
 }
 .sticker:focus-visible { outline: 2px solid var(--tint); outline-offset: 3px; }
+/* The pin. Decoration, and nowhere on the wire (docs/protocol.md,
+ * "Board"): a head with a highlight, and no hit area of its own. */
+.sticker::after {
+    content: "";
+    position: absolute;
+    top: -4px;
+    left: 50%;
+    width: 9px;
+    height: 9px;
+    margin-left: -4.5px;
+    border-radius: 50%;
+    background:
+        radial-gradient(circle at 35% 30%, rgb(255 255 255 / 85%), transparent 45%),
+        radial-gradient(circle at 60% 65%, #b3261e, #7a1a15);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 35%);
+    pointer-events: none;
+}
+/* A PHOTO WITH NO CAPTION IS THE BARE PICTURE: no paper behind it, no
+ * padding around it, nothing under it — a picture pinned to a wall
+ * (docs/protocol.md, "Board"). A caption brings the card back, because
+ * words need paper to sit on. */
+.sticker.is-photo:not(.has-caption) {
+    padding: 0;
+    background: transparent !important;
+    border-radius: 4px;
+    box-shadow: 0 3px 8px rgb(0 0 0 / 30%);
+}
+.sticker.is-photo:not(.has-caption) .note-picture { border-radius: 3px; }
 /* Lifted off the wall while in hand, and following the pointer exactly. */
 .sticker.is-dragging {
     cursor: grabbing;
