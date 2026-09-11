@@ -548,6 +548,13 @@ private struct StickyNote: View {
                 // the layout rule it used to be.
                 .lineLimit(size.fittedLineLimit)
                 .minimumScaleFactor(size.minimumTextScale)
+            // A LIST says what is on it, under its title: the first lines
+            // with their state, and then how many are left. No tap here —
+            // the tick is in the note when it is opened (docs/protocol.md,
+            // "Board").
+            if !isHidden, NoteKind(name: note.kind) == .tasks {
+                NoteTaskBlock(items: note.taskList)
+            }
             Spacer(minLength: 0)
             }
             // No author line at all while hidden — not an empty one, which

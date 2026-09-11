@@ -990,9 +990,65 @@ data class NoteDto(
      * (docs/protocol.md, "Board"). Null when it names nobody.
      */
     val mentions: List<MentionDto>? = null,
+    /**
+     * The things to do, in the author's order. `[]` on a task list nothing
+     * has been written into yet, null on every other kind — the difference
+     * is the point, as with [rsvps] (docs/protocol.md, "Board").
+     */
+    val items: List<TaskItemDto>? = null,
 ) {
     val isTombstone: Boolean get() = deleted == true
 }
+
+/**
+ * One line of a task list (docs/protocol.md, "Board").
+ *
+ * [id] is the server's and stable for the life of the line: it is what a
+ * tick refers to, and what carries a tick through the author's rewrite.
+ */
+@Serializable
+data class TaskItemDto(
+    val id: Long,
+    val text: String,
+    val done: Boolean = false,
+    /**
+     * Who ticked it — null while it is not done, and null on a tick whose
+     * account has since been deleted.
+     */
+    @SerialName("done_by") val doneBy: Long? = null,
+)
+
+/**
+ * The lines as the store holds them: the wire's list verbatim, so a tick
+ * and the server's own ids are kept rather than re-derived.
+ *
+ * An EMPTY list still encodes, unlike a mention list: `[]` means "a list
+ * with nothing on it" and null means "not a list at all", and the two are
+ * different notes.
+ */
+object TaskItemsCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun encode(items: List<TaskItemDto>): String = json.encodeToString(items)
+
+    fun decode(raw: String?): List<TaskItemDto> =
+        raw?.let { runCatching { json.decodeFromString<List<TaskItemDto>>(it) }.getOrNull() }
+            .orEmpty()
+}
+
+/**
+ * One line the AUTHOR is writing. [id] says "the line you already have",
+ * which is what carries its TICK through a rewrite; null, the line is new
+ * (docs/protocol.md, "Board").
+ */
+@Serializable
+data class TaskLineRequest(
+    val id: Long? = null,
+    val text: String,
+)
+
+@Serializable
+data class TaskDoneRequest(val done: Boolean)
 
 @Serializable
 data class BoardResponse(
@@ -1024,6 +1080,11 @@ data class CreateNoteRequest(
     val place: String? = null,
     /** The members the text names (docs/protocol.md, "Board"). */
     val mentions: List<MentionDto>? = null,
+    /**
+     * A task list's lines, on a `tasks` note and nowhere else — the server
+     * refuses them on any other kind (docs/protocol.md, "Board").
+     */
+    val items: List<TaskLineRequest>? = null,
 )
 
 /**
@@ -1048,6 +1109,12 @@ data class PatchNoteRequest(
      * (docs/protocol.md, "Board").
      */
     val mentions: List<MentionDto>? = null,
+    /**
+     * REPLACES a task list's lines, and the author's like its title: a
+     * line carrying its id keeps its TICK, one without an id is new, and a
+     * line left out is gone (docs/protocol.md, "Board").
+     */
+    val items: List<TaskLineRequest>? = null,
 )
 
 @Serializable

@@ -10,9 +10,17 @@
 
 package me.nettrash.familyconnect.data.db
 
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
 class AppDatabaseMigrationsTest {
 
     @Test
@@ -25,12 +33,55 @@ class AppDatabaseMigrationsTest {
     }
 
     @Test
-    fun `the board-events migration is the last one and reaches the current schema`() {
+    fun `the note-lists migration is the last one and reaches the current schema`() {
         val last = AppDatabase.ALL_MIGRATIONS.last()
-        assertThat(last).isSameInstanceAs(AppDatabase.MIGRATION_25_26)
-        assertThat(last.endVersion).isEqualTo(26)
-        // And the photo one is still registered right before it.
+        assertThat(last).isSameInstanceAs(AppDatabase.MIGRATION_26_27)
+        assertThat(last.endVersion).isEqualTo(27)
+        // And the board-events one is still registered right before it.
         assertThat(AppDatabase.ALL_MIGRATIONS[AppDatabase.ALL_MIGRATIONS.size - 2])
-            .isSameInstanceAs(AppDatabase.MIGRATION_24_25)
+            .isSameInstanceAs(AppDatabase.MIGRATION_25_26)
+    }
+
+    /**
+     * The last migration actually adds the two columns its notes need,
+     * run against a real SQLite rather than read off the source.
+     *
+     * The regression this pins is mine: `notes.mentionsJson` arrived with
+     * the note-mentions work and NO migration at all, with the schema
+     * version left at 26 — a fresh install was fine and every upgraded one
+     * would have met a schema Room could not verify. The list check above
+     * cannot see that, because a column added with no step leaves the list
+     * exactly as it was.
+     */
+    @Test
+    @Config(sdk = [34])
+    fun `the note-lists migration adds the columns a note now carries`() {
+        val configuration = SupportSQLiteOpenHelper.Configuration
+            .builder(RuntimeEnvironment.getApplication())
+            // In-memory, and the table as it stood BEFORE this step: id
+            // and the columns the check reads, which is all the ALTERs
+            // need to find.
+            .name(null)
+            .callback(object : SupportSQLiteOpenHelper.Callback(1) {
+                override fun onCreate(db: SupportSQLiteDatabase) {
+                    db.execSQL("CREATE TABLE notes (id INTEGER PRIMARY KEY NOT NULL, text TEXT)")
+                }
+
+                override fun onUpgrade(db: SupportSQLiteDatabase, from: Int, to: Int) = Unit
+            })
+            .build()
+        val helper = FrameworkSQLiteOpenHelperFactory().create(configuration)
+        val db = helper.writableDatabase
+
+        AppDatabase.MIGRATION_26_27.migrate(db)
+
+        val columns = mutableListOf<String>()
+        db.query("PRAGMA table_info(notes)").use { cursor ->
+            val name = cursor.getColumnIndexOrThrow("name")
+            while (cursor.moveToNext()) columns += cursor.getString(name)
+        }
+        helper.close()
+
+        assertThat(columns).containsAtLeast("mentionsJson", "itemsJson")
     }
 }

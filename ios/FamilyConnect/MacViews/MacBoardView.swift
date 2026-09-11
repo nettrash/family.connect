@@ -55,6 +55,8 @@ struct MacBoardView: View {
     @State private var draftSize = NoteSize.medium
     @State private var draftFont = NoteFont.plain
     @State private var draftEvent = MacEventFields()
+    /// A new task list's lines (docs/protocol.md, "Board").
+    @State private var draftLines: [DraftTaskLine] = []
     /// Pinning a picture: the upload it turns into, and what went wrong.
     @State private var pinning = false
     @State private var pinFailure: String?
@@ -110,6 +112,14 @@ struct MacBoardView: View {
             }
             ToolbarItem {
                 Button {
+                    startComposing(.tasks)
+                } label: {
+                    Label("Add List", systemImage: "checklist")
+                }
+                .help("Add a task list")
+            }
+            ToolbarItem {
+                Button {
                     pinPicture()
                 } label: {
                     Label("Pin a Photo", systemImage: "photo.badge.plus")
@@ -148,11 +158,14 @@ struct MacBoardView: View {
                 text: $draftText, color: $draftColor, size: $draftSize, font: $draftFont,
                 event: $draftEvent,
                 kind: composingKind,
-                title: composingKind == .event ? "New Event" : "New Note",
-                mentionCandidates: mentionCandidates(matching:)
+                title: newTitle,
+                mentionCandidates: mentionCandidates(matching:),
+                lines: $draftLines
             ) {
                 let isEvent = composingKind == .event
+                let isList = composingKind == .tasks
                 let event = draftEvent
+                let lines = draftLines
                 Task {
                     // Dropped near the middle with a little scatter, so a
                     // run of new notes does not stack into one pile.
@@ -165,12 +178,23 @@ struct MacBoardView: View {
                         y: Double.random(in: 0.25...0.65),
                         startsAt: isEvent ? event.startsAt : nil,
                         endsAt: isEvent && event.hasEnd ? event.endsAt : nil,
-                        place: isEvent && !event.trimmedPlace.isEmpty ? event.trimmedPlace : nil)
+                        place: isEvent && !event.trimmedPlace.isEmpty ? event.trimmedPlace : nil,
+                        // Empty is still a list — it is what makes the
+                        // note one (docs/protocol.md, "Board").
+                        items: isList ? DraftTaskLine.written(lines) : nil)
                 }
             }
         }
         .sheet(item: $editing) { note in
             MacNoteEditorForExisting(note: note)
+        }
+    }
+
+    private var newTitle: LocalizedStringKey {
+        switch composingKind {
+        case .event: "New Event"
+        case .tasks: "New List"
+        default: "New Note"
         }
     }
 
@@ -220,6 +244,12 @@ struct MacBoardView: View {
             myAnswer: note.myAnswer(coordinator.currentUserID),
             onAnswer: { answer in
                 Task { await coordinator.answerEvent(id: note.noteID, answer: answer) }
+            },
+            onTick: { itemID, done in
+                Task {
+                    await coordinator.tickTask(
+                        noteID: note.noteID, itemID: itemID, done: done)
+                }
             })
     }
 
@@ -228,10 +258,17 @@ struct MacBoardView: View {
     private func startComposing(_ kind: NoteKind) {
         composingKind = kind
         draftText = ""
-        draftColor = kind == .event ? "blue" : (NoteColor.palette.randomElement() ?? "yellow")
+        draftColor = switch kind {
+        case .event: "blue"
+        case .tasks: "green"
+        default: NoteColor.palette.randomElement() ?? "yellow"
+        }
         draftSize = .medium
         draftFont = .plain
         draftEvent = MacEventFields()
+        // A new list opens with one empty line, so the first thing to do
+        // is one tap away rather than two.
+        draftLines = kind == .tasks ? [DraftTaskLine()] : []
         composing = true
     }
 
@@ -268,6 +305,11 @@ fileprivate struct MacNoteView: View {
     /// Say whether you are coming — ANY member may, so it sits outside
     /// every author gate (docs/protocol.md, "Board"). nil retracts.
     var onAnswer: (String?) -> Void = { _ in }
+    /// Tick a line off the list — ANY member may, for the same reason, and
+    /// on this platform the MENU is where they do it: a reader cannot open
+    /// somebody else's note here, and ticking must be reachable by every
+    /// member on every client (docs/protocol.md, "Board").
+    var onTick: (Int64, Bool) -> Void = { _, _ in }
 
     @State private var drag: CGSize = .zero
     @State private var committing = false
@@ -330,6 +372,13 @@ fileprivate struct MacNoteView: View {
                     place: note.place,
                     going: note.answerCount(RsvpAnswer.going.name),
                     maybe: note.answerCount(RsvpAnswer.maybe.name))
+            }
+            // A LIST says what is on it, under its title: the first
+            // lines with their state, and then how many are left. No click
+            // here — the tick is in the menu on this platform
+            // (docs/protocol.md, "Board").
+            if !isHidden, NoteKind(name: note.kind) == .tasks {
+                NoteTaskBlock(items: note.taskList)
             }
             if !isBarePicture {
             // The names, bold and in the note's own ink — and not doors on
@@ -444,6 +493,19 @@ fileprivate struct MacNoteView: View {
                 // Anyone may MOVE a note; only its author may change it.
                 Text("Written by someone else")
             }
+            // TICKING IS NOT AUTHORSHIP either, and this is the one
+            // client where the menu is the only way to it: a reader never
+            // opens somebody else's note here (protocol.md, "Board").
+            if !isHidden, NoteKind(name: note.kind) == .tasks, !note.taskList.isEmpty {
+                Divider()
+                Menu("Things to do") {
+                    ForEach(note.taskList, id: \.id) { item in
+                        Toggle(item.text, isOn: Binding(
+                            get: { item.done },
+                            set: { onTick(item.id, $0) }))
+                    }
+                }
+            }
             // ANSWERING IS NOT AUTHORSHIP: outside the isMine branch on
             // purpose, and offered on a hidden note no more than its text
             // is (protocol.md, "Board").
@@ -517,10 +579,64 @@ private struct MacNoteEditor: View {
     /// "Board"). Empty where nobody is offered, which is what a board with
     /// no roster loaded yet has.
     var mentionCandidates: (String) -> [MentionDTO] = { _ in [] }
+    /// A task list's lines as the author is writing them (docs/protocol.md,
+    /// "Board"). Empty on every other kind.
+    @Binding var lines: [DraftTaskLine]
+    /// What a line's box draws, and what a tap on it asks for. Ticking is
+    /// ANY member's act, so it does not go through `onSave`; on a list
+    /// nobody has saved yet there is nothing to tick and the boxes are
+    /// disabled.
+    var isDone: (Int64) -> Bool = { _ in false }
+    var onTick: (Int64, Bool) -> Void = { _, _ in }
     let onSave: () -> Void
 
     private var canSave: Bool {
         kind == .photo || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// What the preview says before anything is typed.
+    private var blankPreview: String.LocalizationValue {
+        switch kind {
+        case .tasks: "Your list"
+        case .event: "Your event"
+        default: "Your note"
+        }
+    }
+
+    /// The lines the author is writing, each with the box that says
+    /// whether it is done.
+    ///
+    /// Its own property for the reason the phone's is: a block this long
+    /// inside the body is more than the type-checker will do in reasonable
+    /// time.
+    @ViewBuilder
+    private var taskLines: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Things to do").font(.subheadline)
+            ForEach($lines) { $line in
+                NoteTaskRow(
+                    itemID: line.itemID,
+                    done: line.itemID.map(isDone) ?? false,
+                    canEdit: true,
+                    onTick: { done in
+                        if let itemID = line.itemID { onTick(itemID, done) }
+                    },
+                    onRemove: { lines.removeAll { $0.id == line.id } },
+                    text: $line.text)
+                    // The cap where the typing is, as the title has it.
+                    .onChange(of: line.text) { _, new in
+                        let capped = NoteText.capped(new, to: NoteText.maxTaskItemLength)
+                        if capped != new { line.text = capped }
+                    }
+            }
+            Button {
+                lines.append(DraftTaskLine())
+            } label: {
+                Label("Add a thing", systemImage: "plus.circle")
+            }
+            .disabled(lines.count >= NoteText.maxTaskItems)
+        }
+        .frame(width: 320, alignment: .leading)
     }
 
     @Environment(\.dismiss) private var dismiss
@@ -552,6 +668,11 @@ private struct MacNoteEditor: View {
                 Text("\(NoteText.remaining(text)) characters left")
                     .font(.caption)
                     .foregroundStyle(NoteText.remaining(text) == 0 ? .red : .secondary)
+            }
+            // THE LINES, above the look: they are what the note says
+            // (docs/protocol.md, "Board").
+            if kind == .tasks {
+                taskLines
             }
             // WHEN and WHERE, above the look: they are why the note is on
             // the wall (docs/protocol.md, "Board").
@@ -602,7 +723,7 @@ private struct MacNoteEditor: View {
             HStack {
                 Spacer(minLength: 0)
                 NotePreview(
-                    text: text.isEmpty ? String(localized: "Your note") : text,
+                    text: text.isEmpty ? String(localized: blankPreview) : text,
                     color: color,
                     size: size,
                     font: font)
@@ -670,8 +791,21 @@ private struct MacNoteEditorForExisting: View {
     @State private var size: NoteSize = .medium
     @State private var font: NoteFont = .plain
     @State private var event = MacEventFields()
+    @State private var lines: [DraftTaskLine] = []
+    /// Ticks on their way: the line and the state being sent, so a box
+    /// answers the click at once and goes back to the note's own truth
+    /// when the answer — or the refusal — lands.
+    @State private var ticking: [Int64: Bool] = [:]
 
     private var kind: NoteKind { NoteKind(name: note.kind) }
+
+    private var editTitle: LocalizedStringKey {
+        switch kind {
+        case .event: "Edit Event"
+        case .tasks: "Edit List"
+        default: "Edit Note"
+        }
+    }
 
     /// The same strip the new-note editor gets (docs/protocol.md, "Board").
     private func mentionCandidates(matching query: String) -> [MentionDTO] {
@@ -687,11 +821,30 @@ private struct MacNoteEditorForExisting: View {
         MacNoteEditor(
             text: $text, color: $color, size: $size, font: $font, event: $event,
             kind: kind,
-            title: kind == .event ? "Edit Event" : "Edit Note",
-            mentionCandidates: mentionCandidates(matching:)
+            title: editTitle,
+            mentionCandidates: mentionCandidates(matching:),
+            lines: $lines,
+            isDone: { itemID in
+                if let sending = ticking[itemID] { return sending }
+                return note.taskList.first { $0.id == itemID }?.done ?? false
+            },
+            onTick: { itemID, done in
+                // One request per line at a time: a second click while the
+                // first is in flight is the click that would undo it.
+                guard ticking[itemID] == nil else { return }
+                ticking[itemID] = done
+                Task {
+                    await coordinator.tickTask(
+                        noteID: note.noteID, itemID: itemID, done: done)
+                    ticking[itemID] = nil
+                }
+            }
         ) {
             let isEvent = kind == .event
+            let isList = kind == .tasks
             let event = event
+            let written = DraftTaskLine.written(lines)
+            let held = note.taskList.map { APIClient.TaskLineRequest(id: $0.id, text: $0.text) }
             Task {
                 // Size and font only when the author changed them, so a
                 // name this Mac does not know survives a text edit
@@ -704,7 +857,11 @@ private struct MacNoteEditorForExisting: View {
                     font: font.patchName(replacing: note.font),
                     startsAt: isEvent ? event.startsAt : nil,
                     endsAt: isEvent ? .some(event.hasEnd ? event.endsAt : nil) : nil,
-                    place: isEvent ? event.trimmedPlace : nil)
+                    place: isEvent ? event.trimmedPlace : nil,
+                    // Sent only when they DIFFER: `items` is the author's
+                    // field, and one sent unchanged would make opening a
+                    // list to read it an edit.
+                    items: isList && written != held ? written : nil)
             }
         }
         .onAppear {
@@ -712,6 +869,7 @@ private struct MacNoteEditorForExisting: View {
             color = note.color
             size = NoteSize(name: note.size)
             font = NoteFont(name: note.font)
+            lines = note.taskList.map { DraftTaskLine(itemID: $0.id, text: $0.text) }
             if let starts = note.startsAt {
                 event = MacEventFields(
                     startsAt: starts,

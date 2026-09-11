@@ -24,6 +24,9 @@ import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import me.nettrash.familyconnect.data.net.dto.MentionDto
+import me.nettrash.familyconnect.data.net.dto.TaskItemDto
+import me.nettrash.familyconnect.data.net.dto.TaskItemsCodec
+import me.nettrash.familyconnect.data.net.dto.TaskLineRequest
 import me.nettrash.familyconnect.data.net.dto.NoteMentionsCodec
 import me.nettrash.familyconnect.data.net.dto.RsvpDto
 import me.nettrash.familyconnect.data.net.dto.RsvpCodec
@@ -642,5 +645,109 @@ class BoardRepositoryTest {
         runCurrent()
         assertThat(NoteMentionsCodec.decode(noteDao.observeNotes().first().single().mentionsJson))
             .isEmpty()
+    }
+
+    // MARK: - task lists (docs/protocol.md, "Board")
+
+    @Test
+    fun `a list is pinned with its lines, and an empty list is still a list`() =
+        runTest(dispatcher) {
+            val repository = repository()
+
+            repository.addNote(
+                "Saturday", "green", "medium", "plain", 0.1, 0.2,
+                items = listOf(TaskLineRequest(text = "Milk"), TaskLineRequest(text = "Bread")),
+            )
+            repository.addNote("Sunday", "green", "medium", "plain", 0.3, 0.4, items = emptyList())
+            repository.addNote("Milk", "yellow", "medium", "plain", 0.5, 0.6)
+            runCurrent()
+
+            val written = boardApi.created
+            assertThat(written[0].kind).isEqualTo("tasks")
+            assertThat(written[0].items?.map { it.text }).containsExactly("Milk", "Bread").inOrder()
+            // `[]`, not absent: an empty list is what makes the note a
+            // list, and dropping it would pin a plain sticker.
+            assertThat(written[1].kind).isEqualTo("tasks")
+            assertThat(written[1].items).isEmpty()
+            // And a note that is not a list sends no lines at all.
+            assertThat(written[2].kind).isNull()
+            assertThat(written[2].items).isNull()
+        }
+
+    @Test
+    fun `the lines a list arrives with are stored with it`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.applyNote(
+            noteDto(
+                id = 1, text = "Saturday", boardSeq = 10, kind = "tasks",
+                items = listOf(
+                    TaskItemDto(id = 11, text = "Milk", done = true, doneBy = 3L),
+                    TaskItemDto(id = 12, text = "Bread"),
+                ),
+            ),
+        )
+        runCurrent()
+        val stored = noteDao.observeNotes().first().single()
+        val items = TaskItemsCodec.decode(stored.itemsJson)
+        assertThat(items.map { it.text }).containsExactly("Milk", "Bread").inOrder()
+        assertThat(items[0].done).isTrue()
+        assertThat(items[0].doneBy).isEqualTo(3L)
+
+        // A LATER frame rewrites them in place — which is how somebody
+        // else's tick arrives at all.
+        repository.applyNote(
+            noteDto(
+                id = 1, text = "Saturday", boardSeq = 11, kind = "tasks",
+                items = listOf(
+                    TaskItemDto(id = 11, text = "Milk", done = true, doneBy = 3L),
+                    TaskItemDto(id = 12, text = "Bread", done = true, doneBy = 4L),
+                ),
+            ),
+        )
+        runCurrent()
+        val after = TaskItemsCodec.decode(noteDao.observeNotes().first().single().itemsJson)
+        assertThat(after.count { it.done }).isEqualTo(2)
+    }
+
+    @Test
+    fun `a tick asks for a state and applies the answer`() = runTest(dispatcher) {
+        val repository = repository()
+        repository.applyNote(
+            noteDto(
+                id = 1, text = "Saturday", boardSeq = 10, kind = "tasks",
+                items = listOf(TaskItemDto(id = 11, text = "Milk")),
+            ),
+        )
+        runCurrent()
+        // The answer has to be NEWER than the row it replaces, as a
+        // server's is: the per-note seq guard refuses anything older.
+        boardApi.nextSeq = 20
+
+        assertThat(repository.tickTask(noteId = 1, itemId = 11, done = true)).isTrue()
+        runCurrent()
+
+        // A STATE, not a toggle: what was asked for is what was sent.
+        assertThat(boardApi.ticked).containsExactly(Triple(1L, 11L, true))
+        val items = TaskItemsCodec.decode(noteDao.observeNotes().first().single().itemsJson)
+        assertThat(items.single().done).isTrue()
+    }
+
+    @Test
+    fun `an edit sends the lines it keeps, and a move sends none`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.updateNote(
+            1L, text = "Saturday",
+            items = listOf(TaskLineRequest(id = 11, text = "Oat milk"), TaskLineRequest(text = "Eggs")),
+        )
+        repository.updateNote(1L, x = 0.4, y = 0.5)
+        runCurrent()
+
+        val kept = boardApi.patched[0].second.items
+        assertThat(kept?.map { it.id }).containsExactly(11L, null).inOrder()
+        assertThat(kept?.map { it.text }).containsExactly("Oat milk", "Eggs").inOrder()
+        // A move leaves the lines alone, as it leaves the names alone.
+        assertThat(boardApi.patched[1].second.items).isNull()
     }
 }
