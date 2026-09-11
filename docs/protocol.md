@@ -848,6 +848,29 @@ rejected — a drag that ends past the edge should stick to the edge, not fail. 
 `yellow`, `pink`, `blue`, `green`, `orange`, `purple`; anything else is `invalid_note_color`.
 `text` is trimmed, non-empty and at most 280 characters.
 
+**The wall is TALLER than the window, and it scrolls.** `x` and `y` stay fractions of the WALL, so
+a note keeps its relative place; what changes is that the wall is not one screenful. A wall the size
+of the window is a wall that fills up, and a family whose wall is full has to delete something to
+say something. How much taller is each client's own, the way every other dimension here is — but
+the four use the same factor (`fc_text::board::WALL_SCREENS`), so a note two thirds of the way down
+is two thirds of the way down on the phone and on the Mac. Nothing about this is on the wire: a
+server that has never heard of scrolling sends the same fractions, and a client that does not scroll
+draws the same wall squashed, which is what every client did before.
+
+**A PHOTO with no caption is drawn as the bare picture** — no sticker behind it, no author line
+under it. A caption brings the card back: the words need paper to sit on, and the photo then shares
+the sticker with them, as it does today. This is a drawing rule and not a wire one, but it is
+written down because all four clients must agree — a wall where one device shows framed pictures and
+another bare ones is not the same wall. What the reader loses on a bare photo is the author's name,
+which is in the note when they open it, and nothing else: the pin, the tilt, the slot and the tap
+are the same.
+
+**The pin and the ground are the client's own.** A note may be drawn with a pin through it and the
+wall may have paper or cork behind it; both are decoration, neither is on the wire, and a client
+that draws neither is not wrong. They are mentioned here only so that nobody adds a `pin` field:
+where a pin sits is not a fact about the note, and a family that could choose one would be choosing
+per platform anyway.
+
 **A note has a size**, so the thing that matters this week can be made big enough to read from
 across the room and a passing remark can stay small. `size` is one of `small`, `medium`, `large`;
 anything else is `invalid_note_size`, and a note created without one is `medium` — the size every

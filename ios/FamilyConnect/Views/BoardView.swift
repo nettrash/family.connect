@@ -93,15 +93,22 @@ struct BoardView: View {
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
+                // THE WALL SCROLLS, because it is taller than the window
+                // (docs/protocol.md, "Board"): a wall the size of the
+                // window is a wall that fills up. The fractions are read
+                // against the WALL, so nothing moves relative to anything
+                // else — the bottom of it is simply below the fold.
+                let wall = BoardWall.size(visible: geometry.size)
+                ScrollView(.vertical) {
                 ZStack(alignment: .topLeading) {
                     Color(.systemGroupedBackground)
-                        .ignoresSafeArea()
 
                     if notes.isEmpty {
                         ContentUnavailableView(
                             "The board is empty",
                             systemImage: "square.grid.2x2",
                             description: Text("Add a note — everyone in the family sees it."))
+                        .frame(width: geometry.size.width, height: geometry.size.height)
                     }
 
                     ForEach(notes) { note in
@@ -113,7 +120,7 @@ struct BoardView: View {
                                 authorID: note.authorID,
                                 blockedUserIDs: coordinator.blockedUserIDs,
                                 currentUserID: currentUserID),
-                            boardSize: geometry.size,
+                            boardSize: wall,
                             onMoved: { fraction in
                                 Task { await coordinator.updateNote(id: note.noteID, x: fraction.x, y: fraction.y) }
                             },
@@ -122,7 +129,11 @@ struct BoardView: View {
                             })
                     }
                 }
+                .frame(width: wall.width, height: wall.height, alignment: .topLeading)
+                }
+                .scrollBounceBehavior(.basedOnSize)
             }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("Board")
             .navigationBarTitleDisplayMode(.inline)
             .photosPicker(
@@ -393,6 +404,14 @@ private struct StickyNote: View {
     /// once: the idiom never changes while the app runs.
     private static let noteScale: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 1.45 : 1
 
+    /// A PHOTO WITH NO CAPTION IS THE BARE PICTURE (docs/protocol.md,
+    /// "Board"): no paper behind it, no padding around it and no author
+    /// line under it — a picture pinned to a wall. A caption brings the
+    /// card back, because the words need paper to sit on.
+    private var isBarePicture: Bool {
+        !isHidden && NoteKind(name: note.kind) == .photo && note.text.isEmpty
+    }
+
     var body: some View {
         let size = NoteSize(name: note.size)
         let side = size.side * Self.noteScale
@@ -427,6 +446,7 @@ private struct StickyNote: View {
                     going: note.answerCount(RsvpAnswer.going.name),
                     maybe: note.answerCount(RsvpAnswer.maybe.name))
             }
+            if !isBarePicture {
             (isHidden ? Text("Hidden — blocked member") : Text(note.text))
                 // The hand the author chose (docs/protocol.md, "Board").
                 // A hidden note keeps it, like its colour and its tilt:
@@ -443,17 +463,22 @@ private struct StickyNote: View {
                 .lineLimit(size.fittedLineLimit)
                 .minimumScaleFactor(size.minimumTextScale)
             Spacer(minLength: 0)
+            }
             // No author line at all while hidden — not an empty one, which
-            // would still say a note came from somebody.
-            if !isHidden {
+            // would still say a note came from somebody. And none on a
+            // bare picture either: there is no paper under it to write on,
+            // and the name is in the note when it is opened.
+            if !isHidden && !isBarePicture {
                 Text(authorName)
                     .font(.caption2)
                     .foregroundStyle(.black.opacity(0.5))
             }
         }
-        .padding(10)
+        .padding(isBarePicture ? 0 : 10)
         .frame(width: side, height: side, alignment: .topLeading)
-        .background(NoteColor.swiftUI(note.color), in: RoundedRectangle(cornerRadius: 10))
+        .background(
+            isBarePicture ? Color.clear : NoteColor.swiftUI(note.color),
+            in: RoundedRectangle(cornerRadius: isBarePicture ? 4 : 10))
         .shadow(color: .black.opacity(drag == .zero ? 0.12 : 0.25), radius: drag == .zero ? 3 : 10, y: 2)
         .rotationEffect(.degrees(Self.tilt(for: note.noteID)))
         .scaleEffect(drag == .zero ? 1 : 1.04)

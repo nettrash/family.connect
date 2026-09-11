@@ -393,6 +393,24 @@ pub fn tilt_degrees(note_id: i64) -> i64 {
     note_id.rem_euclid(7) - 3
 }
 
+/// How many windows tall the wall is (docs/protocol.md, "Board").
+///
+/// A wall the size of the window is a wall that fills up, and then a family
+/// has to take something down before it can say anything. `x` and `y` are
+/// fractions of the WALL, so making it taller moves nothing relative to
+/// anything else — it only means the bottom of the wall is below the
+/// bottom of the window, and the wall scrolls.
+///
+/// The number is shared by all four clients on purpose, even though the
+/// wire says nothing about it: a note two thirds of the way down should be
+/// two thirds of the way down on the phone and on the Mac.
+pub const WALL_SCREENS: f64 = 1.6;
+
+/// The wall's height for a window of `visible` height.
+pub fn wall_height(visible: f64) -> f64 {
+    (visible * WALL_SCREENS).max(visible)
+}
+
 /// Below this width a wall takes the phone's square stickers: the Mac's
 /// landscape cards would cover most of a narrow board between them.
 pub const COMPACT_BELOW: f64 = 640.0;
@@ -485,6 +503,18 @@ pub fn later(a: Marks, b: Marks) -> Marks {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_wall_is_taller_than_the_window_and_never_shorter() {
+        // Taller, so there is room to pin something without taking
+        // something down (docs/protocol.md, "Board").
+        assert_eq!(wall_height(500.0), 800.0);
+        assert!(wall_height(1000.0) > 1000.0);
+        // And never SHORTER, whatever a window does: a wall smaller than
+        // the window would put fractions of it behind the edges.
+        assert_eq!(wall_height(0.0), 0.0);
+        assert!(wall_height(1.0) >= 1.0);
+    }
+
     use super::*;
 
     #[test]

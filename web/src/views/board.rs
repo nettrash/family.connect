@@ -156,9 +156,12 @@ pub fn board_pane(props: &BoardProps) -> Html {
                 let measure = {
                     let element = element.clone();
                     move || {
+                        // The WALL's height, not the window's: it is
+                        // taller than what is on screen and scrolls
+                        // (docs/protocol.md, "Board").
                         size.set((
                             f64::from(element.client_width()),
-                            f64::from(element.client_height()),
+                            rules::wall_height(f64::from(element.client_height())),
                         ))
                     }
                 };
@@ -313,11 +316,15 @@ pub fn board_pane(props: &BoardProps) -> Html {
                 return;
             };
             let rect = element.get_bounding_client_rect();
-            let board = (rect.width(), rect.height());
+            // The wall's box is what is VISIBLE of it; the wall itself is
+            // taller and scrolled, so the drop is measured from the top of
+            // the wall rather than the top of the window.
+            let board = (rect.width(), rules::wall_height(rect.height()));
+            let scrolled = f64::from(element.scroll_top());
             let card = Size::Medium.frame(rules::is_compact(board.0));
             let corner = rules::clamp_corner(
                 f64::from(event.client_x()) - rect.left() - card.0 / 2.0,
-                f64::from(event.client_y()) - rect.top() - card.1 / 2.0,
+                f64::from(event.client_y()) - rect.top() + scrolled - card.1 / 2.0,
                 card,
                 board,
             );
@@ -432,6 +439,10 @@ pub fn board_pane(props: &BoardProps) -> Html {
                 ondragleave={on_drag_leave}
                 ondrop={on_drop}
             >
+                // What makes the wall scroll: an absolutely positioned
+                // sticker adds no height, so the extent is a box of its
+                // own, as tall as the wall is.
+                <div class="board-extent" aria-hidden="true"></div>
                 if width > 0.0 && height > 0.0 {
                     // Keyed, and in a list of their own (the YEW KEYS TRAP):
                     // one unkeyed sibling would hand a sticker's drag to its
@@ -956,8 +967,11 @@ fn sticker(props: &StickerProps) -> Html {
                 <FittedText text={AttrValue::from(note.text().to_string())} font={note.font()} {size} />
             }
             // No author line at all while hidden — not an empty one, which
-            // would still say a note came from somebody.
-            if !hidden {
+            // would still say a note came from somebody. And none on a
+            // bare photo either: there is no paper under it to write on,
+            // and the name is in the note when it is opened
+            // (docs/protocol.md, "Board").
+            if !(hidden || kind == Kind::Photo && caption.is_empty()) {
                 <span class="note-author">{ props.author.clone() }</span>
             }
         </div>
@@ -2163,9 +2177,11 @@ mod tests {
         ))
         .await;
         let wall = one(&root, ".board-wall");
+        // The WALL, not the window: it is taller than what is on screen
+        // and it scrolls (docs/protocol.md, "Board").
         let (width, height) = (
             f64::from(wall.client_width()),
-            f64::from(wall.client_height()),
+            rules::wall_height(f64::from(wall.client_height())),
         );
         assert!(width > 640.0, "the wide wall: {width}");
         let stickers = all(&root, ".sticker");
@@ -2232,9 +2248,11 @@ mod tests {
         let (root, handle) =
             render(props(vec![note(4, ANNA, "Tidy me", 0.1, 0.1)], &[], &log)).await;
         let wall = one(&root, ".board-wall");
+        // The WALL, not the window: it is taller than what is on screen
+        // and it scrolls (docs/protocol.md, "Board").
         let (width, height) = (
             f64::from(wall.client_width()),
-            f64::from(wall.client_height()),
+            rules::wall_height(f64::from(wall.client_height())),
         );
         let sticker = one(&root, ".sticker");
 
@@ -3002,5 +3020,120 @@ mod tests {
         assert!(new.starts_at.is_some());
         assert_eq!(new.ends_at, None, "no end, none sent");
         assert_eq!(new.place.as_deref(), Some("The park"));
+    }
+    /// A photo note with a picture on it, for the two drawing rules below.
+    fn photo(id: i64, caption: &str, x: f64, y: f64) -> Note {
+        let mut pinned = note(id, ME, caption, x, y);
+        pinned.kind = Some("photo".into());
+        pinned.attachment = Some(crate::model::Attachment {
+            id: id * 100,
+            kind: "photo".into(),
+            mime: Some("image/jpeg".into()),
+            width: Some(1600),
+            height: Some(1200),
+            ..Default::default()
+        });
+        pinned
+    }
+
+    /// THE WALL SCROLLS, because a wall the size of the window is a wall
+    /// that fills up (docs/protocol.md, "Board"). A note near the bottom of
+    /// it is below the fold, and reachable by scrolling rather than gone.
+    #[wasm_bindgen_test]
+    async fn the_wall_is_taller_than_the_window_and_scrolls() {
+        let log = Log::default();
+        let (root, handle) = render(props(
+            vec![
+                note(6, ME, "Milk", 0.1, 0.05),
+                note(7, ME, "Bins", 0.1, 0.95),
+            ],
+            &[],
+            &log,
+        ))
+        .await;
+        let wall = one(&root, ".board-wall");
+        let visible = f64::from(wall.client_height());
+        assert!(
+            f64::from(wall.scroll_height()) > visible + 1.0,
+            "there is wall below the window: {} vs {visible}",
+            wall.scroll_height()
+        );
+        let stickers = all(&root, ".sticker");
+        assert!(
+            px(&stickers[0], "top") < visible,
+            "the note near the top is on screen"
+        );
+        assert!(
+            px(&stickers[1], "top") > visible,
+            "and the one near the bottom is below the fold: {} vs {visible}",
+            px(&stickers[1], "top")
+        );
+        // Scrolling brings it into view — the wall is the scroller, so
+        // nothing else on the page moves.
+        wall.set_scroll_top(wall.scroll_height());
+        TimeoutFuture::new(20).await;
+        let rect = stickers[1].get_bounding_client_rect();
+        let wall_box = wall.get_bounding_client_rect();
+        assert!(
+            rect.top() < wall_box.bottom() && rect.bottom() > wall_box.top(),
+            "scrolled to, it is inside the wall's own box"
+        );
+        handle.destroy();
+        root.remove();
+    }
+
+    /// A PHOTO WITH NO CAPTION IS THE BARE PICTURE: no paper behind it and
+    /// no author line under it. A caption brings the card back, because the
+    /// words need paper to sit on (docs/protocol.md, "Board").
+    #[wasm_bindgen_test]
+    async fn a_photo_has_a_card_only_when_it_has_something_to_say() {
+        let log = Log::default();
+        let (root, handle) = render(props(
+            vec![photo(6, "", 0.2, 0.2), photo(7, "at the lake", 0.6, 0.2)],
+            &[],
+            &log,
+        ))
+        .await;
+        TimeoutFuture::new(30).await;
+        let window = web_sys::window().expect("a window");
+        let background = |element: &HtmlElement| -> String {
+            window
+                .get_computed_style(element)
+                .ok()
+                .flatten()
+                .and_then(|style| style.get_property_value("background-color").ok())
+                .unwrap_or_default()
+        };
+        let stickers = all(&root, ".sticker");
+        assert_eq!(stickers.len(), 2);
+        assert!(
+            background(&stickers[0]).contains("rgba(0, 0, 0, 0)"),
+            "the bare one has no paper behind it: {}",
+            background(&stickers[0])
+        );
+        assert!(
+            !background(&stickers[1]).contains("rgba(0, 0, 0, 0)"),
+            "the captioned one does: {}",
+            background(&stickers[1])
+        );
+        assert!(
+            stickers[0]
+                .query_selector(".note-author")
+                .unwrap()
+                .is_none(),
+            "and nothing to write a name on"
+        );
+        assert!(
+            stickers[1]
+                .query_selector(".note-author")
+                .unwrap()
+                .is_some(),
+            "while the card carries its author"
+        );
+        // Both are still notes: the picture, the slot and the tap are the
+        // same, and only the chrome differs.
+        assert_eq!(all(&root, ".note-picture").len(), 2);
+        handle.destroy();
+        root.remove();
     }
 }

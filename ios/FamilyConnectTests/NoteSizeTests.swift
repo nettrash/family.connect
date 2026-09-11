@@ -117,4 +117,23 @@ struct NoteSizeTests {
         #expect(NoteText.shouldShowCounter(String(repeating: "x", count: 239)) == false)
         #expect(NoteText.shouldShowCounter(String(repeating: "x", count: 240)))
     }
+
+    /// THE WALL IS TALLER THAN THE WINDOW and never shorter
+    /// (docs/protocol.md, "Board"), and the factor is the one every client
+    /// uses — a note two thirds of the way down is two thirds of the way
+    /// down on the phone and on the Mac.
+    ///
+    /// Web counterpart: `fc_text::board`'s
+    /// `the_wall_is_taller_than_the_window_and_never_shorter`.
+    /// Android counterpart: `BoardWallTest`.
+    @Test("the wall is taller than the window, and never shorter")
+    func wallHeight() {
+        #expect(BoardWall.screens == 1.6)
+        #expect(BoardWall.height(visible: 500) == 800)
+        #expect(BoardWall.height(visible: 1000) > 1000)
+        #expect(BoardWall.height(visible: 0) == 0)
+        let wall = BoardWall.size(visible: CGSize(width: 390, height: 700))
+        #expect(wall.width == 390, "only the height grows")
+        #expect(wall.height == 1120)
+    }
 }
