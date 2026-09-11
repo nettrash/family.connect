@@ -1149,3 +1149,58 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
      * line: the bar takes two rather than pushing Sign out off the edge. */
     .bar { flex-wrap: wrap; row-gap: 2px; }
 }
+
+/* --- phase 5: a call in a tab --------------------------------------------- */
+
+/* A band under the bar, not a panel over the page: it takes its own room
+ * rather than covering the composer, the call buttons or a note. */
+.call {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+}
+/* A call being offered is the one thing in a tab worth interrupting for. */
+.call.is-incoming { background: color-mix(in srgb, var(--tint) 12%, var(--panel)); }
+.call-who { display: flex; align-items: center; gap: 12px; flex: 1 1 200px; min-width: 0; }
+.call-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.call-actions button { flex: 0 0 auto; }
+/* The call's own secondary buttons read as what they are — the one red
+ * button is the one that ends it. */
+.call-actions .secondary {
+    background: transparent;
+    color: var(--tint);
+    border: 1px solid var(--line);
+}
+.call-actions .secondary.is-chosen { background: color-mix(in srgb, var(--tint) 16%, transparent); }
+/* The picture takes the whole width of the band, under its head. */
+.call-picture {
+    order: 3;
+    flex: 1 1 100%;
+    position: relative;
+    aspect-ratio: 16 / 9;
+    max-height: 45dvh;
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+}
+.call-remote { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* Our own picture, small and in the corner — and mirrored, because a
+ * camera pointed at somebody is a mirror to them. */
+.call-local {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    width: 28%;
+    max-width: 180px;
+    border-radius: 6px;
+    border: 1px solid rgb(255 255 255 / 25%);
+    transform: scaleX(-1);
+    object-fit: cover;
+    background: #000;
+}
+.call-buttons { display: flex; gap: 4px; flex: none; }

@@ -133,6 +133,13 @@ pub struct Me {
     /// it; 0 when the sweep is off, and when a server predates it.
     #[serde(default)]
     pub familyless_account_ttl_days: i64,
+    /// Whether this server signals calls at all, and video calls beside
+    /// them. ALWAYS present; absent is a server from before calls, and a
+    /// button this client does not offer (docs/protocol.md, "Voice calls").
+    #[serde(default)]
+    pub calls_enabled: bool,
+    #[serde(default)]
+    pub video_calls_enabled: bool,
     /// Whether this server posts the assistant's daily greeting at all —
     /// the operator's half of the switch whose family half is
     /// `Family::ai_greeting`. Absent is off: a server from before it posts
@@ -257,6 +264,30 @@ pub struct ReportedAttachment {
     pub kind: String,
     #[serde(default)]
     pub name: Option<String>,
+}
+
+/// One ICE candidate, as a call frame carries it (docs/protocol.md, "Voice
+/// calls"). The names are the wire's; the browser's own spellings
+/// (`sdpMid`, `sdpMLineIndex`) are translated at the peer connection.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct IceCandidate {
+    pub candidate: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sdp_mid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sdp_mline_index: Option<u16>,
+}
+
+/// One STUN or TURN server from `GET /calls/ice`, with the credentials the
+/// operator minted for this caller when there are any.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub struct IceServer {
+    #[serde(default)]
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub credential: Option<String>,
 }
 
 /// What was sent, by kind (`GET /families/mine/stats`).

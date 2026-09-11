@@ -56,6 +56,34 @@ The consequences worth stating rather than discovering:
   coming back into view or the window to the front. Never before: a reader scrolled up in the
   history, or opening a chat at its unread divider with the newest below the fold, has not read
   what is down there, and a marker once reported is wrong on every device.
+- **A browser SENDS CALL SIGNALLING on the socket, and that is the one exception to the bullet
+  above.** `call_offer`, `call_answer`, `call_ice` and `call_end` are client frames and nothing
+  else carries them: calls have no REST surface, and giving them one would be a second path to keep
+  in step for no gain. The reason the rule exists does not reach them either. What is at stake with
+  a message is somebody believing they sent it, so a message goes out over the path that answers; a
+  call's signalling is momentary, and an offer that did not go up is a call that did not happen —
+  visibly, on the screen of the person who tried it. So a browser sends those four frames, and only
+  those, on the socket it already holds, under the same rule every client follows: a client keeps
+  its socket open for the life of a call, ringing included. A browser could not suspend it if it
+  wanted to.
+- **A browser rings only while its tab is open.** It registers no device and takes no push, so
+  nothing wakes it: a call to somebody whose tab is closed is a call they never hear, and it ends
+  the ordinary way — `timeout`, and a `missed` record that tells the caller exactly what a phone
+  that was switched off would have told them. A tab that is open but in the background DOES ring,
+  because its socket is live; the ringing is the tab's own — its title, a tone, the incoming screen
+  waiting when it is brought to the front. This is a real gap against the phones and not a design
+  choice, and it is the same gap a Mac has (see "Incoming calls").
+- **A browser's call ends when its tab does.** Closing the tab or navigating away takes the peer
+  connection with it, so the client says so while it still can — one synchronous `call_end` on the
+  way out, `hangup` for a call that was answered and `cancel` for one still ringing. Where even
+  that does not get out, the server's own rules cover it: a caller's connection closing while it
+  rings is `cancel`, and an answered call with neither party connected for 60 s is `failed`.
+- **A browser asks for the microphone, and the camera, per origin and at the moment of the call.**
+  There is no settings screen to grant it in advance, so the first call shows the browser's own
+  prompt; a refusal is a call that cannot be placed or answered, and the client says which
+  permission is missing rather than failing quietly. The remote audio element is started from the
+  same click that placed or answered the call, which is the gesture every browser's autoplay rule
+  asks for.
 - **The outbox is kept beside the token, in `sessionStorage`.** A reload goes on sending what was
   unsent — the same rows, the same `client_msg_id`s, their attempts and failures — rather than
   losing what the sender saw as "Sending…". Closing the tab ends the session and loses the outbox
@@ -3180,7 +3208,9 @@ active call when one socket drops, because a momentary network change would othe
 perfectly good conversation. Clients report a dead call themselves, from the peer connection's own
 failure, with `reason: "failed"`.
 
-**A client keeps its socket open for the life of a call**, ringing phase included. That is a change
+**A client keeps its socket open for the life of a call**, ringing phase included — and a browser,
+which sends its signalling on that socket and cannot suspend it, has no other way to be on a call at
+all (see "A browser is a client too"). That is a change
 from the ordinary iOS and Android behaviour of suspending or closing the socket in the background:
 a call's `call_end`, its candidates and an ICE restart all arrive over it, and the platform
 permissions a call runs under (an active audio session; a foreground service of the call type) are
@@ -3884,7 +3914,9 @@ it is the fact of the call, and the device does the ringing itself.
 Who is woken: the callee's devices that have no live socket of their own — the same per-device
 rule as everything above — that can present a call: an `ios` device with a `voip_token`, and an
 `android` device with a push token. An iOS device that never registered a VoIP token is not woken;
-a Mac is never woken, because a Mac that is not running is not a phone in a pocket. What a woken
+a Mac is never woken, because a Mac that is not running is not a phone in a pocket. A browser is
+never woken either, for that reason and one more: it registers no device to wake (see "A browser is
+a client too"), so a closed tab hears nothing and the call is missed. What a woken
 device does next is connect its socket, and the server's registration-time replay ("Late arrivals")
 hands it the offer — or the `call_end`, if the call is already over.
 

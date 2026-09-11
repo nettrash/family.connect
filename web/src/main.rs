@@ -19,6 +19,7 @@
 mod actions;
 mod api;
 mod board;
+mod calls;
 mod live;
 mod location;
 mod media;
@@ -47,11 +48,13 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use actions::{Action, Actions};
+use calls::Calls;
 use live::{AppState, Live, Panel};
 use media::MediaLoader;
 use store::ThreadView;
 use sync::{network_back, page_visible, report_read, start_session, Channels, Shared};
 use views::board::BoardPane;
+use views::call::CallPanel;
 use views::chat_list::ChatList;
 use views::conversation::Conversation;
 use views::dialog::Confirm;
@@ -92,12 +95,23 @@ fn app() -> Html {
         let live = live.clone();
         (*use_memo((), move |_| MediaLoader::new(live))).clone()
     };
+    // The call this tab could be on: one peer connection, the ringing, and
+    // the four frames that carry it (calls.rs). Held for the app's life,
+    // empty between calls.
+    let calls = {
+        let live = live.clone();
+        (*use_memo((), move |_| Calls::new(live, calls::Wire::new()))).clone()
+    };
 
     // Signing out, from anywhere: a 401 and the button do the same thing.
     let sign_out = {
         let live = live.clone();
         let media = media.clone();
+        let calls = calls.clone();
         Callback::from(move |revoke: bool| {
+            // A call does not outlive the session it was placed in, and the
+            // other side is owed the reason rather than a silence.
+            calls.end();
             if revoke {
                 if let Some(held) = live.read(|state| state.token.clone()) {
                     spawn_local(async move { api::logout(&held).await });
@@ -126,11 +140,12 @@ fn app() -> Html {
         let channels = channels.clone();
         let sign_out = sign_out.clone();
         let confirming = confirming_sign_out.clone();
+        let calls = calls.clone();
         use_effect_with(token.clone(), move |held| {
             // A question asked of the last session is not this one's.
             confirming.set(false);
             if let Some(held) = held.clone() {
-                start_session(&live, held, &channels, &sign_out);
+                start_session(&live, held, &channels, &sign_out, &calls);
             }
             move || {
                 if let Some(open) = channels.borrow_mut().take() {
@@ -177,6 +192,26 @@ fn app() -> Html {
                 let _ = window.remove_event_listener_with_callback(
                     "beforeunload",
                     guard.as_ref().unchecked_ref(),
+                );
+            }
+        });
+    }
+
+    // The call goes with the tab — but only once the tab is really going.
+    // `pagehide` is that moment; `beforeunload` is a QUESTION, and a person
+    // who answers it with "stay" would otherwise be left holding a call the
+    // far side has been told is over.
+    {
+        let calls = calls.clone();
+        use_effect_with((), move |_| {
+            let leaving = Closure::<dyn Fn()>::new(move || calls.hang_up_on_unload());
+            let window = web_sys::window().expect("a window");
+            let _ = window
+                .add_event_listener_with_callback("pagehide", leaving.as_ref().unchecked_ref());
+            move || {
+                let _ = window.remove_event_listener_with_callback(
+                    "pagehide",
+                    leaving.as_ref().unchecked_ref(),
                 );
             }
         });
@@ -263,6 +298,7 @@ fn app() -> Html {
         sign_out: sign_out.clone(),
         last_typing,
         media: media.clone(),
+        calls: calls.clone(),
     }
     .callback();
 
@@ -466,6 +502,7 @@ fn app() -> Html {
     };
 
     html! {
+        <ContextProvider<Calls> context={calls.clone()}>
         <ContextProvider<MediaLoader> context={media}>
         <div class="app">
             <header class="bar">
@@ -482,6 +519,18 @@ fn app() -> Html {
                     <button class="signout" onclick={sign_out_click}>{ "Sign out" }</button>
                 </span>
             </header>
+            // A call is a BAND under the bar rather than a panel over the
+            // page: a call is not a reason to cover the Send button, or the
+            // call buttons, or anything else somebody may want while they
+            // talk.
+            if let Some(call) = state.call.clone() {
+                <CallPanel
+                    name={store.names.get(&call.peer_user_id).cloned().unwrap_or_else(|| "Someone".to_string())}
+                    avatar_version={store.members.iter().find(|member| member.id == call.peer_user_id).map_or(0, |member| member.avatar_version)}
+                    {call}
+                    on_action={on_action.clone()}
+                />
+            }
             if let Some(message) = state.failure.clone() {
                 <p class="error" role="alert">
                     { message }
@@ -530,6 +579,9 @@ fn app() -> Html {
                         names={store.names.clone()}
                         members={store.members.clone()}
                         assistant={store.assistant.clone()}
+                        calls_enabled={store.account.as_ref().is_some_and(|account| account.calls_enabled)}
+                        video_calls_enabled={store.account.as_ref().is_some_and(|account| account.video_calls_enabled)}
+                        on_call={state.call.as_ref().is_some_and(|call| call.stage != calls::Stage::Ended)}
                         blocked={store.blocked.clone()}
                         revealed={store.revealed.clone()}
                         revealed_quotes={store.revealed_quotes.clone()}
@@ -576,6 +628,7 @@ fn app() -> Html {
             }
         </div>
         </ContextProvider<MediaLoader>>
+        </ContextProvider<Calls>>
     }
 }
 

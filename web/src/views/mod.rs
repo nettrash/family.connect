@@ -5,6 +5,7 @@ pub mod birthday;
 pub mod board;
 pub mod body;
 pub mod bubble;
+pub mod call;
 pub mod chat_list;
 pub mod composer;
 pub mod conversation;

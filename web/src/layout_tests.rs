@@ -296,6 +296,9 @@ fn props_with(
     on_action: Callback<Action>,
 ) -> ConversationProps {
     ConversationProps {
+        calls_enabled: false,
+        video_calls_enabled: false,
+        on_call: false,
         item: ChatListItem {
             chat: Chat {
                 id: 42,

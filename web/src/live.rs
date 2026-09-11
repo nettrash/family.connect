@@ -34,6 +34,10 @@ pub struct AppState {
     pub board_open: bool,
     /// The account's own panel, or the family's, open over the app.
     pub panel: Option<Panel>,
+    /// The call this tab is on, or ringing with — one at a time, as the
+    /// protocol has it (docs/protocol.md, "Voice calls": one call per
+    /// person). The peer connection behind it lives in `calls::Calls`.
+    pub call: Option<crate::calls::CallState>,
     /// The waiting room's `/me` is out: the next tick waits for it rather
     /// than piling another on a slow server.
     pub polling: bool,

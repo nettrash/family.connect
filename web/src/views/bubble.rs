@@ -52,6 +52,12 @@ pub struct BubbleProps {
     /// hold a picture for.
     #[prop_or_default]
     pub sender_avatar_version: i64,
+    /// Whether this server carries calls, and video ones: what decides
+    /// whether a call record offers a call back (ios taps the record).
+    #[prop_or_default]
+    pub calls_enabled: bool,
+    #[prop_or_default]
+    pub video_calls_enabled: bool,
     pub run_end: bool,
     pub seen: bool,
     pub awaited: bool,
@@ -507,10 +513,23 @@ pub fn bubble(props: &BubbleProps) -> Html {
     let emoji_size = fc_text::emoji::display_font_size_for_body(&message.body, BODY_PX);
     let body = if let Some(call) = &message.call {
         let missed_incoming = call.outcome == "missed" && !mine;
+        // Calling back is what a call record is FOR, half the time — and a
+        // video call back only where the server still carries video.
+        let again = (call.video && props.video_calls_enabled).then_some(true);
+        let call_back = (props.calls_enabled && !props.in_thread).then(|| {
+            let on_action = props.on_action.clone();
+            let video = again.is_some();
+            html! {
+                <button class="link" onclick={Callback::from(move |_: MouseEvent| {
+                    on_action.emit(Action::PlaceCall { chat_id, video })
+                })}>{ "Call back" }</button>
+            }
+        });
         html! {
             <p class={classes!("call-record", missed_incoming.then_some("is-missed"))}>
                 { if call.video { "📹 " } else { "📞 " } }
                 { call_record_line(call, mine) }
+                { call_back.unwrap_or_default() }
             </p>
         }
     } else if props.awaited {
@@ -666,6 +685,8 @@ mod tests {
         BubbleProps {
             message,
             my_user_id: ME,
+            calls_enabled: false,
+            video_calls_enabled: false,
             names: HashMap::from([(ANNA, "Anna".to_string())]),
             blocked: HashSet::new(),
             hidden: false,
@@ -1115,6 +1136,8 @@ mod tests {
             BubbleProps {
                 message: self.message.clone(),
                 my_user_id: self.my_user_id,
+                calls_enabled: self.calls_enabled,
+                video_calls_enabled: self.video_calls_enabled,
                 names: self.names.clone(),
                 blocked: self.blocked.clone(),
                 hidden: self.hidden,

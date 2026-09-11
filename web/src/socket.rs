@@ -22,6 +22,11 @@ use serde::{Deserialize, Serialize};
 /// here (docs/protocol.md, "A browser is a client too"; see outbox.rs). What
 /// is left is momentary, and is dropped rather than saved up while the
 /// socket is down.
+///
+/// CALL SIGNALLING is the one exception to that, and the protocol says so:
+/// `call_offer`, `call_answer`, `call_ice` and `call_end` have no REST
+/// surface, and a call whose offer did not go up is a call that visibly did
+/// not happen (docs/protocol.md, "A browser is a client too").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientFrame {
@@ -31,6 +36,32 @@ pub enum ClientFrame {
     },
     Typing {
         chat_id: i64,
+    },
+    /// Place a call. `call_id` is a UUID v4 this client mints, as it mints a
+    /// `client_msg_id`; `video` is absent for a voice call, and decides the
+    /// call's kind for its whole life (docs/protocol.md, "Video").
+    CallOffer {
+        call_id: String,
+        chat_id: i64,
+        sdp: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        video: Option<bool>,
+    },
+    /// Take the call. The first of the callee's devices to send this has it.
+    CallAnswer {
+        call_id: String,
+        sdp: String,
+    },
+    /// One candidate, trickled after the offer or the answer.
+    CallIce {
+        call_id: String,
+        candidate: crate::model::IceCandidate,
+    },
+    /// End it: `hangup` once answered, `decline` refusing, `cancel` while it
+    /// still rings, `failed` when the media never came up or died.
+    CallEnd {
+        call_id: String,
+        reason: String,
     },
     Ping,
 }
@@ -112,6 +143,44 @@ pub enum ServerFrame {
     /// moved, answered, or a tombstone. Never unread, never notifies.
     BoardNote {
         note: crate::model::Note,
+    },
+    /// Somebody is calling: delivered to every connection the callee has.
+    CallOffer {
+        call_id: String,
+        chat_id: i64,
+        from_user_id: i64,
+        sdp: String,
+        #[serde(default)]
+        video: bool,
+    },
+    /// The offer reached the callee — answered to the caller's own
+    /// connection, and to no other of the caller's devices.
+    CallRinging {
+        call_id: String,
+    },
+    CallAnswer {
+        call_id: String,
+        sdp: String,
+    },
+    CallIce {
+        call_id: String,
+        candidate: crate::model::IceCandidate,
+    },
+    /// A client's reason (`hangup`, `decline`, `cancel`, `failed`) or one of
+    /// the server's (`timeout`, `answered_elsewhere`, `cancel`, `failed`).
+    CallEnd {
+        call_id: String,
+        reason: String,
+    },
+    /// A refused frame. `call_id` is present when it answers a call frame,
+    /// and is how a refusal reaches the call that asked (`call_busy`,
+    /// `peer_busy`, `blocked`, `video_calls_disabled`, `calls_disabled`).
+    Error {
+        code: String,
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        call_id: Option<String>,
     },
     #[serde(other)]
     Unknown,
@@ -219,11 +288,12 @@ mod tests {
 
     /// THE COMPATIBILITY RULE, as a test. A frame type this client has
     /// never heard of must be stepped over, not fail the connection — this
-    /// is what let call signalling be added to v1.
+    /// is what let call signalling be added to v1, and this client has
+    /// since learned that (see the call frames below).
     #[wasm_bindgen_test]
     fn an_unknown_frame_type_is_ignored_rather_than_failing() {
         for text in [
-            r#"{"type": "call_offer", "call_id": "6a1f0c3e", "chat_id": 42, "sdp": "v=0"}"#,
+            r#"{"type": "call_upgrade", "call_id": "6a1f0c3e"}"#,
             r#"{"type": "something_invented_next_year"}"#,
         ] {
             assert_eq!(
@@ -363,6 +433,113 @@ mod tests {
         assert_eq!(
             protocols_for("t0ken-_A9"),
             ["family-connect".to_string(), "bearer.t0ken-_A9".to_string()]
+        );
+    }
+
+    /// The call frames, as the protocol writes them: a voice offer carries
+    /// no `video` key at all, and a video one carries `true`.
+    #[wasm_bindgen_test]
+    fn the_call_frames_read_and_write_as_the_protocol_has_them() {
+        let offer = decode(
+            r#"{"type": "call_offer", "call_id": "6a1f0c3e", "chat_id": 42,
+                "from_user_id": 9, "sdp": "v=0\r\n"}"#,
+        )
+        .expect("an offer");
+        assert_eq!(
+            offer,
+            ServerFrame::CallOffer {
+                call_id: "6a1f0c3e".into(),
+                chat_id: 42,
+                from_user_id: 9,
+                sdp: "v=0\r\n".into(),
+                video: false,
+            },
+            "absent `video` is a voice call"
+        );
+        assert_eq!(
+            decode(r#"{"type": "call_ringing", "call_id": "6a1f0c3e"}"#),
+            Some(ServerFrame::CallRinging {
+                call_id: "6a1f0c3e".into()
+            })
+        );
+        assert_eq!(
+            decode(
+                r#"{"type": "call_ice", "call_id": "6a1f0c3e", "candidate":
+                    {"candidate": "candidate:1", "sdp_mid": "0", "sdp_mline_index": 0}}"#
+            ),
+            Some(ServerFrame::CallIce {
+                call_id: "6a1f0c3e".into(),
+                candidate: crate::model::IceCandidate {
+                    candidate: "candidate:1".into(),
+                    sdp_mid: Some("0".into()),
+                    sdp_mline_index: Some(0),
+                },
+            })
+        );
+        assert_eq!(
+            decode(
+                r#"{"type": "call_end", "call_id": "6a1f0c3e", "reason": "answered_elsewhere"}"#
+            ),
+            Some(ServerFrame::CallEnd {
+                call_id: "6a1f0c3e".into(),
+                reason: "answered_elsewhere".into(),
+            })
+        );
+        // An error that answers a call frame names the call; one that
+        // answers a send does not, and is not this client's to act on.
+        assert_eq!(
+            decode(
+                r#"{"type": "error", "code": "peer_busy", "message": "busy", "call_id": "6a1f0c3e"}"#
+            ),
+            Some(ServerFrame::Error {
+                code: "peer_busy".into(),
+                message: "busy".into(),
+                call_id: Some("6a1f0c3e".into()),
+            })
+        );
+
+        // Outbound: a voice offer leaves `video` out.
+        assert_eq!(
+            serde_json::to_value(ClientFrame::CallOffer {
+                call_id: "6a1f0c3e".into(),
+                chat_id: 42,
+                sdp: "v=0".into(),
+                video: None,
+            })
+            .expect("encodes"),
+            serde_json::json!({"type": "call_offer", "call_id": "6a1f0c3e", "chat_id": 42, "sdp": "v=0"})
+        );
+        assert_eq!(
+            serde_json::to_value(ClientFrame::CallOffer {
+                call_id: "6a1f0c3e".into(),
+                chat_id: 42,
+                sdp: "v=0".into(),
+                video: Some(true),
+            })
+            .expect("encodes"),
+            serde_json::json!({"type": "call_offer", "call_id": "6a1f0c3e", "chat_id": 42, "sdp": "v=0", "video": true})
+        );
+        assert_eq!(
+            serde_json::to_value(ClientFrame::CallEnd {
+                call_id: "6a1f0c3e".into(),
+                reason: "hangup".into(),
+            })
+            .expect("encodes"),
+            serde_json::json!({"type": "call_end", "call_id": "6a1f0c3e", "reason": "hangup"})
+        );
+        assert_eq!(
+            serde_json::to_value(ClientFrame::CallIce {
+                call_id: "6a1f0c3e".into(),
+                candidate: crate::model::IceCandidate {
+                    candidate: "candidate:1".into(),
+                    sdp_mid: Some("0".into()),
+                    sdp_mline_index: None,
+                },
+            })
+            .expect("encodes"),
+            serde_json::json!({"type": "call_ice", "call_id": "6a1f0c3e",
+                "candidate": {"candidate": "candidate:1", "sdp_mid": "0"}}),
+            "an absent index stays absent, never null"
         );
     }
 }

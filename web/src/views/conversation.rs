@@ -41,6 +41,16 @@ pub struct ConversationProps {
     pub names: HashMap<i64, String>,
     pub members: Vec<Member>,
     pub assistant: Option<Assistant>,
+    /// What this server signals: no button at all where it carries no
+    /// calls, and no camera where it carries no video (docs/protocol.md,
+    /// "Where the servers come from").
+    #[prop_or_default]
+    pub calls_enabled: bool,
+    #[prop_or_default]
+    pub video_calls_enabled: bool,
+    /// A call is already on: there is only ever one, so the buttons wait.
+    #[prop_or_default]
+    pub on_call: bool,
     pub blocked: HashSet<i64>,
     pub revealed: HashSet<i64>,
     /// Quote levels of a blocked member peeked at: (message, 0 the quote or
@@ -295,6 +305,15 @@ pub fn conversation(props: &ConversationProps) -> Html {
 
     let is_family = props.item.chat.is_family();
     let is_ai = props.item.chat.is_ai();
+    let blocked_peer = props
+        .item
+        .chat
+        .peer_user_id
+        .is_some_and(|peer| props.blocked.contains(&peer));
+    let place = |video: bool| {
+        let on_action = props.on_action.clone();
+        Callback::from(move |_: MouseEvent| on_action.emit(Action::PlaceCall { chat_id, video }))
+    };
     let assistant_user_id = props.assistant.as_ref().map(|assistant| assistant.user_id);
     let context = Context {
         my_user_id: props.my_user_id,
@@ -995,6 +1014,26 @@ pub fn conversation(props: &ConversationProps) -> Html {
         >
             <header class="conversation-bar">
                 <h2 class="conversation-title">{ title }</h2>
+                // A call lives in a direct chat: the family chat has nobody
+                // in particular to ring, and the assistant has no ears
+                // (docs/protocol.md, "Voice calls"). A member this reader
+                // has blocked is not somebody to call either.
+                if props.calls_enabled && props.item.chat.peer_user_id.is_some() && props.item.chat.is_direct() && !blocked_peer {
+                    <span class="call-buttons">
+                        <button
+                            class="link"
+                            disabled={props.on_call}
+                            onclick={place(false)}
+                        >{ "Call" }</button>
+                        if props.video_calls_enabled {
+                            <button
+                                class="link"
+                                disabled={props.on_call}
+                                onclick={place(true)}
+                            >{ "Video" }</button>
+                        }
+                    </span>
+                }
                 if is_family {
                     <button class="open-polls" onclick={
                         let on_action = props.on_action.clone();
@@ -1052,6 +1091,8 @@ pub fn conversation(props: &ConversationProps) -> Html {
                                     hidden={row.hidden && !revealed}
                                     shows_sender={row.shows_sender || (row.hidden && revealed && is_family)}
                                     sender_avatar_version={avatar_versions.get(&message.sender_id).copied().unwrap_or(0)}
+                                    calls_enabled={props.calls_enabled && !props.on_call}
+                                    video_calls_enabled={props.video_calls_enabled}
                                     run_end={row.run_end}
                                     seen={row.seen}
                                     awaited={row.awaited}
