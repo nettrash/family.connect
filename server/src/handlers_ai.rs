@@ -2766,6 +2766,67 @@ async fn draw_as_asked(
 /// model would be a coincidence rather than the same photo sent twice, and
 /// the failure mode of getting a shared `storage_key` wrong is a family
 /// losing a picture that another row still points at.
+/// A generated picture already on disk, and not yet pointed at by any row.
+///
+/// Handed back rather than bound here so a caller that must bind it inside
+/// a transaction of its own can: the board's backdrop REPLACES the picture
+/// a note holds, and the one unique index over `attachments(note_id)` means
+/// the old row has to go in the same breath as the new one arrives
+/// (docs/protocol.md, "Board").
+pub(crate) struct WrittenPicture {
+    pub storage_key: String,
+    pub mime: &'static str,
+    pub bytes: i64,
+}
+
+impl WrittenPicture {
+    /// Throw the file away — for the caller whose row never landed. Nothing
+    /// points at it, so the unclaimed sweep, which reads ROWS, could never
+    /// find it.
+    pub(crate) async fn discard(&self, state: &AppState) {
+        let path = state.storage.blob_path(&self.storage_key);
+        state.storage.discard(&path).await;
+    }
+}
+
+/// Write a generated picture to disk under a key beginning `prefix`.
+///
+/// The operator's free-space floor applies to a picture the server wrote
+/// exactly as it applies to one a member uploaded, and the write goes
+/// through the same streaming writer an upload uses — as a one-chunk
+/// stream, which is what hashes the bytes, enforces the size ceiling and
+/// renames into place only once the file is whole.
+pub(crate) async fn write_picture(
+    state: &AppState,
+    prefix: &str,
+    image: &GeneratedImage,
+) -> Result<WrittenPicture> {
+    let free = state.storage.free_bytes();
+    if crate::storage::Storage::would_breach_floor(
+        free,
+        image.bytes.len() as u64,
+        state.cfg.limits.min_free_disk_bytes,
+    ) {
+        anyhow::bail!("not enough free disk space to store the generated picture");
+    }
+    let storage_key = format!("{prefix}-{}", crate::tokens::gen_session_token());
+    let path = state.storage.blob_path(&storage_key);
+    let chunk = bytes::Bytes::copy_from_slice(&image.bytes);
+    let one_chunk = Box::pin(futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
+        chunk,
+    )]));
+    let written = state
+        .storage
+        .write_stream(&path, one_chunk, state.cfg.limits.max_attachment_bytes)
+        .await
+        .map_err(|error| anyhow::anyhow!("writing the generated picture: {error:?}"))?;
+    Ok(WrittenPicture {
+        storage_key,
+        mime: image.mime,
+        bytes: written.bytes as i64,
+    })
+}
+
 async fn store_picture(
     state: &AppState,
     chat_id: i64,
@@ -2776,37 +2837,14 @@ async fn store_picture(
     // The operator's free-space floor applies to a picture the server wrote
     // exactly as it applies to one a member uploaded: the thing that must
     // not run out of room is the database.
-    let free = state.storage.free_bytes();
-    if crate::storage::Storage::would_breach_floor(
-        free,
-        image.bytes.len() as u64,
-        state.cfg.limits.min_free_disk_bytes,
-    ) {
-        anyhow::bail!("not enough free disk space to store the generated picture");
-    }
-
     let family_id =
         sqlx::query_scalar::<_, Option<i64>>("SELECT family_id FROM chats WHERE id = $1")
             .bind(chat_id)
             .fetch_optional(&state.pool)
             .await?
             .flatten();
-
-    let storage_key = format!("ai-{message_id}-{}", crate::tokens::gen_session_token());
-    let path = state.storage.blob_path(&storage_key);
-    // Through the same streaming writer an upload uses, as a one-chunk
-    // stream: it is what hashes the bytes, enforces the size ceiling, and
-    // renames into place only once the file is whole — three behaviours
-    // worth borrowing rather than writing a second time.
-    let chunk = bytes::Bytes::copy_from_slice(&image.bytes);
-    let one_chunk = Box::pin(futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
-        chunk,
-    )]));
-    let written = state
-        .storage
-        .write_stream(&path, one_chunk, state.cfg.limits.max_attachment_bytes)
-        .await
-        .map_err(|error| anyhow::anyhow!("writing the generated picture: {error:?}"))?;
+    let written = write_picture(state, &format!("ai-{message_id}"), image).await?;
+    let storage_key = written.storage_key.clone();
 
     if let Err(error) = sqlx::query(
         "INSERT INTO attachments
@@ -2815,8 +2853,8 @@ async fn store_picture(
     )
     .bind(assistant_id)
     .bind(message_id)
-    .bind(image.mime)
-    .bind(written.bytes as i64)
+    .bind(written.mime)
+    .bind(written.bytes)
     .bind(&storage_key)
     .bind(family_id)
     .execute(&state.pool)
@@ -2825,7 +2863,7 @@ async fn store_picture(
         // The row is what makes the file reachable, so a file with no row is
         // a leak the sweeper cannot see: it only looks at UNCLAIMED
         // attachment rows, and there is none here.
-        state.storage.discard(&path).await;
+        written.discard(state).await;
         return Err(error.into());
     }
     Ok(())

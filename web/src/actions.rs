@@ -173,6 +173,14 @@ pub enum Action {
         done_now: bool,
         done: Callback<()>,
     },
+    /// Ask the assistant for a picture to sit behind an event — the
+    /// AUTHOR's, drawn from the note's own title (docs/protocol.md,
+    /// "Board"). `done` hears when it is in or refused, so a button that
+    /// said "drawing…" can stop saying it either way.
+    DrawBackdrop {
+        note_id: i64,
+        done: Callback<()>,
+    },
     /// Peek at a note a block hides.
     RevealNote {
         note_id: i64,
@@ -1259,6 +1267,20 @@ impl Actions {
                         Err(error) => {
                             this.board_refused(session, &error, Some(note_id), &Callback::noop());
                             this.fail_with(session, &error, t("Couldn't tick that off."));
+                        }
+                    }
+                    done.emit(());
+                });
+            }
+            Action::DrawBackdrop { note_id, done } => {
+                spawn_local(async move {
+                    match api::draw_backdrop(&token, note_id).await {
+                        Ok(note) => {
+                            live.update(session, |state| state.store.board.apply(note));
+                        }
+                        Err(error) => {
+                            this.board_refused(session, &error, Some(note_id), &Callback::noop());
+                            this.fail_with(session, &error, t("Couldn't draw that."));
                         }
                     }
                     done.emit(());

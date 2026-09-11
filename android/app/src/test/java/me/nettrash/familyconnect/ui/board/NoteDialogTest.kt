@@ -41,6 +41,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performTouchInput
 import com.google.common.truth.Truth.assertThat
+import me.nettrash.familyconnect.data.net.dto.RsvpDto
 import me.nettrash.familyconnect.data.net.dto.TaskItemDto
 import me.nettrash.familyconnect.data.net.dto.MentionDto
 import org.junit.Rule
@@ -383,5 +384,171 @@ class NoteDialogTest {
         // The ids it kept are what carry the ticks through the rewrite.
         assertThat(NoteTasks.written(lines).map { it.id })
             .containsExactly(11L, 12L, null).inOrder()
+    }
+
+    // MARK: - events (docs/protocol.md, "Board")
+
+    private fun eventDraft(mine: Boolean = true) = NoteDraft(
+        noteId = 9L,
+        text = "Christmas dinner",
+        color = "blue",
+        size = "medium",
+        font = "plain",
+        kind = NoteKinds.EVENT,
+        startsAt = 1_798_128_000_000L,
+        endsAt = 1_798_142_400_000L,
+        place = "Gran's house",
+        rsvps = listOf(
+            RsvpDto(userId = 2L, answer = RsvpAnswers.GOING),
+            RsvpDto(userId = 3L, answer = RsvpAnswers.MAYBE),
+        ),
+        x = 0.1,
+        y = 0.1,
+        authorId = if (mine) 1L else 7L,
+    )
+
+    /** The wide roster the dialog names guests from. */
+    private val guestNames = mapOf(2L to "Anna", 3L to "Gran")
+
+    @Test
+    fun anOpenEventNamesWhoIsComingRatherThanCountingThem() {
+        compose.setContent {
+            NoteDialog(
+                draft = eventDraft(mine = false),
+                canEdit = false,
+                authorName = "Bob",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                names = guestNames,
+                onDelete = null,
+            )
+        }
+
+        // The names, grouped by answer — the card counts, the note names.
+        compose.onNodeWithText("Anna").assertIsDisplayed()
+        compose.onNodeWithText("Gran").assertIsDisplayed()
+        // TWO of each answer that somebody gave: the picker's own choice
+        // and the group's label. Nobody said no, so "Can't" is the
+        // picker's alone — that absence is the assertion.
+        compose.onAllNodesWithText("Going").assertCountEquals(2)
+        compose.onAllNodesWithText("Maybe").assertCountEquals(2)
+        compose.onAllNodesWithText("Can't").assertCountEquals(1)
+    }
+
+    @Test
+    fun anEventNobodyHasAnsweredSaysSo() {
+        compose.setContent {
+            NoteDialog(
+                draft = eventDraft().copy(rsvps = emptyList()),
+                canEdit = false,
+                authorName = "Bob",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                names = guestNames,
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithText("Nobody has answered yet.").assertIsDisplayed()
+    }
+
+    /**
+     * The calendar copy is ANYBODY's; the backdrop is the author's, and
+     * only where the server can draw at all (docs/protocol.md, "Board").
+     */
+    @Test
+    fun theCalendarCopyIsAnybodysAndTheBackdropIsTheAuthors() {
+        var asked = 0
+        compose.setContent {
+            NoteDialog(
+                draft = eventDraft(mine = false),
+                canEdit = false,
+                authorName = "Bob",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                names = guestNames,
+                canDraw = true,
+                onDrawBackdrop = { _ -> asked += 1 },
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithText("Add to Calendar").assertIsDisplayed()
+        compose.onAllNodesWithText("Draw a backdrop").assertCountEquals(0)
+        assertThat(asked).isEqualTo(0)
+    }
+
+    @Test
+    fun theAuthorAsksForABackdropOnceAndTheButtonSaysItIsDrawing() {
+        var settle: ((Boolean) -> Unit)? = null
+        var asked = 0
+        compose.setContent {
+            NoteDialog(
+                draft = eventDraft(),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                names = guestNames,
+                canDraw = true,
+                // Held, not answered: what the button looks like WHILE it
+                // draws is the thing worth pinning.
+                onDrawBackdrop = { onSettled -> asked += 1; settle = onSettled },
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithText("Draw a backdrop").performClick()
+        assertThat(asked).isEqualTo(1)
+        compose.onNodeWithText("Drawing…").assertIsDisplayed()
+        // Pressed again while it draws: one bill, not two.
+        compose.onNodeWithText("Drawing…").performClick()
+        assertThat(asked).isEqualTo(1)
+
+        settle?.invoke(true)
+        compose.waitForIdle()
+        // Back to an offer — and the note this dialog was opened with had
+        // no backdrop, so it is the first-time wording until it is
+        // reopened on a note that has one.
+        compose.onNodeWithText("Draw a backdrop").assertIsDisplayed()
+    }
+
+    @Test
+    fun anEventThatAlreadyHasABackdropOffersAnother() {
+        compose.setContent {
+            NoteDialog(
+                draft = eventDraft().copy(hasBackdrop = true),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                names = guestNames,
+                canDraw = true,
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithText("Draw another backdrop").assertIsDisplayed()
+    }
+
+    /** A server with no picture model has nothing to hang the action on. */
+    @Test
+    fun aServerThatCannotDrawOffersNoBackdrop() {
+        compose.setContent {
+            NoteDialog(
+                draft = eventDraft(),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                names = guestNames,
+                canDraw = false,
+                onDelete = null,
+            )
+        }
+
+        compose.onAllNodesWithText("Draw a backdrop").assertCountEquals(0)
+        // The calendar copy is still there: it needs no server at all.
+        compose.onNodeWithText("Add to Calendar").assertIsDisplayed()
     }
 }

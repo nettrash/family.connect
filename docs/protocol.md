@@ -199,8 +199,10 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `cannot_remove_owner`, `cannot_dm_self`, `cannot_block_self`, `blocked`, `cannot_report_self`,
 `report_not_pending`, `not_same_family`, `user_not_found`, `chat_not_found`, `not_chat_member`,
 `message_empty`, `message_too_long`, `message_not_found`, `not_message_author`, `invalid_emoji`,
-`note_not_found`, `not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_language`,
+`note_not_found`, `not_note_author`, `invalid_note_color`, `invalid_note_size`,
+`invalid_note_font`, `invalid_note_kind`, `invalid_rsvp`, `invalid_task`, `invalid_language`,
 `board_full`, `invalid_pagination`, `device_not_found`, `invalid_poll`, `poll_closed`,
+`pictures_unavailable`,
 `calls_disabled`, `video_calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`,
 `peer_busy`, `peer_unreachable`, `avatar_too_large`, `invalid_image`, `attachment_too_large`,
 `invalid_attachment`, `attachment_not_found`, `attachment_expired`, `attachment_already_used`,
@@ -971,7 +973,58 @@ which is where that news belongs.
 There is no calendar on this wire and no `.ics`. A client that can put an event in the system
 calendar builds it locally out of the title, the times and the place; the server neither generates
 one nor knows whether anybody kept it. That is deliberate — a calendar entry is a copy, and a copy
-the server maintained would be a second source of truth for something the family already has.
+the server maintained would be a second source of truth for something the family already has. Every
+client SHOULD offer it where the platform has somewhere to put it — the system calendar on a phone
+or a Mac, a downloaded `.ics` built in the browser on the web — and a client that cannot simply
+does not show the action. What it copies is the title, the start, the end and the place, and
+nothing else: not who is coming, which is the family's business and not the calendar's, and not the
+backdrop.
+
+**WHO IS COMING is a list once the event is OPEN, and a number on the sticker.** A card has room
+for the news and the note has room for the people, which is the same division the mention rule
+makes: the wall says how many are going and maybe, and the opened event names them — grouped by
+answer, in the roster's own order, with the reader among them if they have answered. Nothing new is
+on the wire for it: `rsvps` already carries the ids, names come from the roster as every other name
+does, and a member who has since left resolves exactly as their old messages do. A member who has
+not answered is not in any group; "nobody has answered yet" is a sentence, not an empty list of
+names.
+
+**An event is drawn as a CALENDAR ENTRY**, on the sticker and in the note: the date as a block — the
+day's number over its short month — and the time beside it, then the place under that, then the
+title. This is a drawing rule and not a wire one, and it is written down for the reason the bare
+photo is: a wall where one device shows a calendar page and another a paragraph of small print is
+not the same wall. A past event keeps its slot and its block, drawn quieter, exactly as before: the
+wall is the family's and clearing it is their call.
+
+**THE ASSISTANT CAN DRAW AN EVENT'S BACKDROP.** `POST /families/mine/board/notes/{id}/backdrop`
+asks the family's assistant for a picture to sit behind an event, and answers with the note that
+now carries it. The AUTHOR only, and an event only: the backdrop is part of what the note looks
+like, which is the author's, and the other kinds have nowhere to put one (a photo note IS its
+picture).
+
+**What leaves the server is the note's TITLE and nothing else** — not the place, not the times, not
+who is coming, not the family's history, not a language instruction. That is the `/draw` rule
+applied unchanged (see "Pictures"), and it is why this takes no prompt from the client: a request
+body would be a second way to send words to a model from a screen that is not the assistant's chat,
+and the words on the sticker are the ones the family already chose to put on their wall.
+
+It needs a server with an images deployment, which is the same `assistant.images` that `GET
+/families/mine` already reports, and which is what a client hangs the action on; a server without
+one answers `pictures_unavailable` (403) rather than drawing nothing. The picture is an ORDINARY
+attachment afterwards in every respect — claimed by that one note, served to the family, counted in
+statistics, swept with the note — and it is made the way a `/draw` picture is, by the server's own
+process with no upload and nobody to authenticate.
+
+Asking again REPLACES it: the note's picture is otherwise fixed at creation, and this is the one
+exception, because a family who dislikes what the model drew should not have to take the event down
+and lose the answers to get another one. The picture it replaces goes the way a deleted note's
+does — its row and its bytes — so an event holds one backdrop or none.
+
+It costs a picture and says so: one image against the family's count, with no tokens, exactly as a
+`/draw` does (see "Family statistics"). It takes a `board_seq` and reaches the other devices through
+the one feed, it does NOT notify — only creation notifies, and nobody should be woken because an
+event got a picture — and it leaves `content_seq` alone: the note says exactly what it said, and a
+badge claiming there is something to READ would be a lie.
 
 **A TASK LIST is the fourth kind**: something the family has to get done, on the wall where the
 family looks. Its `text` is the list's TITLE and is required, as an event's is, and it carries
@@ -3560,6 +3613,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /families/mine/board/notes` | `{text, color, x, y, size?, font?, kind?, attachment_id?, starts_at?, ends_at?, place?, mentions?, items?}` → `201 {note: Note}`. `mentions: [{user_id, name}]` names members of this family, at most 20, each once, each a name the `text` says after an `@` — the same rules and the same grammar as a message's (`validation` otherwise, see "Board"). Caller becomes the author. `size` defaults to `medium`, `font` to `plain` and `kind` to `text` when absent. `attachment_id` claims one photo this caller uploaded: REQUIRED by `kind: "photo"` (whose `text` may then be empty), optional on `kind: "event"` (the backdrop), refused on a text note. `starts_at` is required by — and only accepted on — an event, with `ends_at` and `place` optional there and nowhere else. Errors: `validation` (text empty on a text note or > 280; an `attachment_id` without the kind, or the kind without one), `invalid_note_kind`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `invalid_attachment` (not a photo), `attachment_not_found`, `attachment_already_used`, `attachment_expired`, `board_full` (409, over the note ceiling), `not_in_family`. An event also answers `validation` for a missing or unparseable `starts_at`, an `ends_at` before it, a `place` over 200 characters, or any of the three on a note that is not an event. `items: [{text}]` is the TASK LIST's lines, accepted on — and only on — `kind: "tasks"`, whose `text` is its title: at most 20, each trimmed, non-empty and at most 100 characters, `validation` otherwise. An `id` on a created item is refused: ids are the server's. |
 | `PATCH /families/mine/board/notes/{id}` | `{text?, color?, size?, font?, x?, y?, starts_at?, ends_at?, place?, mentions?, items?}` → `200 {note: Note}`. `mentions` REPLACES the list — a note's names are re-decided on every edit, unlike a message's, because an edit to a note notifies nobody (see "Board"); sending `text` without `mentions` clears them. A note's KIND and its picture are fixed at creation: neither is patchable, and a photo note's caption may be set to empty here. An event's `starts_at`, `ends_at` and `place` are the AUTHOR'S, like its title — `place` may be sent empty to clear it, `ends_at` null to clear it — and are refused on any other kind. `items` REPLACES a task list's lines and is the author's too (refused on any other kind): an entry `{id, text}` whose `id` the note holds is that item, rewritten and moved, and KEEPS ITS TICK; an entry `{text}` is new; an item left out is gone; an `id` that is not this note's is `validation`, and a `done` sent here is ignored (see "Board"). Any member may send `x`/`y`; only the author may send `text`, `color`, `size` or `font` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `validation`, `not_in_family`. |
 | `PUT /families/mine/board/notes/{id}/rsvp` | `{answer}` → `200 {note: Note}`. Records the caller as `going`, `maybe` or `no` on an event — an idempotent state-set, not a toggle, and ANY member may send it. Re-sending the answer already held is a no-op: no new seq, no fan-out. Errors: `invalid_rsvp` (400 — not one of the three, or the note is not an event), `note_not_found` (404), `not_in_family`. |
+| `POST /families/mine/board/notes/{id}/backdrop` | → `200 {note: Note}`. Asks the assistant for a picture to sit behind an EVENT, drawn from the note's TITLE and nothing else; the AUTHOR only. No request body: the prompt is the title (see "Board"). Replaces the backdrop it has, taking the old picture's row and bytes with it — the one way a note's picture changes after creation. Costs one image against the family's count, takes a `board_seq`, notifies nobody and leaves `content_seq` alone. Errors: `pictures_unavailable` (403 — this server has no images deployment; `assistant.images` on `GET /families/mine` is what a client checks first), `note_not_found` (404), `not_note_author` (403), `validation` (the note is not an event), `storage_full`, `not_in_family`. |
 | `PUT /families/mine/board/notes/{id}/tasks/{item_id}` | `{done}` → `200 {note: Note}`. Ticks or unticks one line of a task list — an idempotent state-set, not a toggle, and ANY member may send it; the server records who. Re-sending the state already held is a no-op: no new seq, no fan-out. Errors: `invalid_task` (400 — the note is not a task list, or the item is not one of its lines), `note_not_found` (404), `not_in_family`. |
 | `DELETE /families/mine/board/notes/{id}/rsvp` | → `200 {note: Note}`. Retracts the caller's answer; idempotent (retracting nothing returns the event unchanged and burns no seq). Errors: `invalid_rsvp` (the note is not an event), `note_not_found`, `not_in_family`. |
 | `DELETE /families/mine/board/notes/{id}` | → `204`. Author only. Idempotent: deleting an already-deleted note is still `204` and takes no new seq. A photo note's picture goes with it. Errors: `note_not_found`, `not_note_author`, `not_in_family`. |

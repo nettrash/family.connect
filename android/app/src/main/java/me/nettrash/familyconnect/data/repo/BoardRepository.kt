@@ -331,6 +331,20 @@ class BoardRepository @Inject constructor(
         else -> false
     }
 
+    /**
+     * Ask the assistant for a backdrop. The AUTHOR's, and drawn from the
+     * note's own title (docs/protocol.md, "Board").
+     */
+    suspend fun drawBackdrop(noteId: Long): Boolean = when (
+        val result = boardApi.drawBackdrop(noteId)
+    ) {
+        is ApiResult.Ok -> {
+            applyNote(result.value.note)
+            true
+        }
+        else -> false
+    }
+
     suspend fun deleteNote(id: Long): Boolean = when (boardApi.deleteNote(id)) {
         is ApiResult.Ok -> {
             noteDao.delete(id)

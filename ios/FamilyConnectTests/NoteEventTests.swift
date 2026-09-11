@@ -44,6 +44,32 @@ struct NoteEventTests {
         #expect(nextDay.count > sameDay.count)
     }
 
+    /// The CALENDAR BLOCK and the line beside it (docs/protocol.md,
+    /// "Board"): the block carries the date, so the line carries the time
+    /// and says the date again only when the event ends on another day.
+    @Test("the block is the day and its short month, and the line is the time")
+    func calendarBlock() {
+        let block = EventFormat.block(starts: starts)
+        // The day, as a number and nothing else.
+        #expect(Int(block.day) != nil)
+        // Short, not the whole word and not a number: a block that said
+        // "December" would not be a block.
+        #expect(!block.month.isEmpty)
+        #expect(block.month.count <= 5)
+        #expect(Int(block.month) == nil)
+
+        // Same day: two clock times, and the date is left to the block.
+        let sameDay = EventFormat.clock(starts: starts, ends: sameDayEnd)
+        #expect(sameDay.contains("–"))
+        #expect(!sameDay.contains(block.month))
+        // No end: one time.
+        #expect(!EventFormat.clock(starts: starts, ends: nil).contains("–"))
+        // Another day: the end carries its own date, or "17:00 – 01:00"
+        // would read as an event that went backwards.
+        let across = EventFormat.clock(starts: starts, ends: nextDayEnd)
+        #expect(across.count > sameDay.count)
+    }
+
     @Test("past is decided by the end when there is one, and the start when there is not")
     func pastRule() {
         #expect(!EventFormat.isPast(starts, ends: sameDayEnd, now: starts.addingTimeInterval(60)))

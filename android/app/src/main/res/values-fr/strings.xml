@@ -541,4 +541,11 @@
         <item quantity="one">+%1$d autre</item>
         <item quantity="other">+%1$d autres</item>
     </plurals>
+    <string name="s_nobody_answered">Personne n\'a encore répondu.</string>
+    <string name="s_add_to_calendar">Ajouter au calendrier</string>
+    <string name="s_draw_backdrop">Dessiner un fond</string>
+    <string name="s_draw_another_backdrop">Dessiner un autre fond</string>
+    <string name="s_drawing">Dessin en cours…</string>
+    <string name="s_draw_failed">Impossible de dessiner cela.</string>
+    <string name="s_no_calendar_app">Aucune app de calendrier pour l\'ajouter.</string>
 </resources>

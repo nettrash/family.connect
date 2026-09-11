@@ -210,6 +210,13 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/families/mine/board/notes/{note_id}/rsvp",
             put(handlers_board::put_rsvp).delete(handlers_board::delete_rsvp),
         )
+        // The assistant's picture behind an event: the AUTHOR's, and its
+        // own route because it is not an edit anybody could send — the
+        // prompt is the note's own title (docs/protocol.md, "Board").
+        .route(
+            "/api/v1/families/mine/board/notes/{note_id}/backdrop",
+            post(handlers_board::draw_backdrop),
+        )
         // Ticking a line off a task list is the shared act too, for the
         // same reason and with its own route (docs/protocol.md, "Board").
         .route(

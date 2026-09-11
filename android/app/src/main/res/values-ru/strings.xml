@@ -561,4 +561,11 @@
         <item quantity="many">+%1$d ещё</item>
         <item quantity="other">+%1$d ещё</item>
     </plurals>
+    <string name="s_nobody_answered">Пока никто не ответил.</string>
+    <string name="s_add_to_calendar">Добавить в календарь</string>
+    <string name="s_draw_backdrop">Нарисовать фон</string>
+    <string name="s_draw_another_backdrop">Нарисовать другой фон</string>
+    <string name="s_drawing">Рисует…</string>
+    <string name="s_draw_failed">Не удалось нарисовать.</string>
+    <string name="s_no_calendar_app">Нет приложения календаря, куда добавить.</string>
 </resources>

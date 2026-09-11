@@ -78,6 +78,11 @@ pub mod codes {
     /// note is right there, and "no such note" would send a client looking
     /// for a sync bug it does not have.
     pub const INVALID_TASK: &str = "invalid_task";
+    /// This server has no images deployment, so nothing can draw. A 403
+    /// like `calls_disabled`, and for the same reason: it is a fact about
+    /// the SERVER rather than the request, and a client checks
+    /// `assistant.images` before it offers the action at all.
+    pub const PICTURES_UNAVAILABLE: &str = "pictures_unavailable";
     pub const INVALID_LANGUAGE: &str = "invalid_language";
     pub const BOARD_FULL: &str = "board_full";
     pub const INVALID_EMOJI: &str = "invalid_emoji";

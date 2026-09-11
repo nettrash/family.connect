@@ -1002,9 +1002,36 @@ button.mention { cursor: pointer; }
 }
 .task-drop:hover { color: var(--danger); }
 
-/* An event says WHEN before it says what. */
-.note-event { flex: 0 1 auto; min-height: 0; overflow: hidden; display: grid; align-content: start; gap: 1px; font-size: 11px; color: rgb(0 0 0 / 55%); min-width: 0; }
-.note-event > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* An event says WHEN before it says what, and says it as a CALENDAR
+ * ENTRY: the date in a block, the time and place beside it
+ * (docs/protocol.md, "Board"). */
+.note-event {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+    font-size: 11px;
+    color: rgb(0 0 0 / 55%);
+    min-width: 0;
+}
+.note-event-lines { display: grid; align-content: start; gap: 1px; min-width: 0; }
+.note-event-lines > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The block: the day's number over its short month, on paper of its own so
+ * it reads as a torn calendar page rather than another line of text. */
+.note-date {
+    flex: none;
+    display: grid;
+    justify-items: center;
+    padding: 2px 5px 3px;
+    border-radius: 5px;
+    background: rgb(255 255 255 / 55%);
+    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
+    line-height: 1;
+}
+.note-day { font-size: 15px; font-weight: 700; color: rgb(0 0 0 / 78%); }
+.note-month { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: rgb(178 38 30 / 85%); }
 /* When may take two lines, as on the phone: an event cut before its end
  * time is an event whose end nobody can read. */
 .note-when {
@@ -1016,6 +1043,18 @@ button.mention { cursor: pointer; }
     -webkit-line-clamp: 2;
 }
 .note-event.is-past .note-when { color: rgb(0 0 0 / 40%); }
+.note-event.is-past .note-date { opacity: .55; }
+
+/* The note, opened: an event's own block, its guests and its actions. */
+.sheet-event { display: flex; gap: 10px; align-items: flex-start; }
+.sheet-date { font-size: 13px; }
+.sheet-date .note-day { font-size: 20px; }
+.sheet-date .note-month { font-size: 11px; }
+.guests { display: grid; gap: 4px; margin: 4px 0 0; }
+.guest-group { margin: 0; display: flex; gap: 8px; align-items: baseline; font-size: 14px; }
+.guest-answer { flex: none; font-weight: 600; color: var(--muted); min-width: 4.5em; }
+.guest-names { overflow-wrap: anywhere; }
+.event-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 
 /* The note, opened. */
 .note-sheet { width: min(480px, 100%); }

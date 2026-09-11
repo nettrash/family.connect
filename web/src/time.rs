@@ -64,6 +64,79 @@ fn options(pairs: &[(&str, &str)]) -> JsValue {
     object.into()
 }
 
+/// An event's date as a CALENDAR BLOCK: the day's number and its short
+/// month, both in the reader's own language (docs/protocol.md, "Board").
+///
+/// Two strings rather than one, because they are drawn one over the other —
+/// which is the whole point of the block — and because a joined "24 Dec"
+/// would put them in an order some languages do not use.
+pub fn date_block(rfc3339: &str) -> Option<(String, String)> {
+    let date = date_of(rfc3339)?;
+    let day: String = date
+        .to_locale_date_string(&locale(), &options(&[("day", "numeric")]))
+        .into();
+    let month: String = date
+        .to_locale_date_string(&locale(), &options(&[("month", "short")]))
+        .into();
+    Some((day, month))
+}
+
+/// The event's TIME, beside the block that already says the date: "16:00",
+/// "16:00 – 20:00", or "16:00 – 25 Dec 02:00" when it ends on another day.
+pub fn event_clock(starts_at: &str, ends_at: Option<&str>) -> String {
+    let Some(starts) = date_of(starts_at) else {
+        return String::new();
+    };
+    let from = clock(starts_at);
+    let Some(ends) = ends_at.and_then(date_of) else {
+        return from;
+    };
+    let to = clock(ends_at.unwrap_or_default());
+    if day_of_date(&ends) == day_of_date(&starts) {
+        format!("{from} – {to}")
+    } else {
+        let end_day: String = ends
+            .to_locale_date_string(
+                &locale(),
+                &options(&[("month", "short"), ("day", "numeric")]),
+            )
+            .into();
+        format!("{from} – {end_day} {to}")
+    }
+}
+
+/// A wire instant as iCalendar spells one: `YYYYMMDDTHHMMSSZ`, in UTC.
+///
+/// Through the platform's own date maths (`toISOString`) rather than string
+/// arithmetic: the wire's instant may carry fractional seconds or an
+/// offset, and only a real parse gets every shape right.
+pub fn ics_stamp(rfc3339: &str) -> Option<String> {
+    let iso: String = date_of(rfc3339)?.to_iso_string().into();
+    // "2026-12-24T16:00:00.000Z" → "20261224T160000Z"
+    let (date, rest) = iso.split_once('T')?;
+    let clock = rest.split('.').next().unwrap_or(rest).trim_end_matches('Z');
+    Some(format!(
+        "{}T{}Z",
+        date.replace('-', ""),
+        clock.replace(':', "")
+    ))
+}
+
+/// Now, in the same shape — what an `.ics` stamps itself with.
+pub fn ics_now() -> String {
+    let iso: String = Date::new_0().to_iso_string().into();
+    iso.split_once('T')
+        .and_then(|(date, rest)| {
+            let clock = rest.split('.').next()?.trim_end_matches('Z');
+            Some(format!(
+                "{}T{}Z",
+                date.replace('-', ""),
+                clock.replace(':', "")
+            ))
+        })
+        .unwrap_or_default()
+}
+
 /// "17:03", or "5:03 PM" — hours and minutes the way the reader's language
 /// writes them. Empty for a timestamp that cannot be read.
 pub fn clock(rfc3339: &str) -> String {

@@ -250,6 +250,11 @@ struct MacBoardView: View {
                     await coordinator.tickTask(
                         noteID: note.noteID, itemID: itemID, done: done)
                 }
+            },
+            names: displayName(for:),
+            canDraw: AppSettings.assistantImages,
+            onDrawBackdrop: {
+                Task { await coordinator.drawBackdrop(noteID: note.noteID) }
             })
     }
 
@@ -310,6 +315,13 @@ fileprivate struct MacNoteView: View {
     /// somebody else's note here, and ticking must be reachable by every
     /// member on every client (docs/protocol.md, "Board").
     var onTick: (Int64, Bool) -> Void = { _, _ in }
+    /// Every name this family has, for naming who is coming
+    /// (docs/protocol.md, "Board").
+    var names: (Int64) -> String = { _ in "" }
+    /// Whether this SERVER can draw at all (`assistant.images`).
+    var canDraw: Bool = false
+    /// Ask the assistant for a backdrop — the author's.
+    var onDrawBackdrop: () -> Void = {}
 
     @State private var drag: CGSize = .zero
     @State private var committing = false
@@ -506,6 +518,30 @@ fileprivate struct MacNoteView: View {
                     }
                 }
             }
+            // WHO IS COMING, by name — and on this client the menu IS
+            // the opened note, so this is where the names belong
+            // (protocol.md, "Board"). Plain rows: it is news, not an
+            // action.
+            if !isHidden, NoteKind(name: note.kind) == .event {
+                Divider()
+                if guestGroups.isEmpty {
+                    Text("Nobody has answered yet.")
+                } else {
+                    ForEach(guestGroups, id: \.0) { group in
+                        Text(verbatim: "\(group.0.plainTitle): \(group.1)")
+                    }
+                }
+                // A copy for this reader's own calendar — anybody's — and
+                // the picture behind it, which is the author's.
+                Button("Add to Calendar") { addToCalendar() }
+                if isMine, canDraw {
+                    Button(
+                        note.attachmentID == nil
+                            ? "Draw a backdrop"
+                            : "Draw another backdrop",
+                        action: onDrawBackdrop)
+                }
+            }
             // ANSWERING IS NOT AUTHORSHIP: outside the isMine branch on
             // purpose, and offered on a hidden note no more than its text
             // is (protocol.md, "Board").
@@ -526,6 +562,36 @@ fileprivate struct MacNoteView: View {
                 }
             }
         }
+    }
+}
+
+extension MacNoteView {
+    /// Who is coming, grouped by answer and named — the sticker's counts
+    /// with the people put back (docs/protocol.md, "Board").
+    var guestGroups: [(RsvpAnswer, String)] {
+        RsvpAnswer.allCases.compactMap { choice in
+            let named = note.rsvpList
+                .filter { $0.answer == choice.name }
+                .map { names($0.userID) }
+                .filter { !$0.isEmpty }
+            return named.isEmpty ? nil : (choice, named.joined(separator: ", "))
+        }
+    }
+
+    /// Write the `.ics` and let the Mac open it — Calendar's own import
+    /// dialog, which costs no permission and no entitlement
+    /// (EventCalendar).
+    func addToCalendar() {
+        let title = note.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let ics = EventCalendar.ics(
+            noteID: note.noteID,
+            title: title,
+            startsAt: note.startsAt,
+            endsAt: note.endsAt,
+            place: note.place),
+            let file = EventCalendar.file(named: title, ics: ics)
+        else { return }
+        NSWorkspace.shared.open(file)
     }
 }
 

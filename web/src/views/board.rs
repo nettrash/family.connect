@@ -56,6 +56,11 @@ pub struct BoardProps {
     /// former members too, so that an old note still says who wrote it.
     pub members: Vec<Member>,
     pub blocked: HashSet<i64>,
+    /// Whether this SERVER has a picture model, which is what the
+    /// assistant's backdrop action hangs on (`assistant.images` on
+    /// `GET /families/mine`; docs/protocol.md, "Board").
+    #[prop_or_default]
+    pub can_draw: bool,
     /// Hidden notes peeked at.
     pub revealed: HashSet<i64>,
     /// A photo on its way up.
@@ -427,6 +432,8 @@ pub fn board_pane(props: &BoardProps) -> Html {
                 my_user_id={props.my_user_id}
                 members={props.members.clone()}
                 open_ids={open_ids.clone()}
+                names={props.names.clone()}
+                can_draw={props.can_draw}
                 {compact}
                 now_minute={props.now_minute}
                 on_close={close.clone()}
@@ -1112,6 +1119,50 @@ fn tick_box(id: Option<i64>, done: Option<bool>, tick: &Callback<(i64, bool)>, t
     }
 }
 
+/// Hand a browser one `.ics` file to save.
+///
+/// A blob and an anchor, the way a photo's download works
+/// (`crate::media::download`): there is no calendar door in a browser, so
+/// the file IS the door (docs/protocol.md, "Board"). The object URL is
+/// revoked once the click has been taken — the bytes are tiny, but a page
+/// left open all day should not keep every event somebody ever saved.
+fn save_ics(name: &str, ics: &str) {
+    let parts = js_sys::Array::new();
+    parts.push(&wasm_bindgen::JsValue::from_str(ics));
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type("text/calendar;charset=utf-8");
+    let Ok(blob) = web_sys::Blob::new_with_str_sequence_and_options(&parts, &options) else {
+        return;
+    };
+    let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
+        return;
+    };
+    crate::media::download(&url, name);
+    let _ = web_sys::Url::revoke_object_url(&url);
+}
+
+/// A title as a file name: the words it has, and nothing a file system
+/// would refuse. Empty titles cannot happen — an event's is required — but
+/// a title of only punctuation can, and "event.ics" beats ".ics".
+fn file_stem(title: &str) -> String {
+    let kept: String = title
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch == ' ' || ch == '-' || ch == '_' {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let trimmed = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    if trimmed.is_empty() {
+        "event".to_string()
+    } else {
+        trimmed
+    }
+}
+
 /// A task list as the WALL draws it: the first lines with their state, and
 /// then how many are left (docs/protocol.md, "Board").
 ///
@@ -1290,18 +1341,33 @@ struct EventProps {
 
 /// When, where and who is coming — above an event's title, because the
 /// date is the reason it is on the wall (NoteEventBlock).
+///
+/// Drawn as a CALENDAR ENTRY (docs/protocol.md, "Board"): the date in a
+/// block, the day's number over its short month, with the time beside it
+/// and the place under that. The shape is the same on all four clients —
+/// a wall where one device shows a calendar page and another a paragraph of
+/// small print is not the same wall.
 #[function_component(EventBlock)]
 fn event_block(props: &EventProps) -> Html {
-    let when = time::event_when(&props.starts_at, props.ends_at.as_deref());
+    let block = time::date_block(&props.starts_at);
+    let clock = time::event_clock(&props.starts_at, props.ends_at.as_deref());
     html! {
         <div class={classes!("note-event", props.past.then_some("is-past"))}>
-            <span class="note-when">{ when }</span>
-            if let Some(place) = props.place.clone() {
-                <span class="note-place">{ place }</span>
+            if let Some((day, month)) = block {
+                <div class="note-date" aria-hidden="true">
+                    <span class="note-day">{ day }</span>
+                    <span class="note-month">{ month }</span>
+                </div>
             }
-            if let Some(line) = rules::going_line(props.going, props.maybe) {
-                <span class="note-going">{ line }</span>
-            }
+            <div class="note-event-lines">
+                <span class="note-when">{ clock }</span>
+                if let Some(place) = props.place.clone() {
+                    <span class="note-place">{ place }</span>
+                }
+                if let Some(line) = rules::going_line(props.going, props.maybe) {
+                    <span class="note-going">{ line }</span>
+                }
+            </div>
         </div>
     }
 }
@@ -1324,6 +1390,11 @@ struct SheetProps {
     /// [`members`], which is what a name may NAME: somebody blocked can
     /// still be named, they just cannot be a door.
     open_ids: Rc<HashSet<i64>>,
+    /// Every name this family has, former members included: who answered
+    /// an event is named from this, exactly as an old note's author is.
+    names: HashMap<i64, String>,
+    /// Whether the assistant can draw this event a backdrop.
+    can_draw: bool,
     compact: bool,
     now_minute: i64,
     on_close: Callback<()>,
@@ -1597,6 +1668,9 @@ struct Editing {
     /// ticking two lines is two independent facts (unlike an event's
     /// answer, where the second replaces the first).
     ticking: HashMap<i64, bool>,
+    /// A backdrop being drawn. An image model takes seconds, so the button
+    /// says so and cannot be pressed twice into two bills.
+    drawing: bool,
 }
 
 /// Send one answer; when it is in, send the one that waited behind it, or
@@ -1674,6 +1748,7 @@ fn note_sheet(props: &SheetProps) -> Html {
             answer_sending: false,
             answer_queued: None,
             ticking: HashMap::new(),
+            drawing: false,
         })
     };
     let redraw = use_force_update();
@@ -2201,6 +2276,137 @@ fn note_sheet(props: &SheetProps) -> Html {
         }
     });
 
+    // WHO IS COMING, by name, in the note somebody has opened: the card
+    // has room for the news and the note has room for the people
+    // (docs/protocol.md, "Board"). Names from the WIDE roster, so a member
+    // who has since left is named exactly as their old notes are.
+    let guests = props
+        .note
+        .as_ref()
+        .filter(|note| note.kind() == Kind::Event && !props.gone)
+        .map(|note| {
+            let groups: Vec<Html> = Answer::ALL
+                .iter()
+                .filter_map(|answer| {
+                    let names: Vec<String> = note
+                        .rsvps()
+                        .iter()
+                        .filter(|rsvp| rsvp.answer == answer.name())
+                        .map(|rsvp| {
+                            props
+                                .names
+                                .get(&rsvp.user_id)
+                                .cloned()
+                                .unwrap_or_else(|| t("Someone").to_string())
+                        })
+                        .collect();
+                    (!names.is_empty()).then(|| {
+                        html! {
+                            <p class="guest-group">
+                                <span class="guest-answer">{ answer.title() }</span>
+                                <span class="guest-names">{ names.join(", ") }</span>
+                            </p>
+                        }
+                    })
+                })
+                .collect();
+            html! {
+                <div class="guests">
+                    if groups.is_empty() {
+                        // A sentence, not an empty list of names: a member
+                        // who has not answered is in no group at all.
+                        <p class="footnote">{ t("Nobody has answered yet.") }</p>
+                    } else {
+                        { for groups }
+                    }
+                </div>
+            }
+        });
+
+    // Add to Calendar: built HERE, in the browser, out of the title, the
+    // times and the place — never from the server, which carries no
+    // calendar at all (docs/protocol.md, "Board").
+    let to_calendar = props
+        .note
+        .as_ref()
+        .filter(|note| note.kind() == Kind::Event && !props.gone)
+        .and_then(|note| note.starts_at.clone().map(|starts| (note.clone(), starts)))
+        .map(|(note, starts)| {
+            let title = note.text().to_string();
+            let place = note.place.clone().filter(|place| !place.is_empty());
+            let ends = note.ends_at.clone();
+            let note_id = note.id;
+            let save = Callback::from(move |_: MouseEvent| {
+                let Some(dtstart) = time::ics_stamp(&starts) else {
+                    return;
+                };
+                let ics = fc_text::calendar::one_event(
+                    // Stable for the event, so a calendar that already has
+                    // it updates rather than keeping two.
+                    &format!("fc-note-{note_id}@family.connect"),
+                    &title,
+                    &dtstart,
+                    ends.as_deref().and_then(time::ics_stamp).as_deref(),
+                    place.as_deref(),
+                    &time::ics_now(),
+                );
+                save_ics(&format!("{}.ics", file_stem(&title)), &ics);
+            });
+            html! {
+                <button type="button" class="secondary" onclick={save}>
+                    { t("Add to Calendar") }
+                </button>
+            }
+        });
+
+    // The assistant's picture behind it — the AUTHOR's, and only where this
+    // server can draw at all (docs/protocol.md, "Board").
+    let backdrop = (kind == Kind::Event && editable && props.can_draw && !props.gone).then(|| {
+        let on_action = props.on_action.clone();
+        let cell = cell.clone();
+        let redraw = redraw.clone();
+        let sheet = props.sheet;
+        let has_one = props
+            .note
+            .as_ref()
+            .is_some_and(|note| note.attachment.is_some());
+        let drawing = now.drawing;
+        let ask = Callback::from(move |_: MouseEvent| {
+            let Sheet::Open(note_id) = sheet else {
+                return;
+            };
+            {
+                let mut editing = cell.borrow_mut();
+                if editing.drawing {
+                    return;
+                }
+                editing.drawing = true;
+            }
+            redraw.force_update();
+            let done = {
+                let cell = cell.clone();
+                let redraw = redraw.clone();
+                Callback::from(move |()| {
+                    cell.borrow_mut().drawing = false;
+                    redraw.force_update();
+                })
+            };
+            on_action.emit(Action::DrawBackdrop { note_id, done });
+        });
+        html! {
+            <button type="button" class="secondary" onclick={ask}
+                disabled={drawing} aria-busy={drawing.then_some("true")}>
+                { if drawing {
+                    t("Drawing…")
+                } else if has_one {
+                    t("Draw another backdrop")
+                } else {
+                    t("Draw a backdrop")
+                } }
+            </button>
+        }
+    });
+
     // Answering is its own act: ANY member may, so it is not part of the
     // author's save, and it sits outside every author gate.
     let answering = props
@@ -2246,13 +2452,6 @@ fn note_sheet(props: &SheetProps) -> Html {
                     }
                 })
             };
-            let guests = (!note.rsvps().is_empty()).then(|| {
-                rules::guest_line(
-                    note.count(Answer::Going),
-                    note.count(Answer::Maybe),
-                    note.count(Answer::No),
-                )
-            });
             html! {
                 <fieldset class="rsvp">
                     <legend>{ t("Are you coming?") }</legend>
@@ -2270,9 +2469,6 @@ fn note_sheet(props: &SheetProps) -> Html {
                             >{ choice.title() }</button>
                         }) }
                     </div>
-                    if let Some(guests) = guests {
-                        <p class="footnote">{ guests }</p>
-                    }
                 </fieldset>
             }
         });
@@ -2444,6 +2640,13 @@ fn note_sheet(props: &SheetProps) -> Html {
                     </div>
                 </div>
                 { answering.clone().unwrap_or_default() }
+                { guests.clone().unwrap_or_default() }
+                if to_calendar.is_some() || backdrop.is_some() {
+                    <div class="event-actions">
+                        { to_calendar.clone().unwrap_or_default() }
+                        { backdrop.clone().unwrap_or_default() }
+                    </div>
+                }
             </>
         }
     } else {
@@ -2452,13 +2655,22 @@ fn note_sheet(props: &SheetProps) -> Html {
             .then(|| note.starts_at.clone())
             .flatten()
             .map(|starts_at| {
+                let block = time::date_block(&starts_at);
                 html! {
-                    <p class="sheet-when">
-                        { time::event_when(&starts_at, note.ends_at.as_deref()) }
-                        if let Some(place) = note.place.clone().filter(|place| !place.is_empty()) {
-                            <span class="sheet-place">{ place }</span>
+                    <div class="sheet-event">
+                        if let Some((day, month)) = block {
+                            <div class="note-date sheet-date" aria-hidden="true">
+                                <span class="note-day">{ day }</span>
+                                <span class="note-month">{ month }</span>
+                            </div>
                         }
-                    </p>
+                        <p class="sheet-when">
+                            { time::event_when(&starts_at, note.ends_at.as_deref()) }
+                            if let Some(place) = note.place.clone().filter(|place| !place.is_empty()) {
+                                <span class="sheet-place">{ place }</span>
+                            }
+                        </p>
+                    </div>
                 }
             });
         html! {
@@ -2486,8 +2698,15 @@ fn note_sheet(props: &SheetProps) -> Html {
                     </p>
                 }
                 { list.unwrap_or_default() }
+                { guests.unwrap_or_default() }
                 <p class="footnote">{ t1("Written by %@", &props.author) }</p>
                 { answering.unwrap_or_default() }
+                if to_calendar.is_some() || backdrop.is_some() {
+                    <div class="event-actions">
+                        { to_calendar.unwrap_or_default() }
+                        { backdrop.unwrap_or_default() }
+                    </div>
+                }
             </>
         }
     };
@@ -2578,6 +2797,10 @@ mod tests {
             my_user_id: ME,
             names: HashMap::from([(ANNA, "Anna".to_string())]),
             blocked: blocked.iter().copied().collect(),
+            // Every board test runs on a server that CAN draw: the tests
+            // that care about the button say so, and the ones that do not
+            // are unaffected by its presence.
+            can_draw: true,
             revealed: HashSet::new(),
             pinning: false,
             now_minute: (js_sys::Date::now() / 60_000.0) as i64,
@@ -3751,6 +3974,175 @@ mod tests {
             })
             .collect();
         assert_eq!(opened, vec![ANNA]);
+        handle.destroy();
+        root.remove();
+    }
+
+    /// An event is drawn as a CALENDAR ENTRY, and the open note names who
+    /// is coming rather than counting them (docs/protocol.md, "Board").
+    #[wasm_bindgen_test]
+    async fn an_event_is_a_calendar_entry_and_the_note_names_its_guests() {
+        const GRAN: i64 = 55;
+        let log = Log::default();
+        let mut event = event_note(6, ME);
+        event.starts_at = Some("2026-12-24T16:00:00Z".into());
+        event.ends_at = Some("2026-12-24T20:00:00Z".into());
+        event.rsvps = Some(vec![
+            crate::model::Rsvp {
+                user_id: ANNA,
+                answer: "going".into(),
+            },
+            crate::model::Rsvp {
+                user_id: GRAN,
+                answer: "maybe".into(),
+            },
+            crate::model::Rsvp {
+                user_id: ME,
+                answer: "no".into(),
+            },
+        ]);
+        let mut props = props(vec![event], &[], &log);
+        props.names.insert(GRAN, "Gran".to_string());
+        props.names.insert(ME, "Me".to_string());
+        let (root, handle) = render(props).await;
+        TimeoutFuture::new(30).await;
+
+        // The block: the day's number over its short month, and the TIME
+        // beside it — the date is not repeated as a sentence.
+        let day = one(&root, ".sticker .note-date .note-day");
+        assert_eq!(day.text_content().unwrap_or_default(), "24");
+        assert!(!one(&root, ".sticker .note-month")
+            .text_content()
+            .unwrap_or_default()
+            .is_empty());
+        let when = one(&root, ".sticker .note-when")
+            .text_content()
+            .unwrap_or_default();
+        assert!(
+            !when.contains("24") || when.matches("24").count() <= 1,
+            "the sticker's line is the time, not the date again: {when:?}"
+        );
+        // The sticker counts; it does not name.
+        let going = one(&root, ".sticker .note-going")
+            .text_content()
+            .unwrap_or_default();
+        assert!(going.contains('1'), "{going:?}");
+        assert!(!going.contains("Anna"), "the wall counts: {going:?}");
+
+        // Opened, it NAMES them, grouped by answer.
+        key(&all(&root, ".sticker")[0], "keydown", "Enter");
+        TimeoutFuture::new(30).await;
+        let groups: Vec<String> = all(&root, ".note-sheet .guest-group")
+            .iter()
+            .map(|group| group.text_content().unwrap_or_default())
+            .collect();
+        assert_eq!(groups.len(), 3, "going, maybe and can't: {groups:?}");
+        assert!(groups[0].contains("Anna"), "{groups:?}");
+        assert!(groups[1].contains("Gran"), "{groups:?}");
+        assert!(groups[2].contains("Me"), "the reader is among them: {groups:?}");
+        handle.destroy();
+        root.remove();
+    }
+
+    /// Nobody has answered: a sentence, not an empty list of names.
+    #[wasm_bindgen_test]
+    async fn an_event_nobody_has_answered_says_so() {
+        let log = Log::default();
+        let mut event = event_note(6, ME);
+        event.rsvps = Some(Vec::new());
+        let (root, handle) = render(props(vec![event], &[], &log)).await;
+        TimeoutFuture::new(30).await;
+        key(&all(&root, ".sticker")[0], "keydown", "Enter");
+        TimeoutFuture::new(30).await;
+
+        assert!(all(&root, ".note-sheet .guest-group").is_empty());
+        assert!(one(&root, ".note-sheet .guests")
+            .text_content()
+            .unwrap_or_default()
+            .contains("Nobody has answered"));
+        handle.destroy();
+        root.remove();
+    }
+
+    /// The backdrop is the AUTHOR's, and only where the server can draw
+    /// (docs/protocol.md, "Board").
+    #[wasm_bindgen_test]
+    async fn only_the_author_asks_for_a_backdrop_and_only_where_one_can_be_drawn() {
+        let log = Log::default();
+        // Somebody else's event: the reader may answer it and add it to
+        // their calendar, and may not ask for a picture on it.
+        let (root, handle) = render(props(vec![event_note(6, ANNA)], &[], &log)).await;
+        TimeoutFuture::new(30).await;
+        key(&all(&root, ".sticker")[0], "keydown", "Enter");
+        TimeoutFuture::new(30).await;
+        let labels: Vec<String> = all(&root, ".note-sheet .event-actions button")
+            .iter()
+            .map(|button| button.text_content().unwrap_or_default())
+            .collect();
+        assert!(
+            labels.iter().any(|label| label.contains("Calendar")),
+            "anybody may keep a copy: {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|label| label.contains("backdrop")),
+            "a backdrop is the author's: {labels:?}"
+        );
+        handle.destroy();
+        root.remove();
+
+        // The author's own, on a server that CANNOT draw: no button at all.
+        let log = Log::default();
+        let mut cannot = props(vec![event_note(6, ME)], &[], &log);
+        cannot.can_draw = false;
+        let (root, handle) = render(cannot).await;
+        TimeoutFuture::new(30).await;
+        key(&all(&root, ".sticker")[0], "keydown", "Enter");
+        TimeoutFuture::new(30).await;
+        assert!(
+            !all(&root, ".note-sheet .event-actions button")
+                .iter()
+                .any(|button| button
+                    .text_content()
+                    .unwrap_or_default()
+                    .contains("backdrop")),
+            "nothing to hang the action on"
+        );
+        handle.destroy();
+        root.remove();
+
+        // The author's own, on a server that can: one ask, once.
+        let log = Log::default();
+        let (root, handle) = render(props(vec![event_note(6, ME)], &[], &log)).await;
+        TimeoutFuture::new(30).await;
+        key(&all(&root, ".sticker")[0], "keydown", "Enter");
+        TimeoutFuture::new(30).await;
+        let ask = all(&root, ".note-sheet .event-actions button")
+            .into_iter()
+            .find(|button| {
+                button
+                    .text_content()
+                    .unwrap_or_default()
+                    .contains("backdrop")
+            })
+            .expect("the backdrop button");
+        ask.click();
+        TimeoutFuture::new(30).await;
+        // Pressed again while it is drawing: one bill, not two.
+        ask.click();
+        TimeoutFuture::new(30).await;
+        let asked: Vec<i64> = log
+            .borrow()
+            .iter()
+            .filter_map(|action| match action {
+                Action::DrawBackdrop { note_id, .. } => Some(*note_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(asked, vec![6]);
+        assert!(
+            ask.has_attribute("disabled"),
+            "and it says it is drawing while it draws"
+        );
         handle.destroy();
         root.remove();
     }

@@ -41,6 +41,16 @@ nonisolated enum RsvpAnswer: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// The same three words as plain text, for a place that cannot take a
+    /// `LocalizedStringKey` — a menu row built by interpolation.
+    var plainTitle: String {
+        switch self {
+        case .going: String(localized: "Going")
+        case .maybe: String(localized: "Maybe")
+        case .no: String(localized: "Can't")
+        }
+    }
+
     var symbol: String {
         switch self {
         case .going: "checkmark.circle.fill"
@@ -69,6 +79,33 @@ enum EventFormat {
         return "\(day), \(from) – \(to)"
     }
 
+    /// The date as a CALENDAR BLOCK: the day's number and its short month,
+    /// both in the reader's own language (docs/protocol.md, "Board").
+    ///
+    /// Two strings rather than one, because they are drawn one over the
+    /// other — which is the point of the block — and because a joined
+    /// "24 Dec" would put them in an order some languages do not use.
+    static func block(starts: Date) -> (day: String, month: String) {
+        (
+            starts.formatted(.dateTime.day()),
+            starts.formatted(.dateTime.month(.abbreviated))
+        )
+    }
+
+    /// The TIME, beside the block that already says the date: "16:00",
+    /// "16:00 – 20:00", or "16:00 – 25 Dec 02:00" when it ends on another
+    /// day.
+    static func clock(starts: Date, ends: Date?) -> String {
+        let from = starts.formatted(date: .omitted, time: .shortened)
+        guard let ends else { return from }
+        let to = ends.formatted(date: .omitted, time: .shortened)
+        if Calendar.current.isDate(ends, inSameDayAs: starts) {
+            return "\(from) – \(to)"
+        }
+        let day = ends.formatted(.dateTime.day().month(.abbreviated))
+        return "\(from) – \(day) \(to)"
+    }
+
     /// Has it already happened? A past event is drawn quieter rather than
     /// removed: the wall is the family's, and clearing it is their call.
     static func isPast(_ starts: Date, ends: Date?, now: Date = Date()) -> Bool {
@@ -76,7 +113,13 @@ enum EventFormat {
     }
 }
 
-/// The block an event note draws above its title.
+/// The block an event note draws above its title — a CALENDAR ENTRY: the
+/// date in a block of its own, the time beside it, the place under that
+/// (docs/protocol.md, "Board").
+///
+/// The shape is the same on all four clients. A wall where one device shows
+/// a calendar page and another a paragraph of small print is not the same
+/// wall, which is the same argument the bare photo rests on.
 struct NoteEventBlock: View {
     let starts: Date
     let ends: Date?
@@ -84,11 +127,21 @@ struct NoteEventBlock: View {
     let going: Int
     let maybe: Int
 
+    private var isPast: Bool { EventFormat.isPast(starts, ends: ends) }
+
     var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            NoteDateBlock(starts: starts, past: isPast)
+            lines
+        }
+    }
+
+    @ViewBuilder
+    private var lines: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(EventFormat.when(starts: starts, ends: ends))
+            Text(EventFormat.clock(starts: starts, ends: ends))
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(.black.opacity(EventFormat.isPast(starts, ends: ends) ? 0.4 : 0.75))
+                .foregroundStyle(.black.opacity(isPast ? 0.4 : 0.75))
                 .lineLimit(2)
                 .minimumScaleFactor(0.7)
             if let place, !place.isEmpty {
@@ -114,6 +167,35 @@ struct NoteEventBlock: View {
         if maybe == 0 { return String(localized: "\(going) going") }
         if going == 0 { return String(localized: "\(maybe) maybe") }
         return String(localized: "\(going) going, \(maybe) maybe")
+    }
+}
+
+/// The date, as a torn calendar page: the day's number over its short
+/// month, on paper of its own so it reads as a date and not as another line
+/// of small print.
+///
+/// Not read out: the sticker's own label already says when the event is,
+/// and a screen reader hearing "24 Dec" twice is worse than once.
+struct NoteDateBlock: View {
+    let starts: Date
+    var past: Bool = false
+
+    var body: some View {
+        let block = EventFormat.block(starts: starts)
+        VStack(spacing: 0) {
+            Text(block.day)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(.black.opacity(0.78))
+            Text(block.month.uppercased())
+                .font(.system(size: 9, weight: .semibold))
+                .kerning(0.4)
+                .foregroundStyle(Color(red: 0.698, green: 0.149, blue: 0.118).opacity(0.85))
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 3)
+        .background(.white.opacity(0.55), in: RoundedRectangle(cornerRadius: 5))
+        .opacity(past ? 0.55 : 1)
+        .accessibilityHidden(true)
     }
 }
 

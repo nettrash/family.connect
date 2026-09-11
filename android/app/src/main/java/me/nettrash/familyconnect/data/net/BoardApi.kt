@@ -92,6 +92,13 @@ interface BoardApi {
      */
     suspend fun tickTask(noteId: Long, itemId: Long, done: Boolean): ApiResult<NoteResponse>
 
+    /**
+     * Ask the assistant for a picture to sit behind an EVENT, drawn from
+     * the note's own title — the AUTHOR's, and nothing to send
+     * (docs/protocol.md, "Board").
+     */
+    suspend fun drawBackdrop(noteId: Long): ApiResult<NoteResponse>
+
     suspend fun deleteNote(id: Long): ApiResult<Unit>
 }
 
@@ -214,6 +221,9 @@ class DefaultBoardApi @Inject constructor(
             "/families/mine/board/notes/$noteId/tasks/$itemId",
             TaskDoneRequest(done),
         )
+
+    override suspend fun drawBackdrop(noteId: Long): ApiResult<NoteResponse> =
+        client.postEmpty("/families/mine/board/notes/$noteId/backdrop")
 
     override suspend fun deleteNote(id: Long): ApiResult<Unit> =
         client.delete("/families/mine/board/notes/$id")

@@ -45,6 +45,7 @@ pub mod assistant;
 pub mod assistant_pictures;
 pub mod avatar;
 pub mod board;
+pub mod calendar;
 pub mod call_record;
 pub mod composer;
 pub mod emoji;

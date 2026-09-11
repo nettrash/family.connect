@@ -522,4 +522,11 @@
     <plurals name="s_more_things">
         <item quantity="other">还有 %1$d 项</item>
     </plurals>
+    <string name="s_nobody_answered">还没有人回应。</string>
+    <string name="s_add_to_calendar">添加到日历</string>
+    <string name="s_draw_backdrop">绘制背景图</string>
+    <string name="s_draw_another_backdrop">重新绘制背景图</string>
+    <string name="s_drawing">正在绘制…</string>
+    <string name="s_draw_failed">无法绘制。</string>
+    <string name="s_no_calendar_app">没有可添加的日历应用。</string>
 </resources>
