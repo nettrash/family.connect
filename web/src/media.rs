@@ -24,13 +24,29 @@ use yew::prelude::*;
 use crate::api;
 use crate::live::Live;
 
-/// Which bytes of an attachment.
+/// Which bytes of an attachment — or which of a person's profile pictures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Variant {
     /// The small JPEG: a photo's preview, a video's poster.
     Preview,
     /// The file itself.
     Original,
+    /// A USER's profile picture at this `avatar_version`, under the user's
+    /// id. The version is part of the key because it is the cache key the
+    /// protocol offers: a version is never reused for another picture, so a
+    /// new one is simply a new entry (docs/protocol.md, `avatar_version`).
+    Avatar(i64),
+}
+
+impl Variant {
+    /// Which of the three bounds this counts against.
+    fn kind(self) -> u8 {
+        match self {
+            Variant::Preview => 0,
+            Variant::Original => 1,
+            Variant::Avatar(_) => 2,
+        }
+    }
 }
 
 /// How many previews are held. A preview is a few tens of kilobytes, so
@@ -40,6 +56,9 @@ pub const PREVIEW_CAP: usize = 400;
 /// How many originals are held. An original may be a hundred-megabyte
 /// video, so only the handful just looked at.
 pub const ORIGINAL_CAP: usize = 16;
+
+/// How many profile pictures are held: a family's faces, many times over.
+pub const AVATAR_CAP: usize = 200;
 
 struct Entry {
     url: String,
@@ -57,6 +76,11 @@ struct Cache {
     tick: u64,
     /// Fetches in flight, and who is waiting for each.
     waiting: HashMap<(i64, Variant), Vec<Callback<Option<String>>>>,
+    /// Profile pictures the server said it does not have — a member with
+    /// none at that version, or somebody this reader may not see — settled
+    /// for the session rather than asked for again on every draw. Never a
+    /// failure that was only a bad minute: that is tried again.
+    missing: std::collections::HashSet<(i64, Variant)>,
 }
 
 impl Cache {
@@ -65,6 +89,7 @@ impl Cache {
             let _ = Url::revoke_object_url(&entry.url);
         }
         self.waiting.clear();
+        self.missing.clear();
     }
 
     fn touch(&mut self, key: (i64, Variant)) -> Option<String> {
@@ -92,12 +117,20 @@ impl Cache {
         let cap = match key.1 {
             Variant::Preview => PREVIEW_CAP,
             Variant::Original => ORIGINAL_CAP,
+            Variant::Avatar(_) => AVATAR_CAP,
         };
-        while self.entries.keys().filter(|held| held.1 == key.1).count() > cap {
+        let kind = key.1.kind();
+        while self
+            .entries
+            .keys()
+            .filter(|held| held.1.kind() == kind)
+            .count()
+            > cap
+        {
             let Some(oldest) = self
                 .entries
                 .iter()
-                .filter(|(held, _)| held.1 == key.1 && **held != key)
+                .filter(|(held, _)| held.1.kind() == kind && **held != key)
                 .min_by_key(|(_, entry)| entry.used)
                 .map(|(held, _)| *held)
             else {
@@ -159,6 +192,11 @@ impl MediaLoader {
         if let Some(url) = self.cache.borrow_mut().touch((id, variant)) {
             return Some(url);
         }
+        // A profile picture's id is a USER's: nothing below — an upload's
+        // alias, an outbox id — is about one.
+        if matches!(variant, Variant::Avatar(_)) {
+            return None;
+        }
         // A server id this device uploaded: the bytes its bubble drew from.
         let provisional = self
             .live
@@ -173,6 +211,8 @@ impl MediaLoader {
                 state.store.bytes.get(&id).and_then(|bytes| match variant {
                     Variant::Preview => bytes.preview.clone(),
                     Variant::Original => bytes.file.clone(),
+                    // A profile picture is never an outbox attachment.
+                    Variant::Avatar(_) => None,
                 })
             });
             return blob.and_then(|blob| self.cache.borrow_mut().insert((id, variant), blob));
@@ -200,6 +240,7 @@ impl MediaLoader {
             state.store.bytes.get(&id).and_then(|bytes| match variant {
                 Variant::Preview => bytes.preview.clone(),
                 Variant::Original => bytes.file.clone(),
+                Variant::Avatar(_) => None,
             })
         })
     }
@@ -229,11 +270,11 @@ impl MediaLoader {
             }
             return;
         }
-        if id == 0 {
+        let key = (id, variant);
+        if id == 0 || self.cache.borrow().missing.contains(&key) {
             done.emit(None);
             return;
         }
-        let key = (id, variant);
         let first = {
             let mut cache = self.cache.borrow_mut();
             let waiting = cache.waiting.entry(key).or_default();
@@ -247,11 +288,22 @@ impl MediaLoader {
         let live = self.live.clone();
         let cache = self.cache.clone();
         spawn_local(async move {
-            let fetched = match token {
-                Some(token) => api::attachment_bytes(&token, id, variant == Variant::Preview)
+            let fetched = match (token, variant) {
+                (Some(token), Variant::Avatar(_)) => match api::avatar_bytes(&token, id).await {
+                    Ok(blob) => Some(blob),
+                    // The one answer for "no picture" and "not yours to
+                    // see" alike (docs/protocol.md, `GET /users/{id}/avatar`).
+                    Err(error) => {
+                        if error.code() == Some("user_not_found") && live.is_live(session) {
+                            cache.borrow_mut().missing.insert(key);
+                        }
+                        None
+                    }
+                },
+                (Some(token), _) => api::attachment_bytes(&token, id, variant == Variant::Preview)
                     .await
                     .ok(),
-                None => None,
+                (None, _) => None,
             };
             let url = fetched
                 .filter(|_| live.is_live(session))
@@ -481,5 +533,33 @@ mod tests {
                 .any(|key| key.0 == -2 || key.0 == 0),
             "nothing on the wire for an id with no server id"
         );
+    }
+
+    /// A picture the server said it does not have is settled for the tab:
+    /// asked for again it answers at once, and nothing is fetched.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn a_missing_picture_is_not_asked_for_again() {
+        let loader = loader();
+        let key = (9, Variant::Avatar(3));
+        loader.cache.borrow_mut().missing.insert(key);
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let into = heard.clone();
+        loader.load(
+            9,
+            Variant::Avatar(3),
+            Callback::from(move |url: Option<String>| into.borrow_mut().push(url)),
+        );
+        assert_eq!(*heard.borrow(), vec![None], "answered at once");
+        assert!(loader.cache.borrow().waiting.is_empty(), "nothing fetched");
+        // Another version is another picture, and is asked for.
+        loader.load(9, Variant::Avatar(4), Callback::noop());
+        assert!(loader
+            .cache
+            .borrow()
+            .waiting
+            .contains_key(&(9, Variant::Avatar(4))));
+        // A new session forgets what the last one settled.
+        loader.clear();
+        assert!(loader.cache.borrow().missing.is_empty());
     }
 }

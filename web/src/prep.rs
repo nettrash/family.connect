@@ -17,10 +17,15 @@
 //!
 //! AUDIO and FILES go untouched; what kind each is, and what it is called,
 //! are fc_text::media's rules.
+//!
+//! A PROFILE PICTURE is its own thing (ios `Core/AvatarImage.swift`): the
+//! largest centred square, at most 512 across, over white, as a JPEG stepped
+//! down in quality until it fits the byte budget fc_text::avatar keeps.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use fc_text::avatar;
 use fc_text::media::{self, Route};
 use futures::channel::oneshot;
 use futures::future::{select, Either};
@@ -154,6 +159,58 @@ async fn photo(file: &File) -> Result<Prepared, PrepError> {
         preview,
         ..Prepared::default()
     })
+}
+
+/// A profile picture made from `file`, ready for `PUT /me/avatar`.
+pub async fn avatar(file: &File) -> Result<Blob, PrepError> {
+    let bitmap = decode(file).await.ok_or(PrepError::Unreadable)?;
+    let jpeg = avatar_jpeg(&bitmap).await;
+    bitmap.close();
+    jpeg.ok_or(PrepError::Unreadable)
+}
+
+async fn avatar_jpeg(bitmap: &ImageBitmap) -> Option<Blob> {
+    let square = avatar::square(bitmap.width(), bitmap.height())?;
+    let document = web_sys::window()?.document()?;
+    let canvas: HtmlCanvasElement = document.create_element("canvas").ok()?.dyn_into().ok()?;
+    canvas.set_width(square.edge);
+    canvas.set_height(square.edge);
+    let context: CanvasRenderingContext2d = canvas.get_context("2d").ok()??.dyn_into().ok()?;
+    let edge = f64::from(square.edge);
+    context.set_fill_style_str("#ffffff");
+    context.fill_rect(0.0, 0.0, edge, edge);
+    let _ = js_sys::Reflect::set(
+        &context,
+        &JsValue::from_str("imageSmoothingQuality"),
+        &JsValue::from_str("high"),
+    );
+    let side = f64::from(square.side);
+    context
+        .draw_image_with_image_bitmap_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+            bitmap,
+            f64::from(square.x),
+            f64::from(square.y),
+            side,
+            side,
+            0.0,
+            0.0,
+            edge,
+            edge,
+        )
+        .ok()?;
+    // The first quality that fits — and when none does, the last one tried:
+    // better a larger upload the server may still take than no picture.
+    let mut last = None;
+    for quality in avatar::QUALITIES {
+        let Some(jpeg) = to_blob(&canvas, "image/jpeg", quality).await else {
+            continue;
+        };
+        if jpeg.size() <= avatar::MAX_BYTES as f64 {
+            return Some(jpeg);
+        }
+        last = Some(jpeg);
+    }
+    last
 }
 
 /// The image, decoded the right way up. `from-image` is what honours EXIF

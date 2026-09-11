@@ -667,6 +667,7 @@ async fn a_poll_question_carries_its_mentions() {
         username: "anna".into(),
         role: Some("member".into()),
         deleted: false,
+        ..Default::default()
     }];
     let handle =
         yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), asked).render();
@@ -789,6 +790,7 @@ async fn the_assistant_photo_door_is_there_only_when_all_three_allow_it() {
                 ai_history: true,
                 ai_vision,
                 ai_history_photos: false,
+                ..Default::default()
             });
             let handle =
                 yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), asked)
@@ -915,6 +917,7 @@ async fn a_threads_box_says_what_goes_to_the_assistant() {
             ai_history: true,
             ai_vision: true,
             ai_history_photos: false,
+            ..Default::default()
         }),
         on_action: Callback::noop(),
     };

@@ -971,6 +971,11 @@ pub fn conversation(props: &ConversationProps) -> Html {
 
     let divider_count = anchor.map(|(_, count)| count).unwrap_or(0);
     let member_count = props.members.len();
+    let avatar_versions: HashMap<i64, i64> = props
+        .members
+        .iter()
+        .map(|member| (member.id, member.avatar_version))
+        .collect();
     let title = props.item.chat.display_title(
         props
             .item
@@ -1046,6 +1051,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                                     {parent_revealed}
                                     hidden={row.hidden && !revealed}
                                     shows_sender={row.shows_sender || (row.hidden && revealed && is_family)}
+                                    sender_avatar_version={avatar_versions.get(&message.sender_id).copied().unwrap_or(0)}
                                     run_end={row.run_end}
                                     seen={row.seen}
                                     awaited={row.awaited}

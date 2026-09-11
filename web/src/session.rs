@@ -108,6 +108,29 @@ pub fn clear() {
     if let Some(storage) = storage() {
         let _ = storage.remove_item(TOKEN_KEY);
         let _ = storage.remove_item(OUTBOX_KEY);
+        let _ = storage.remove_item(AWAITING_KEY);
+    }
+}
+
+/// The account whose join request this tab was waiting on. A refusal is
+/// never said by the server — the request just vanishes from `/me`
+/// (docs/protocol.md, `GET /me`) — so only a client that REMEMBERS waiting
+/// can tell "declined" from "never asked", and a reload must not forget it.
+const AWAITING_KEY: &str = "fc.join.awaiting";
+
+pub fn awaiting_join() -> Option<i64> {
+    storage()?.get_item(AWAITING_KEY).ok()??.parse().ok()
+}
+
+pub fn set_awaiting_join(user_id: Option<i64>) {
+    let Some(storage) = storage() else { return };
+    match user_id {
+        Some(user_id) => {
+            let _ = storage.set_item(AWAITING_KEY, &user_id.to_string());
+        }
+        None => {
+            let _ = storage.remove_item(AWAITING_KEY);
+        }
     }
 }
 

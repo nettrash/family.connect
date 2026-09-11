@@ -22,6 +22,9 @@
 //! - [`media`] — attachments: which kind a picked file goes as, its name and
 //!   type, the server's magic-number check, and how a bubble lays one out.
 //! - [`wav`] — a voice note as WAV, for browsers that cannot record MP4.
+//! - [`account`] — usernames, passwords, names, invite codes, birthdays, the
+//!   family's languages and the owner's member cap, by the server's rules.
+//! - [`avatar`] — the initials a profile circle draws with no picture.
 //! - [`board`] — the family board: what a note may say, the names its size,
 //!   colour, face and kind travel under, where it sits, how its text is
 //!   fitted, and what the badge counts.
@@ -30,8 +33,10 @@
 //!   `mailto:` and `tel:` ever link — in a browser, anything else is a way
 //!   to run script.
 
+pub mod account;
 pub mod assistant;
 pub mod assistant_pictures;
+pub mod avatar;
 pub mod board;
 pub mod call_record;
 pub mod composer;

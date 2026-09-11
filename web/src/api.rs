@@ -21,7 +21,8 @@ use wasm_bindgen::JsCast;
 use web_sys::{AbortController, Blob, RequestCache};
 
 use crate::model::{
-    Attachment, Chat, ChatListItem, Me, Mention, Message, Note, Poll, Reaction, Roster,
+    Attachment, Birthday, Chat, ChatListItem, Family, JoinRequest, Me, Member, Mention, Message,
+    Note, Poll, Reaction, Report, Roster, Stats, User,
 };
 use crate::staged::OutgoingItem;
 use crate::store::Outgoing;
@@ -87,6 +88,80 @@ struct ErrorBody {
 struct LoginRequest<'a> {
     username: &'a str,
     password: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct RegisterRequest<'a> {
+    username: &'a str,
+    display_name: &'a str,
+    password: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct FamilyResponse {
+    family: Family,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserResponse {
+    user: User,
+}
+
+#[derive(Debug, Deserialize)]
+struct MemberResponse {
+    member: Member,
+}
+
+/// `POST /families/join`'s answer: `joined` or `pending`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Joined {
+    pub status: String,
+}
+
+/// `POST /families/leave`'s answer when the caller was the owner and the
+/// family passed to somebody.
+#[derive(Debug, Deserialize)]
+struct LeftResponse {
+    #[serde(default)]
+    new_owner_user_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InviteCodeResponse {
+    invite_code: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RequestsResponse {
+    requests: Vec<JoinRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReportsResponse {
+    reports: Vec<Report>,
+}
+
+/// A change to the family's settings — the owner's. Only what is sent
+/// changes, and `max_members` and `language` are the protocol's two DOUBLE
+/// options: `Some(None)` — sent as null — clears them, absent leaves them.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+pub struct FamilyPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub join_policy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_members: Option<Option<i64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_history: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_vision: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_history_photos: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_greeting: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_faces: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -313,7 +388,7 @@ async fn read<T: DeserializeOwned>(response: Response) -> Result<T, ApiError> {
 /// The failure half of `read`, for answers with no body worth reading.
 async fn check(response: &Response) -> Result<(), ApiError> {
     if response.status() == 401 {
-        return Err(ApiError::Unauthorized);
+        return Err(unauthorized(response).await);
     }
     if response.ok() {
         return Ok(());
@@ -332,10 +407,36 @@ async fn check(response: &Response) -> Result<(), ApiError> {
             code: envelope.error.code,
             message: envelope.error.message,
         }),
+        // A proxy's own 413 is HTML, and it is still an answer — the body
+        // was too big for what stands in front of the server — never "can't
+        // reach the server".
+        Err(_) if status == 413 => Err(ApiError::Server {
+            code: TOO_LARGE.to_string(),
+            message: String::new(),
+        }),
         // A body that is not the protocol's shape is still a failure, and
         // saying which status it was beats saying nothing: nginx answers
         // its own rate limit and a dead upstream with HTML.
         Err(_) => Err(ApiError::Network(format!("The server answered {status}."))),
+    }
+}
+
+/// Not the server's: this client's own name for a bare 413 from a proxy.
+pub const TOO_LARGE: &str = "payload_too_large";
+
+/// A 401 is a session that is gone — EXCEPT `invalid_credentials`, which
+/// shares the status and not the meaning: a password typed wrong at sign-in,
+/// or as the proof `POST /me/password` and `POST /me/delete` ask for
+/// (docs/protocol.md, "Error shape"). Signing somebody out for a typo would
+/// be the wrong answer to it, and "your session has expired" the wrong
+/// sentence.
+async fn unauthorized(response: &Response) -> ApiError {
+    match response.json::<ErrorEnvelope>().await {
+        Ok(envelope) if envelope.error.code == "invalid_credentials" => ApiError::Server {
+            code: envelope.error.code,
+            message: envelope.error.message,
+        },
+        _ => ApiError::Unauthorized,
     }
 }
 
@@ -394,6 +495,24 @@ pub async fn login(username: &str, password: &str) -> Result<AuthResponse, ApiEr
     read(request.send().await.map_err(network)?).await
 }
 
+/// `POST /auth/register` — a new account, signed in. Usernames are unique
+/// ignoring case; the account belongs to no family until it makes or joins
+/// one.
+pub async fn register(
+    username: &str,
+    display_name: &str,
+    password: &str,
+) -> Result<AuthResponse, ApiError> {
+    let request = Request::post(&path("/auth/register"))
+        .json(&RegisterRequest {
+            username,
+            display_name,
+            password,
+        })
+        .map_err(network)?;
+    read(request.send().await.map_err(network)?).await
+}
+
 /// `POST /auth/logout` — revokes this session and closes its sockets.
 ///
 /// Its failure is deliberately not reported: the client is signing out
@@ -414,6 +533,189 @@ pub async fn me(token: &str) -> Result<Me, ApiError> {
 /// `GET /families/mine` — the roster, the assistant, the block list.
 pub async fn family(token: &str) -> Result<Roster, ApiError> {
     get(token, "/families/mine").await
+}
+
+/// `POST /families` — a new family, with the caller as its owner.
+pub async fn create_family(token: &str, name: &str) -> Result<Family, ApiError> {
+    let response: FamilyResponse = with_body(
+        Request::post(&path("/families")),
+        token,
+        &serde_json::json!({ "name": name }),
+    )
+    .await?;
+    Ok(response.family)
+}
+
+/// `POST /families/join` — in at once, or a request waiting on the owner.
+pub async fn join_family(token: &str, invite_code: &str) -> Result<Joined, ApiError> {
+    with_body(
+        Request::post(&path("/families/join")),
+        token,
+        &serde_json::json!({ "invite_code": invite_code }),
+    )
+    .await
+}
+
+/// `POST /families/leave` — answers who the family passed to, when the
+/// caller was its owner and somebody remains.
+pub async fn leave_family(token: &str) -> Result<Option<i64>, ApiError> {
+    let response = bearer(Request::post(&path("/families/leave")), token)
+        .send()
+        .await
+        .map_err(network)?;
+    check(&response).await?;
+    if response.status() == 204 {
+        return Ok(None);
+    }
+    let left: LeftResponse = response
+        .json()
+        .await
+        .map_err(|error| ApiError::Network(error.to_string()))?;
+    Ok(left.new_owner_user_id)
+}
+
+/// `PATCH /families/mine` — the owner's settings; only what is sent changes.
+pub async fn patch_family(token: &str, patch: &FamilyPatch) -> Result<Family, ApiError> {
+    let response: FamilyResponse =
+        with_body(Request::patch(&path("/families/mine")), token, patch).await?;
+    Ok(response.family)
+}
+
+/// `POST /families/invite-code/rotate` — the old code stops working at once.
+pub async fn rotate_invite_code(token: &str) -> Result<String, ApiError> {
+    let response: InviteCodeResponse = read(
+        bearer(Request::post(&path("/families/invite-code/rotate")), token)
+            .send()
+            .await
+            .map_err(network)?,
+    )
+    .await?;
+    Ok(response.invite_code)
+}
+
+/// `GET /families/join-requests` — the owner's, pending only.
+pub async fn join_requests(token: &str) -> Result<Vec<JoinRequest>, ApiError> {
+    let response: RequestsResponse = get(token, "/families/join-requests").await?;
+    Ok(response.requests)
+}
+
+/// `POST /families/join-requests/{id}/approve` or `…/reject`.
+pub async fn decide_join_request(token: &str, id: i64, approve: bool) -> Result<(), ApiError> {
+    let verb = if approve { "approve" } else { "reject" };
+    let url = path(&format!("/families/join-requests/{id}/{verb}"));
+    empty::<()>(Request::post(&url), token, None).await
+}
+
+/// `GET /families/reports` — the owner's open reports, oldest first.
+pub async fn reports(token: &str) -> Result<Vec<Report>, ApiError> {
+    let response: ReportsResponse = get(token, "/families/reports").await?;
+    Ok(response.reports)
+}
+
+/// `POST /families/reports/{id}/resolve` — off the owner's list.
+pub async fn resolve_report(token: &str, id: i64) -> Result<(), ApiError> {
+    let url = path(&format!("/families/reports/{id}/resolve"));
+    empty::<()>(Request::post(&url), token, None).await
+}
+
+/// `DELETE /families/members/{id}` — the owner removes somebody.
+pub async fn remove_member(token: &str, user_id: i64) -> Result<(), ApiError> {
+    let url = path(&format!("/families/members/{user_id}"));
+    empty::<()>(Request::delete(&url), token, None).await
+}
+
+/// `POST /families/members/{id}/password` — the owner sets a new password
+/// for somebody who has forgotten theirs; every device of theirs signs out.
+pub async fn reset_member_password(
+    token: &str,
+    user_id: i64,
+    new_password: &str,
+) -> Result<(), ApiError> {
+    let url = path(&format!("/families/members/{user_id}/password"));
+    empty(
+        Request::post(&url),
+        token,
+        Some(&serde_json::json!({ "new_password": new_password })),
+    )
+    .await
+}
+
+/// `PUT` / `DELETE /families/members/{id}/birthday` — the owner filling one
+/// in for somebody, or clearing it.
+pub async fn set_member_birthday(
+    token: &str,
+    user_id: i64,
+    birthday: Option<Birthday>,
+) -> Result<Option<Member>, ApiError> {
+    let url = path(&format!("/families/members/{user_id}/birthday"));
+    match birthday {
+        Some(birthday) => {
+            let response: MemberResponse = with_body(Request::put(&url), token, &birthday).await?;
+            Ok(Some(response.member))
+        }
+        None => {
+            empty::<()>(Request::delete(&url), token, None).await?;
+            Ok(None)
+        }
+    }
+}
+
+/// `GET /families/mine/stats` — the family's numbers, for every member.
+pub async fn stats(token: &str) -> Result<Stats, ApiError> {
+    get(token, "/families/mine/stats").await
+}
+
+/// `PUT` / `DELETE /me/birthday` — your own.
+pub async fn set_my_birthday(
+    token: &str,
+    birthday: Option<Birthday>,
+) -> Result<Option<User>, ApiError> {
+    let url = path("/me/birthday");
+    match birthday {
+        Some(birthday) => {
+            let response: UserResponse = with_body(Request::put(&url), token, &birthday).await?;
+            Ok(Some(response.user))
+        }
+        None => {
+            empty::<()>(Request::delete(&url), token, None).await?;
+            Ok(None)
+        }
+    }
+}
+
+/// `POST /me/password` — proving the current one; every OTHER session goes.
+pub async fn change_password(token: &str, current: &str, new: &str) -> Result<(), ApiError> {
+    empty(
+        Request::post(&path("/me/password")),
+        token,
+        Some(&serde_json::json!({ "current_password": current, "new_password": new })),
+    )
+    .await
+}
+
+/// `POST /me/delete` — the account, permanently, on its password.
+pub async fn delete_account(token: &str, password: &str) -> Result<(), ApiError> {
+    empty(
+        Request::post(&path("/me/delete")),
+        token,
+        Some(&serde_json::json!({ "password": password })),
+    )
+    .await
+}
+
+/// `PUT /me/avatar` — the picture, as raw JPEG bytes.
+pub async fn upload_avatar(token: &str, jpeg: &Blob) -> Result<User, ApiError> {
+    let request = bearer(Request::put(&path("/me/avatar")), token)
+        .header("Content-Type", "image/jpeg")
+        .body(wasm_bindgen::JsValue::from(jpeg.clone()))
+        .map_err(network)?;
+    let response: UserResponse = read(request.send().await.map_err(network)?).await?;
+    Ok(response.user)
+}
+
+/// `DELETE /me/avatar` — back to initials.
+pub async fn delete_avatar(token: &str) -> Result<(), ApiError> {
+    empty::<()>(Request::delete(&path("/me/avatar")), token, None).await
 }
 
 /// `GET /chats` — the family chat always, direct chats once they exist.
@@ -715,6 +1017,31 @@ pub async fn attachment_bytes(token: &str, id: i64, preview: bool) -> Result<Blo
         .map_err(|_| unreadable())
 }
 
+/// `GET /users/{id}/avatar` — a profile picture, as bytes in this tab's
+/// memory, under the same `no-store` rule as every other picture: the
+/// server's `immutable` is right for an app's cache and wrong for a browser
+/// every account on the machine shares (docs/protocol.md, "A browser is a
+/// client too").
+pub async fn avatar_bytes(token: &str, user_id: i64) -> Result<Blob, ApiError> {
+    let response = bearer(
+        Request::get(&path(&format!("/users/{user_id}/avatar"))),
+        token,
+    )
+    .cache(RequestCache::NoStore)
+    .send()
+    .await
+    .map_err(network)?;
+    check(&response).await?;
+    let raw: web_sys::Response = response.into();
+    let unreadable = || ApiError::Network("The answer could not be read.".into());
+    let promise = raw.blob().map_err(|_| unreadable())?;
+    wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|_| unreadable())?
+        .dyn_into::<Blob>()
+        .map_err(|_| unreadable())
+}
+
 /// `PATCH /chats/{id}/messages/{mid}` — author only; the body alone changes.
 pub async fn edit_message(
     token: &str,
@@ -905,6 +1232,60 @@ pub async fn set_blocked(token: &str, user_id: i64, blocked: bool) -> Result<(),
 mod tests {
     use super::*;
     use wasm_bindgen_test::*;
+
+    fn answered(status: u16, body: &str) -> Response {
+        let init = web_sys::ResponseInit::new();
+        init.set_status(status);
+        Response::from(
+            web_sys::Response::new_with_opt_str_and_init(Some(body), &init).expect("a response"),
+        )
+    }
+
+    /// Both are 401; only one is a session that has ended. A wrong password
+    /// signs nobody out, and is not told as an expired session.
+    #[wasm_bindgen_test]
+    async fn a_wrong_password_is_not_an_ended_session() {
+        let wrong = answered(
+            401,
+            r#"{"error":{"code":"invalid_credentials","message":"invalid username or password"}}"#,
+        );
+        assert_eq!(
+            check(&wrong).await,
+            Err(ApiError::Server {
+                code: "invalid_credentials".into(),
+                message: "invalid username or password".into(),
+            })
+        );
+        let gone = answered(
+            401,
+            r#"{"error":{"code":"unauthorized","message":"session expired"}}"#,
+        );
+        assert_eq!(check(&gone).await, Err(ApiError::Unauthorized));
+        // A proxy's own 413 is an answer — too big — not an unreachable
+        // server; and a protocol 413 keeps its own code.
+        assert_eq!(
+            check(&answered(413, "<html>413 Request Entity Too Large</html>")).await,
+            Err(ApiError::Server {
+                code: TOO_LARGE.into(),
+                message: String::new(),
+            })
+        );
+        assert_eq!(
+            check(&answered(
+                413,
+                r#"{"error":{"code":"avatar_too_large","message":"too big"}}"#
+            ))
+            .await
+            .unwrap_err()
+            .code(),
+            Some("avatar_too_large")
+        );
+        // A proxy's own 401, in HTML: the session, as before.
+        assert_eq!(
+            check(&answered(401, "<html>401</html>")).await,
+            Err(ApiError::Unauthorized)
+        );
+    }
 
     fn row() -> Outgoing {
         Outgoing {
@@ -1145,6 +1526,42 @@ mod tests {
             serde_json::from_str(r#"{"notes": [{"id": 12, "deleted": true, "board_seq": 92}]}"#)
                 .expect("reads");
         assert!(changes.notes[0].deleted);
+    }
+
+    /// A family patch sends only what changed, and the two double options
+    /// clear with a null.
+    #[wasm_bindgen_test]
+    fn a_family_patch_sends_only_what_changed() {
+        assert_eq!(
+            serde_json::to_value(FamilyPatch {
+                join_policy: Some("approval".into()),
+                ..FamilyPatch::default()
+            })
+            .expect("encodes"),
+            serde_json::json!({"join_policy": "approval"})
+        );
+        assert_eq!(
+            serde_json::to_value(FamilyPatch {
+                max_members: Some(None),
+                language: Some(None),
+                ..FamilyPatch::default()
+            })
+            .expect("encodes"),
+            serde_json::json!({"max_members": null, "language": null})
+        );
+        assert_eq!(
+            serde_json::to_value(FamilyPatch {
+                max_members: Some(Some(8)),
+                ai_vision: Some(true),
+                ..FamilyPatch::default()
+            })
+            .expect("encodes"),
+            serde_json::json!({"max_members": 8, "ai_vision": true})
+        );
+        assert_eq!(
+            serde_json::to_value(FamilyPatch::default()).expect("encodes"),
+            serde_json::json!({})
+        );
     }
 
     #[wasm_bindgen_test]

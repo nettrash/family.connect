@@ -72,7 +72,11 @@ The consequences worth stating rather than discovering:
   asks with `cache: no-store`. The server's `Cache-Control: private, immutable` is right for an
   app's own cache and wrong for a browser's, which every account that signs in on the machine
   shares and which outlives the tab — the reason the token lives in `sessionStorage` in the first
-  place. A reload fetches again; that is the price, and it is paid only by the reader. A tile
+  place. A reload fetches again; that is the price, and it is paid only by the reader. Profile
+  pictures (`GET /users/{id}/avatar`) are fetched the same way, held in memory under the user id
+  AND the `avatar_version`, which is never reused for another picture; a `404` there — no picture,
+  or a person this reader may not see, the same answer by design — is settled for the tab rather
+  than asked again on every draw, while any other failure is tried again. A tile
   never downloads a VIDEO to draw itself: it draws the poster, or a placeholder until one lands.
 - **A browser records voice notes into MP4 (AAC) where it can, and into WAV where it cannot —
   never WebM.** WebM is what most browsers' recorders produce by default, `kind=audio` does not
@@ -110,6 +114,12 @@ different protocol.
 - Every other endpoint (and the WebSocket upgrade) requires `Authorization: Bearer <token>`.
 - Sessions have a sliding expiry (default 180 days, refreshed by use). A `401` means the session
   is gone — the client wipes local state (keeping the server URL) and returns to login.
+- **Except `invalid_credentials`, which shares the status and not the meaning.** It is a password
+  that was wrong: at `POST /auth/login`, where there is no session yet, and as the proof
+  `POST /me/password` and `POST /me/delete` ask for, where the session that sent it is still live
+  and still this device's. A client tells the two apart by the `code`, never by the status alone —
+  one that signs somebody out for a mistyped current password, or tells them at the login form
+  that their session has expired, has read the status and not the answer.
 - A password change revokes sessions, which is what makes it useful for recovery rather than just
   hygiene: changing your own password ends every OTHER session you have, and an owner resetting a
   member's password ends ALL of theirs. Those devices find out the ordinary way — their next call

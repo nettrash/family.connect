@@ -11,6 +11,7 @@ use crate::actions::Action;
 use crate::model::{Call, Message};
 use crate::time;
 use crate::views::attachments::AttachmentStack;
+use crate::views::avatar::Avatar;
 use crate::views::body::Body;
 use crate::views::poll::PollView;
 use crate::views::reactions::{chips, details, EmojiPicker, QUICK_REACTIONS};
@@ -46,6 +47,11 @@ pub struct BubbleProps {
     #[prop_or_default]
     pub parent_revealed: bool,
     pub shows_sender: bool,
+    /// The sender's `avatar_version`, for the picture beside their name at
+    /// the head of a run — 0, and initials, for anybody the roster does not
+    /// hold a picture for.
+    #[prop_or_default]
+    pub sender_avatar_version: i64,
     pub run_end: bool,
     pub seen: bool,
     pub awaited: bool,
@@ -553,7 +559,15 @@ pub fn bubble(props: &BubbleProps) -> Html {
             ondblclick={on_double}
         >
             if props.shows_sender {
-                <span class="sender">{ name_of(&props.names, message.sender_id) }</span>
+                <span class="sender">
+                    <Avatar
+                        title={name_of(&props.names, message.sender_id)}
+                        user_id={Some(message.sender_id)}
+                        version={props.sender_avatar_version}
+                        size={18}
+                    />
+                    { name_of(&props.names, message.sender_id) }
+                </span>
             }
             { quote.unwrap_or_default() }
             if !message.attachments().is_empty() {
@@ -675,6 +689,7 @@ mod tests {
             on_edit: Callback::noop(),
             on_report: Callback::noop(),
             on_jump: Callback::noop(),
+            sender_avatar_version: 0,
         }
     }
 
@@ -1123,6 +1138,7 @@ mod tests {
                 on_edit: self.on_edit.clone(),
                 on_report: self.on_report.clone(),
                 on_jump: self.on_jump.clone(),
+                sender_avatar_version: 0,
             }
         }
     }

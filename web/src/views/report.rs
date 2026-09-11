@@ -5,6 +5,8 @@
 
 use yew::prelude::*;
 
+use crate::views::dialog::Modal;
+
 /// Who is being reported, and for which message if any.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReportTarget {
@@ -49,14 +51,6 @@ pub fn report_dialog(props: &ReportProps) -> Html {
         let on_cancel = props.on_cancel.clone();
         Callback::from(move |_: MouseEvent| on_cancel.emit(()))
     };
-    let on_key = {
-        let on_cancel = props.on_cancel.clone();
-        Callback::from(move |event: KeyboardEvent| {
-            if event.key() == "Escape" {
-                on_cancel.emit(());
-            }
-        })
-    };
     // MANDATORY, and a protocol requirement rather than a nicety: somebody
     // who reports a message without knowing the owner will read it has been
     // surprised by their own app — most of all in a direct chat.
@@ -65,10 +59,10 @@ pub fn report_dialog(props: &ReportProps) -> Html {
     } else {
         "Your family owner will be told you reported this member."
     };
+    // The shared frame: it takes the focus as it opens — the chosen reason —
+    // so Escape and Tab work from the keyboard, and gives it back after.
     html! {
-        <div class="dialog-backdrop" onkeydown={on_key}>
-            <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="report-title">
-                <h2 id="report-title">{ "Report" }</h2>
+        <Modal title="Report" on_cancel={props.on_cancel.clone()}>
                 <fieldset class="reasons">
                     <legend>{ format!("Why are you reporting {}?", props.target.name) }</legend>
                     { for REASONS.iter().map(|(code, label)| html! {
@@ -96,7 +90,6 @@ pub fn report_dialog(props: &ReportProps) -> Html {
                     <button class="secondary" onclick={cancel}>{ "Cancel" }</button>
                     <button class="primary" onclick={submit}>{ "Report" }</button>
                 </div>
-            </div>
-        </div>
+        </Modal>
     }
 }

@@ -147,6 +147,7 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
                                 parent_revealed={props.revealed_quotes.contains(&(message.id, 1))}
                                 {hidden}
                                 shows_sender={props.is_family_chat && message.sender_id != props.my_user_id && !hidden}
+                                sender_avatar_version={props.members.iter().find(|member| member.id == message.sender_id).map_or(0, |member| member.avatar_version)}
                                 run_end={true}
                                 seen={false}
                                 awaited={false}

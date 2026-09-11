@@ -375,6 +375,32 @@ pub struct Store {
     pub listed: HashMap<i64, i64>,
     /// The family board (board.rs).
     pub board: crate::board::Board,
+    /// The whole of the last `GET /me` — the role, a join request still
+    /// waiting, the server's switches — and None until it has answered.
+    pub account: Option<Me>,
+    /// The owner's pending join requests, as last read.
+    pub join_requests: Vec<crate::model::JoinRequest>,
+    /// The owner's open reports, oldest first, as last read.
+    pub reports: Vec<crate::model::Report>,
+    /// This account asked to join a family and is waiting on its owner —
+    /// what tells a request that vanished (declined) from one never made.
+    pub awaiting_join: bool,
+    /// The request this account was waiting on was declined: said once, on
+    /// the family gate, until the next join or create.
+    pub join_declined: bool,
+    /// Bumped by every frame that changes who is in the family or who owns
+    /// it — `member_joined`, `member_left`, `member_deleted`,
+    /// `family_owner`. A leave dialog names who inherits, a prediction any
+    /// of them can change, so it is built again from a fresh read when one
+    /// lands (docs/protocol.md, `next_owner_user_id`).
+    pub roster_changes: u64,
+    /// Bumped by every answer to the owner's own change of the family. A
+    /// roster read that was asked for BEFORE one does not overwrite it.
+    pub family_writes: u64,
+    /// Bumped by every `/me` taken in. A poll's answer that lands after
+    /// another `/me` — the resync an approval set off — is older than what
+    /// is held, and is not taken.
+    pub account_reads: u64,
 }
 
 /// How long a `typing` frame stands before it is forgotten, in
@@ -422,31 +448,227 @@ impl Store {
     }
 
     /// `GET /me`: who this is, and the block list — REPLACED, never merged.
-    pub fn apply_me(&mut self, me: &Me) {
-        // Another family — the last member left and a new one was started,
-        // from another device — is another wall: nothing of the old one's
-        // feed will ever tombstone its notes, so they go now, and the next
-        // read is a whole read. The badge's marks are the person's and stay.
+    /// Answers whether the account's family changed, which the app answers
+    /// by putting away whatever pane was open on the old one.
+    pub fn apply_me(&mut self, me: &Me) -> bool {
         let family = |family: &Option<crate::model::Family>| family.as_ref().map(|f| f.id);
-        if self.my_user_id == me.user.id && family(&self.family) != family(&me.family) {
-            let board = std::mem::take(&mut self.board);
-            self.board.marks = board.marks;
-            self.board.marks_for = board.marks_for;
+        // Only a SECOND answer can say the family changed. The first one of
+        // a session meets a store that holds no family yet — but may hold
+        // the outbox a reload put back, bubbles and all, which a "change"
+        // would wipe (and a row that then failed would fail on no bubble).
+        let changed = self.account.is_some()
+            && self.my_user_id == me.user.id
+            && family(&self.family) != family(&me.family);
+        if changed {
+            self.forget_family();
         }
         self.my_user_id = me.user.id;
         self.family = me.family.clone();
         self.names.insert(me.user.id, me.user.display_name.clone());
         self.blocked = me.blocked_user_ids.iter().copied().collect();
         self.support_contact = me.support_contact.clone();
+        self.account = Some(me.clone());
+        self.account_reads += 1;
+        // A join request is only ever answered by vanishing: the account
+        // that was waiting and now has neither a family nor a request was
+        // declined (ios AppSession.apply(me:)).
+        match (&me.family, &me.pending_join_request) {
+            (Some(_), _) => {
+                self.awaiting_join = false;
+                self.join_declined = false;
+            }
+            (None, Some(_)) => {
+                self.awaiting_join = true;
+                self.join_declined = false;
+            }
+            (None, None) => {
+                if self.awaiting_join {
+                    self.join_declined = true;
+                }
+                self.awaiting_join = false;
+            }
+        }
+        changed
+    }
+
+    /// Everything that belonged to the family this account WAS in, gone:
+    /// it left, it was removed, or it is in another one now (the last member
+    /// left and a new one was started, from another device). Nothing of the
+    /// old family's feeds will ever reach this client again to tidy it — no
+    /// tombstone for its notes, no read for its chats — so it goes now, and
+    /// the next reads are whole ones. What is the PERSON's stays: the board's
+    /// seen-marks, the block list, and an outbox whose rows the server will
+    /// refuse on their own if they can no longer go.
+    pub fn forget_family(&mut self) {
+        let board = std::mem::take(&mut self.board);
+        self.board.marks = board.marks;
+        self.board.marks_for = board.marks_for;
+        // The assistant's chat is the person's, not the family's: leaving
+        // takes the family chat and the direct chats and nothing else
+        // (docs/protocol.md, `POST /families/leave`), so it keeps its
+        // history, its draft and whatever is still on its way.
+        let theirs: HashSet<i64> = self
+            .chats
+            .iter()
+            .filter(|item| item.chat.is_ai())
+            .map(|item| item.chat.id)
+            .collect();
+        self.chats.retain(|item| theirs.contains(&item.chat.id));
+        self.threads.retain(|chat_id, _| theirs.contains(chat_id));
+        self.cursors.retain(|chat_id, _| theirs.contains(chat_id));
+        self.listed.retain(|chat_id, _| theirs.contains(chat_id));
+        // What was written in the old family's chats can never go now —
+        // each would be refused `not_chat_member`, on a bubble nobody can
+        // see any more — so it goes with its chats, as the apps' purge
+        // takes it, bytes and all.
+        let gone: Vec<i64> = self
+            .outbox
+            .iter()
+            .filter(|row| !theirs.contains(&row.chat_id))
+            .flat_map(|row| row.items.iter().map(|item| item.provisional_id))
+            .collect();
+        for provisional in gone {
+            self.bytes.remove(&provisional);
+        }
+        self.outbox.retain(|row| theirs.contains(&row.chat_id));
+        self.members.clear();
+        self.assistant = None;
+        self.typing.clear();
+        self.peer_read.clear();
+        self.thread_view = None;
+        self.open_polls = None;
+        self.drafts.retain(|chat_id, _| theirs.contains(chat_id));
+        self.staged.retain(|chat_id, _| theirs.contains(chat_id));
+        self.revealed.clear();
+        self.revealed_quotes.clear();
+        self.ai_failed.clear();
+        self.join_requests.clear();
+        self.reports.clear();
+    }
+
+    /// Whether this account is the family's owner, as `/me` last said — kept
+    /// true to `family_owner` frames in between.
+    pub fn is_owner(&self) -> bool {
+        self.account.as_ref().is_some_and(Me::is_owner)
     }
 
     /// `GET /families/mine`: the roster, the names, the assistant, and the
-    /// block list again (it rides on both reads).
+    /// block list again (it rides on both reads). Its `family` is the
+    /// fresher copy — the owner's invite code rides on it — and replaces the
+    /// one `/me` gave.
     pub fn apply_roster(&mut self, roster: &Roster) {
         self.names.extend(roster.names());
+        // A read that finds the family changed — somebody in or out, an
+        // owner moved, which a socket that was down never heard as frames —
+        // counts as the frames would have. One that finds it as it was does
+        // not, so a leave dialog's own read does not set off another.
+        let shape = |members: &[Member]| -> Vec<(i64, Option<String>)> {
+            let mut shape: Vec<_> = members
+                .iter()
+                .map(|member| (member.id, member.role.clone()))
+                .collect();
+            shape.sort();
+            shape
+        };
+        if shape(&self.members) != shape(&roster.members) {
+            self.roster_changes += 1;
+        }
         self.members = roster.members.clone();
         self.assistant = roster.assistant.clone();
         self.blocked = roster.blocked_user_ids.iter().copied().collect();
+        // The roster names every member's role, this account's too — and it
+        // is fresher than the `/me` it may follow, and than a `family_owner`
+        // frame this tab missed while its socket was down.
+        if let Some(role) = roster
+            .members
+            .iter()
+            .find(|member| member.id == self.my_user_id)
+            .and_then(|member| member.role.clone())
+        {
+            if let Some(account) = self.account.as_mut() {
+                account.role = Some(role);
+            }
+        }
+        if let Some(family) = roster.family.as_ref().filter(|family| {
+            self.family
+                .as_ref()
+                .is_some_and(|held| held.id == family.id)
+        }) {
+            self.family = Some(family.clone());
+            if let Some(account) = self.account.as_mut() {
+                account.family = Some(family.clone());
+            }
+        }
+    }
+
+    /// The family's settings, as the owner's own change answered them.
+    /// A PATCH answers without the invite code unless the caller owns the
+    /// family, so the code already held is kept rather than blanked.
+    pub fn apply_family(&mut self, family: crate::model::Family) {
+        self.family_writes += 1;
+        let code = self
+            .family
+            .as_ref()
+            .and_then(|held| held.invite_code.clone());
+        let family = crate::model::Family {
+            invite_code: family.invite_code.or(code),
+            ..family
+        };
+        if let Some(account) = self.account.as_mut() {
+            account.family = Some(family.clone());
+        }
+        self.family = Some(family);
+    }
+
+    /// A member's birthday, as the owner's own change left it — or mine.
+    pub fn set_birthday(&mut self, user_id: i64, birthday: Option<crate::model::Birthday>) {
+        if let Some(member) = self.members.iter_mut().find(|member| member.id == user_id) {
+            member.birthday = birthday;
+        }
+        if let Some(account) = self
+            .account
+            .as_mut()
+            .filter(|account| account.user.id == user_id)
+        {
+            account.user.birthday = birthday;
+        }
+    }
+
+    /// The owner's invite code, rotated: the one held, and the account's.
+    pub fn set_invite_code(&mut self, code: String) {
+        if let Some(family) = self.family.as_mut() {
+            family.invite_code = Some(code.clone());
+        }
+        if let Some(family) = self.account.as_mut().and_then(|a| a.family.as_mut()) {
+            family.invite_code = Some(code);
+        }
+    }
+
+    /// A profile picture's version — 0 when it was taken away.
+    pub fn set_avatar_version(&mut self, user_id: i64, version: i64) {
+        if let Some(member) = self.members.iter_mut().find(|member| member.id == user_id) {
+            member.avatar_version = version;
+        }
+        if let Some(account) = self
+            .account
+            .as_mut()
+            .filter(|account| account.user.id == user_id)
+        {
+            account.user.avatar_version = version;
+        }
+    }
+
+    /// My own profile as an endpoint of mine answered it — a new picture, a
+    /// birthday — into both places it is drawn from.
+    pub fn apply_my_user(&mut self, user: crate::model::User) {
+        self.names.insert(user.id, user.display_name.clone());
+        if let Some(member) = self.members.iter_mut().find(|member| member.id == user.id) {
+            member.avatar_version = user.avatar_version;
+            member.birthday = user.birthday;
+        }
+        if let Some(account) = self.account.as_mut() {
+            account.user = user;
+        }
     }
 
     /// `GET /chats`, MERGED into what this client holds rather than laid
@@ -1264,6 +1486,7 @@ impl Store {
     }
 
     pub fn member_joined(&mut self, user: &User) {
+        self.roster_changes += 1;
         self.names.insert(user.id, user.display_name.clone());
         if !self.members.iter().any(|member| member.id == user.id) {
             self.members.push(Member {
@@ -1272,6 +1495,8 @@ impl Store {
                 username: user.username.clone(),
                 role: Some("member".to_string()),
                 deleted: false,
+                avatar_version: user.avatar_version,
+                birthday: user.birthday,
             });
         }
     }
@@ -1279,17 +1504,30 @@ impl Store {
     /// Somebody left. They are no longer offered as somebody to name, but
     /// their name stays on everything they said.
     pub fn member_left(&mut self, user_id: i64) {
+        self.roster_changes += 1;
         self.members.retain(|member| member.id != user_id);
     }
 
     /// An account was deleted: the tombstone is WRITTEN, deliberately — the
     /// one frame whose job is to wipe what is stored.
     pub fn member_deleted(&mut self, member: &Member) {
+        self.roster_changes += 1;
         self.members.retain(|held| held.id != member.id);
         self.names.insert(member.id, member.display_name.clone());
     }
 
     pub fn family_owner(&mut self, user_id: i64) {
+        self.roster_changes += 1;
+        if let Some(account) = self.account.as_mut() {
+            account.role = Some(
+                if account.user.id == user_id {
+                    "owner"
+                } else {
+                    "member"
+                }
+                .to_string(),
+            );
+        }
         for member in self.members.iter_mut() {
             member.role = Some(
                 if member.id == user_id {
@@ -1851,10 +2089,12 @@ mod tests {
                 username: "me".into(),
                 display_name: "Me".into(),
                 deleted: false,
+                ..Default::default()
             },
             family: None,
             blocked_user_ids: vec![11],
             support_contact: None,
+            ..Default::default()
         };
         store.apply_me(&me);
         assert_eq!(store.blocked, HashSet::from([11]), "replaced whole");
@@ -2167,6 +2407,7 @@ mod tests {
             username: "junior".into(),
             display_name: "Junior".into(),
             deleted: false,
+            ..Default::default()
         });
         assert_eq!(store.name_of(11), "Junior");
         assert!(store.members.iter().any(|m| m.id == 11));
@@ -2199,6 +2440,7 @@ mod tests {
             username: String::new(),
             role: None,
             deleted: true,
+            ..Default::default()
         });
         assert_eq!(
             store.name_of(11),
@@ -2682,6 +2924,7 @@ mod tests {
             ai_history: true,
             ai_vision: false,
             ai_history_photos: false,
+            ..Default::default()
         };
         let me = |family_id: Option<i64>| Me {
             user: User {
@@ -2689,10 +2932,12 @@ mod tests {
                 username: "me".into(),
                 display_name: "Me".into(),
                 deleted: false,
+                ..Default::default()
             },
             family: family_id.map(family),
             blocked_user_ids: Vec::new(),
             support_contact: None,
+            ..Default::default()
         };
         let mut store = Store::default();
         store.apply_me(&me(Some(3)));
@@ -2726,5 +2971,237 @@ mod tests {
             "the marks are the person's"
         );
         assert_eq!(store.board.marks_for, 7);
+    }
+
+    fn account(family: Option<i64>, pending: bool) -> Me {
+        Me {
+            user: User {
+                id: ME,
+                username: "me".into(),
+                display_name: "Me".into(),
+                ..Default::default()
+            },
+            family: family.map(|id| crate::model::Family {
+                id,
+                name: "The Smiths".into(),
+                ..Default::default()
+            }),
+            pending_join_request: pending.then(|| crate::model::PendingJoin {
+                family_id: 3,
+                family_name: "The Smiths".into(),
+                created_at: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// A refusal is never said: the request just vanishes from `/me`. Only
+    /// an account that was WAITING has been declined.
+    #[wasm_bindgen_test]
+    fn a_declined_request_is_told_by_its_vanishing() {
+        let mut store = Store::default();
+        store.apply_me(&account(None, false));
+        assert!(!store.join_declined, "never asked is not declined");
+        store.apply_me(&account(None, true));
+        assert!(store.awaiting_join && !store.join_declined);
+        store.apply_me(&account(None, true));
+        assert!(store.awaiting_join, "still waiting");
+        store.apply_me(&account(None, false));
+        assert!(store.join_declined && !store.awaiting_join);
+        store.apply_me(&account(None, false));
+        assert!(
+            store.join_declined,
+            "said until the next join, not only once"
+        );
+        store.apply_me(&account(Some(3), false));
+        assert!(!store.join_declined && !store.awaiting_join);
+    }
+
+    #[wasm_bindgen_test]
+    fn an_approved_request_is_not_a_declined_one() {
+        let mut store = Store::default();
+        store.apply_me(&account(None, true));
+        store.apply_me(&account(Some(3), false));
+        assert!(!store.join_declined && !store.awaiting_join);
+    }
+
+    /// The owner's lists belong to the family they were read in.
+    #[wasm_bindgen_test]
+    fn leaving_forgets_the_owners_lists() {
+        let mut store = Store::default();
+        store.apply_me(&account(Some(3), false));
+        store.join_requests = vec![crate::model::JoinRequest {
+            id: 1,
+            user: User::default(),
+            created_at: None,
+        }];
+        store.reports = vec![crate::model::Report {
+            id: 2,
+            reporter: User::default(),
+            reported: User::default(),
+            reason: "spam".into(),
+            created_at: None,
+            message_id: None,
+            message_excerpt: None,
+            message_attachments: Vec::new(),
+        }];
+        store.apply_me(&account(None, false));
+        assert!(store.join_requests.is_empty() && store.reports.is_empty());
+    }
+
+    /// Taking the picture away changes the version and nothing else — the
+    /// birthday stays (ios rebuilds the user and loses it) — and the same
+    /// the other way round.
+    #[wasm_bindgen_test]
+    fn a_picture_and_a_birthday_change_only_themselves() {
+        let mut store = Store::default();
+        let mut me = account(Some(3), false);
+        me.user.avatar_version = 4;
+        me.user.birthday = Some(crate::model::Birthday { month: 3, day: 14 });
+        store.apply_me(&me);
+        store.members = vec![Member {
+            id: ME,
+            avatar_version: 4,
+            birthday: Some(crate::model::Birthday { month: 3, day: 14 }),
+            ..Default::default()
+        }];
+        store.set_avatar_version(ME, 0);
+        let held = &store.account.as_ref().unwrap().user;
+        assert_eq!(held.avatar_version, 0);
+        assert_eq!(
+            held.birthday,
+            Some(crate::model::Birthday { month: 3, day: 14 })
+        );
+        assert_eq!(store.members[0].avatar_version, 0);
+        assert!(store.members[0].birthday.is_some());
+        store.set_birthday(ME, None);
+        assert_eq!(store.account.as_ref().unwrap().user.birthday, None);
+        assert_eq!(store.members[0].birthday, None);
+        assert_eq!(store.members[0].avatar_version, 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_rotated_code_replaces_both_copies() {
+        let mut store = Store::default();
+        let mut me = account(Some(3), false);
+        me.role = Some("owner".into());
+        store.apply_me(&me);
+        store.set_invite_code("NEWCODE2".into());
+        assert_eq!(
+            store.family.as_ref().unwrap().invite_code.as_deref(),
+            Some("NEWCODE2")
+        );
+        assert_eq!(
+            store
+                .account
+                .as_ref()
+                .unwrap()
+                .family
+                .as_ref()
+                .unwrap()
+                .invite_code
+                .as_deref(),
+            Some("NEWCODE2")
+        );
+    }
+
+    /// A leave dialog is rebuilt when ownership moves under it; this is
+    /// what it watches.
+    #[wasm_bindgen_test]
+    fn ownership_moving_is_counted() {
+        let mut store = Store::default();
+        let mut me = account(Some(3), false);
+        me.role = Some("owner".into());
+        store.apply_me(&me);
+        let before = store.roster_changes;
+        store.family_owner(ANNA);
+        assert_eq!(store.roster_changes, before + 1);
+        store.member_joined(&User {
+            id: 12,
+            ..Default::default()
+        });
+        store.member_left(12);
+        assert_eq!(
+            store.roster_changes,
+            before + 3,
+            "joins and leaves move the heir too"
+        );
+        assert!(!store.is_owner());
+    }
+
+    /// A reload with something unsent: the rows come back with their
+    /// bubbles before `/me` has answered, and that first answer — which
+    /// finds no family held yet — is not a family CHANGE that wipes them.
+    #[wasm_bindgen_test]
+    fn a_reload_keeps_its_unsent_bubbles() {
+        let mut before = store();
+        before.queue_send(42, "a".into(), text("still going"));
+        let rows = before.outbox.clone();
+        let mut after = Store {
+            my_user_id: ME,
+            ..Store::default()
+        };
+        after.restore_outbox(rows);
+        let changed = after.apply_me(&account(Some(3), false));
+        assert!(!changed, "the first answer is not a change");
+        assert_eq!(after.outbox.len(), 1);
+        assert!(
+            after.threads[&42]
+                .messages
+                .iter()
+                .any(|m| m.client_msg_id.as_deref() == Some("a")),
+            "the bubble is still there to show how it goes"
+        );
+    }
+
+    /// Leaving takes the family chat and the direct chats, and whatever
+    /// was on its way to them — it can never go now — but the assistant's
+    /// chat is the person's, and keeps its history and its unsent rows.
+    #[wasm_bindgen_test]
+    fn leaving_keeps_only_what_is_the_persons() {
+        let mut store = store();
+        store.chats.push(chat(50, "ai"));
+        store.apply_me(&account(Some(3), false));
+        store.queue_send(42, "family".into(), text("to the family"));
+        store.queue_send(50, "ai".into(), text("to the assistant"));
+        store.drafts.insert(42, "half a thought".into());
+        store.drafts.insert(50, "a question".into());
+        assert!(store.apply_me(&account(None, false)), "a change");
+        let rows: Vec<&str> = store
+            .outbox
+            .iter()
+            .map(|row| row.client_msg_id.as_str())
+            .collect();
+        assert_eq!(rows, vec!["ai"]);
+        assert!(store.threads.contains_key(&50) && !store.threads.contains_key(&42));
+        assert!(store.item(50).is_some() && store.item(42).is_none());
+        assert_eq!(
+            store.drafts.get(&50).map(String::as_str),
+            Some("a question")
+        );
+        assert!(!store.drafts.contains_key(&42));
+    }
+
+    /// The roster is fresher than `/me` about this account's own role — and
+    /// than a `family_owner` frame missed while the socket was down.
+    #[wasm_bindgen_test]
+    fn the_roster_says_who_owns_the_family() {
+        let mut store = store();
+        store.apply_me(&account(Some(3), false));
+        assert!(!store.is_owner());
+        let before = store.roster_changes;
+        let roster = Roster {
+            members: vec![Member {
+                id: ME,
+                role: Some("owner".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        store.apply_roster(&roster);
+        assert!(store.is_owner());
+        assert_eq!(store.roster_changes, before + 1, "a changed family counts");
+        store.apply_roster(&roster);
+        assert_eq!(store.roster_changes, before + 1, "the same family does not");
     }
 }

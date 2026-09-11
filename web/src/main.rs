@@ -6,14 +6,15 @@
 //! session token in `sessionStorage` so closing the tab is a sign-out, and
 //! SENDS over REST while only listening on the socket.
 //!
-//! It is being brought to the macOS app's feature set phase by phase. This
-//! one is the conversation itself: formatting, links and large emoji,
-//! replies with their quotes, threads, reactions, mentions, the assistant
-//! with its streamed answers and pictures, polls and the open-polls list,
-//! edits, seen ticks in direct chats, the unread divider, reports and
-//! blocks — on top of sign-in, the chat list, history and an outbox that
-//! survives a bad network. What is not built yet is not stubbed either,
-//! because a stub is a claim that something works.
+//! It is being brought to the macOS app's feature set phase by phase: the
+//! conversation itself (formatting, links and large emoji, replies with
+//! their quotes, threads, reactions, mentions, the assistant with its
+//! streamed answers and pictures, polls, edits, seen ticks, the unread
+//! divider, reports and blocks, over an outbox that survives a bad
+//! network); attachments; the family board; and the account — signing up,
+//! the family gate for an account in none, settings, the owner's family
+//! pane and everybody's profile pictures. What is not built yet is not
+//! stubbed either, because a stub is a claim that something works.
 
 mod actions;
 mod api;
@@ -46,15 +47,19 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use actions::{Action, Actions};
-use live::{AppState, Live};
+use live::{AppState, Live, Panel};
 use media::MediaLoader;
 use store::ThreadView;
 use sync::{network_back, page_visible, report_read, start_session, Channels, Shared};
 use views::board::BoardPane;
 use views::chat_list::ChatList;
 use views::conversation::Conversation;
+use views::dialog::Confirm;
+use views::family::FamilyPane;
+use views::gate::{FamilyGate, PendingApproval};
 use views::login::Login;
 use views::open_polls::OpenPollsPanel;
+use views::settings::SettingsPane;
 use views::thread_panel::ThreadPanel;
 use views::viewer::Viewer;
 
@@ -78,6 +83,10 @@ fn app() -> Html {
     }))
     .clone();
     let channels: Shared<Option<Channels>> = use_mut_ref(|| None);
+    // Signing out from the bar or Settings asks first (ios MacSettingsView
+    // "Log out?"): one stray click would otherwise end the session, and
+    // with it anything this tab had not sent yet.
+    let confirming_sign_out = use_state(|| false);
     let last_typing = use_mut_ref(HashMap::<i64, f64>::new);
     let media = {
         let live = live.clone();
@@ -116,7 +125,10 @@ fn app() -> Html {
         let live = live.clone();
         let channels = channels.clone();
         let sign_out = sign_out.clone();
+        let confirming = confirming_sign_out.clone();
         use_effect_with(token.clone(), move |held| {
+            // A question asked of the last session is not this one's.
+            confirming.set(false);
             if let Some(held) = held.clone() {
                 start_session(&live, held, &channels, &sign_out);
             }
@@ -277,9 +289,37 @@ fn app() -> Html {
     let state = live.read(|state| state.clone());
     let store = &state.store;
     let sign_out_click = {
-        let sign_out = sign_out.clone();
-        Callback::from(move |_| sign_out.emit(true))
+        let confirming = confirming_sign_out.clone();
+        Callback::from(move |_: MouseEvent| confirming.set(true))
     };
+
+    // An account in no family: the gate — or, with a request waiting on an
+    // owner, the waiting room. Until `/me` has answered nobody knows which,
+    // and the shell below says it is connecting.
+    if let Some(account) = store
+        .account
+        .clone()
+        .filter(|account| account.family.is_none())
+    {
+        let on_sign_out = {
+            let sign_out = sign_out.clone();
+            Callback::from(move |_: ()| sign_out.emit(true))
+        };
+        return if account.pending_join_request.is_some() {
+            html! { <PendingApproval on_action={on_action.clone()} {on_sign_out} /> }
+        } else {
+            html! {
+                <FamilyGate
+                    {account}
+                    declined={store.join_declined}
+                    notice={state.notice.clone()}
+                    failure={state.failure.clone()}
+                    on_action={on_action.clone()}
+                    {on_sign_out}
+                />
+            }
+        };
+    }
     let dismiss = on_action.reform(|_: MouseEvent| Action::DismissNotice);
     let open_item = state
         .open_chat
@@ -366,6 +406,65 @@ fn app() -> Html {
         }
     });
 
+    // The family and the settings, for an account in one — each a pane in
+    // the chat's place, as the board is.
+    let panel_button = |panel: Panel, label: &'static str| {
+        let open = state.panel == Some(panel);
+        let toggle = on_action.reform(move |_: MouseEvent| {
+            if open {
+                Action::ClosePanel
+            } else {
+                Action::OpenPanel(panel)
+            }
+        });
+        html! {
+            <button
+                class={classes!("board-button", open.then_some("is-active"))}
+                aria-pressed={if open { "true" } else { "false" }}
+                onclick={toggle}
+            >{ label }</button>
+        }
+    };
+    let family_button = store
+        .family
+        .is_some()
+        .then(|| panel_button(Panel::Family, "Family"));
+    let settings_button = store
+        .account
+        .is_some()
+        .then(|| panel_button(Panel::Settings, "Settings"));
+    let close_panel = on_action.reform(|_: ()| Action::ClosePanel);
+    let panel = match (state.panel, store.account.clone(), store.family.clone()) {
+        (Some(Panel::Settings), Some(account), family) => Some(html! {
+            <SettingsPane
+                {account}
+                {family}
+                roster_changes={store.roster_changes}
+                on_action={on_action.clone()}
+                on_close={close_panel.clone()}
+                on_sign_out={{
+                    let confirming = confirming_sign_out.clone();
+                    Callback::from(move |_: ()| confirming.set(true))
+                }}
+            />
+        }),
+        (Some(Panel::Family), Some(account), Some(family)) => Some(html! {
+            <FamilyPane
+                {account}
+                {family}
+                members={store.members.clone()}
+                assistant={store.assistant.clone()}
+                blocked={store.blocked.clone()}
+                join_requests={store.join_requests.clone()}
+                reports={store.reports.clone()}
+                support_contact={store.support_contact.clone()}
+                on_action={on_action.clone()}
+                on_close={close_panel.clone()}
+            />
+        }),
+        _ => None,
+    };
+
     html! {
         <ContextProvider<MediaLoader> context={media}>
         <div class="app">
@@ -378,6 +477,8 @@ fn app() -> Html {
                 }
                 <span class="bar-actions">
                     { board_button.unwrap_or_default() }
+                    { family_button.unwrap_or_default() }
+                    { settings_button.unwrap_or_default() }
                     <button class="signout" onclick={sign_out_click}>{ "Sign out" }</button>
                 </span>
             </header>
@@ -396,13 +497,16 @@ fn app() -> Html {
                 <ChatList
                     chats={store.sorted_chats()}
                     names={store.names.clone()}
+                    avatars={store.members.iter().map(|member| (member.id, member.avatar_version)).collect::<HashMap<i64, i64>>()}
                     blocked={store.blocked.clone()}
                     my_user_id={store.my_user_id}
                     selected={state.open_chat}
                     on_select={on_action.reform(Action::SelectChat)}
                     now_ms={now}
                 />
-                if state.board_open && store.family.is_some() {
+                if let Some(panel) = panel {
+                    { panel }
+                } else if state.board_open && store.family.is_some() {
                     <BoardPane
                         notes={store.board.drawn()}
                         loaded={store.board.loaded}
@@ -451,8 +555,38 @@ fn app() -> Html {
                 { side_panel }
             </div>
             { viewer.unwrap_or_default() }
+            if *confirming_sign_out {
+                <Confirm
+                    title="Sign out?"
+                    message={sign_out_message(!store.outbox.is_empty() || !store.staged.is_empty())}
+                    confirm="Sign Out"
+                    on_confirm={{
+                        let confirming = confirming_sign_out.clone();
+                        let sign_out = sign_out.clone();
+                        Callback::from(move |_: ()| {
+                            confirming.set(false);
+                            sign_out.emit(true);
+                        })
+                    }}
+                    on_cancel={{
+                        let confirming = confirming_sign_out.clone();
+                        Callback::from(move |_: ()| confirming.set(false))
+                    }}
+                />
+            }
         </div>
         </ContextProvider<MediaLoader>>
+    }
+}
+
+/// What signing out means for this tab: the messages are the server's, the
+/// session is the tab's — and what the tab has not sent yet goes with it.
+fn sign_out_message(unsent: bool) -> String {
+    let lead = "Messages stay on the family server; this tab forgets its session.";
+    if unsent {
+        format!("{lead} What hasn't been sent yet is lost.")
+    } else {
+        lead.to_string()
     }
 }
 
