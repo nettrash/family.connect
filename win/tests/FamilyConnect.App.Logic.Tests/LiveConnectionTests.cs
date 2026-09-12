@@ -25,6 +25,11 @@ public class LiveConnectionTests : IDisposable
 
         public int Runs { get; private set; }
 
+        /// <summary>The most <see cref="RunAsync"/> calls that were ever in flight at once.</summary>
+        public int Overlap { get; private set; }
+
+        public int Live { get; private set; }
+
         public bool Stopped { get; private set; }
 
         public bool IsConnected { get; set; }
@@ -45,6 +50,8 @@ public class LiveConnectionTests : IDisposable
         public async Task RunAsync(CancellationToken ct)
         {
             Runs++;
+            Live++;
+            Overlap = Math.Max(Overlap, Live);
             running.TrySetResult();
             try
             {
@@ -53,6 +60,10 @@ public class LiveConnectionTests : IDisposable
             catch (OperationCanceledException)
             {
                 Stopped = true;
+            }
+            finally
+            {
+                Live--;
             }
         }
 
@@ -236,6 +247,38 @@ public class LiveConnectionTests : IDisposable
         // and the one after it did.
         Assert.Equal(2, routed);
         await rig.Live.DisposeAsync();
+    }
+
+    /// <summary>
+    /// STARTING AND STOPPING ARE SERIALISED. A stop used to clear its fields and only then wait
+    /// for the socket loop to wind down, so a start arriving in that window found nothing running
+    /// and put a SECOND <c>RunAsync</c> on the same socket — one object with one live connection
+    /// field, and the two would have fought over it. A gate that moves away and back (signed out,
+    /// signed in; removed, re-approved) is exactly that window.
+    /// </summary>
+    [Fact]
+    public async Task AGateThatMovesAwayAndBackNeverRunsTwoSocketsAtOnce()
+    {
+        var rig = Build();
+        await rig.Session.SignInAsync("anna", "hunter2");
+        await rig.Wire.Running.WaitAsync(Patience);
+
+        for (var again = 0; again < 5; again++)
+        {
+            // Not awaited, on purpose: this is the window handler's own shape — the gate moved
+            // on somebody else's thread and a window event may not block on a socket.
+            var stopping = rig.Live.StopAsync();
+            rig.Live.Start();
+            await stopping.WaitAsync(Patience);
+            await rig.Live.StartAsync();
+        }
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+        Assert.Equal(1, rig.Wire.Overlap);
+        Assert.Equal(Link.Connecting, rig.Live.Link);
+
+        await rig.Live.DisposeAsync();
+        Assert.Equal(0, rig.Wire.Live);
     }
 
     /// <summary>

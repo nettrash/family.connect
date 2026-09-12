@@ -57,6 +57,16 @@ public sealed class LiveConnection : IAsyncDisposable
     private readonly SemaphoreSlim due = new(0, 1);
     private readonly object gate = new();
 
+    /// <summary>
+    /// STARTING AND STOPPING ARE SERIALISED, and it took a review round to notice why. A stop
+    /// clears the fields under the lock and only THEN waits for the socket loop to wind down, so
+    /// a start arriving in that window found `life` null, believed nothing was running, and put a
+    /// SECOND <c>RunAsync</c> on the same socket — which is one socket object with one live
+    /// connection field, so the two would have fought over it. A gate movement away and back
+    /// (signed out, signed in; removed, re-approved) is exactly that window.
+    /// </summary>
+    private readonly SemaphoreSlim lifecycle = new(1, 1);
+
     private CancellationTokenSource? life;
     private Task? loop;
     private Task? passes;
@@ -107,9 +117,16 @@ public sealed class LiveConnection : IAsyncDisposable
     /// Start listening, if the session says there is anything to listen to. Idempotent: the
     /// window may call it on every appearance.
     /// </summary>
-    public void Start()
+    public void Start() => _ = StartAsync();
+
+    /// <summary>
+    /// The same start, awaitable — which is what a test wants and what the fire-and-forget
+    /// <see cref="Start"/> is.
+    /// </summary>
+    public async Task StartAsync()
     {
-        lock (gate)
+        await lifecycle.WaitAsync().ConfigureAwait(false);
+        try
         {
             if (!session.State.CanChat || life is not null)
             {
@@ -120,7 +137,11 @@ public sealed class LiveConnection : IAsyncDisposable
             loop = Task.Run(() => socket.RunAsync(ct), CancellationToken.None);
             passes = Task.Run(() => PassesAsync(ct), CancellationToken.None);
         }
-        // Outside the lock: a subscriber is somebody else's code, and holding a lock across it is
+        finally
+        {
+            lifecycle.Release();
+        }
+        // Outside the gate: a subscriber is somebody else's code, and holding a gate across it is
         // how a window handler ends up waiting on a socket.
         Publish(Link.Connecting);
     }
@@ -131,36 +152,41 @@ public sealed class LiveConnection : IAsyncDisposable
     /// </summary>
     public async Task StopAsync()
     {
-        CancellationTokenSource? stopping;
-        Task?[] running;
-        lock (gate)
+        await lifecycle.WaitAsync().ConfigureAwait(false);
+        try
         {
-            stopping = life;
-            running = [loop, passes];
+            var stopping = life;
+            Task?[] running = [loop, passes];
+            if (stopping is null)
+            {
+                return;
+            }
+            await stopping.CancelAsync().ConfigureAwait(false);
+            foreach (var task in running)
+            {
+                if (task is not null)
+                {
+                    try
+                    {
+                        await task.ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Asked for.
+                    }
+                }
+            }
+            stopping.Dispose();
+            // Cleared only once the loop has actually WOUND DOWN, and inside the gate, so a
+            // start that follows cannot find a socket that looks free while it is still running.
             life = null;
             loop = null;
             passes = null;
         }
-        if (stopping is null)
+        finally
         {
-            return;
+            lifecycle.Release();
         }
-        await stopping.CancelAsync().ConfigureAwait(false);
-        foreach (var task in running)
-        {
-            if (task is not null)
-            {
-                try
-                {
-                    await task.ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    // Asked for.
-                }
-            }
-        }
-        stopping.Dispose();
         Publish(Link.Down);
     }
 
@@ -262,5 +288,6 @@ public sealed class LiveConnection : IAsyncDisposable
         session.Changed -= OnGateMoved;
         await StopAsync().ConfigureAwait(false);
         due.Dispose();
+        lifecycle.Dispose();
     }
 }

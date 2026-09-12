@@ -194,6 +194,42 @@ public class ConversationModelTests : IDisposable
         Assert.Equal(2, rig.Handler.Asked.Count);
     }
 
+    /// <summary>
+    /// A WINDOW THAT IS NOT AT THE BOTTOM SAYS SO. A reader who opened a chat at an old position
+    /// and never came down has not read the rest of it, and a client that reported the newest
+    /// anyway would clear a badge nobody looked at.
+    /// </summary>
+    [Fact]
+    public async Task AWindowScrolledUpTheHistoryReportsOnlyWhatItHasShown()
+    {
+        chats.Apply([Message(1338), Message(1339), Message(1340)], SeqRoute.LiveFrame);
+        var rig = Build(new Server().On("/chats/42/read", null, HttpStatusCode.NoContent));
+
+        Assert.True(await rig.Chat.ReadAsync(seen: 1339));
+
+        Assert.Equal(1339, chats.Chat(Chat)!.LastReadMessageId);
+        // One message is still unread, and the badge still says so.
+        Assert.Equal(1, chats.Chat(Chat)!.UnreadCount);
+
+        // Coming down to the bottom reports the rest.
+        Assert.True(await rig.Chat.ReadAsync());
+        Assert.Equal(1340, chats.Chat(Chat)!.LastReadMessageId);
+        Assert.Equal(0, chats.Chat(Chat)!.UnreadCount);
+    }
+
+    [Fact]
+    public async Task AWindowThatNamesAnIdThisDeviceHasNeverSeenIsClamped()
+    {
+        chats.Apply(Message(1338), SeqRoute.LiveFrame);
+        var rig = Build(new Server().On("/chats/42/read", null, HttpStatusCode.NoContent));
+
+        Assert.True(await rig.Chat.ReadAsync(seen: 999_999));
+
+        // What is HELD, not what was named: a marker past the newest message would report a
+        // message this device has never seen as read.
+        Assert.Equal(1338, chats.Chat(Chat)!.LastReadMessageId);
+    }
+
     [Fact]
     public async Task AReadThatTheNetworkRefusesStillTakesTheBadgeOut()
     {

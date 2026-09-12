@@ -411,6 +411,39 @@ public class AppSessionTests : IDisposable
         Assert.Equal(Gate.Owner, session.State.Gate);
     }
 
+    /// <summary>
+    /// A family read that was IN FLIGHT when the gate moved publishes nothing: handing the window
+    /// a signed-out state carrying a family is how a sign-out draws a chat list for a second.
+    /// </summary>
+    [Fact]
+    public async Task AFamilyReadThatLandsAfterASignOutPublishesNothing()
+    {
+        var held = new TaskCompletionSource();
+        var server = new Server()
+            .On("/auth/login", Token)
+            .On("/me", Me(InFamily))
+            .On("/auth/logout", null, HttpStatusCode.NoContent)
+            .OnAsync("/families/mine", async () =>
+            {
+                await held.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                return (HttpStatusCode.OK, """
+                    {"family": {"id": 3, "name": "The Smiths", "ai_history": true},
+                     "members": [], "blocked_user_ids": []}
+                    """);
+            });
+        var (session, _, _) = Build(server);
+        await session.SignInAsync("anna", "hunter2");
+
+        // The family read is in flight when the user signs out.
+        var reading = session.RefreshFamilyAsync();
+        await session.SignOutAsync();
+        held.SetResult();
+        Assert.Null(await reading);
+
+        Assert.Equal(Gate.SignedOut, session.State.Gate);
+        Assert.Null(session.State.Family);
+    }
+
     [Fact]
     public async Task TheFamilysOwnDocumentFillsInTheAssistantAndTheRoster()
     {
