@@ -272,7 +272,7 @@ struct MacBoardView: View {
             canDraw: AppSettings.assistantImages,
             onDrawBackdrop: {
                 Task {
-                    if await coordinator.drawBackdrop(noteID: note.noteID) == false {
+                    if await coordinator.drawBackdrop(noteID: note.noteID) == nil {
                         failure = String(localized: "Couldn't draw that.")
                     }
                 }
@@ -374,6 +374,13 @@ fileprivate struct MacNoteView: View {
         !isHidden && NoteKind(name: note.kind) == .photo && note.text.isEmpty
     }
 
+    /// An EVENT's picture is its BACKDROP — the card's ground, not its
+    /// content (docs/protocol.md, "Board").
+    private var backdropID: Int64? {
+        guard !isHidden, NoteKind(name: note.kind) == .event else { return nil }
+        return note.attachmentID
+    }
+
     /// The pinned picture's own shape, where the server recorded it — the
     /// card of a bare photo, fitted (docs/protocol.md, "Board"). Nil
     /// otherwise, and then the card is the step's own.
@@ -426,13 +433,6 @@ fileprivate struct MacNoteView: View {
                     going: note.answerCount(RsvpAnswer.going.name),
                     maybe: note.answerCount(RsvpAnswer.maybe.name))
             }
-            // A LIST says what is on it, under its title: the first
-            // lines with their state, and then how many are left. No click
-            // here — the tick is in the menu on this platform
-            // (docs/protocol.md, "Board").
-            if !isHidden, NoteKind(name: note.kind) == .tasks {
-                NoteTaskBlock(items: note.taskList)
-            }
             if !isBarePicture {
             // The names, bold and in the note's own ink — and not doors on
             // the wall, for the reason BoardView gives (docs/protocol.md,
@@ -452,6 +452,15 @@ fileprivate struct MacNoteView: View {
                 // the same rule and the same floor as the phone.
                 .lineLimit(noteSize.fittedLineLimit)
                 .minimumScaleFactor(noteSize.minimumTextScale)
+            // A LIST says what is on it, UNDER ITS TITLE (docs/protocol.md,
+            // "Board"): the first lines with their state, and then how many
+            // are left. Drawn after the text for exactly that reason — the
+            // Mac had it above, so the title of a list read as a caption
+            // under it. No click here: the tick is in the menu on this
+            // platform.
+            if !isHidden, NoteKind(name: note.kind) == .tasks {
+                NoteTaskBlock(items: note.taskList)
+            }
             Spacer(minLength: 0)
             }
             // No author line at all while hidden — nor on a bare picture,
@@ -464,9 +473,20 @@ fileprivate struct MacNoteView: View {
         }
         .padding(isBarePicture ? 0 : 10)
         .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .background(
-            isBarePicture ? Color.clear : NoteColor.swiftUI(note.color),
-            in: RoundedRectangle(cornerRadius: isBarePicture ? 4 : 8))
+        // The card's ground: its colour, and over that the assistant's
+        // backdrop where there is one — the phone's rule exactly
+        // (docs/protocol.md, "Board").
+        .background {
+            let shape = RoundedRectangle(cornerRadius: isBarePicture ? 4 : 8)
+            shape
+                .fill(isBarePicture ? Color.clear : NoteColor.swiftUI(note.color))
+                .overlay {
+                    if let backdropID {
+                        NoteBackdrop(attachmentID: backdropID)
+                    }
+                }
+                .clipShape(shape)
+        }
         // Lifted off the wall while it is in hand — the same cue the phone
         // gives, and the only feedback a cursor drag has.
         .shadow(color: .black.opacity(isDragging ? 0.28 : 0.12),
@@ -695,6 +715,13 @@ private struct MacNoteEditor: View {
     /// disabled.
     var isDone: (Int64) -> Bool = { _ in false }
     var onTick: (Int64, Bool) -> Void = { _, _ in }
+    /// An event's backdrop, where it has one: the picture the family asked
+    /// for, drawn over the note that is open as well as behind its card
+    /// (docs/protocol.md, "Board"). Read from the note itself rather than
+    /// passed as a flag, so a REDRAW — which replaces the picture with a new
+    /// attachment — is visible here without anything being told to refresh.
+    var backdropID: Int64?
+    /// Last, because SwiftUI's trailing closure is this one.
     let onSave: () -> Void
 
     private var canSave: Bool {
@@ -751,6 +778,11 @@ private struct MacNoteEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.headline)
+            if kind == .event, let backdropID {
+                NoteBackdrop(attachmentID: backdropID)
+                    .frame(width: 320, height: 120)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
             TextEditor(text: $text)
                 .frame(width: 320, height: 120)
                 .border(.separator)
@@ -951,7 +983,9 @@ private struct MacNoteEditorForExisting: View {
                     }
                     ticking[itemID] = nil
                 }
-            }
+            },
+            // Read live from the note, so a redraw is visible here.
+            backdropID: NoteKind(name: note.kind) == .event ? note.attachmentID : nil
         ) {
             let isEvent = kind == .event
             let isList = kind == .tasks

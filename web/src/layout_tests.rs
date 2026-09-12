@@ -1126,3 +1126,80 @@ async fn a_mention_is_bold_and_the_colour_of_the_words_around_it() {
     handle.destroy();
     root.remove();
 }
+
+/// A PICTURE IN THE VIEWER FITS THE WINDOW, both ways.
+///
+/// The bug this pins was a stylesheet rule and nothing else, which is why it
+/// is here rather than in the viewer's own tests: `.viewer-photo` is a grid,
+/// its tracks were AUTO, an auto track grows to its content — so a 600×1200
+/// photograph made the grid area 1200 tall, `max-height: 100%` resolved
+/// against that, and the picture opened at natural size and was clipped by
+/// the overflow. In a window with room for all of it, a reader saw the
+/// middle third.
+///
+/// The markup is built by hand: the component needs a media loader and a
+/// fetched URL to draw anything, and what is under test is the CSS.
+#[wasm_bindgen_test]
+async fn a_tall_picture_in_the_viewer_fits_the_window() {
+    install_stylesheet();
+    let document = document();
+    // A viewer over a window-sized root, as the real one is (`position:
+    // fixed; inset: 0`), with a bar above the stage.
+    let root = fixed_root(
+        "position:fixed;top:0;left:0;width:900px;height:600px;display:grid;\
+         grid-template-rows:minmax(0,1fr);",
+    );
+    root.set_inner_html(
+        "<div class=\"viewer\">\
+           <div class=\"viewer-bar\"><span class=\"viewer-title\">Photo</span></div>\
+           <div class=\"viewer-stage\">\
+             <div class=\"viewer-photo\"><img alt=\"\" /></div>\
+           </div>\
+         </div>",
+    );
+    let image: HtmlElement = root
+        .query_selector(".viewer-photo img")
+        .expect("a selector")
+        .expect("the picture")
+        .dyn_into()
+        .unwrap();
+    // A 3×6 pixel PNG stretched by CSS behaves like the 600×1200 one: what
+    // decides the layout is the intrinsic RATIO, not the pixel count.
+    let tall = "data:image/svg+xml;base64,\
+        PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2MDAiIGhlaWdodD0iMTIwMCI+\
+        PHJlY3Qgd2lkdGg9IjYwMCIgaGVpZ2h0PSIxMjAwIiBmaWxsPSIjMDA4MGZmIi8+PC9zdmc+";
+    image
+        .set_attribute("src", tall)
+        .expect("the picture's source");
+    // Two frames: one for the load, one for the layout it changes.
+    TimeoutFuture::new(120).await;
+
+    let stage: HtmlElement = root
+        .query_selector(".viewer-stage")
+        .expect("a selector")
+        .expect("the stage")
+        .dyn_into()
+        .unwrap();
+    let drawn = image.get_bounding_client_rect();
+    let box_ = stage.get_bounding_client_rect();
+    assert!(drawn.height() > 0.0, "the picture drew at all");
+    assert!(
+        drawn.height() <= box_.height() + 1.0,
+        "the picture is no taller than the stage: {} in {}",
+        drawn.height(),
+        box_.height()
+    );
+    assert!(
+        drawn.width() <= box_.width() + 1.0,
+        "nor wider: {} in {}",
+        drawn.width(),
+        box_.width()
+    );
+    // And it keeps its own shape rather than being squashed into the box.
+    let ratio = drawn.width() / drawn.height();
+    assert!(
+        (ratio - 0.5).abs() < 0.02,
+        "a 1:2 photograph stays 1:2: {ratio}"
+    );
+    root.remove();
+}

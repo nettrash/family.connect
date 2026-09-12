@@ -489,8 +489,32 @@ button.link, .link {
 .viewer .secondary { background: rgb(255 255 255 / 12%); color: #f2f2f6; }
 .viewer .link { color: #f2f2f6; font-size: 18px; }
 .viewer-stage { position: relative; min-height: 0; display: grid; place-items: center; overflow: hidden; }
-.viewer-photo, .viewer-video { position: relative; width: 100%; height: 100%; display: grid; place-items: center; overflow: hidden; }
-.viewer-photo img, .viewer-video img, .viewer-video video { max-width: 100%; max-height: 100%; object-fit: contain; }
+/* THE PICTURE FITS THE WINDOW, both ways.
+ *
+ * The rows and columns are pinned to `minmax(0, 1fr)` on purpose, and this is
+ * the whole fix: an AUTO track grows to its content, so the image's own 1200px
+ * became the grid area, `max-height: 100%` resolved against THAT, and a
+ * portrait photograph opened at natural size and was clipped by the overflow
+ * below — the middle third of it, in a window with room for all of it. A
+ * bounded track makes the area the BOX, which is what the percentages were
+ * always meant to mean. */
+.viewer-photo, .viewer-video {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    place-items: center;
+    overflow: hidden;
+}
+.viewer-photo img, .viewer-video img, .viewer-video video {
+    max-width: 100%;
+    max-height: 100%;
+    /* `contain` alone would not have saved it: the element itself was 1200
+     * tall, so there was nothing left over to letterbox. */
+    object-fit: contain;
+}
 .viewer-photo img { transition: transform .12s ease-out; touch-action: none; user-select: none; }
 .viewer-photo img.is-zoomed { cursor: grab; transition: none; }
 .viewer-loading { margin: 0; opacity: .8; }
@@ -985,6 +1009,39 @@ button.mention { cursor: pointer; }
 .note-picture.is-loading { background: rgb(0 0 0 / 6%); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .6; } }
 
+/* AN EVENT'S BACKDROP: the picture the assistant drew, as the card's GROUND
+ * (docs/protocol.md, "Board"). The one picture here that is not drawn whole
+ * — it stands in for the paper, so it covers the card and is cropped to its
+ * shape — with a scrim of its own so the note's fixed dark ink stays
+ * readable over whatever the model chose to draw. Taken out of the flow so
+ * it takes none of the room the words need — the wall's promise is that a
+ * note's text fits its card. */
+.note-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    overflow: hidden;
+    pointer-events: none;
+}
+.note-backdrop img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.note-backdrop::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    /* Lighter at the top, where the date block sits on its own white paper,
+     * and heavier under the title and the place. */
+    background: linear-gradient(to bottom, rgb(255 255 255 / 45%), rgb(255 255 255 / 78%));
+}
+/* Everything the card SAYS is lifted over the ground. Without this the
+ * backdrop paints in document order — over the date block and the title,
+ * which is a card with a picture and no words on it. */
+.sticker.has-backdrop > *:not(.note-backdrop) { position: relative; z-index: 1; }
+/* And a slightly deeper shadow, because a picture reaches the card's edges
+ * where a pastel had the wall showing through its own translucency: without
+ * it a pale backdrop dissolves into the cork. */
+.sticker.has-backdrop { box-shadow: 0 2px 6px rgb(0 0 0 / 22%); }
+
 /* A TASK LIST on the wall: the first lines with their state, and then how
  * many are left (docs/protocol.md, "Board"). Inside `.note-text`, so the
  * fitting scales the title and the lines together — and aria-hidden, since
@@ -1126,6 +1183,26 @@ button.mention { cursor: pointer; }
     margin: 0 auto;
 }
 .sheet-picture .note-picture.is-loading { height: min(240px, 40vh); }
+/* The backdrop over an OPEN event: a banner, not a ground — a dialog's
+ * fields need their own paper, and this is where the picture the family
+ * asked for is big enough to look at. Click opens it in the viewer, like
+ * any other picture on this board. */
+.sheet-banner {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: transparent;
+    cursor: zoom-in;
+}
+.sheet-banner .note-backdrop {
+    position: relative;
+    inset: auto;
+    height: min(180px, 28vh);
+}
+/* No scrim here: there are no words over it in a dialog. */
+.sheet-banner .note-backdrop::after { content: none; }
 .sheet-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; }
 .sheet-when { margin: 0; display: grid; gap: 2px; font-weight: 600; }
 .sheet-place { font-weight: 400; color: var(--muted); }

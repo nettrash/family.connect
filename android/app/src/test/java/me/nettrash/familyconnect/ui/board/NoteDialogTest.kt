@@ -25,6 +25,8 @@
 package me.nettrash.familyconnect.ui.board
 
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -34,6 +36,9 @@ import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -41,6 +46,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performTouchInput
 import com.google.common.truth.Truth.assertThat
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.RsvpDto
 import me.nettrash.familyconnect.data.net.dto.TaskItemDto
 import me.nettrash.familyconnect.data.net.dto.MentionDto
@@ -55,6 +61,17 @@ class NoteDialogTest {
 
     @get:Rule
     val compose = createComposeRule()
+
+    /** What the assistant answers with: an ordinary attachment afterwards. */
+    private val drawnPicture = AttachmentDto(
+        id = 900L,
+        kind = "photo",
+        mime = "image/png",
+        size = 2048L,
+        width = 1024,
+        height = 1024,
+        hasPreview = true,
+    )
 
     private fun draft() = NoteDraft(
         noteId = null,
@@ -459,6 +476,50 @@ class NoteDialogTest {
     }
 
     /**
+     * THE FOUR ANSWERS ARE FOUR EQUAL SEGMENTS, one line each.
+     *
+     * "No answer" is the longest of the four labels, and it was wrapping:
+     * that made its own segment wider than the others and stretched the
+     * row's background down with it. It also sits FIRST now, as the phone's
+     * picker and the web both have it.
+     */
+    @Test
+    fun theAnswersAreFourEqualSegmentsAndNobodyWraps() {
+        compose.setContent {
+            NoteDialog(
+                draft = eventDraft(),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                names = guestNames,
+                onDelete = null,
+            )
+        }
+
+        // By ROLE as well as by text: "Going" and "Maybe" also name the
+        // groups of who is coming, further down the same dialog.
+        val segments = listOf("No answer", "Going", "Maybe", "Can't").map { label ->
+            compose.onAllNodes(
+                hasText(label) and SemanticsMatcher.expectValue(
+                    SemanticsProperties.Role,
+                    Role.RadioButton,
+                ),
+            ).onFirst().fetchSemanticsNode()
+        }
+        val widths = segments.map { it.size.width }
+        val heights = segments.map { it.size.height }
+        // Equal quarters: no segment is bigger than its neighbours.
+        assertThat(widths.max() - widths.min()).isAtMost(2)
+        // And the same height, which is what "the background expanded
+        // vertically" was: one label on two lines takes the row with it.
+        assertThat(heights.max() - heights.min()).isAtMost(2)
+        // "No answer" leads, where a reader looks to take an answer back.
+        val lefts = segments.map { it.positionInRoot.x }
+        assertThat(lefts).isInOrder()
+    }
+
+    /**
      * The calendar copy is ANYBODY's; the backdrop is the author's, and
      * only where the server can draw at all (docs/protocol.md, "Board").
      */
@@ -486,7 +547,7 @@ class NoteDialogTest {
 
     @Test
     fun theAuthorAsksForABackdropOnceAndTheButtonSaysItIsDrawing() {
-        var settle: ((Boolean) -> Unit)? = null
+        var settle: ((AttachmentDto?) -> Unit)? = null
         var asked = 0
         compose.setContent {
             NoteDialog(
@@ -511,12 +572,42 @@ class NoteDialogTest {
         compose.onNodeWithText("Drawing…").performClick()
         assertThat(asked).isEqualTo(1)
 
-        settle?.invoke(true)
+        settle?.invoke(drawnPicture)
         compose.waitForIdle()
-        // Back to an offer — and the note this dialog was opened with had
-        // no backdrop, so it is the first-time wording until it is
-        // reopened on a note that has one.
-        compose.onNodeWithText("Draw a backdrop").assertIsDisplayed()
+        // The picture LANDED, so the offer is now "another": the dialog
+        // knows what it drew even though the draft it opened with had none.
+        // Before this the button went back to offering a first backdrop and
+        // the card still showed no picture, which is exactly what "after
+        // regeneration nothing changed" looked like.
+        compose.onNodeWithText("Draw another backdrop").assertIsDisplayed()
+    }
+
+    /** And what it drew is DRAWN, over the note that is open. */
+    @Test
+    fun aBackdropThatLandedIsDrawnInTheOpenNote() {
+        var settle: ((AttachmentDto?) -> Unit)? = null
+        compose.setContent {
+            NoteDialog(
+                draft = eventDraft(),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                names = guestNames,
+                canDraw = true,
+                onDrawBackdrop = { onSettled -> settle = onSettled },
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithText("Draw a backdrop").performClick()
+        settle?.invoke(drawnPicture)
+        compose.waitForIdle()
+
+        // The bytes never arrive in a Robolectric test, so what is pinned
+        // here is that the dialog now HAS a backdrop to draw — the wording
+        // is the only thing a test without pixels can see.
+        compose.onNodeWithText("Draw another backdrop").assertIsDisplayed()
     }
 
     /**
@@ -536,7 +627,7 @@ class NoteDialogTest {
                 onSave = { _, _, _, _, _ -> },
                 names = guestNames,
                 canDraw = true,
-                onDrawBackdrop = { onSettled -> onSettled(false) },
+                onDrawBackdrop = { onSettled -> onSettled(null) },
                 onDelete = null,
             )
         }
@@ -553,7 +644,7 @@ class NoteDialogTest {
     fun anEventThatAlreadyHasABackdropOffersAnother() {
         compose.setContent {
             NoteDialog(
-                draft = eventDraft().copy(hasBackdrop = true),
+                draft = eventDraft().copy(backdrop = drawnPicture),
                 canEdit = true,
                 authorName = "You",
                 onDismiss = {},

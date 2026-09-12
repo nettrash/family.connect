@@ -1,0 +1,150 @@
+{
+  "capped": [
+    {"text": "Milk and eggs", "max": 4, "kept": "Milk", "scalars": 13},
+    {"text": "Milk and eggs", "max": 280, "kept": "Milk and eggs", "scalars": 13},
+    {"text": "Milk", "max": 0, "kept": "", "scalars": 4},
+    {"text": "🎂🎂", "max": 1, "kept": "🎂", "scalars": 2},
+    {"text": "🎂", "max": 0, "kept": "", "scalars": 1},
+    {"text": "👨‍👩‍👧‍👦", "max": 3, "kept": "👨‍👩", "scalars": 7},
+    {"text": "éclair", "max": 2, "kept": "é", "scalars": 7},
+    {"text": "é", "max": 1, "kept": "é", "scalars": 1},
+    {"text": "Привет", "max": 3, "kept": "При", "scalars": 6},
+    {"text": "a̐éö̲", "max": 4, "kept": "a̐éö", "scalars": 5}
+  ],
+  "cap_at_caret": [
+    {"value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaxyzbbbbbbbbbbbbbbbbbbbb", "caret": 282, "max": 280, "kept": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbb", "moved": 260},
+    {"value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaxyzbbbbbbbbbbbbbbbbbbbb", "caret": 0, "max": 280, "kept": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaax", "moved": 0},
+    {"value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaxyzbbbbbbbbbbbbbbbbbbbb", "caret": 302, "max": 280, "kept": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaax", "moved": 280},
+    {"value": "Milk", "caret": 2, "max": 280, "kept": "Milk", "moved": 2},
+    {"value": "🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂", "caret": 400, "max": 280, "kept": "🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂", "moved": 400},
+    {"value": "🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂", "caret": 10, "max": 280, "kept": "🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂🎂", "moved": 10},
+    {"value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "caret": 150, "max": 280, "kept": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "moved": 130},
+    {"value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx🎂", "caret": 92, "max": 80, "kept": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "moved": 80}
+  ],
+  "remaining": [
+    {"text": "", "remaining": 280, "counter": false},
+    {"text": "Milk", "remaining": 276, "counter": false},
+    {"text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "remaining": 41, "counter": false},
+    {"text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "remaining": 40, "counter": true},
+    {"text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "remaining": 0, "counter": true}
+  ],
+  "fitted_picture": [
+    {"space": [150, 110], "picture": [600, 1200], "fitted": [54.99999999999999, 109.99999999999999]},
+    {"space": [150, 110], "picture": [1600, 900], "fitted": [150, 84.375]},
+    {"space": [150, 110], "picture": [300, 220], "fitted": [150, 110]},
+    {"space": [150, 110], "picture": [15, 11], "fitted": [150, 110]},
+    {"space": [150, 110], "picture": [0, 0], "fitted": [150, 110]},
+    {"space": [150, 110], "picture": [600, 0], "fitted": [150, 110]},
+    {"space": [150, 110], "picture": [-4, 8], "fitted": [150, 110]},
+    {"space": [150, 110], "picture": [20000, 10], "fitted": [150, 1]},
+    {"space": [132, 132], "picture": [4032, 3024], "fitted": [132, 99]},
+    {"space": [280, 200], "picture": [1080, 1920], "fitted": [112.5, 200]}
+  ],
+  "wall_height": [
+    {"visible": 0, "height": 0},
+    {"visible": 1, "height": 1.6},
+    {"visible": 500, "height": 800},
+    {"visible": 1000, "height": 1600}
+  ],
+  "task_lines": [
+    {"total": 0, "shown": 0, "left": 0},
+    {"total": 3, "shown": 3, "left": 0},
+    {"total": 5, "shown": 5, "left": 0},
+    {"total": 6, "shown": 5, "left": 1},
+    {"total": 20, "shown": 5, "left": 15}
+  ],
+  "tilt": [
+    {"id": -8, "degrees": 3},
+    {"id": -7, "degrees": -3},
+    {"id": -6, "degrees": -2},
+    {"id": -5, "degrees": -1},
+    {"id": -4, "degrees": 0},
+    {"id": -3, "degrees": 1},
+    {"id": -2, "degrees": 2},
+    {"id": -1, "degrees": 3},
+    {"id": 0, "degrees": -3},
+    {"id": 1, "degrees": -2},
+    {"id": 2, "degrees": -1},
+    {"id": 3, "degrees": 0},
+    {"id": 4, "degrees": 1},
+    {"id": 5, "degrees": 2},
+    {"id": 6, "degrees": 3},
+    {"id": 7, "degrees": -3},
+    {"id": 8, "degrees": -2},
+    {"id": 9, "degrees": -1},
+    {"id": 10, "degrees": 0},
+    {"id": 11, "degrees": 1},
+    {"id": 12, "degrees": 2},
+    {"id": 13, "degrees": 3},
+    {"id": 14, "degrees": -3},
+    {"id": 15, "degrees": -2}
+  ],
+  "geometry": [
+    {"fraction": [0.5, 0.25], "card": [150, 110], "board": [900, 600], "offset": [20, -20], "origin": [450, 150], "dragged": [470, 130], "fraction_of_origin": [0.5, 0.25]},
+    {"fraction": [0.98, 0.98], "card": [150, 110], "board": [900, 600], "offset": [0, 0], "origin": [750, 490], "dragged": [750, 490], "fraction_of_origin": [0.8333333333333334, 0.8166666666666667]},
+    {"fraction": [-1, -1], "card": [150, 110], "board": [900, 600], "offset": [5, 5], "origin": [0, 0], "dragged": [5, 5], "fraction_of_origin": [0, 0]},
+    {"fraction": [0.5, 0.5], "card": [150, 110], "board": [100, 80], "offset": [0, 0], "origin": [0, 0], "dragged": [0, 0], "fraction_of_origin": [0, 0]},
+    {"fraction": [0.1, 0.9], "card": [280, 200], "board": [1200, 1600], "offset": [-400, 400], "origin": [120, 1400], "dragged": [0, 1400], "fraction_of_origin": [0.1, 0.875]}
+  ],
+  "cards": [
+    {"size": "small", "compact": false, "card": [120, 88], "type_px": 12},
+    {"size": "small", "compact": true, "card": [100, 100], "type_px": 12},
+    {"size": "medium", "compact": false, "card": [150, 110], "type_px": 14},
+    {"size": "medium", "compact": true, "card": [132, 132], "type_px": 14},
+    {"size": "large", "compact": false, "card": [280, 200], "type_px": 15},
+    {"size": "large", "compact": true, "card": [220, 220], "type_px": 15}
+  ],
+  "colors": [
+    {"name": "yellow", "hex": "#fff2b3"},
+    {"name": "pink", "hex": "#fcc7d9"},
+    {"name": "blue", "hex": "#c2e0fc"},
+    {"name": "green", "hex": "#c9f0c9"},
+    {"name": "orange", "hex": "#ffd9b3"},
+    {"name": "purple", "hex": "#e0d1fa"},
+    {"name": "chartreuse", "hex": "#fff2b3"}
+  ],
+  "fallbacks": [
+    {"given": "small", "size": "small"},
+    {"given": "medium", "size": "medium"},
+    {"given": "large", "size": "large"},
+    {"given": "huge", "size": "medium"},
+    {"given": "Large", "size": "medium"},
+    {"given": null, "size": "medium"}
+  ],
+  "kinds": [
+    {"given": "text", "kind": "text"},
+    {"given": "photo", "kind": "photo"},
+    {"given": "event", "kind": "event"},
+    {"given": "tasks", "kind": "tasks"},
+    {"given": "video", "kind": "text"},
+    {"given": null, "kind": "text"}
+  ],
+  "answers": [
+    {"given": "going", "answer": "going"},
+    {"given": "maybe", "answer": "maybe"},
+    {"given": "no", "answer": "no"},
+    {"given": "perhaps", "answer": null},
+    {"given": null, "answer": null}
+  ],
+  "going_line": [
+    {"going": 0, "maybe": 0, "line": null},
+    {"going": 2, "maybe": 0, "line": "2 going"},
+    {"going": 0, "maybe": 1, "line": "1 maybe"},
+    {"going": 2, "maybe": 1, "line": "2 going, 1 maybe"},
+    {"going": 7, "maybe": 3, "line": "7 going, 3 maybe"}
+  ],
+  "lines_that_fit": [
+    {"height": 80, "line_height": 20, "lines": 4},
+    {"height": 10, "line_height": 20, "lines": 1},
+    {"height": 80, "line_height": 0, "lines": 1},
+    {"height": 0, "line_height": 20, "lines": 1}
+  ],
+  "unread": [
+    {"note_id": 3, "content_seq": 101, "unread": true},
+    {"note_id": 99, "content_seq": 100, "unread": false},
+    {"note_id": 11, "content_seq": null, "unread": true},
+    {"note_id": 10, "content_seq": null, "unread": false},
+    {"note_id": 11, "content_seq": 0, "unread": true}
+  ],
+  "constants": {"max_text": 280, "max_place": 200, "max_task_item": 100, "max_task_items": 20, "counter_from": 40, "wall_screens": 1.6, "wall_task_lines": 5, "compact_below": 640, "min_text_scale": 0.6, "fit_steps": 7}
+}

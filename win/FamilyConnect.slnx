@@ -1,0 +1,19 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="ARM64" />
+  </Configurations>
+  <Folder Name="/src/">
+    <!--
+      When FamilyConnect.App arrives it is the ONLY project that carries
+      <Platforms>x64;ARM64</Platforms>, and a .slnx needs an explicit rule for it or Visual
+      Studio refuses to open the solution and `dotnet build -p:Platform=x64` silently builds
+      the other architecture (md.win/docs/windows-facts.md, paid for once already). Everything
+      here is AnyCPU until then, which needs no rule.
+    -->
+    <Project Path="src/FamilyConnect.Core/FamilyConnect.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FamilyConnect.Core.Tests/FamilyConnect.Core.Tests.csproj" />
+  </Folder>
+</Solution>

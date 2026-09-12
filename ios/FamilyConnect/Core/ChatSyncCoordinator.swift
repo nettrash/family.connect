@@ -1252,11 +1252,19 @@ final class ChatSyncCoordinator {
     /// AUTHOR's, and drawn from the note's own title — there is nothing to
     /// send (docs/protocol.md, "Board").
     @discardableResult
-    func drawBackdrop(noteID: Int64) async -> Bool {
-        guard let dto = try? await api.drawBackdrop(noteID: noteID) else { return false }
+    /// Ask the assistant for an event's backdrop, and answer with the
+    /// picture's id — nil when it did not arrive.
+    ///
+    /// The ID rather than a Bool, because a REDRAW replaces the picture with
+    /// a NEW attachment (docs/protocol.md, "Board") and the sheet that asked
+    /// holds a snapshot of the note as it was: without the new id it would
+    /// keep drawing the old picture, or none, which is what made asking
+    /// again look like nothing happening.
+    func drawBackdrop(noteID: Int64) async -> Int64? {
+        guard let dto = try? await api.drawBackdrop(noteID: noteID) else { return nil }
         applyNote(dto)
         saveContext()
-        return true
+        return dto.attachment?.id
     }
 
     func deleteNote(id: Int64) async -> Bool {

@@ -53,11 +53,71 @@ struct BoardGround: View {
     }
 
     var body: some View {
-        // Lit from the top-left, the way a wall in a room is.
-        LinearGradient(
-            colors: [cork, cork, shade],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing)
+        // THE SAME FOUR LAYERS THE WEB PAINTS, in the same order — the web's
+        // wall was the one that looked like cork and the apps' was a flat
+        // gradient, which is what "only on the web does the board look ok"
+        // was about:
+        //
+        //   1. the cork itself, lit from the top-left the way a wall in a
+        //      room is;
+        //   2. a soft highlight where the light falls;
+        //   3. a shadow in the far corner;
+        //   4. the WEAVE — two sets of hairlines at opposing angles, which
+        //      is what stops a large wall reading as a flat brown rectangle.
+        //
+        // Drawn, not an asset: an image would have to be shipped at three
+        // scales and would tile visibly on a wall this size.
+        ZStack {
+            LinearGradient(
+                colors: [cork, cork, shade],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing)
+            Canvas { context, size in
+                weave(in: &context, size: size, degrees: 38, spacing: 4, color: .black.opacity(0.04))
+                weave(in: &context, size: size, degrees: -52, spacing: 5, color: .white.opacity(0.05))
+            }
+            RadialGradient(
+                colors: [.white.opacity(0.26), .clear],
+                center: UnitPoint(x: 0.15, y: 0),
+                startRadius: 0,
+                endRadius: 520)
+            RadialGradient(
+                colors: [.black.opacity(0.14), .clear],
+                center: UnitPoint(x: 0.85, y: 1),
+                startRadius: 0,
+                endRadius: 420)
+        }
+        // A ground is not content: a reader is told about the notes on the
+        // wall, never about the wall.
+        .accessibilityHidden(true)
+    }
+
+    /// One set of the weave's hairlines, at `degrees` from the vertical.
+    ///
+    /// Drawn from the middle out, across the wall's DIAGONAL: rotate a square
+    /// of that size about the centre and it still covers the wall whatever
+    /// the angle, so no line stops short of an edge — and it is the smallest
+    /// box that does, which on a Mac's wall is about a third fewer lines
+    /// than the lazy (width + height) reach. One stroke for the whole set.
+    private func weave(
+        in context: inout GraphicsContext,
+        size: CGSize,
+        degrees: Double,
+        spacing: CGFloat,
+        color: Color
+    ) {
+        let reach = hypot(size.width, size.height) / 2 + spacing
+        guard reach > 0, spacing > 0 else { return }
+        var path = Path()
+        var offset = -reach
+        while offset <= reach {
+            path.move(to: CGPoint(x: offset, y: -reach))
+            path.addLine(to: CGPoint(x: offset, y: reach))
+            offset += spacing
+        }
+        context.translateBy(x: size.width / 2, y: size.height / 2)
+        context.rotate(by: .degrees(degrees))
+        context.stroke(path, with: .color(color), lineWidth: 1)
     }
 }
 

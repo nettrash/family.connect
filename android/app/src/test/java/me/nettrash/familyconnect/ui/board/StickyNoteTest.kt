@@ -16,6 +16,7 @@
 
 package me.nettrash.familyconnect.ui.board
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -29,6 +30,8 @@ import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.NoteMentionsCodec
+import me.nettrash.familyconnect.data.net.dto.TaskItemDto
+import me.nettrash.familyconnect.data.net.dto.TaskItemsCodec
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -127,6 +130,72 @@ class StickyNoteTest {
             .fetchSemanticsNode().size
         assertThat(card.width.toFloat() / card.height.toFloat()).isWithin(0.02f).of(1f)
     }
+
+    /**
+     * A LIST'S LINES SIT UNDER ITS TITLE (docs/protocol.md, "Board") — so
+     * the title takes the room it needs and no more. It used to take the
+     * whole card (`weight(1f)` with `fill`), which pushed the lines to the
+     * bottom edge, half a sticker away from the title they belong to.
+     *
+     * Measured on the title's own box, because the lines themselves are
+     * deliberately invisible to the semantics tree: the sticker has one
+     * label and the rows are not separate news.
+     */
+    @Test
+    fun aListsTitleTakesOnlyTheRoomItNeedsAndATextNotesTakesTheCard() {
+        // BOTH IN ONE COMPOSITION, and compared against each other rather
+        // than against a number: a TEXT note's words fill the card, because
+        // that is what the fitting measures against, and a LIST's title
+        // takes one line so the lines can sit under it. Giving a list's
+        // title `fill` again makes these two heights the same, which is
+        // what this catches — a threshold in pixels would have been two
+        // pixels away from passing either way.
+        compose.setContent {
+            Column {
+                StickyNote(
+                    note = list(),
+                    authorName = "Bob",
+                    isHiddenByBlock = false,
+                    boardWidthPx = 1080,
+                    boardHeightPx = 1920,
+                    onMoved = { _, _ -> },
+                    onTap = {},
+                )
+                StickyNote(
+                    note = list().copy(id = 4L, kind = "text", itemsJson = null, text = "Milk"),
+                    authorName = "Bob",
+                    isHiddenByBlock = false,
+                    boardWidthPx = 1080,
+                    boardHeightPx = 1920,
+                    onMoved = { _, _ -> },
+                    onTap = {},
+                )
+            }
+        }
+
+        val listTitle = compose.onNodeWithText("Saturday").fetchSemanticsNode().size.height
+        val textTitle = compose.onNodeWithText("Milk").fetchSemanticsNode().size.height
+        assertThat(textTitle).isGreaterThan(listTitle * 2)
+    }
+
+    private fun list() = NoteEntity(
+        id = 3L,
+        authorId = 9L,
+        text = "Saturday",
+        color = "green",
+        x = 0.1,
+        y = 0.1,
+        createdAt = 0L,
+        updatedAt = 0L,
+        boardSeq = 1L,
+        kind = "tasks",
+        itemsJson = TaskItemsCodec.encode(
+            listOf(
+                TaskItemDto(id = 11L, text = "Milk", done = true, doneBy = 3L),
+                TaskItemDto(id = 12L, text = "Bread", done = false),
+            ),
+        ),
+    )
 
     private fun portrait(caption: String) = NoteEntity(
         id = 2L,

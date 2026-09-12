@@ -29,6 +29,7 @@ import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.BoardApi
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.NoteDto
@@ -334,15 +335,21 @@ class BoardRepository @Inject constructor(
     /**
      * Ask the assistant for a backdrop. The AUTHOR's, and drawn from the
      * note's own title (docs/protocol.md, "Board").
+     *
+     * Answers with the PICTURE — null when none arrived. A redraw replaces
+     * the picture with a new attachment, and the dialog that asked holds the
+     * note as it was when it opened: without the new one it would keep
+     * drawing the old picture, or none, which is what made asking again look
+     * like nothing happening.
      */
-    suspend fun drawBackdrop(noteId: Long): Boolean = when (
+    suspend fun drawBackdrop(noteId: Long): AttachmentDto? = when (
         val result = boardApi.drawBackdrop(noteId)
     ) {
         is ApiResult.Ok -> {
             applyNote(result.value.note)
-            true
+            result.value.note.attachment
         }
-        else -> false
+        else -> null
     }
 
     suspend fun deleteNote(id: Long): Boolean = when (boardApi.deleteNote(id)) {

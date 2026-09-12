@@ -656,6 +656,13 @@ fn sticker(props: &StickerProps) -> Html {
     let picture = (!hidden && kind == Kind::Photo)
         .then(|| note.attachment.clone())
         .flatten();
+    // AN EVENT'S PICTURE IS ITS BACKDROP (docs/protocol.md, "Board"): the
+    // ground the card is drawn on, not the content — so it is not `picture`,
+    // which is what a photo note pins, and it fills the card rather than
+    // being fitted inside it.
+    let backdrop = (!hidden && kind == Kind::Event)
+        .then(|| note.attachment.clone())
+        .flatten();
     let caption = note.text().trim().to_string();
     // A BARE photo's CARD IS THE PICTURE (docs/protocol.md, "Board"): the
     // box hugs the fitted photograph from the same corner, so the pin sits
@@ -995,6 +1002,7 @@ fn sticker(props: &StickerProps) -> Html {
                 dragging.then_some("is-dragging"),
                 hidden.then_some("is-hidden"),
                 picture.is_some().then_some("is-photo"),
+                backdrop.is_some().then_some("has-backdrop"),
                 (!caption.is_empty()).then_some("has-caption"),
             )}
             {style}
@@ -1011,6 +1019,9 @@ fn sticker(props: &StickerProps) -> Html {
             onkeyup={on_key_up}
             onblur={on_blur}
         >
+            if let Some(attachment) = backdrop {
+                <NoteBackdrop {attachment} />
+            }
             if let Some(attachment) = picture {
                 <NotePicture {attachment} />
             }
@@ -1338,6 +1349,30 @@ fn note_picture(props: &PictureProps) -> Html {
     );
     html! {
         <div class={classes!("note-picture", url.is_none().then_some("is-loading"))}>
+            if let Some(url) = url {
+                <img src={url} alt="" draggable="false" />
+            }
+        </div>
+    }
+}
+
+/// AN EVENT'S BACKDROP: the picture the assistant drew, as the card's
+/// ground (docs/protocol.md, "Board").
+///
+/// It FILLS the card — the one picture on this wall that is not drawn whole,
+/// because it stands in for the paper rather than being the thing pinned —
+/// and it carries its own scrim, so the note's ink stays readable over
+/// whatever the model chose to draw.
+#[function_component(NoteBackdrop)]
+fn note_backdrop(props: &PictureProps) -> Html {
+    let source = crate::views::attachments::tile_source(&props.attachment);
+    let url = use_media(
+        props.attachment.id,
+        source.unwrap_or(crate::media::Variant::Preview),
+        source.is_some(),
+    );
+    html! {
+        <div class="note-backdrop" aria-hidden="true">
             if let Some(url) = url {
                 <img src={url} alt="" draggable="false" />
             }
@@ -2489,6 +2524,28 @@ fn note_sheet(props: &SheetProps) -> Html {
             }
         });
 
+    // An event's backdrop, as a banner over the note that is open: on the
+    // wall it is the card's ground, and here it is the picture the family
+    // asked for, big enough to look at (docs/protocol.md, "Board").
+    let event_banner = props
+        .note
+        .as_ref()
+        .filter(|note| note.kind() == Kind::Event)
+        .and_then(|note| note.attachment.clone())
+        .map(|attachment| {
+            let on_action = props.on_action.clone();
+            let items = vec![attachment.clone()];
+            html! {
+                <button
+                    class="sheet-banner"
+                    aria-label={t("View the photo")}
+                    onclick={Callback::from(move |_: MouseEvent| on_action.emit(Action::OpenViewer { items: items.clone(), index: 0 }))}
+                >
+                    <NoteBackdrop {attachment} />
+                </button>
+            }
+        });
+
     let picture = props
         .note
         .as_ref()
@@ -2567,6 +2624,14 @@ fn note_sheet(props: &SheetProps) -> Html {
             .as_ref()
             .filter(|_| kind == Kind::Photo)
             .and_then(|note| note.attachment.clone());
+        // And an event's backdrop, which is the card's ground: the author
+        // asks for one from this very sheet, so the preview is where they
+        // see what arrived (docs/protocol.md, "Board").
+        let preview_backdrop = props
+            .note
+            .as_ref()
+            .filter(|_| kind == Kind::Event)
+            .and_then(|note| note.attachment.clone());
         // The sticker as the wall will draw it — so a bare photo's card is
         // the fitted picture here too (docs/protocol.md, "Board"), or the
         // author would be shown a shape the wall never draws.
@@ -2585,6 +2650,7 @@ fn note_sheet(props: &SheetProps) -> Html {
         };
         html! {
             <>
+                { event_banner.clone().unwrap_or_default() }
                 { picture.clone().unwrap_or_default() }
                 <label class="field">{ field_label }
                     <textarea
@@ -2657,9 +2723,12 @@ fn note_sheet(props: &SheetProps) -> Html {
                 // the author, not a name (docs/protocol.md, "Board").
                 <div class="sheet-preview" aria-label={t("Preview")} role="img">
                     <div
-                        class={classes!("sticker", "is-preview", preview_picture.is_some().then_some("is-photo"), (!preview_text.is_empty()).then_some("has-caption"))}
+                        class={classes!("sticker", "is-preview", preview_picture.is_some().then_some("is-photo"), preview_backdrop.is_some().then_some("has-backdrop"), (!preview_text.is_empty()).then_some("has-caption"))}
                         style={format!("width:{}px;height:{}px;background:{};", card.0, card.1, rules::color_hex(&draft_now.color))}
                     >
+                        if let Some(attachment) = preview_backdrop {
+                            <NoteBackdrop {attachment} />
+                        }
                         if let Some(attachment) = preview_picture {
                             <NotePicture {attachment} />
                         }
@@ -2706,6 +2775,7 @@ fn note_sheet(props: &SheetProps) -> Html {
             });
         html! {
             <>
+                { event_banner.unwrap_or_default() }
                 { picture.unwrap_or_default() }
                 { event.unwrap_or_default() }
                 if !note.text().trim().is_empty() {
@@ -3943,6 +4013,75 @@ mod tests {
         handle.destroy();
         root.remove();
     }
+    /// AN EVENT'S BACKDROP IS DRAWN, and drawn as the card's GROUND
+    /// (docs/protocol.md, "Board"). Nobody drew it at all before: the
+    /// assistant took the family's picture allowance, replaced the note's
+    /// attachment, and every client kept showing a plain card — so asking
+    /// again looked like nothing happening.
+    #[wasm_bindgen_test]
+    async fn an_events_backdrop_is_drawn_behind_its_card() {
+        let log = Log::default();
+        let mut with_backdrop = event_note(6, ME);
+        with_backdrop.attachment = Some(crate::model::Attachment {
+            id: 600,
+            kind: "photo".into(),
+            mime: Some("image/jpeg".into()),
+            width: Some(1024),
+            height: Some(1024),
+            ..Default::default()
+        });
+        let plain = event_note(7, ME);
+        let (root, handle) = render(props(vec![with_backdrop, plain], &[], &log)).await;
+        TimeoutFuture::new(30).await;
+        let window = web_sys::window().expect("a window");
+        let stickers = all(&root, ".sticker");
+        assert_eq!(stickers.len(), 2);
+        let drawn = stickers[0]
+            .query_selector(".note-backdrop")
+            .unwrap()
+            .expect("the event with a picture draws it");
+        // An event with none keeps its colour, exactly as it always did.
+        assert!(
+            stickers[1].query_selector(".note-backdrop").unwrap().is_none(),
+            "and an event without one draws no ground"
+        );
+        // It is NOT the content: a photo note's picture is the thing pinned
+        // and is fitted whole; this stands in for the paper, so it covers.
+        let document = window.document().expect("a document");
+        let img = document.create_element("img").unwrap();
+        drawn.append_child(&img).unwrap();
+        let img: HtmlElement = img.dyn_into().unwrap();
+        let fit = window
+            .get_computed_style(&img)
+            .ok()
+            .flatten()
+            .and_then(|style| style.get_property_value("object-fit").ok())
+            .unwrap_or_default();
+        assert_eq!(fit, "cover", "a backdrop fills its card");
+        // Behind the words, and taking no touches of its own: the whole
+        // face of a sticker is a drag handle.
+        let drawn: HtmlElement = drawn.dyn_into().unwrap();
+        let style = |element: &HtmlElement, property: &str| -> String {
+            window
+                .get_computed_style(element)
+                .ok()
+                .flatten()
+                .and_then(|value| value.get_property_value(property).ok())
+                .unwrap_or_default()
+        };
+        assert_eq!(style(&drawn, "position"), "absolute");
+        assert_eq!(style(&drawn, "pointer-events"), "none");
+        // The event's own block sits OVER it.
+        let block = one(&stickers[0], ".note-event");
+        assert!(
+            style(&block, "position") == "relative",
+            "the card's content is lifted over the ground: {}",
+            style(&block, "position")
+        );
+        handle.destroy();
+        root.remove();
+    }
+
     /// A PHOTO IS DRAWN WHOLE (docs/protocol.md, "Board"): fitted in both
     /// dimensions, never cropped — and a BARE one's card is the picture
     /// itself, so the pin sits on the photograph and the wall shows around

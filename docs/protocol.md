@@ -1037,6 +1037,24 @@ exception, because a family who dislikes what the model drew should not have to 
 and lose the answers to get another one. The picture it replaces goes the way a deleted note's
 does — its row and its bytes — so an event holds one backdrop or none.
 
+**A BACKDROP IS DRAWN, AND IT FILLS ITS CARD.** It is the one picture on this wall that is NOT
+drawn whole: a backdrop is the note's GROUND — it stands in for the paper the event's card would
+otherwise be — so it covers the card, cropped to the card's shape, with the words over it and
+enough of a scrim under them that the ink stays readable. "A PHOTO IS DRAWN WHOLE" above is about a
+picture that IS the content, which somebody chose and pinned; this is decoration a model drew to sit
+behind words, and a letterboxed backdrop with paper showing around it would read as neither one
+thing nor the other. An event with no backdrop keeps its colour, exactly as it always did.
+
+It is drawn on the STICKER and in the opened note, for the reason every other drawing rule here is
+written down: a wall where one device shows the picture the family asked for and another shows a
+plain card is not the same wall. The two are not the same shape, and deliberately: on the sticker it
+is the GROUND, under the words; in the opened note it is a BANNER above them, because a screen of
+fields needs its own paper and because that is where the author who just asked for it wants to see
+it at a size worth looking at. And because asking again replaces the picture with a NEW
+attachment, a client that caches bytes by attachment id shows the new one without being told to
+drop anything — but a client that caches by NOTE must invalidate, or a redraw looks like nothing
+happening, which is exactly how this was found.
+
 It costs a picture and says so: one image against the family's count, with no tokens, exactly as a
 `/draw` does (see "Family statistics"). It takes a `board_seq` and reaches the other devices through
 the one feed, it does NOT notify — only creation notifies, and nobody should be woken because an
