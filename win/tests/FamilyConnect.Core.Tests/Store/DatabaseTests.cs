@@ -40,7 +40,7 @@ public class DatabaseTests : IDisposable
         Assert.Equal(Database.SchemaVersion, database.UserVersion);
         Assert.Equal(1, Database.SchemaVersion);
         Assert.Equal(
-            ["chats", "members", "messages", "meta", "notes", "outbox"],
+            ["blocked", "chats", "members", "messages", "meta", "notes", "outbox"],
             database.Tables());
     }
 

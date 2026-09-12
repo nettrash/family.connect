@@ -51,7 +51,9 @@ public sealed record UserDto(
     long Id,
     string Username,
     string DisplayName,
-    int AvatarVersion = 0);
+    int AvatarVersion = 0,
+    bool Deleted = false,
+    BirthdayDto? Birthday = null);
 
 /// <summary>A member of the family, with the two flags that outlive them.</summary>
 /// <remarks>
@@ -64,10 +66,40 @@ public sealed record MemberDto(
     string Username,
     string DisplayName,
     int AvatarVersion = 0,
-    bool Owner = false,
+    string? Role = null,
     bool HasLeft = false,
     bool Deleted = false,
-    string? Birthday = null);
+    BirthdayDto? Birthday = null)
+{
+    /// <summary>
+    /// Whether this member owns the family. The wire says <c>"role": "owner"|"member"</c> — a
+    /// STRING, and there is no <c>owner</c> boolean to decode: a port that declared one got
+    /// `false` for everybody, including the owner reading their own roster, and every
+    /// owner-only door in the app would have been shut. The same idiom as
+    /// <see cref="MeResponse.IsOwner"/>, deliberately.
+    /// </summary>
+    public bool Owner => Role == "owner";
+
+    /// <summary>
+    /// A member who is GONE: they left, or their account was deleted. Both keep their row, and
+    /// this is the one question a name-resolving caller asks about it.
+    /// </summary>
+    public bool IsFormer => HasLeft || Deleted;
+}
+
+/// <summary>
+/// A day and a month, with NO YEAR — "nobody should have to publish their age to be wished a
+/// happy birthday" (docs/protocol.md). 29 February is a birthday here, because there is no year
+/// for it to fail to exist in.
+/// </summary>
+/// <remarks>
+/// ONE OBJECT, NOT TWO SIBLING FIELDS, and that shape is load-bearing for a reason worth writing
+/// down: this port first declared it a string, which made `GET /families/mine` UNREADABLE for any
+/// family where somebody had set one — the decode threw, the answer came back as a terminal
+/// "2xx I cannot read", and the whole resync stopped. A field whose type is wrong does not
+/// degrade; it takes the document with it.
+/// </remarks>
+public sealed record BirthdayDto(int Month, int Day);
 
 public sealed record ChatDto(
     long Id,

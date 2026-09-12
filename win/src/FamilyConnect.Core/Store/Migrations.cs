@@ -27,7 +27,11 @@ public static class Migrations
             username       TEXT    NOT NULL,
             display_name   TEXT    NOT NULL,
             avatar_version INTEGER NOT NULL DEFAULT 0,
-            owner          INTEGER NOT NULL DEFAULT 0,
+            -- The wire's own word: "owner" or "member", and NULL for a former member, who has
+            -- no role at all (docs/protocol.md, "Objects"). Kept as the string rather than
+            -- flattened to a flag so that "not in the family any more" stays distinguishable
+            -- from "in it, not the owner".
+            role           TEXT,
             -- A member who LEFT and an account that was DELETED both keep their row: their
             -- messages and their notes keep their authors, and a name has to resolve for an old
             -- message (docs/protocol.md, "Objects").
@@ -142,6 +146,18 @@ public static class Migrations
         )
         """,
         "CREATE INDEX outbox_by_chat ON outbox(chat_id, queued_at)",
+        // ---- who this reader will not see ------------------------------
+        """
+        -- The CALLER'S OWN block list, which is complete state: `GET /me` and
+        -- `GET /families/mine` both carry it in full, and the `member_blocked` frame is a
+        -- state-set rather than an event (docs/protocol.md, "Blocking a member"). A row here
+        -- may name somebody the roster cannot: a blocked member who has since left, or whose
+        -- account is gone, and resolving the id to a name is the client's job and may be
+        -- impossible. So it is its own table and not a column on `members`.
+        CREATE TABLE blocked (
+            user_id INTEGER PRIMARY KEY
+        )
+        """,
         // ---- cursors and marks -----------------------------------------
         """
         CREATE TABLE meta (

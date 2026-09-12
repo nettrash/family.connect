@@ -9,12 +9,19 @@
 //! Output goes to `win/tests/FamilyConnect.Core.Tests/Fixtures/board-vectors.json` — see
 //! Cargo.toml for the one command.
 use fc_text::board as b;
+use fc_text::{call_record, media, notify};
 
 fn q(text: &str) -> String {
     serde_json::to_string(text).unwrap()
 }
 
 fn main() {
+    // No argument: the board vectors, which is the command the docs give. `chat` prints the
+    // chat-line vectors instead — the same idea for the words a chat row is drawn with.
+    if std::env::args().nth(1).as_deref() == Some("chat") {
+        chat();
+        return;
+    }
     let mut out = String::from("{\n");
 
     // --- capped -------------------------------------------------------
@@ -261,4 +268,85 @@ fn main() {
     // Trailing commas are not JSON: strip the one before each closing bracket.
     let cleaned = out.replace(",\n  ]", "\n  ]");
     print!("{}", cleaned);
+}
+
+/// The words a chat ROW is drawn with, from the same crate: a call record's line, what an
+/// attachment is called when it has no name, and the two notification sentences. The preview
+/// itself is each client's own composition, but every piece it leans on is here.
+fn chat() {
+    let mut out = String::from("{\n");
+
+    out.push_str("  \"call_record\": [\n");
+    for outcome in ["completed", "missed", "declined", "failed", "hologram"] {
+        for duration in [None, Some(0i64), Some(61), Some(222), Some(3762), Some(-5)] {
+            for video in [false, true] {
+                for mine in [false, true] {
+                    out.push_str(&format!(
+                        "    {{\"outcome\": {}, \"duration_secs\": {}, \"video\": {}, \"mine\": {}, \"said\": {}}},\n",
+                        q(outcome),
+                        match duration { Some(secs) => secs.to_string(), None => "null".into() },
+                        video,
+                        mine,
+                        q(&call_record::label(outcome, duration, video, mine))
+                    ));
+                }
+            }
+        }
+    }
+    out.push_str("  ],\n");
+
+    out.push_str("  \"duration\": [\n");
+    for seconds in [0i64, 9, 59, 60, 61, 599, 3599, 3600, 3762, 86399, -1] {
+        out.push_str(&format!(
+            "    {{\"seconds\": {}, \"said\": {}}},\n",
+            seconds,
+            q(&call_record::duration(seconds))
+        ));
+    }
+    out.push_str("  ],\n");
+
+    out.push_str("  \"display_name\": [\n");
+    for kind in ["photo", "video", "audio", "file", "location", "hologram"] {
+        for name in [None, Some(""), Some("receipts.pdf")] {
+            out.push_str(&format!(
+                "    {{\"kind\": {}, \"name\": {}, \"said\": {}}},\n",
+                q(kind),
+                match name { Some(name) => q(name), None => "null".into() },
+                q(&media::display_name(kind, name))
+            ));
+        }
+    }
+    out.push_str("  ],\n");
+
+    out.push_str("  \"notify_title\": [\n");
+    for family in [None, Some("The Smiths")] {
+        for mentioned in [false, true] {
+            out.push_str(&format!(
+                "    {{\"family\": {}, \"sender\": {}, \"mentioned\": {}, \"said\": {}}},\n",
+                match family { Some(name) => q(name), None => "null".into() },
+                q("Anna"),
+                mentioned,
+                q(&notify::title(family, "Anna", mentioned))
+            ));
+        }
+    }
+    out.push_str("  ],\n");
+
+    out.push_str("  \"page_title\": [\n");
+    for unread in [-1i64, 0, 1, 3, 99, 100, 1000] {
+        out.push_str(&format!(
+            "    {{\"unread\": {}, \"said\": {}}},\n",
+            unread,
+            q(&notify::page_title("Family Connect", unread))
+        ));
+    }
+    out.push_str("  ],\n");
+
+    out.push_str(&format!(
+        "  \"bodies\": {{\"new_message\": {}, \"new_note\": {}}}\n",
+        q(notify::new_message()),
+        q(notify::new_note())
+    ));
+    out.push_str("}\n");
+    print!("{}", out.replace(",\n  ]", "\n  ]"));
 }

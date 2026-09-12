@@ -12,8 +12,10 @@
       here is AnyCPU until then, which needs no rule.
     -->
     <Project Path="src/FamilyConnect.Core/FamilyConnect.Core.csproj" />
+    <Project Path="src/FamilyConnect.App.Logic/FamilyConnect.App.Logic.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FamilyConnect.Core.Tests/FamilyConnect.Core.Tests.csproj" />
+    <Project Path="tests/FamilyConnect.App.Logic.Tests/FamilyConnect.App.Logic.Tests.csproj" />
   </Folder>
 </Solution>
