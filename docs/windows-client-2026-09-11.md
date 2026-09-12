@@ -5,9 +5,9 @@ Windows 10/11 — better for 11 than 10."* This document says what the macOS cli
 contains, which Windows facts are verified rather than assumed, where the four hard parts are, and
 what has to be decided.
 
-**Phase 1 has since been started** — `win/`, the portable core: the wire, the board's shared
-arithmetic and the send rules, with 82 tests that run on macOS and a differential oracle generated
-from the web client's own Rust. See `win/README.md` for what exists and "Phases" below for what
+**Phase 1 has since been started** — `win/`, the portable core: the wire (REST and the socket),
+the local cache, the send queue and the board's shared arithmetic, with 140 tests that run on
+macOS and a differential oracle generated from the web client's own Rust. See `win/README.md` for what exists and "Phases" below for what
 does not. The stack question was answered the way this document recommends (WinUI 3 + C#/.NET 10,
 md.win's layout); calls, push, the minimum Windows build and where it ships are still open.
 
