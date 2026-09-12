@@ -24,6 +24,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import me.nettrash.familyconnect.data.db.GoneNoteEntity
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.db.NoteEntity
@@ -93,6 +94,11 @@ class BoardRepository @Inject constructor(
         // the field existed needs its badge mark seeded, or the server's
         // backfill badges the whole wall (BoardBadge.contentMarkSeed).
         seedContentMarkIfNeeded()
+        // A TOMBSTONE IS THE LAST WORD. Board seqs commit out of order and a catch-up page
+        // carries the pre-delete copy, so without this an older answer crossing the tombstone on
+        // the wire puts a note the family took down back on the wall (docs/protocol.md, "Board":
+        // "never brought back by an older copy of itself arriving late").
+        if (noteDao.isGone(note.id)) return false
         val existing = noteDao.findById(note.id)
         // STRICTLY older is refused; the SAME seq is written when it would
         // change the row. An equal seq is the same server state — except to
@@ -104,8 +110,12 @@ class BoardRepository @Inject constructor(
         if (existing != null && note.boardSeq < existing.boardSeq) return false
 
         if (note.isTombstone) {
-            // The guard covers deletion too: a stale tombstone must not
-            // remove a note that has since moved.
+            // The guard above covers deletion too: a stale tombstone never
+            // reaches here, so it removes nothing and remembers nothing —
+            // the note it names legitimately outlived it. A tombstone for a
+            // note this device never HELD does get remembered, because the
+            // copy it is about may still be on its way.
+            noteDao.remember(GoneNoteEntity(note.id))
             if (existing != null) noteDao.delete(note.id)
             return existing != null
         }
@@ -184,7 +194,13 @@ class BoardRepository @Inject constructor(
         // gone, and merely applying what it did return kept every note
         // deleted while this device was not listening. A note held ABOVE the
         // read's mark arrived after the read was taken, and stays.
-        noteDao.deleteNotListed(board.maxBoardSeq, board.notes.map { it.id })
+        val listed = board.notes.map { it.id }
+        // Read BEFORE they are dropped: a note the read left out is a note that is gone, and it
+        // is remembered as gone for the same reason a tombstone is.
+        noteDao.idsNotListed(board.maxBoardSeq, listed).forEach {
+            noteDao.remember(GoneNoteEntity(it))
+        }
+        noteDao.deleteNotListed(board.maxBoardSeq, listed)
         board.notes.forEach { applyNote(it) }
         settings.setBoardCursor(maxOf(boardCursor(), board.maxBoardSeq))
         return true
@@ -354,6 +370,10 @@ class BoardRepository @Inject constructor(
 
     suspend fun deleteNote(id: Long): Boolean = when (boardApi.deleteNote(id)) {
         is ApiResult.Ok -> {
+            // The third of the protocol's three doors to "gone": a tombstone, a full read that
+            // left it out, and this client's own DELETE. The frame that confirms it arrives
+            // later and finds the id already remembered, which is the point.
+            noteDao.remember(GoneNoteEntity(id))
             noteDao.delete(id)
             true
         }

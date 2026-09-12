@@ -401,6 +401,25 @@ data class MessageEntity(
  * a note is written only when the incoming seq is greater than the one
  * held, so an out-of-order frame cannot undo a newer move.
  */
+/**
+ * A note a TOMBSTONE has taken, and it never comes back.
+ *
+ * A delete is the last thing that happens to a note, but board seqs commit out of order and a
+ * catch-up page carries the pre-delete copy — so without this table an older answer crossing the
+ * tombstone on the wire RESURRECTS a note the family took down, and nothing but the next full read
+ * takes it off again. protocol.md ("Board") says it outright: "a note a client has seen deleted —
+ * by a tombstone, by a full read that left it out, or by its own DELETE — is never brought back by
+ * an older copy of itself arriving late, from a page, a frame or a reply that was already in
+ * flight." Note ids are never reused, so remembering the id is the whole of it.
+ *
+ * One row per note the family has ever deleted, which is a handful a week at worst. The web client
+ * keeps the same set in memory; the Windows client keeps the same table.
+ */
+@Entity(tableName = "goneNotes")
+data class GoneNoteEntity(
+    @PrimaryKey val noteId: Long,
+)
+
 @Entity(tableName = "notes")
 data class NoteEntity(
     @PrimaryKey val id: Long,
