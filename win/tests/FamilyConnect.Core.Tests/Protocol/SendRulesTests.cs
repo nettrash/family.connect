@@ -21,6 +21,26 @@ public class SendRulesTests
         Assert.Equal(6, SendRules.MaxAttempts);
     }
 
+    /// <summary>
+    /// The budget is SIX TRIES, counting the failure being judged — so the sixth failure is the
+    /// one that says so, and a client that waited a seventh delay would be promising something
+    /// that never comes.
+    /// </summary>
+    [Fact]
+    public void TheSixthFailureIsTheVisibleOne()
+    {
+        for (var failures = 1; failures < SendRules.MaxAttempts; failures++)
+        {
+            Assert.Equal(
+                SendRules.Outcome.Retry,
+                SendRules.Verdict(ApiError.Transport("offline"), failures, Now, Ceilings()).What);
+        }
+        Assert.Equal(
+            SendRules.Outcome.Failed,
+            SendRules.Verdict(
+                ApiError.Transport("offline"), SendRules.MaxAttempts, Now, Ceilings()).What);
+    }
+
     [Fact]
     public void OnlyATerminalCodeMarksAMessageFailed()
     {
@@ -59,16 +79,21 @@ public class SendRulesTests
     [Fact]
     public void TheRetryScheduleIsTheSharedJitterShapePositionedOnTheRow()
     {
-        // Positioned at the row's own attempt count, so the schedule survives a relaunch: the
-        // ceilings are 1, 2, 4, 8, 16, 30 — and the last is the cap, not 32.
-        double[] expected = [1, 2, 4, 8, 16, 30];
-        for (var attempts = 0; attempts < expected.Length; attempts++)
+        // Positioned at the row's own attempt count, so the schedule survives a relaunch. The
+        // FIRST failure waits the first step: 1, 2, 4, 8, 16 — five waits inside a budget of six
+        // tries, and the sixth failure is the visible one (see below).
+        double[] expected = [1, 2, 4, 8, 16];
+        for (var failures = 1; failures <= expected.Length; failures++)
         {
             var (what, next) = SendRules.Verdict(
-                ApiError.Transport("offline"), attempts, Now, Ceilings());
+                ApiError.Transport("offline"), failures, Now, Ceilings());
             Assert.Equal(SendRules.Outcome.Retry, what);
-            Assert.Equal(Now.AddSeconds(expected[attempts]), next);
+            Assert.Equal(Now.AddSeconds(expected[failures - 1]), next);
         }
+        // And the cap binds rather than the doubling, for a row whose count somehow ran on.
+        var (_, capped) = SendRules.Verdict(
+            ApiError.Transport("offline"), 40, Now, Ceilings());
+        Assert.Null(capped);
     }
 
     [Fact]

@@ -68,7 +68,12 @@ public static class SendRules
     /// The verdict on one failure: what to do, and when to try if trying is the answer.
     /// </summary>
     /// <param name="error">What came back — or a transport failure, which says nothing at all.</param>
-    /// <param name="attempts">How many tries this row has now had, including this one.</param>
+    /// <param name="attempts">
+    /// How many attempts this row has now had, THIS FAILURE INCLUDED — so the first failure is 1,
+    /// and the delay after it is the first step of the backoff. The budget is spent when this
+    /// reaches <see cref="MaxAttempts"/>: six tries and then a visible failure, which is five
+    /// waits and not six.
+    /// </param>
     /// <param name="now">The clock, passed in so this stays pure and testable.</param>
     /// <param name="backoff">
     /// The shared jitter shape, positioned at this row's own attempt count so a schedule survives
@@ -110,7 +115,9 @@ public static class SendRules
             var capped = wait > RetryAfterCap ? RetryAfterCap : wait;
             return (Outcome.Retry, now + (capped < TimeSpan.Zero ? TimeSpan.Zero : capped));
         }
-        backoff.AdvanceTo(attempts);
+        // The FIRST failure waits the first step, so the shape is positioned one behind the
+        // count: attempts 1 → base, 2 → base·2, and so on.
+        backoff.AdvanceTo(Math.Max(0, attempts - 1));
         return (Outcome.Retry, now + backoff.NextDelay());
     }
 

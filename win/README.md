@@ -5,16 +5,29 @@ The fourth client of the protocol in `docs/protocol.md`, alongside `ios/` (iOS +
 `docs/windows-client-2026-09-11.md`.
 
 **Status: phase 1, the portable core.** There is no window yet. What exists is the part of the
-client that has nothing to do with Windows — the wire, the board's arithmetic, the send rules —
-and it is deliberately the part that can be verified on the Mac this is developed on.
+client that has nothing to do with Windows — the wire, the local cache, the send queue, the board's
+arithmetic — and it is deliberately the part that can be verified on the Mac this is developed on.
 
 ```
 win/
   FamilyConnect.slnx
-  src/FamilyConnect.Core/         the wire, the board rules, the send rules   (AnyCPU)
+  src/FamilyConnect.Core/
+    Protocol/   ApiError, ServerUrl, Dtos, Frames, ApiClient, ChatSocket, SendRules,
+                ReconnectBackoff, ApiResult/ITokenStore
+    Store/      Database + Migrations (numbered), BoardStore, OutboxStore, Times
+    Board/      NoteText, NoteLook, BoardWall, BoardTasks, BoardPicture, NoteFitting, BoardBadge
+    Text/       StringCatalog (the apps' English string IS the key)
   tests/FamilyConnect.Core.Tests/ xUnit, runs anywhere `dotnet` runs
   tools/board-oracle/             Rust: regenerates the shared-arithmetic fixture
 ```
+
+What is NOT here yet: the WinUI app, the credential store (`ITokenStore` is the seam; on Windows it
+belongs in the locker), the media outbox's uploads, and calls.
+
+The cache is SQLite with numbered migrations and no destructive fallback. `DatabaseTests` compares
+a database that walked every step against one created fresh, table by table and column by column —
+which is the only thing that catches a column added without a migration. Android shipped exactly
+that once (issue #70) and every upgraded install would have crashed on the next launch.
 
 ## Build and test — on any OS
 
