@@ -9,7 +9,7 @@ what has to be decided.
 the local cache, the send queue, the board's shared arithmetic, the reconnect resync, the live
 frame router, the app's session gate, the live connection's policy, the chat list, the
 conversation, the board, the media outbox, the attachment cache, the family console and the
-notification rules, the account's own screens and the calendar hand-off, with **327 tests** that run on macOS and TWO differential oracles generated from the web client's own
+notification rules, the account's own screens, the calendar hand-off and the nine languages, with **338 tests** that run on macOS and TWO differential oracles generated from the web client's own
 Rust (the wall's arithmetic, and the words a chat row is drawn with). The second assembly now
 exists too — `FamilyConnect.App.Logic`, everything the window DOES with none of the window, on
 md.win's split.
@@ -167,9 +167,10 @@ numbers and the same tests, so a Windows wall is the same wall.
 4. **The board.** The wall, all four note kinds, drag, the `.ics` hand-off, backdrops.
 5. **Account and family.** Sign-up, the family gate, settings, the owner's console, avatars,
    reports and blocks, statistics, the assistant's switches.
-6. **Notifications, languages and the shell.** Local toasts from the socket, the nine `.resw`
-   catalogues, Windows 11 chrome where present (Mica, corner preference, taskbar badge), Windows 10
-   fallbacks.
+6. **Notifications, languages and the shell.** Local toasts from the socket, the nine language
+   catalogues — **JSON rather than `.resw`**, because a `.resw` name cannot be an English sentence
+   and the key IS the English sentence for all four clients (see `win/README.md`) — Windows 11
+   chrome where present (Mica, corner preference, taskbar badge), Windows 10 fallbacks.
 7. **Calls** — only if the decision below says so, and proven against all three existing peers
    before anything else in it is written.
 

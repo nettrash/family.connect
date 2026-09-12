@@ -1,0 +1,16 @@
+{
+  "_comment": [
+    "The Windows client's OWN strings: the ones the apps' Localizable.xcstrings does not hold.",
+    "A key with an empty object is ENGLISH FOR NOW in every language — recorded here rather than",
+    "quietly drawn in English by nine catalogues that look complete. The web client keeps exactly",
+    "the same file for exactly the same reason (web/i18n/web.json), and these five are the same",
+    "five it is waiting on."
+  ],
+  "strings": {
+    "%@ — %@": {},
+    "%@ — %@ mentioned you": {},
+    "Chat": {},
+    "New note": {},
+    "Voice message": {}
+  }
+}

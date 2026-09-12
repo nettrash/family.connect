@@ -30,6 +30,12 @@ public static class Times
     /// Back to the wire's spelling: UTC, with a `Z`. Null and 0 both mean "no stamp" — 0 is this
     /// cache's spelling of absent, not 1970.
     /// </summary>
+    /// <remarks>
+    /// THE INVARIANT CULTURE IS LOAD-BEARING, and not decoration. In a custom format string
+    /// <c>:</c> is not a colon — it is the culture's TIME SEPARATOR — and Finnish spells that
+    /// <c>.</c>, so the reader's own culture would write <c>2026-12-24T16.00.00.000Z</c> here: an
+    /// instant no server can read, from a client that looked correct in every other language.
+    /// </remarks>
     public static string? Rfc3339(long? milliseconds) =>
         milliseconds is null or 0
             ? null

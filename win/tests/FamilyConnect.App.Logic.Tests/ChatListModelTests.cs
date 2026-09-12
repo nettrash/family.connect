@@ -36,7 +36,10 @@ public class ChatListModelTests : IDisposable
         CallRecordDto? call = null) =>
         new(
             id, chat, sender, null, body,
-            (at ?? Now.AddMinutes(-5)).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            // Through the product's OWN writer, and therefore invariantly: a fixture that
+            // formatted the wire's instants in the machine's language would hand the product
+            // `16.00.00` on a Finnish computer and fail for the one reason that is not a bug.
+            Times.Rfc3339((at ?? Now.AddMinutes(-5)).ToUnixTimeMilliseconds())!,
             Attachments: media,
             Call: call);
 

@@ -16,4 +16,12 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
   </ItemGroup>
+  <ItemGroup>
+    <!--
+      The nine languages, inside the assembly. English has no file: its keys ARE its values, which
+      is the whole point of keying on the source sentence (win/i18n/generate.py writes the other
+      eight from the apps' own Localizable.xcstrings).
+    -->
+    <EmbeddedResource Include="Text\i18n\*.json" />
+  </ItemGroup>
 </Project>
