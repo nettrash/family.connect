@@ -99,6 +99,44 @@ public class ChatOracleTests
         }
     }
 
+    /// <summary>
+    /// THE `.ics` FILE, BYTE FOR BYTE. Nothing about it is on the wire, which is exactly why four
+    /// clients writing it four ways would diverge in silence — and the three rules that are easy
+    /// to get wrong (CRLF, escaping, folding at 75 OCTETS without splitting a UTF-8 sequence) are
+    /// invisible until a calendar refuses the file.
+    /// </summary>
+    [Fact]
+    public void AnEventsCalendarFileIsTheOriginalsByteForByte()
+    {
+        var vectors = Section("ics");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        foreach (var row in vectors.EnumerateArray())
+        {
+            string? Optional(string name) =>
+                row.GetProperty(name).ValueKind == JsonValueKind.Null
+                    ? null
+                    : row.GetProperty(name).GetString();
+            Assert.Equal(
+                row.GetProperty("file").GetString(),
+                Calendar.OneEvent(
+                    row.GetProperty("uid").GetString()!,
+                    row.GetProperty("title").GetString()!,
+                    row.GetProperty("starts_at").GetString()!,
+                    Optional("ends_at"),
+                    Optional("place"),
+                    "20260912T120000Z"));
+        }
+    }
+
+    [Fact]
+    public void AnInstantIsStampedTheWayICalendarWantsIt()
+    {
+        // The wire carries an instant; a calendar file wants UTC and says so with the Z.
+        Assert.Equal(
+            "20261224T160000Z",
+            Calendar.Stamp(new DateTimeOffset(2026, 12, 24, 19, 0, 0, TimeSpan.FromHours(3))));
+    }
+
     [Fact]
     public void TheNotificationBodiesAreTheOriginals()
     {

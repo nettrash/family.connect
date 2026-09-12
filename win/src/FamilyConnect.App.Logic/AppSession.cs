@@ -42,6 +42,12 @@ public enum SessionEnd
 
     /// <summary>They were waiting for an owner, and the request is no longer pending.</summary>
     JoinRequestRejected,
+
+    /// <summary>
+    /// They deleted the account. Not "signed out" and not "expired": there is nothing to sign
+    /// back into, and a screen offering to would be cruel as well as wrong.
+    /// </summary>
+    AccountDeleted,
 }
 
 /// <summary>What the window binds to: one snapshot, replaced whole.</summary>
@@ -237,6 +243,33 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
         Clear();
         Ended?.Invoke(SessionEnd.SignedOut);
     }
+
+    /// <summary>
+    /// Delete this account. The password is the proof, for the same reason a password CHANGE
+    /// needs the current one — and when it is done there is nothing left to sign into.
+    /// </summary>
+    public async Task<ApiError?> DeleteAccountAsync(
+        string password, CancellationToken ct = default)
+    {
+        var answer = await api.DeleteAccount(password, ct).ConfigureAwait(false);
+        if (!answer.Ok)
+        {
+            // A WRONG PASSWORD HERE IS NOT AN EXPIRED SESSION either: the account is still
+            // there, and so is the session.
+            return answer.Error;
+        }
+        Clear();
+        Ended?.Invoke(SessionEnd.AccountDeleted);
+        return null;
+    }
+
+    /// <summary>
+    /// Change the password. The current one is required because A LIVE SESSION IS NOT PROOF —
+    /// and a refusal here says "that is not your password", never "you have been signed out".
+    /// </summary>
+    public async Task<ApiError?> ChangePasswordAsync(
+        string currentPassword, string newPassword, CancellationToken ct = default) =>
+        (await api.ChangePassword(currentPassword, newPassword, ct).ConfigureAwait(false)).Error;
 
     /// <summary>
     /// The session is gone server-side: a REST <c>401</c> with <c>session_expired</c>, or the

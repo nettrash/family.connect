@@ -17,7 +17,8 @@ win/
                 SendRules, ReconnectBackoff, Resync, FrameRouter, ApiResult/ITokenStore
     Store/      Database + Migrations (numbered), ChatStore, BoardStore, OutboxStore, Times
     Board/      NoteText, NoteLook, BoardWall, BoardTasks, BoardPicture, NoteFitting, BoardBadge
-    Text/       StringCatalog (the apps' English string IS the key)
+    Text/       StringCatalog (the apps' English string IS the key), CallRecordText,
+                AttachmentText, NotifyText, Calendar (the .ics a client writes itself)
   src/FamilyConnect.App.Logic/
                 AppSession — which screen the app is on, and the three ways a session ends
                 LiveConnection — the socket, the resync, the outbox and the router under one policy
@@ -28,6 +29,7 @@ win/
                 AttachmentCache — downloaded bytes, kept, with the preview rule in ONE place
                 Family — the door, the owner's console, and the numbers everybody may see
                 Notifications — when this client speaks up, and what it says when it does
+                Avatars — what a picture must be before it is sent, and a cache keyed by VERSION
   tests/FamilyConnect.Core.Tests/      xUnit, runs anywhere `dotnet` runs
   tests/FamilyConnect.App.Logic.Tests/ the same, for the app's own behaviour
   tools/board-oracle/                  Rust: regenerates the shared-arithmetic fixture
@@ -96,6 +98,23 @@ same write.
 
 **The statistics' rows do not add up to the totals, and the gap is the block.** The totals are the
 family's numbers; the rows are what this caller may see of them. Nothing here sums the rows.
+
+**NO PUSH, AND THAT IS THE PROTOCOL'S ANSWER RATHER THAN A GAP HERE.** `POST /devices` takes
+`ios`, `macos` or `android` — a Windows client has no token any of those name, so it registers
+nothing and is in the browser's position: **local toasts from the socket, and nothing on a lock
+screen**. Giving Windows real push means adding a platform to `docs/protocol.md` AND a WNS sender
+to the server; until that is decided, `NotificationRules` is the whole of it.
+
+**A profile picture is cached by (user, VERSION).** No frame carries a picture — only the number —
+so a cache keyed on the user alone shows a face the family replaced weeks ago. It is the board
+backdrop's mistake in another place. "No picture" is an answer and is kept for that version; a
+transient failure is not.
+
+**The `.ics` a client writes itself is pinned byte for byte.** Nothing about it is on the wire,
+which is exactly why four clients writing it four ways would diverge in silence — and its three
+rules are invisible until a calendar refuses the file: CRLF line endings, escaping the format's own
+separators, and folding at 75 OCTETS **per code point** (the oracle caught a first draft that
+folded per GRAPHEME and so broke a ZWJ emoji one byte later than the others).
 
 **A notification is never the message.** The body is the one a server with
 `include_message_body = false` would send, and the block reaches one step further than the sender:

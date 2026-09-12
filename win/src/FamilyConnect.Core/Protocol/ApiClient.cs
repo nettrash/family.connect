@@ -179,6 +179,87 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
     public Task<ApiResult<Nothing>> DeleteNote(long noteId, CancellationToken ct = default) =>
         Send<Nothing>(HttpMethod.Delete, $"/families/mine/board/notes/{noteId}", ct: ct);
 
+    // ---- this account ----------------------------------------------------
+
+    /// <summary>
+    /// Change your own password, which requires proving you know the current one — A LIVE SESSION
+    /// IS NOT PROOF, because an unattended unlocked machine is exactly what this defends against.
+    /// </summary>
+    /// <remarks>
+    /// The refusal is <c>invalid_credentials</c>, and it means "that is not your password" and
+    /// NOT "your session has expired": it must never sign anybody out (see
+    /// <see cref="ApiError.SessionGone"/>).
+    /// </remarks>
+    public Task<ApiResult<Nothing>> ChangePassword(
+        string currentPassword, string newPassword, CancellationToken ct = default) =>
+        Send<Nothing>(
+            HttpMethod.Post, "/me/password",
+            new { current_password = currentPassword, new_password = newPassword }, ct: ct);
+
+    /// <summary>
+    /// Delete this account, permanently. The password is required for the same reason the change
+    /// above requires it.
+    /// </summary>
+    public Task<ApiResult<Nothing>> DeleteAccount(
+        string password, CancellationToken ct = default) =>
+        Send<Nothing>(HttpMethod.Post, "/me/delete", new { password }, ct: ct);
+
+    /// <summary>
+    /// The owner resetting a member's password WITHOUT knowing the current one — the whole point
+    /// is that the member has forgotten it. Every session of theirs is revoked.
+    /// </summary>
+    public Task<ApiResult<Nothing>> ResetMemberPassword(
+        long userId, string newPassword, CancellationToken ct = default) =>
+        Send<Nothing>(
+            HttpMethod.Post, $"/families/members/{userId}/password",
+            new { new_password = newPassword }, ct: ct);
+
+    /// <summary>
+    /// A new profile picture: RAW BYTES, which with the two avatar reads is the only binary
+    /// surface in the protocol. The answer carries the incremented <c>avatar_version</c>.
+    /// </summary>
+    /// <remarks>
+    /// Clients downscale and re-encode BEFORE this: a square JPEG whose longest edge is 512 px is
+    /// what the phones and the Mac send, and the server stores what it is given after validating
+    /// the type and the size — it never transcodes.
+    /// </remarks>
+    public async Task<ApiResult<UserResponse>> PutAvatar(
+        ReadOnlyMemory<byte> bytes, string mime, CancellationToken ct = default)
+    {
+        using var content = new ReadOnlyMemoryContent(bytes);
+        content.Headers.ContentType = new MediaTypeHeaderValue(mime);
+        return await Send<UserResponse>(HttpMethod.Put, "/me/avatar", content: content, ct: ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>Drop it, and set <c>avatar_version</c> back to 0. Idempotent.</summary>
+    public Task<ApiResult<Nothing>> DeleteAvatar(CancellationToken ct = default) =>
+        Send<Nothing>(HttpMethod.Delete, "/me/avatar", ct: ct);
+
+    /// <summary>
+    /// Somebody's picture. Visible to themselves and to members of the same family; anybody else
+    /// — and a user with no picture at all — is <c>404 user_not_found</c>, the same answer for
+    /// both, which is the non-enumeration rule this protocol follows everywhere.
+    /// </summary>
+    public async Task<ApiResult<byte[]>> Avatar(long userId, CancellationToken ct = default)
+    {
+        using var request = Request(HttpMethod.Get, $"/users/{userId}/avatar");
+        try
+        {
+            using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return ApiResult<byte[]>.Failure(await Failure(response, ct).ConfigureAwait(false));
+            }
+            return ApiResult<byte[]>.Success(
+                await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false));
+        }
+        catch (Exception exception) when (Unreached(exception, ct))
+        {
+            return ApiResult<byte[]>.Failure(ApiError.Transport(exception.Message));
+        }
+    }
+
     // ---- the family's own console ----------------------------------------
 
     /// <summary>Start a family. The caller becomes its owner and its chat is made with it.</summary>
