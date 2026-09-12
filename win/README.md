@@ -12,17 +12,22 @@ arithmetic — and it is deliberately the part that can be verified on the Mac t
 win/
   FamilyConnect.slnx
   src/FamilyConnect.Core/
-    Protocol/   ApiError, ServerUrl, Dtos, Frames, ApiClient, ChatSocket, SendRules,
-                ReconnectBackoff, ApiResult/ITokenStore
-    Store/      Database + Migrations (numbered), BoardStore, OutboxStore, Times
+    Protocol/   ApiError, ServerUrl, Dtos, Frames, ApiClient, ChatSocket, SendPipeline,
+                SendRules, ReconnectBackoff, ApiResult/ITokenStore
+    Store/      Database + Migrations (numbered), ChatStore, BoardStore, OutboxStore, Times
     Board/      NoteText, NoteLook, BoardWall, BoardTasks, BoardPicture, NoteFitting, BoardBadge
     Text/       StringCatalog (the apps' English string IS the key)
   tests/FamilyConnect.Core.Tests/ xUnit, runs anywhere `dotnet` runs
   tools/board-oracle/             Rust: regenerates the shared-arithmetic fixture
 ```
 
+The send path is whole: `SendPipeline` writes the row down, tries the socket, gives the frame the
+ack deadline, falls back to `POST /chats/{id}/messages` with the same `client_msg_id`, and marks a
+row failed only on a terminal code. Both the deadline and the clock are injectable, because a suite
+that sleeps ten seconds per silent socket is a suite nobody runs.
+
 What is NOT here yet: the WinUI app, the credential store (`ITokenStore` is the seam; on Windows it
-belongs in the locker), the media outbox's uploads, and calls.
+belongs in the locker), the uploads a media send owes, and calls.
 
 The cache is SQLite with numbered migrations and no destructive fallback. `DatabaseTests` compares
 a database that walked every step against one created fresh, table by table and column by column —
