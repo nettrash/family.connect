@@ -214,6 +214,12 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
         {
             return family.Error ?? ApiError.Transport("no answer");
         }
+        if (!state.CanChat)
+        {
+            // The gate moved while this read was in flight — a sign-out, or a removal. Publishing
+            // now would hand the window a signed-out state carrying a family.
+            return null;
+        }
         Publish(state with
         {
             Family = family.Value.Family,

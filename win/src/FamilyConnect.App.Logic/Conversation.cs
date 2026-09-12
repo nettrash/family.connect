@@ -170,9 +170,19 @@ public sealed class ConversationModel
     /// Report what the reader has read, at most once per newest message. Answers whether it
     /// reported anything — a device with nothing new to say makes no request.
     /// </summary>
-    public async Task<bool> ReadAsync(CancellationToken ct = default)
+    /// <param name="seen">
+    /// The newest message the reader has actually BEEN SHOWN, for a window that is not at the
+    /// bottom. Null means "everything held", which is what a window scrolled to the newest
+    /// message means — and what a window scrolled up the history most certainly does not: a
+    /// reader who opened a chat at an old position and never came down has not read the rest of
+    /// it, and a client that said so would clear a badge nobody looked at. Clamped to what is
+    /// held, so a window that names an id from somewhere else cannot report a message this
+    /// device has never seen.
+    /// </param>
+    public async Task<bool> ReadAsync(long? seen = null, CancellationToken ct = default)
     {
-        var newest = chats.Newest(ChatId)?.Id ?? 0;
+        var held = chats.Newest(ChatId)?.Id ?? 0;
+        var newest = seen is { } shown ? Math.Min(shown, held) : held;
         var marker = Math.Max(reported, chats.Chat(ChatId)?.LastReadMessageId ?? 0);
         if (newest <= marker)
         {
