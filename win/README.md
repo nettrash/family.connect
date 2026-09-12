@@ -30,6 +30,7 @@ win/
                 Family — the door, the owner's console, and the numbers everybody may see
                 Notifications — when this client speaks up, and what it says when it does
                 Avatars — what a picture must be before it is sent, and a cache keyed by VERSION
+  i18n/                                generate.py + win.json (the port's own strings)
   tests/FamilyConnect.Core.Tests/      xUnit, runs anywhere `dotnet` runs
   tests/FamilyConnect.App.Logic.Tests/ the same, for the app's own behaviour
   tools/board-oracle/                  Rust: regenerates the shared-arithmetic fixture
@@ -116,6 +117,25 @@ rules are invisible until a calendar refuses the file: CRLF line endings, escapi
 separators, and folding at 75 OCTETS **per code point** (the oracle caught a first draft that
 folded per GRAPHEME and so broke a ZWJ emoji one byte later than the others).
 
+**THE NINE LANGUAGES ARE JSON, NOT `.resw`, AND THAT IS A DECISION.** The key IS the English
+sentence — the apps' `Localizable.xcstrings` is the source of truth for all four clients — and a
+`.resw` name cannot BE an English sentence: `%@`, `·`, an em dash and a full stop are variously
+invalid or meaningful in a resource name, and WinUI mangles what it accepts. A `.resw` would
+therefore need a second table mapping slugs to sentences, which is a second source of truth and
+the thing this design exists to avoid. So `win/i18n/generate.py` writes eight JSON tables (English
+needs none: its keys are its values) which ship embedded in `FamilyConnect.Core`, and the app's own
+XAML chrome may still use `.resw` for labels nobody else has to agree with.
+
+A sentence nobody has translated yet reads in ENGLISH rather than as a slug, and the five that are
+English for now are NAMED in `win/i18n/win.json` — a test fails on any other untranslated key, so
+a new string cannot go quietly missing in nine catalogues that look complete. Completeness is asked
+of the TABLE and not of the answer, because "Video" in German and "Photo" in French are real
+translations identical to the English.
+
+**A family's language is NOT the display language.** It is what the assistant answers in; the
+window draws in whatever the device is set to, because a family setting that silently re-languaged
+somebody's computer would be a surprise nobody asked for.
+
 **A notification is never the message.** The body is the one a server with
 `include_message_body = false` would send, and the block reaches one step further than the sender:
 the assistant's answer to a blocked member's question raises nothing either, because it would light
@@ -140,7 +160,30 @@ that once (issue #70) and every upgraded install would have crashed on the next 
 cd win
 dotnet build FamilyConnect.slnx
 dotnet test FamilyConnect.slnx
+python3 i18n/generate.py ..          # rewrite the nine catalogues from the apps' own
+python3 i18n/generate.py .. --check  # …or just say whether they are out of date
 ```
+
+**Under somebody else's language.** Everything machine-facing is invariant and everything shown is
+the reader's, and the way to know is to run it as they would:
+
+```bash
+for loc in de_DE.UTF-8 tr_TR.ISO8859-9 ru_RU.UTF-8 fi_FI.UTF-8 ja_JP.UTF-8; do
+  LC_ALL=$loc DOTNET_CLI_UI_LANGUAGE=en dotnet test FamilyConnect.slnx --nologo -v q
+done
+```
+
+`CultureTests` sets the culture itself as well, so the coverage cannot be lost by launching the
+suite a different way — but the sweep is what found the one that mattered: **`fi-FI` spells the
+time separator `.`**, so `ToString("yyyy-MM-ddTHH:mm:ss.fffZ")` on a Finnish machine writes
+`2026-12-24T16.00.00.000Z` — an instant no server can read, from a client that looked correct in
+German, Turkish, Russian, Japanese and Swedish. The invariant culture in `Times.Rfc3339` is
+load-bearing, and now a test says so.
+
+CI runs this lane on **ubuntu AND windows** (`.github/workflows/ci.yml`, job `win`): the portable
+half is worth nothing unless something actually runs it on the target, and what that catches is not
+compile errors but SQLite's locking, path separators, line endings in the fixtures and the reader's
+own culture. The same lane re-prints both oracle fixtures from `web/text` and fails on a diff.
 
 .NET 10 (`global.json` pins the SDK band). Nothing here references a Windows API, on purpose: a
 WinUI **app** cannot be built on macOS at all — its XAML compiler is .NET Framework — so a port

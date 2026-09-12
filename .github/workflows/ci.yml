@@ -79,6 +79,7 @@ jobs:
       server: ${{ steps.filter.outputs.server }}
       android: ${{ steps.filter.outputs.android }}
       ios: ${{ steps.filter.outputs.ios }}
+      win: ${{ steps.filter.outputs.win }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,14 +89,14 @@ jobs:
           base='${{ github.event.before }}'
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             echo "No usable diff base ($base) -- running every job."
-            printf 'server=true\nandroid=true\nios=true\n' >> "$GITHUB_OUTPUT"
+            printf 'server=true\nandroid=true\nios=true\nwin=true\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           files=$(git diff --name-only "$base" '${{ github.sha }}')
           echo "Changed files:"; echo "$files" | sed 's/^/  /'
           if echo "$files" | grep -q -E '^(docs/protocol\.md|\.github/)'; then
             echo "A shared path changed (the protocol contract or CI itself) -- running every job."
-            printf 'server=true\nandroid=true\nios=true\n' >> "$GITHUB_OUTPUT"
+            printf 'server=true\nandroid=true\nios=true\nwin=true\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # The `@ai` and `/draw` vector tables live in THREE files and are
@@ -113,7 +114,20 @@ jobs:
             echo "A client mirror table changed -- the server holds the test that compares all three."
             mirror_changed=true
           fi
-          for stack in server android ios; do
+          # The Windows client's oracles are GENERATED from web/text, so a change there is a
+          # change to what the C# port is held to — the fixture in win/ is only right while the
+          # Rust it was printed from says the same thing, and no other job would notice.
+          if echo "$files" | grep -q -E '^web/text/'; then
+            echo "The shared text crate changed -- the Windows oracles are generated from it."
+            echo "win=true" >> "$GITHUB_OUTPUT"
+            web_text_changed=true
+          else
+            web_text_changed=false
+          fi
+          for stack in server android ios win; do
+            if [ "$stack" = win ] && [ "$web_text_changed" = true ]; then
+              continue  # already decided above
+            fi
             if echo "$files" | grep -q -E "^$stack/"; then
               echo "$stack=true" >> "$GITHUB_OUTPUT"
             elif [ "$stack" = server ] && [ "$mirror_changed" = true ]; then
@@ -613,6 +627,107 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  win:
+    name: Windows client (core + app logic)
+    needs: changes
+    if: needs.changes.outputs.win == 'true'
+    # BOTH, and the pair is the point. Everything under win/src is deliberately free of any
+    # Windows API so that it can be written and tested on the Mac this port is developed on —
+    # which is worth nothing unless something actually runs it on Windows too. The differences
+    # this lane exists to catch are not compile errors: they are SQLite's file locking, the
+    # path separator, line endings in the oracle fixtures, and the reader's own culture
+    # (win/README.md, and the `fi-FI` case in CultureTests).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          # The band win/global.json pins, so the runner cannot quietly build with another one.
+          global-json-file: win/global.json
+
+      - name: Show toolchain
+        working-directory: win
+        run: |
+          dotnet --info
+          dotnet --version
+
+      - name: Build
+        working-directory: win
+        run: dotnet build FamilyConnect.slnx --configuration Release
+
+      - name: Run tests
+        working-directory: win
+        shell: bash
+        run: |
+          set -o pipefail
+          dotnet test FamilyConnect.slnx --configuration Release --no-build \
+            --logger "console;verbosity=normal" 2>&1 | tee "$RUNNER_TEMP/win-test.log"
+
+      # An exit code is not a result, which is this file's whole rule. `dotnet test` over a
+      # solution prints one summary line per assembly and exits 0 for a run that matched no
+      # tests at all — a mistyped filter, a project dropped from the .slnx, a test assembly that
+      # failed to load — so the count is read back and a collapse fails the lane. A FLOOR rather
+      # than an equality, so that adding a test does not break CI while losing a suite does.
+      - name: Assert the tests actually ran
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/win-test.log"
+          test -s "$log" || { echo "::error::no test log -- the test step produced nothing"; exit 1; }
+          python3 - "$log" <<'PY'
+          import re, sys
+          text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+          runs = re.findall(r"(Passed|Failed)!\s+-\s+Failed:\s+(\d+),\s+Passed:\s+(\d+)", text)
+          if not runs:
+              print("::error::no summary line in the log -- nothing ran"); sys.exit(1)
+          failed = sum(int(f) for _, f, _ in runs)
+          passed = sum(int(p) for _, _, p in runs)
+          print(f"assemblies={len(runs)} passed={passed} failed={failed}")
+          if failed:
+              print(f"::error::{failed} tests failed"); sys.exit(1)
+          if len(runs) < 2:
+              print(f"::error::only {len(runs)} test assembly ran; expected Core and App.Logic"); sys.exit(1)
+          if passed < 320:
+              print(f"::error::only {passed} tests ran; expected ~351"); sys.exit(1)
+          PY
+
+      # The nine language tables are GENERATED from the apps' own catalogue, and a hand-edited or
+      # stale one is a Russian window drawing English at the moment somebody notices. `--check`
+      # writes nothing and exits non-zero when they no longer match.
+      - name: The language tables are not stale
+        if: matrix.os == 'ubuntu-24.04'
+        # --check, so a stale table FAILS rather than being quietly rewritten under CI's feet.
+        run: python3 win/i18n/generate.py . --check
+
+      # And the two ORACLE fixtures are printed by a Rust program that depends on web/text BY
+      # PATH: "an oracle built on one machine proves nothing" (float-pow10-portability). If the
+      # shared crate has moved, the fixture the C# suite is held to has to move with it, and the
+      # only way to know is to print it again and look.
+      - name: The oracles still say what the fixtures say
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          cd win/tools/board-oracle
+          cargo run --quiet > ../../tests/FamilyConnect.Core.Tests/Fixtures/board-vectors.json
+          cargo run --quiet -- chat > ../../tests/FamilyConnect.Core.Tests/Fixtures/chat-vectors.json
+          cd ../../..
+          git diff --exit-code -- win/tests/FamilyConnect.Core.Tests/Fixtures \
+            || { echo "::error::the oracle fixtures are out of date -- regenerate them (win/README.md)"; exit 1; }
+
+      - name: Upload test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-test-log-${{ matrix.os }}
+          path: ${{ runner.temp }}/win-test.log
+          if-no-files-found: ignore
+          retention-days: 7
+
 # Deliberately not here, and why:
 #
 #   * A macOS UI lane -- the Mac launch smoke test (MacLaunchSmokeUITests). It
@@ -638,6 +753,11 @@ jobs:
 #   * A required-check / branch-protection rule: this repo is private on the
 #     free plan, where branch protection is not available. CI here is advisory,
 #     which is part of why it triggers on push rather than on pull_request.
+#   * A Windows UI lane for FamilyConnect.App. There is no app project yet (win/ is the
+#     portable half by design), and when it arrives its XAML compiler is .NET Framework and
+#     Windows-only -- so the `win` job above builds and tests everything EXCEPT the window, on
+#     both platforms, which is the split the port was designed around. md.win's `tools/xamlcheck`
+#     is the trick for type-checking code-behind without it.
 #   * A README badge. Every sibling has one, but an unparameterised badge URL
 #     reports the DEFAULT branch -- master, which is 39 commits behind -- so it
 #     would show a green tick for code nobody is running. Add one with

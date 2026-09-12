@@ -35,6 +35,11 @@ public static class Calendar
     /// An instant in the shape iCalendar wants. The wire carries an instant and every client
     /// draws it in the reader's own zone, but a calendar file wants UTC and says so with the Z.
     /// </summary>
+    /// <remarks>
+    /// The pattern has no <c>:</c> and no <c>/</c> in it, so unlike the wire's own spelling
+    /// (<see cref="Store.Times.Rfc3339"/>) it carries no culture-sensitive placeholder at all —
+    /// the invariant culture here is belt beside braces, and a mutation run says so.
+    /// </remarks>
     public static string Stamp(DateTimeOffset when) =>
         when.UtcDateTime.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
 

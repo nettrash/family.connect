@@ -1,3 +1,4 @@
+using System.Globalization;
 using FamilyConnect.Core.Board;
 using FamilyConnect.Core.Protocol;
 using Microsoft.Data.Sqlite;
@@ -72,7 +73,7 @@ public sealed class BoardStore(Database database)
         // TWO FULL READS CAN LAND IN EITHER ORDER, and an older one landing second must change
         // nothing at all: it would drop every note written between the two and set the cursor
         // back to its own mark.
-        if (maxBoardSeq < long.Parse(Meta(FullMark) ?? "0"))
+        if (maxBoardSeq < Number(Meta(FullMark)))
         {
             return;
         }
@@ -94,8 +95,8 @@ public sealed class BoardStore(Database database)
                 Write(note, transaction);
             }
         }
-        SetMeta(CursorSeq, maxBoardSeq.ToString(), transaction);
-        SetMeta(FullMark, maxBoardSeq.ToString(), transaction);
+        SetMeta(CursorSeq, Text(maxBoardSeq), transaction);
+        SetMeta(FullMark, Text(maxBoardSeq), transaction);
         transaction.Commit();
     }
 
@@ -130,7 +131,7 @@ public sealed class BoardStore(Database database)
         };
         if (mayMove && note.BoardSeq > Cursor)
         {
-            SetMeta(CursorSeq, note.BoardSeq.ToString(), transaction);
+            SetMeta(CursorSeq, Text(note.BoardSeq), transaction);
         }
         transaction.Commit();
         return changed;
@@ -152,7 +153,7 @@ public sealed class BoardStore(Database database)
         }
         if (route != SeqRoute.Evidence)
         {
-            SetMeta(CursorSeq, highest.ToString(), transaction);
+            SetMeta(CursorSeq, Text(highest), transaction);
         }
         transaction.Commit();
         return changed;
@@ -201,23 +202,34 @@ public sealed class BoardStore(Database database)
     }
 
     /// <summary>Where the change feed should carry on from.</summary>
-    public long Cursor => long.TryParse(Meta(CursorSeq), out var seq) ? seq : 0;
+    public long Cursor => Number(Meta(CursorSeq));
+
+    /// <summary>
+    /// A number this cache wrote for ITSELF, read back the same way it was written. A machine's
+    /// number is INVARIANT in both directions: the reader's culture decides how a number is
+    /// SHOWN, and has no business in a value nobody reads.
+    /// </summary>
+    private static long Number(string? text) =>
+        long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+            ? value
+            : 0;
+
+    private static string Text(long value) => value.ToString(CultureInfo.InvariantCulture);
 
     /// <summary>
     /// What this DEVICE has shown its reader — not the sync cursor, and moved only when the board
     /// has actually been on screen (docs/protocol.md, "Board").
     /// </summary>
     public BoardMarks Marks =>
-        new(long.TryParse(Meta(MarkNoteId), out var id) ? id : 0,
-            long.TryParse(Meta(MarkContentSeq), out var seq) ? seq : 0);
+        new(Number(Meta(MarkNoteId)), Number(Meta(MarkContentSeq)));
 
     /// <summary>Monotonic in both fields: a cleared badge must not come back.</summary>
     public void Mark(BoardMarks marks)
     {
         var later = BoardMarks.Later(Marks, marks);
         using var transaction = database.Connection.BeginTransaction();
-        SetMeta(MarkNoteId, later.NoteId.ToString(), transaction);
-        SetMeta(MarkContentSeq, later.ContentSeq.ToString(), transaction);
+        SetMeta(MarkNoteId, Text(later.NoteId), transaction);
+        SetMeta(MarkContentSeq, Text(later.ContentSeq), transaction);
         transaction.Commit();
     }
 
