@@ -179,6 +179,169 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
     public Task<ApiResult<Nothing>> DeleteNote(long noteId, CancellationToken ct = default) =>
         Send<Nothing>(HttpMethod.Delete, $"/families/mine/board/notes/{noteId}", ct: ct);
 
+    // ---- the family's own console ----------------------------------------
+
+    /// <summary>Start a family. The caller becomes its owner and its chat is made with it.</summary>
+    public Task<ApiResult<FamilyOnlyResponse>> CreateFamily(
+        string name, CancellationToken ct = default) =>
+        Send<FamilyOnlyResponse>(HttpMethod.Post, "/families", new { name }, ct: ct);
+
+    /// <summary>
+    /// Ask to join one. Under policy <c>open</c> the answer is <c>joined</c> and membership is
+    /// immediate; under <c>approval</c> it is <c>pending</c> and an owner has to answer.
+    /// </summary>
+    /// <remarks>
+    /// A CLOSED family answers <c>invalid_invite_code</c>, byte-identical to a code that never
+    /// existed: a shut door tells a stranger nothing. A FULL one answers <c>family_full</c>,
+    /// which does admit the code is real — the alternative is telling an invited member their
+    /// code is invalid on the day the family filled up.
+    /// </remarks>
+    public Task<ApiResult<JoinAnswer>> JoinFamily(
+        string inviteCode, CancellationToken ct = default) =>
+        Send<JoinAnswer>(
+            HttpMethod.Post, "/families/join", new { invite_code = inviteCode }, ct: ct);
+
+    /// <summary>
+    /// Change the family (owner only). Only the fields present change — and the two that can be
+    /// CLEARED send an explicit null (see <see cref="FamilyPatch"/>).
+    /// </summary>
+    public Task<ApiResult<FamilyOnlyResponse>> PatchFamily(
+        FamilyPatch patch, CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object?>();
+        if (patch.JoinPolicy is { } policy)
+        {
+            body["join_policy"] = policy;
+        }
+        if (patch.ClearsCap)
+        {
+            body["max_members"] = null;
+        }
+        else if (patch.MaxMembers is { } cap)
+        {
+            body["max_members"] = cap;
+        }
+        if (patch.ClearsLanguage)
+        {
+            body["language"] = null;
+        }
+        else if (patch.Language is { } language)
+        {
+            body["language"] = language;
+        }
+        foreach (var (key, value) in new (string, bool?)[]
+                 {
+                     ("ai_history", patch.AiHistory),
+                     ("ai_vision", patch.AiVision),
+                     ("ai_history_photos", patch.AiHistoryPhotos),
+                     ("ai_greeting", patch.AiGreeting),
+                     ("ai_faces", patch.AiFaces),
+                 })
+        {
+            if (value is { } flag)
+            {
+                body[key] = flag;
+            }
+        }
+        return Send<FamilyOnlyResponse>(HttpMethod.Patch, "/families/mine", body, ct: ct);
+    }
+
+    /// <summary>A new invite code (owner). The old one stops working; pending requests survive.</summary>
+    public Task<ApiResult<InviteCodeResponse>> RotateInviteCode(CancellationToken ct = default) =>
+        Send<InviteCodeResponse>(HttpMethod.Post, "/families/invite-code/rotate", ct: ct);
+
+    public Task<ApiResult<JoinRequestsResponse>> JoinRequests(CancellationToken ct = default) =>
+        Send<JoinRequestsResponse>(HttpMethod.Get, "/families/join-requests", ct: ct);
+
+    /// <summary>
+    /// Let them in. The cap is re-checked HERE, because the roster can fill between a request and
+    /// the decision: <c>family_full</c> leaves the request PENDING — a full family is a temporary
+    /// condition and not a decision, and the owner may approve it again once a seat frees.
+    /// </summary>
+    public Task<ApiResult<MemberResponse>> ApproveJoinRequest(
+        long requestId, CancellationToken ct = default) =>
+        Send<MemberResponse>(
+            HttpMethod.Post, $"/families/join-requests/{requestId}/approve", ct: ct);
+
+    public Task<ApiResult<Nothing>> RejectJoinRequest(
+        long requestId, CancellationToken ct = default) =>
+        Send<Nothing>(HttpMethod.Post, $"/families/join-requests/{requestId}/reject", ct: ct);
+
+    /// <summary>
+    /// Leave. AN OWNER WHO LEAVES HANDS THE FAMILY ON and is never refused; the answer names the
+    /// successor, or carries nobody when the family went with them.
+    /// </summary>
+    public Task<ApiResult<LeftAnswer>> LeaveFamily(CancellationToken ct = default) =>
+        Send<LeftAnswer>(HttpMethod.Post, "/families/leave", ct: ct);
+
+    public Task<ApiResult<Nothing>> RemoveMember(long userId, CancellationToken ct = default) =>
+        Send<Nothing>(HttpMethod.Delete, $"/families/members/{userId}", ct: ct);
+
+    /// <summary>Your own birthday: a day and a month, and no year at all.</summary>
+    public Task<ApiResult<UserResponse>> SetMyBirthday(
+        int month, int day, CancellationToken ct = default) =>
+        Send<UserResponse>(HttpMethod.Put, "/me/birthday", new { month, day }, ct: ct);
+
+    public Task<ApiResult<Nothing>> ClearMyBirthday(CancellationToken ct = default) =>
+        Send<Nothing>(HttpMethod.Delete, "/me/birthday", ct: ct);
+
+    /// <summary>
+    /// The owner filling one in for somebody else — a parent for a child, typically, which is
+    /// what makes the family calendar usable at all. The owner MAY name themselves here.
+    /// </summary>
+    public Task<ApiResult<MemberResponse>> SetMemberBirthday(
+        long userId, int month, int day, CancellationToken ct = default) =>
+        Send<MemberResponse>(
+            HttpMethod.Put, $"/families/members/{userId}/birthday", new { month, day }, ct: ct);
+
+    public Task<ApiResult<Nothing>> ClearMemberBirthday(
+        long userId, CancellationToken ct = default) =>
+        Send<Nothing>(HttpMethod.Delete, $"/families/members/{userId}/birthday", ct: ct);
+
+    /// <summary>
+    /// Stop seeing a member. ANY member may block any other, the owner included — and the blocked
+    /// member is never told (docs/protocol.md, "Blocking a member").
+    /// </summary>
+    public Task<ApiResult<Nothing>> Block(long userId, CancellationToken ct = default) =>
+        Send<Nothing>(HttpMethod.Put, $"/families/members/{userId}/block", ct: ct);
+
+    /// <summary>
+    /// Unblock. Scoped to the CALLER'S OWN list and not to the roster: any id on it may be
+    /// cleared, including somebody who has since left or deleted their account.
+    /// </summary>
+    public Task<ApiResult<Nothing>> Unblock(long userId, CancellationToken ct = default) =>
+        Send<Nothing>(HttpMethod.Delete, $"/families/members/{userId}/block", ct: ct);
+
+    /// <summary>
+    /// Report a member, or one of their messages. An OPEN report by this caller against this
+    /// member is returned as it stands and creates nothing — a double tap is not two rows in the
+    /// owner's list, while reporting a second message IS a second report.
+    /// </summary>
+    public Task<ApiResult<ReportResponse>> Report(
+        long reportedUserId, string reason, long? messageId = null, CancellationToken ct = default) =>
+        Send<ReportResponse>(
+            HttpMethod.Post, "/families/reports",
+            messageId is { } named
+                ? new { reported_user_id = reportedUserId, reason, message_id = named }
+                : (object)new { reported_user_id = reportedUserId, reason },
+            ct: ct);
+
+    /// <summary>The owner's moderation list: open only, oldest first.</summary>
+    public Task<ApiResult<ReportsResponse>> Reports(CancellationToken ct = default) =>
+        Send<ReportsResponse>(HttpMethod.Get, "/families/reports", ct: ct);
+
+    /// <summary>Dealt with — what that MEANS is the owner's business.</summary>
+    public Task<ApiResult<Nothing>> ResolveReport(
+        long reportId, CancellationToken ct = default) =>
+        Send<Nothing>(HttpMethod.Post, $"/families/reports/{reportId}/resolve", ct: ct);
+
+    /// <summary>
+    /// What the family has sent. NOT owner-only: it is a shared curiosity, and the same numbers go
+    /// to everyone — except that a member the caller has blocked is left out of the rows.
+    /// </summary>
+    public Task<ApiResult<StatsResponse>> Stats(CancellationToken ct = default) =>
+        Send<StatsResponse>(HttpMethod.Get, "/families/mine/stats", ct: ct);
+
     // ---- attachments -----------------------------------------------------
 
     /// <summary>

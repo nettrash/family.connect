@@ -8,7 +8,8 @@ what has to be decided.
 **Phase 1 has since been started** — `win/`, the portable core: the wire (REST and the socket),
 the local cache, the send queue, the board's shared arithmetic, the reconnect resync, the live
 frame router, the app's session gate, the live connection's policy, the chat list, the
-conversation, the board, the media outbox and the attachment cache, with **291 tests** that run on macOS and TWO differential oracles generated from the web client's own
+conversation, the board, the media outbox, the attachment cache, the family console and the
+notification rules, with **316 tests** that run on macOS and TWO differential oracles generated from the web client's own
 Rust (the wall's arithmetic, and the words a chat row is drawn with). The second assembly now
 exists too — `FamilyConnect.App.Logic`, everything the window DOES with none of the window, on
 md.win's split.

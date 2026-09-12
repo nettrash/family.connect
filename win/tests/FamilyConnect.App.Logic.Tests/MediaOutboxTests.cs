@@ -83,7 +83,7 @@ public class MediaOutboxTests : IDisposable
         Assert.Equal(2, await media.PushAsync());
 
         var held = outbox.Find(row.ClientMsgId)!;
-        Assert.Equal([34L, 35L], held.AttachmentIds);
+        Assert.Equal([34L, 35L], held.AttachmentIds!);
         Assert.False(held.OwesUploads);
         // The facts ride in the query, the bytes in the body.
         Assert.All(handler.Asked, path => Assert.Contains("kind=photo", path));
@@ -107,8 +107,8 @@ public class MediaOutboxTests : IDisposable
         Assert.Equal(1, await media.PushAsync());
 
         var held = outbox.Find(row.ClientMsgId)!;
-        Assert.Equal([34L], held.AttachmentIds);
-        Assert.Equal(["b.jpg", "c.jpg"], held.PendingFiles);
+        Assert.Equal([34L], held.AttachmentIds!);
+        Assert.Equal(["b.jpg", "c.jpg"], held.PendingFiles!);
         // Still queued, not failed: a transient upload failure is not a refusal.
         Assert.False(held.Failed);
     }
@@ -241,7 +241,7 @@ public class MediaOutboxTests : IDisposable
         Assert.Equal(1, await pipeline.FlushAsync(SendRules.FlushTrigger.SocketConnected));
 
         // One flush: the bytes went, and then the message went WITH the id they became.
-        Assert.Equal([34L], Assert.Single(posted));
+        Assert.Equal([34L], Assert.Single(posted)!);
         Assert.Empty(outbox.All());
     }
 
@@ -260,7 +260,7 @@ public class MediaOutboxTests : IDisposable
                 (HttpStatusCode.OK, Uploaded(77))),
             staging);
         await media.PushAsync();
-        Assert.Equal([34L], outbox.Find(row.ClientMsgId)!.AttachmentIds);
+        Assert.Equal([34L], outbox.Find(row.ClientMsgId)!.AttachmentIds!);
 
         // The send is refused because the server swept the upload before the message named it.
         var pipeline = new SendPipeline(
@@ -273,11 +273,11 @@ public class MediaOutboxTests : IDisposable
         var owing = outbox.Find(row.ClientMsgId)!;
         Assert.False(owing.Failed);
         Assert.Null(owing.AttachmentIds);
-        Assert.Equal(["a.jpg"], owing.PendingFiles);
+        Assert.Equal(["a.jpg"], owing.PendingFiles!);
 
         // And the pump pushes it again, to a new id.
         Assert.Equal(1, await media.PushAsync());
-        Assert.Equal([77L], outbox.Find(row.ClientMsgId)!.AttachmentIds);
+        Assert.Equal([77L], outbox.Find(row.ClientMsgId)!.AttachmentIds!);
     }
 
     /// <summary>

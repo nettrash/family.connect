@@ -227,3 +227,157 @@ public sealed record AssistantDto(
     string? Draw = null,
     bool Vision = false,
     bool Images = false);
+
+// ---- the family's own console --------------------------------------------
+
+/// <summary>
+/// A change to the family, by its owner. EVERY field is optional and which fields are PRESENT
+/// decides what changes — sending none of them is a valid no-op.
+/// </summary>
+/// <remarks>
+/// <b>TWO OF THESE ARE THE ONLY PLACES ON THIS WIRE WHERE `null` MEANS SOMETHING A MISSING KEY
+/// DOES NOT.</b> <c>"language": null</c> CLEARS the family's language and
+/// <c>"max_members": null</c> CLEARS the cap, while leaving either key out leaves it alone. The
+/// booleans are not such places: each has a real default, absent leaves it alone, and there is
+/// nothing for a null to mean — which is why they are <c>bool?</c> and the two clearable fields
+/// need <see cref="ClearsCap"/> and <see cref="ClearsLanguage"/> to say "send the null".
+/// </remarks>
+public sealed record FamilyPatch
+{
+    [JsonPropertyName("join_policy")]
+    public string? JoinPolicy { get; init; }
+
+    [JsonPropertyName("max_members")]
+    public int? MaxMembers { get; init; }
+
+    public string? Language { get; init; }
+
+    [JsonPropertyName("ai_history")]
+    public bool? AiHistory { get; init; }
+
+    [JsonPropertyName("ai_vision")]
+    public bool? AiVision { get; init; }
+
+    [JsonPropertyName("ai_history_photos")]
+    public bool? AiHistoryPhotos { get; init; }
+
+    [JsonPropertyName("ai_greeting")]
+    public bool? AiGreeting { get; init; }
+
+    [JsonPropertyName("ai_faces")]
+    public bool? AiFaces { get; init; }
+
+    /// <summary>Send <c>"max_members": null</c> — clear the cap, rather than leave it alone.</summary>
+    [JsonIgnore]
+    public bool ClearsCap { get; init; }
+
+    /// <summary>Send <c>"language": null</c> — clear it, rather than leave it alone.</summary>
+    [JsonIgnore]
+    public bool ClearsLanguage { get; init; }
+}
+
+public sealed record FamilyOnlyResponse(FamilyDto Family);
+
+public sealed record MemberResponse(MemberDto Member);
+
+public sealed record UserResponse(UserDto User);
+
+public sealed record InviteCodeResponse(
+    [property: JsonPropertyName("invite_code")] string InviteCode);
+
+public sealed record JoinAnswer(string Status)
+{
+    /// <summary>Membership was immediate: the family's policy is <c>open</c>.</summary>
+    public bool Joined => Status == "joined";
+
+    /// <summary>A request was created and an owner has to answer it.</summary>
+    public bool Pending => Status == "pending";
+}
+
+public sealed record JoinRequestDto(
+    long Id,
+    UserDto User,
+    [property: JsonPropertyName("created_at")] string? CreatedAt = null);
+
+public sealed record JoinRequestsResponse(JoinRequestDto[]? Requests);
+
+/// <summary>
+/// Who left, when an OWNER did. Absent means nobody remained and the family went with them —
+/// which is a different dialog and a different confirmation.
+/// </summary>
+public sealed record LeftAnswer(
+    [property: JsonPropertyName("new_owner_user_id")] long? NewOwnerUserId = null);
+
+public sealed record ReportDto(
+    long Id,
+    UserDto Reporter,
+    UserDto Reported,
+    string Reason,
+    [property: JsonPropertyName("created_at")] string? CreatedAt = null,
+    /// <summary>Dropped once retention has swept that message; the excerpt stays.</summary>
+    [property: JsonPropertyName("message_id")] long? MessageId = null,
+    /// <summary>
+    /// The WHOLE body, frozen when the report was raised and never cut — a moderator judging a
+    /// message has to see all of it. The one quotation in this protocol that is STORED.
+    /// </summary>
+    [property: JsonPropertyName("message_excerpt")] string? MessageExcerpt = null,
+    [property: JsonPropertyName("message_attachments")] AttachmentDto[]? MessageAttachments = null);
+
+public sealed record ReportResponse(ReportDto Report);
+
+public sealed record ReportsResponse(ReportDto[]? Reports);
+
+/// <summary>
+/// What the family has actually sent — the same numbers for everybody, except that a member the
+/// CALLER has blocked is left out of the rows.
+/// </summary>
+/// <remarks>
+/// <b>THE ROWS DO NOT ADD UP TO THE TOTALS, AND THE GAP IS THE BLOCK.</b> The totals are the
+/// family's numbers and are not projected per caller; the rows are what this caller may see of
+/// them. A client must never derive a total by summing the rows, nor a member's share by dividing
+/// into that sum (docs/protocol.md, "Family statistics").
+/// </remarks>
+public sealed record StatsResponse(
+    [property: JsonPropertyName("generated_at")] string? GeneratedAt,
+    StatsTotalsDto Totals,
+    StatsMemberDto[]? Members);
+
+public sealed record StatsTotalsDto(
+    int Members,
+    long Messages,
+    [property: JsonPropertyName("board_notes")] long BoardNotes,
+    StatsMediaDto? Attachments = null,
+    StatsAiDto? Ai = null);
+
+public sealed record StatsMemberDto(
+    [property: JsonPropertyName("user_id")] long UserId,
+    [property: JsonPropertyName("display_name")] string DisplayName,
+    long Messages,
+    StatsMediaDto? Attachments = null,
+    StatsAiDto? Ai = null);
+
+/// <summary>
+/// <c>bytes</c> adds up what was SENT; <c>stored_bytes</c> counts each distinct file once, because
+/// identical bytes are stored once per family — the difference is what dedup saved, and it is a
+/// family total only.
+/// </summary>
+public sealed record StatsMediaDto(
+    int Count,
+    int Photo = 0,
+    int Video = 0,
+    int Audio = 0,
+    int File = 0,
+    int Location = 0,
+    long Bytes = 0,
+    [property: JsonPropertyName("stored_bytes")] long? StoredBytes = null);
+
+/// <summary>
+/// <c>images</c> counts the pictures the assistant GENERATED and is its own number rather than a
+/// share of <c>questions</c>: an image model reports no tokens, so a family reading only the token
+/// counts would see the expensive half of the assistant as free.
+/// </summary>
+public sealed record StatsAiDto(
+    int Questions,
+    [property: JsonPropertyName("prompt_tokens")] long PromptTokens = 0,
+    [property: JsonPropertyName("completion_tokens")] long CompletionTokens = 0,
+    int Images = 0);
