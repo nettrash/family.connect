@@ -9,7 +9,7 @@
 //! Output goes to `win/tests/FamilyConnect.Core.Tests/Fixtures/board-vectors.json` — see
 //! Cargo.toml for the one command.
 use fc_text::board as b;
-use fc_text::{call_record, media, notify};
+use fc_text::{calendar, call_record, media, notify};
 
 fn q(text: &str) -> String {
     serde_json::to_string(text).unwrap()
@@ -338,6 +338,51 @@ fn chat() {
             "    {{\"unread\": {}, \"said\": {}}},\n",
             unread,
             q(&notify::page_title("Family Connect", unread))
+        ));
+    }
+    out.push_str("  ],\n");
+
+    // The `.ics` a client writes when it has nowhere else to put an event. Nothing here is on
+    // the wire, which is exactly why four clients writing it four ways would diverge in silence.
+    let long_a = "a".repeat(200);
+    let long_ya = "\u{44f}".repeat(120);
+    let long_b = "\u{431}".repeat(90);
+    let events: Vec<(&str, &str, &str, Option<&str>, Option<&str>)> = vec![
+        ("fc-note-12@nettrash", "Christmas dinner", "20261224T160000Z",
+         Some("20261224T200000Z"), Some("Gran's house")),
+        ("fc-note-13@nettrash", "Lunch, then a walk; bring boots", "20261225T120000Z",
+         None, None),
+        ("fc-note-14@nettrash", "Back\\slash and a\nnewline", "20261226T090000Z",
+         None, Some("Somewhere, else; really")),
+        ("fc-note-15@nettrash",
+         "День рождения бабушки и ещё очень длинное название события которое точно не влезает",
+         "20261227T100000Z", Some("20261227T140000Z"), Some("У бабушки дома, в саду")),
+        ("fc-note-16@nettrash", "A title that is exactly long enough in plain ASCII to fold once",
+         "20261228T080000Z", None, None),
+        ("fc-note-17@nettrash", "🎂🎂🎂 a cake for every one of the very many guests we invited",
+         "20261229T080000Z", None, None),
+        // A ZWJ sequence, which is ONE grapheme and seven code points: the fold is per CODE
+        // POINT, so a client folding by grapheme cluster would break the file one byte earlier
+        // and no oracle-less test would ever notice.
+        // Long enough to fold SEVERAL times: every continuation's leading space is itself
+        // an octet of the folded line, so an off-by-one in that budget shows up here and
+        // nowhere else.
+        ("fc-note-19@nettrash", &long_a, "20261231T080000Z", None, None),
+        ("fc-note-20@nettrash", &long_ya, "20270101T080000Z", None, Some(&long_b)),
+        ("fc-note-18@nettrash",
+         "A very long title indeed, long enough to fold right here 👨\u{200d}👩\u{200d}👧\u{200d}👦 and then some more",
+         "20261230T080000Z", None, None),
+    ];
+    out.push_str("  \"ics\": [\n");
+    for (uid, title, starts, ends, place) in &events {
+        out.push_str(&format!(
+            "    {{\"uid\": {}, \"title\": {}, \"starts_at\": {}, \"ends_at\": {}, \"place\": {}, \"file\": {}}},\n",
+            q(uid),
+            q(title),
+            q(starts),
+            match ends { Some(ends) => q(ends), None => "null".into() },
+            match place { Some(place) => q(place), None => "null".into() },
+            q(&calendar::one_event(uid, title, starts, *ends, *place, "20260912T120000Z"))
         ));
     }
     out.push_str("  ],\n");

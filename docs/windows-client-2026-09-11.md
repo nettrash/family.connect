@@ -9,7 +9,7 @@ what has to be decided.
 the local cache, the send queue, the board's shared arithmetic, the reconnect resync, the live
 frame router, the app's session gate, the live connection's policy, the chat list, the
 conversation, the board, the media outbox, the attachment cache, the family console and the
-notification rules, with **316 tests** that run on macOS and TWO differential oracles generated from the web client's own
+notification rules, the account's own screens and the calendar hand-off, with **327 tests** that run on macOS and TWO differential oracles generated from the web client's own
 Rust (the wall's arithmetic, and the words a chat row is drawn with). The second assembly now
 exists too — `FamilyConnect.App.Logic`, everything the window DOES with none of the window, on
 md.win's split.
@@ -175,6 +175,16 @@ numbers and the same tests, so a Windows wall is the same wall.
 
 Each phase is one session's work at the pace the web client went at (six phases, one repository,
 committed as it went), except the board and the chat, which are two.
+
+## One of the open decisions has an answer in the document
+
+**Push.** `POST /devices` takes `ios`, `macos` or `android` and nothing else, and the protocol says
+in as many words that "a browser registers no device and receives no push". A Windows client is in
+exactly that position: it has no APNs or FCM token to give. So *socket-only toasts* is not a
+compromise this port chose — it is what the protocol currently allows, and it is built and tested
+(`NotificationRules`, 15 mutants). Giving Windows real push is a protocol change plus a server
+change: a `windows` platform on `POST /devices`, a WNS channel URI where a token goes, and a WNS
+sender beside the APNs and FCM ones. Worth deciding on its own merits rather than as part of #64.
 
 ## What has to be decided before phase 1
 

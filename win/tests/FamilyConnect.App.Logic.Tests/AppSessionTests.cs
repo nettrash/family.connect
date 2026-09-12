@@ -335,6 +335,82 @@ public class AppSessionTests : IDisposable
         Assert.Empty(chats.Chats());
     }
 
+    /// <summary>
+    /// A WRONG PASSWORD ON A PASSWORD CHANGE IS NOT AN EXPIRED SESSION EITHER. It is the same
+    /// 401 and the same distinction: the account is still there, and so is the session.
+    /// </summary>
+    [Fact]
+    public async Task AWrongCurrentPasswordDoesNotSignAnybodyOut()
+    {
+        var server = new Server()
+            .On("/auth/login", Token)
+            .On("/me", Me(InFamily))
+            .On(
+                "/me/password",
+                """{"error": {"code": "invalid_credentials", "message": "no"}}""",
+                HttpStatusCode.Unauthorized);
+        var (session, tokens, _) = Build(server);
+        await session.SignInAsync("anna", "hunter2");
+        var endings = new List<SessionEnd>();
+        session.Ended += end => endings.Add(end);
+
+        var refused = await session.ChangePasswordAsync("wrong", "hunter22");
+
+        Assert.Equal(ErrorCodes.InvalidCredentials, refused!.Code);
+        Assert.Empty(endings);
+        Assert.Equal("t0ken", tokens.Token);
+        Assert.Equal(Gate.Owner, session.State.Gate);
+    }
+
+    /// <summary>
+    /// Deleting the account ends everything — and it is its OWN ending, because there is nothing
+    /// left to sign back into and a screen offering to would be cruel as well as wrong.
+    /// </summary>
+    [Fact]
+    public async Task DeletingTheAccountIsItsOwnEndingAndTakesEverythingWithIt()
+    {
+        var server = new Server()
+            .On("/auth/login", Token)
+            .On("/me", Me(InFamily))
+            .On("/me/delete", null, HttpStatusCode.NoContent);
+        var (session, tokens, _) = Build(server);
+        await session.SignInAsync("anna", "hunter2");
+        var chats = new ChatStore(cache);
+        chats.Replace([new ChatRowDto(new ChatDto(42, "family", "The Smiths"))]);
+        var endings = new List<SessionEnd>();
+        session.Ended += end => endings.Add(end);
+
+        Assert.Null(await session.DeleteAccountAsync("hunter2"));
+
+        Assert.Equal([SessionEnd.AccountDeleted], endings);
+        Assert.Null(tokens.Token);
+        Assert.Equal(Gate.SignedOut, session.State.Gate);
+        Assert.Empty(chats.Chats());
+    }
+
+    [Fact]
+    public async Task ARefusedDeletionChangesNothing()
+    {
+        var server = new Server()
+            .On("/auth/login", Token)
+            .On("/me", Me(InFamily))
+            .On(
+                "/me/delete",
+                """{"error": {"code": "invalid_credentials", "message": "no"}}""",
+                HttpStatusCode.Unauthorized);
+        var (session, tokens, _) = Build(server);
+        await session.SignInAsync("anna", "hunter2");
+        var endings = new List<SessionEnd>();
+        session.Ended += end => endings.Add(end);
+
+        var refused = await session.DeleteAccountAsync("wrong");
+
+        Assert.Equal(ErrorCodes.InvalidCredentials, refused!.Code);
+        Assert.Empty(endings);
+        Assert.Equal("t0ken", tokens.Token);
+        Assert.Equal(Gate.Owner, session.State.Gate);
+    }
+
     [Fact]
     public async Task TheFamilysOwnDocumentFillsInTheAssistantAndTheRoster()
     {
