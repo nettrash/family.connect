@@ -130,6 +130,41 @@ nonisolated enum BoardTasks {
     }
 }
 
+/// How a PICTURE is drawn on the wall (docs/protocol.md, "Board").
+///
+/// A PHOTO IS DRAWN WHOLE: fitted in both dimensions and never cropped to
+/// fill its box. Issue #71 is what filling costs — a portrait photograph
+/// from a phone lost more than half its height on the board, faces and all,
+/// on every client that fitted the width alone.
+///
+/// Web counterpart: `fc_text::board::fitted_picture`.
+/// Android counterpart: `BoardPicture.fitted` in ui/board/BoardScreen.kt.
+nonisolated enum BoardPicture {
+    /// The size a picture of `picture` pixels takes inside `space`, fitted
+    /// in both dimensions — a tall photograph on a wide card comes back
+    /// narrow, a wide one short, and neither comes back cropped.
+    ///
+    /// Also the size of a BARE photo's card, which is the picture itself:
+    /// the note's box hugs this, so the pin sits on the photograph rather
+    /// than over bare wall.
+    ///
+    /// A picture the server never gave dimensions for takes the whole
+    /// space, which costs a margin at worst — the picture is still drawn
+    /// fitted inside it and never cropped.
+    static func fitted(space: CGSize, picture: CGSize) -> CGSize {
+        guard picture.width > 0, picture.height > 0, space.width > 0, space.height > 0 else {
+            return space
+        }
+        let scale = min(space.width / picture.width, space.height / picture.height)
+        // Never below a hairline: a panorama 20 000 pixels wide would round
+        // its height to nothing, and a card of no height is a note nobody
+        // can tap.
+        return CGSize(
+            width: max(1, min(space.width, picture.width * scale)),
+            height: max(1, min(space.height, picture.height * scale)))
+    }
+}
+
 /// Ordered small → large, which is the order a picker shows them in.
 nonisolated enum NoteSize: String, CaseIterable, Identifiable, Sendable {
     case small

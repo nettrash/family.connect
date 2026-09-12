@@ -651,7 +651,29 @@ struct StickerProps {
 fn sticker(props: &StickerProps) -> Html {
     let note = &props.note;
     let size = note.size();
-    let card = size.frame(props.compact);
+    let kind = note.kind();
+    let hidden = props.hidden;
+    let picture = (!hidden && kind == Kind::Photo)
+        .then(|| note.attachment.clone())
+        .flatten();
+    let caption = note.text().trim().to_string();
+    // A BARE photo's CARD IS THE PICTURE (docs/protocol.md, "Board"): the
+    // box hugs the fitted photograph from the same corner, so the pin sits
+    // on the picture and the wall shows around it — rather than a slab of
+    // card with a letterboxed portrait in the middle of it.
+    let card = {
+        let frame = size.frame(props.compact);
+        match picture.as_ref().filter(|_| caption.is_empty()) {
+            Some(attachment) => rules::fitted_picture(
+                frame,
+                (
+                    attachment.width.unwrap_or_default() as f64,
+                    attachment.height.unwrap_or_default() as f64,
+                ),
+            ),
+            None => frame,
+        }
+    };
     let fraction = note.position();
     let wall = props.wall;
     let hand = use_mut_ref(Hand::default);
@@ -899,12 +921,6 @@ fn sticker(props: &StickerProps) -> Html {
         })
     };
 
-    let kind = note.kind();
-    let hidden = props.hidden;
-    let picture = (!hidden && kind == Kind::Photo)
-        .then(|| note.attachment.clone())
-        .flatten();
-    let caption = note.text().trim().to_string();
     let event_block = (!hidden && kind == Kind::Event)
         .then(|| note.starts_at.clone())
         .flatten()
@@ -2536,7 +2552,6 @@ fn note_sheet(props: &SheetProps) -> Html {
                 />
             }
         });
-        let card = draft_now.size.frame(props.compact);
         let preview_text = if draft_now.text.trim().is_empty() {
             match kind {
                 Kind::Photo => String::new(),
@@ -2552,6 +2567,22 @@ fn note_sheet(props: &SheetProps) -> Html {
             .as_ref()
             .filter(|_| kind == Kind::Photo)
             .and_then(|note| note.attachment.clone());
+        // The sticker as the wall will draw it — so a bare photo's card is
+        // the fitted picture here too (docs/protocol.md, "Board"), or the
+        // author would be shown a shape the wall never draws.
+        let card = {
+            let frame = draft_now.size.frame(props.compact);
+            match preview_picture.as_ref().filter(|_| preview_text.is_empty()) {
+                Some(attachment) => rules::fitted_picture(
+                    frame,
+                    (
+                        attachment.width.unwrap_or_default() as f64,
+                        attachment.height.unwrap_or_default() as f64,
+                    ),
+                ),
+                None => frame,
+            }
+        };
         html! {
             <>
                 { picture.clone().unwrap_or_default() }
@@ -3912,6 +3943,95 @@ mod tests {
         handle.destroy();
         root.remove();
     }
+    /// A PHOTO IS DRAWN WHOLE (docs/protocol.md, "Board"): fitted in both
+    /// dimensions, never cropped — and a BARE one's card is the picture
+    /// itself, so the pin sits on the photograph and the wall shows around
+    /// it. Issue #71: `object-fit: cover` kept the middle of every portrait
+    /// pinned from a phone and threw two thirds of its height away.
+    #[wasm_bindgen_test]
+    async fn a_portrait_photo_is_drawn_whole_and_a_bare_card_is_the_picture() {
+        let log = Log::default();
+        let mut bare = photo(6, "", 0.2, 0.2);
+        let mut captioned = photo(7, "Gran's garden", 0.6, 0.2);
+        for pinned in [&mut bare, &mut captioned] {
+            let attachment = pinned.attachment.as_mut().expect("a pinned picture");
+            attachment.width = Some(600);
+            attachment.height = Some(1200);
+        }
+        let (root, handle) = render(props(vec![bare, captioned], &[], &log)).await;
+        TimeoutFuture::new(30).await;
+        let window = web_sys::window().expect("a window");
+        let computed = |element: &HtmlElement, property: &str| -> String {
+            window
+                .get_computed_style(element)
+                .ok()
+                .flatten()
+                .and_then(|style| style.get_property_value(property).ok())
+                .unwrap_or_default()
+        };
+        let stickers = all(&root, ".sticker");
+        assert_eq!(stickers.len(), 2);
+        // The Mac's medium card is 150x110, so a 1:2 photograph pinned bare
+        // is drawn 55 wide and the full 110 tall — the picture's own shape,
+        // and every pixel of it.
+        let (width, height) = (px(&stickers[0], "width"), px(&stickers[0], "height"));
+        assert!((width - 55.0).abs() < 0.5, "the card hugs the picture: {width}");
+        assert!((height - 110.0).abs() < 0.5, "and fills the card's height: {height}");
+        assert!(
+            ((width / height) - 0.5).abs() < 0.01,
+            "which is the picture's own shape: {width}x{height}"
+        );
+        // A captioned one keeps its whole card — the words need the paper —
+        // and fits the picture into the strip above them.
+        assert_eq!(px(&stickers[1], "width"), 150.0, "the captioned card stands");
+        assert_eq!(px(&stickers[1], "height"), 110.0);
+        // FITTED, not filled: the rule that was wrong. Asserted on the
+        // shipped stylesheet through the shipped markup — the bytes never
+        // arrive in a test, so the `img` the component draws once they do is
+        // put in its place.
+        let document = window.document().expect("a document");
+        for box_ in all(&root, ".note-picture") {
+            let img = document.create_element("img").unwrap();
+            box_.append_child(&img).unwrap();
+            // The loading class off: this is the rule for a picture that
+            // has ARRIVED, and the grey shape is only the wait.
+            box_.set_class_name("note-picture");
+            let img: HtmlElement = img.dyn_into().unwrap();
+            assert_eq!(
+                computed(&img, "object-fit"),
+                "contain",
+                "the whole picture, fitted in both dimensions"
+            );
+            // And no ground of its own behind it: what shows around a
+            // fitted picture is the sticker's paper, or the wall. A grey
+            // one would be a frame around every portrait.
+            assert!(
+                computed(&box_, "background-color").contains("rgba(0, 0, 0, 0)"),
+                "nothing behind the picture: {}",
+                computed(&box_, "background-color")
+            );
+        }
+        // And the bare one's shadow is the PICTURE's, not the box's: a
+        // box-shadow would outline the card around a fitted portrait.
+        assert_eq!(
+            computed(&stickers[0], "box-shadow"),
+            "none",
+            "no shadow from the bare card"
+        );
+        let bare_img = one(&stickers[0], ".note-picture img");
+        assert!(
+            computed(&bare_img, "filter").contains("drop-shadow"),
+            "the picture casts it instead: {}",
+            computed(&bare_img, "filter")
+        );
+        assert!(
+            !computed(&stickers[1], "box-shadow").contains("none"),
+            "while a card with paper on it keeps its own"
+        );
+        handle.destroy();
+        root.remove();
+    }
+
     /// A note that NAMES a member: the name is drawn as a highlight, and a
     /// tap on it opens the chat with them rather than the note
     /// (docs/protocol.md, "Board").

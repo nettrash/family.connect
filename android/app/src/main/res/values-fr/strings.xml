@@ -547,5 +547,6 @@
     <string name="s_draw_another_backdrop">Dessiner un autre fond</string>
     <string name="s_drawing">Dessin en cours…</string>
     <string name="s_draw_failed">Impossible de dessiner cela.</string>
+    <string name="s_tick_failed">Impossible de cocher cette tâche.</string>
     <string name="s_no_calendar_app">Aucune app de calendrier pour l\'ajouter.</string>
 </resources>

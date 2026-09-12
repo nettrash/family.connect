@@ -109,7 +109,8 @@ struct NotePreview: View {
     }
 }
 
-/// The picture on a photo note, filling the sticker's width.
+/// The picture on a photo note, drawn WHOLE inside the room the card gives
+/// it (docs/protocol.md, "Board").
 ///
 /// Through the same AttachmentStore a message's photo comes from, by id:
 /// the bytes are cached once per device and a board that fetched its own
@@ -120,6 +121,10 @@ struct NotePicture: View {
     let attachmentID: Int64
     /// How tall the picture is drawn — see `height(cardHeight:hasCaption:)`.
     var height: CGFloat = 84
+    /// The shape to hold while the bytes are on their way, so the caption
+    /// does not jump when they land. Nil for a picture whose dimensions the
+    /// server never recorded — then the box is whatever it was given.
+    var shape: CGSize? = nil
 
     @Environment(AttachmentStore.self) private var store
 
@@ -131,8 +136,16 @@ struct NotePicture: View {
     /// and the author line out through the bottom of the card. What is left
     /// after the padding, the author line and — when there is one — a line
     /// of caption, never below a strip that still reads as a picture.
+    ///
+    /// A photo with NO caption is not this case at all: it is the bare
+    /// picture, its card IS the picture (BoardPicture.fitted), and the
+    /// strip's arithmetic — a caption's line, an author line — has nothing
+    /// to take room for. It gets the whole card, which is issue #71's other
+    /// half: an 84pt strip in a 132pt square drew a third of a portrait and
+    /// left the rest of the card empty.
     static func height(cardHeight: CGFloat, hasCaption: Bool) -> CGFloat {
-        let room = cardHeight - 20 - 16 - (hasCaption ? 22 : 0)
+        guard hasCaption else { return max(1, cardHeight) }
+        let room = cardHeight - 20 - 16 - 22
         return min(84, max(24, room))
     }
 
@@ -151,17 +164,39 @@ struct NotePicture: View {
         return store.previewOrPhoto(id: attachmentID)
     }
 
+    /// FITTED, never filled (docs/protocol.md, "Board"): the whole
+    /// photograph, in both dimensions.
+    ///
+    /// Named rather than written inline so a test can hold it: issue #71
+    /// was one word in a view body — `.fill` — and nothing outside the
+    /// body could see it. See BoardPictureTests.
+    static let contentMode: ContentMode = .fit
+
+    /// The placeholder's shape: the picture's own where it is known, and
+    /// nothing to constrain when it is not.
+    private var ratio: CGFloat? {
+        guard let shape, shape.width > 0, shape.height > 0 else { return nil }
+        return shape.width / shape.height
+    }
+
     var body: some View {
         Group {
             if let image {
+                // FITTED, never filled: the whole photograph, in both
+                // dimensions (docs/protocol.md, "Board"). `.fill` was
+                // issue #71 — it cropped every portrait to the middle of
+                // its own height.
                 image
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
+                    .aspectRatio(contentMode: Self.contentMode)
             } else {
                 // The shape the picture will take, so the caption does not
-                // jump when the bytes land.
+                // jump when the bytes land — the picture's own shape where
+                // the server gave its dimensions, and the whole box where
+                // it did not.
                 Rectangle()
                     .fill(.black.opacity(0.06))
+                    .aspectRatio(ratio, contentMode: Self.contentMode)
                     .overlay {
                         ProgressView().controlSize(.small)
                     }

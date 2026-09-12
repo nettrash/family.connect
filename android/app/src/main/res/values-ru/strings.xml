@@ -567,5 +567,6 @@
     <string name="s_draw_another_backdrop">Нарисовать другой фон</string>
     <string name="s_drawing">Рисует…</string>
     <string name="s_draw_failed">Не удалось нарисовать.</string>
+    <string name="s_tick_failed">Не удалось отметить.</string>
     <string name="s_no_calendar_app">Нет приложения календаря, куда добавить.</string>
 </resources>
