@@ -22,6 +22,10 @@ win/
                 AppSession — which screen the app is on, and the three ways a session ends
                 LiveConnection — the socket, the resync, the outbox and the router under one policy
                 ChatList — the rows, their order, and the one line under each name
+                Conversation — one open chat: the window, paging back, the read marker, typing
+                Board — the wall: the stickers on it, the badge over it, the writes that change it
+                MediaOutbox — the uploads a queued message owes, and the bytes waiting for them
+                AttachmentCache — downloaded bytes, kept, with the preview rule in ONE place
   tests/FamilyConnect.Core.Tests/      xUnit, runs anywhere `dotnet` runs
   tests/FamilyConnect.App.Logic.Tests/ the same, for the app's own behaviour
   tools/board-oracle/                  Rust: regenerates the shared-arithmetic fixture
@@ -51,10 +55,34 @@ that preceded the page already counted every message on it. A list read takes th
 PLUS whatever raced it (anything held above the preview that answer carried), and reading
 subtracts rather than recounts.
 
+**The board has three cursors' worth of rules and they are all in `BoardStore`.** A full read
+REPLACES the wall — except a note held above the read's own `max_board_seq`, which arrived after
+the read was taken; an older full read landing second is ignored outright. A tombstone is
+REMEMBERED (the `gone` table), so an older copy of a deleted note cannot put it back — the web
+client keeps the same set, and Apple and Android do not, which is a known gap there. And the
+cursor moves in three ways and no others: a full read sets it to its mark, a catch-up page to the
+page's highest seq, and a frame to its own — the frame only once this device has read the board at
+all, because a cursor of 0 is what asks for the whole wall and a frame that jumped that queue
+would leave the wall to whatever frames happened to arrive.
+
 The three catch-up cursors are **this device's**, and a `GET /chats` row's `max_*_seq` is the
 **server's** — same names, different numbers. Storing one as the other makes the gate "the
 server's mark exceeds what I have applied" false for ever and silently stops every catch-up; this
 port did exactly that until a resync test asked for a page and got none.
+
+**A media send is represented before the first byte moves.** The row, the files it owes and the
+files it CAME FROM are written down first — `staged_files` never shrinks, because
+`attachment_expired` means *upload it again* and a row that had forgotten where the bytes came
+from could only give up. Every landing is remembered as it happens, so a crash halfway through a
+four-photo message costs the remaining three; a file this device can no longer find fails the row
+outright (an id cannot recover a picture); and a flush PUSHES what is owed before it posts
+anything, because the pipeline passes over a row that still owes a byte.
+
+**A preview is only asked for when the attachment says it has one.** The server generates none for
+a picture the assistant drew, and none at all for a file, audio or a location — so `has_preview` is
+a fact, not a hint. Asking anyway answers 404, and a client that reads that as "no picture" draws
+an empty frame for ever (the Android board's backdrops, issue #71's follow-up). The rule lives in
+`AttachmentCache` rather than at every call site, where one of them will always forget.
 
 The send path is whole: `SendPipeline` writes the row down, tries the socket, gives the frame the
 ack deadline, falls back to `POST /chats/{id}/messages` with the same `client_msg_id`, and marks a

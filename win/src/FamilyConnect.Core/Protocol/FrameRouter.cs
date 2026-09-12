@@ -145,8 +145,9 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board)
 
             case ServerFrame.BoardNote note:
                 // Guarded by `board_seq` in the store, exactly as the catch-up is: an
-                // out-of-order frame cannot undo a newer move.
-                board.Apply(note.Note);
+                // out-of-order frame cannot undo a newer move. A frame moves the board's cursor,
+                // as a catch-up page does — and as the answer to our own write does not.
+                board.Apply(note.Note, SeqRoute.LiveFrame);
                 BoardChanged?.Invoke(note.Note);
                 break;
 

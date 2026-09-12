@@ -101,6 +101,106 @@ public class BoardStoreTests : IDisposable
         Assert.Equal("the newer one", store.Note(12)!.Text);
     }
 
+    /// <summary>
+    /// A TOMBSTONE IS THE LAST WORD. A delete is the last thing that happens to a note, but seqs
+    /// commit out of order and a history page carries the pre-delete copy — so a note that has
+    /// been taken down must not come back when an older answer crosses the tombstone on the wire.
+    /// </summary>
+    [Fact]
+    public void ANoteTakenDownStaysDownHoweverLateAnOlderCopyArrives()
+    {
+        var store = Store();
+        store.Apply([Note(12, 11), Note(13, 12)]);
+
+        Assert.True(store.Apply(Note(12, 13, deleted: true)));
+        Assert.Equal([13L], store.Notes().Select(note => note.Id));
+
+        // The copy that was already travelling when the delete happened — a catch-up page, or a
+        // frame that crossed it.
+        Assert.False(store.Apply(Note(12, 99, text: "back from the dead")));
+        Assert.Equal([13L], store.Notes().Select(note => note.Id));
+
+        // And a full read that still lists it puts nothing back either.
+        store.Replace([Note(12, 11), Note(13, 12)], 12);
+        Assert.Equal([13L], store.Notes().Select(note => note.Id));
+    }
+
+    /// <summary>
+    /// A FULL READ REPLACES THE WALL — except what is NEWER than the read's own mark. A frame
+    /// that landed while the read was in flight is not on that answer, and wiping it would take
+    /// a note off the wall seconds after somebody pinned it.
+    /// </summary>
+    [Fact]
+    public void AFullReadKeepsWhatArrivedAfterTheReadWasTaken()
+    {
+        var store = Store();
+        // A frame, ahead of the read that is about to land.
+        store.Apply(Note(20, 30, text: "just pinned"), SeqRoute.LiveFrame);
+
+        store.Replace([Note(12, 11), Note(13, 12)], 12);
+
+        Assert.Equal([20L, 13L, 12L], store.Notes().Select(note => note.Id));
+        Assert.Equal("just pinned", store.Note(20)!.Text);
+        // The cursor is the read's mark: the server read it BEFORE the notes, so it is never
+        // past a change they missed.
+        Assert.Equal(12, store.Cursor);
+    }
+
+    /// <summary>
+    /// THE CURSOR IS NOT MOVED BY EVERY WRITE. A live frame and a page of the feed move it; the
+    /// answer to this client's own write is evidence about one note and says nothing about what
+    /// else has happened, so a cursor moved by it steps the feed past somebody else's change.
+    /// </summary>
+    [Fact]
+    public void OnlyAFrameOrAPageMovesTheBoardsCursor()
+    {
+        var store = Store();
+
+        store.Apply(Note(12, 11), SeqRoute.Evidence);
+        Assert.Equal("Milk", store.Note(12)!.Text);
+        Assert.Equal(0, store.Cursor);
+
+        // A FRAME BEFORE THIS DEVICE HAS EVER READ THE BOARD moves nothing either: the cursor
+        // being 0 is what tells the resync to read the whole wall, and a frame that jumped that
+        // queue would leave it above changes nobody had read.
+        store.Apply(Note(13, 12), SeqRoute.LiveFrame);
+        Assert.Equal("Milk", store.Note(13)!.Text);
+        Assert.Equal(0, store.Cursor);
+
+        // The whole wall, read once…
+        store.Replace([Note(12, 11), Note(13, 12)], 12);
+        Assert.Equal(12, store.Cursor);
+
+        // …and from here a frame does move it.
+        store.Apply(Note(14, 20), SeqRoute.LiveFrame);
+        Assert.Equal(20, store.Cursor);
+
+        store.Apply([Note(15, 21)]);
+        Assert.Equal(21, store.Cursor);
+
+        // And a page applied as evidence — the answer to our own write, which never comes as a
+        // page in practice — moves nothing either.
+        store.Apply([Note(16, 22)], SeqRoute.Evidence);
+        Assert.Equal(21, store.Cursor);
+    }
+
+    /// <summary>
+    /// TWO FULL READS CAN LAND IN EITHER ORDER, and an older one landing second must change
+    /// nothing: it would drop every note written between the two and set the cursor back.
+    /// </summary>
+    [Fact]
+    public void AFullReadOlderThanOneAlreadyAppliedIsIgnored()
+    {
+        var store = Store();
+        store.Replace([Note(12, 11), Note(13, 12)], 12);
+
+        // The slower read, taken before the faster one and arriving after it.
+        store.Replace([Note(12, 11)], 10);
+
+        Assert.Equal([13L, 12L], store.Notes().Select(note => note.Id));
+        Assert.Equal(12, store.Cursor);
+    }
+
     [Fact]
     public void APageOfChangesIsAppliedInOrderAndMovesTheCursorOnce()
     {

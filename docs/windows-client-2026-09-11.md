@@ -7,14 +7,22 @@ what has to be decided.
 
 **Phase 1 has since been started** — `win/`, the portable core: the wire (REST and the socket),
 the local cache, the send queue, the board's shared arithmetic, the reconnect resync, the live
-frame router, the app's session gate, the live connection's policy and the chat list, with
-**245 tests** that run on macOS and TWO differential oracles generated from the web client's own
+frame router, the app's session gate, the live connection's policy, the chat list, the
+conversation, the board, the media outbox and the attachment cache, with **291 tests** that run on macOS and TWO differential oracles generated from the web client's own
 Rust (the wall's arithmetic, and the words a chat row is drawn with). The second assembly now
 exists too — `FamilyConnect.App.Logic`, everything the window DOES with none of the window, on
 md.win's split.
 See `win/README.md` for what exists and "Phases" below for what does not. The stack question was
 answered the way this document recommends (WinUI 3 + C#/.NET 10, md.win's layout); calls, push,
 the minimum Windows build and where it ships are still open.
+
+Writing the board model turned up THREE more, all of them rules `protocol.md` already states and
+this port had not kept: a full read wiped notes that arrived while it was in flight (it must keep
+anything held above the read's own mark); a deleted note could be RESURRECTED by an older copy
+arriving late (the `gone` set the web client keeps — still a gap on Apple and Android); and the
+board cursor was moved by the answer to the client's own write and by a frame arriving before the
+wall had ever been read, either of which leaves the cursor above changes nobody has read. An older
+full read landing second is now ignored too.
 
 A FIFTH defect came out of writing the chat list: the unread count was RECOMPUTED from local
 history on every applied message, so a device told "12 unread" by `GET /chats` drew 1 the moment
