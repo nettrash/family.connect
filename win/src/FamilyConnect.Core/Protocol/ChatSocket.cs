@@ -93,6 +93,30 @@ public interface IFrameSender
 }
 
 /// <summary>
+/// The realtime connection as the app above it uses one: the frames, the three things that happen
+/// TO a connection, and the loop that keeps it.
+/// </summary>
+/// <remarks>
+/// A seam, so that the layer deciding WHEN to connect and what a connection means can be tested
+/// without a socket at all. <see cref="ChatSocket"/> is the one implementation; a test's fake is
+/// the other, and neither is an abstraction for its own sake.
+/// </remarks>
+public interface ILiveSocket : IFrameSender
+{
+    /// <summary>A connection came up. The resync starts here, and so does the outbox flush.</summary>
+    event Action? Connected;
+
+    /// <summary>It went away. Whether it comes back is the loop's business.</summary>
+    event Action? Disconnected;
+
+    /// <summary>The session is gone: sign out, and do not reconnect.</summary>
+    event Action? SessionExpired;
+
+    /// <summary>Connect, read, reconnect — until cancelled or the session expires.</summary>
+    Task RunAsync(CancellationToken ct);
+}
+
+/// <summary>
 /// The realtime connection: one socket at a time, reconnected with full jitter, with the frames
 /// handed to whoever is listening (docs/protocol.md, "WebSocket protocol").
 /// </summary>
@@ -110,7 +134,7 @@ public interface IFrameSender
 /// Apple counterpart: <c>ChatSocket</c>. Android: <c>ChatSocketImpl</c>. Web: <c>web/src/socket.rs</c>.
 /// </para>
 /// </remarks>
-public sealed class ChatSocket : IFrameSender
+public sealed class ChatSocket : ILiveSocket
 {
     /// <summary>The close code the server sends when the session expires mid-connection.</summary>
     public const int SessionExpiredCode = 4401;

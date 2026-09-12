@@ -3930,15 +3930,29 @@ apply it under the same rule the board catch-up uses: a note is written only whe
      applied per message under the `reaction_seq` guard. The stored cursor advances with every
      page **even for messages the client does not hold** (states for unknown messages are
      dropped; history paging re-delivers them embedded on the `Message` objects).
+     Then, when the chat's `max_edit_seq` from step 2 exceeds the locally stored edit cursor:
+     `GET /chats/{id}/edits?after_seq=<stored cursor>` looped until a short page, applied through
+     exactly the same path as a page of history — the feed answers whole `Message` objects — and
+     under the `edit_seq` guard, with the cursor advancing per page as the reaction one does.
+     This is the only step that learns of a change to a message the client ALREADY HOLDS: step 3's
+     own `after_id` is `WHERE id > cursor` and can never look at an older row, so without this a
+     device that slept through an edit shows the old words until something else happens to that
+     message. It is a third feed and not a variation on the first two: the edit sequence is its
+     own, and the answer is a message rather than a state.
      Then, when the chat's `max_poll_seq` from step 2 exceeds the locally stored poll cursor:
      `GET /chats/{id}/polls?after_seq=<stored cursor>` looped until a short page, applied per
      message under the `poll_seq` guard, with the cursor advancing exactly as the reaction one
      does.
-     **Only a live frame and a catch-up page may move either chat cursor.** A reaction or poll
+     **The three cursors above are the CLIENT'S, and a `GET /chats` row's `max_*_seq` is the
+     SERVER'S — same names, different numbers.** The gate is "the server's mark exceeds what I
+     have applied", so a client that stores the list's mark as its own cursor makes that test
+     false for ever and silently stops catching up. Keep them apart: the marks arrive with step 2
+     and are read from the answer; the cursors live where the applied states are.
+     **Only a live frame and a catch-up page may move any of them.** A reaction, edit or poll
      state that reaches a client by any other route — embedded on a fetched `Message`, or in the
-     HTTP response to that client's own reaction, vote, retraction or close — is applied under
-     the per-message guard and must NOT advance the chat cursor. Such a state is evidence about
-     one message and none at all about another message's lower value, and REST goes on working
+     HTTP response to that client's own reaction, edit, vote, retraction or close — is applied
+     under the per-message guard and must NOT advance the chat cursor. Such a state is evidence
+     about one message and none at all about another message's lower value, and REST goes on working
      while the socket is down, which is precisely when the frames carrying those lower values
      were missed: a vote answered with `poll_seq` 100 would push the cursor past somebody else's
      99, step 2's `max_poll_seq > cursor` test would then ask for nothing, and that state would

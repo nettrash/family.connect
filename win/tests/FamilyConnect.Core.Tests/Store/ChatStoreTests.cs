@@ -185,14 +185,14 @@ public class ChatStoreTests : IDisposable
         var store = Store();
         store.Replace([Row()]);
         store.Apply(Message(1341));
-        Assert.True(store.ApplyReactions(1341, 10, [new ReactionDto(9, "❤️")]));
+        Assert.True(store.ApplyReactions(42, 1341, 10, [new ReactionDto(9, "❤️")]));
         Assert.Equal("❤️", Assert.Single(store.Message(1341)!.Reactions!).Emoji);
         // Cleared is `[]` and the field STAYS: a client tells "cleared" from "no data".
-        Assert.True(store.ApplyReactions(1341, 11, []));
+        Assert.True(store.ApplyReactions(42, 1341, 11, []));
         Assert.NotNull(store.Message(1341)!.Reactions);
         Assert.Empty(store.Message(1341)!.Reactions!);
         // And an older frame that crossed a newer one is dropped.
-        Assert.False(store.ApplyReactions(1341, 9, [new ReactionDto(9, "👍")]));
+        Assert.False(store.ApplyReactions(42, 1341, 9, [new ReactionDto(9, "👍")]));
         Assert.Empty(store.Message(1341)!.Reactions!);
         // The chat's cursor followed the newest.
         Assert.Equal(11, store.Chat(42)!.MaxReactionSeq);
@@ -204,14 +204,39 @@ public class ChatStoreTests : IDisposable
         var store = Store();
         store.Replace([Row()]);
         store.Apply(Message(1342, body: "Pizza or pasta?"));
-        Assert.True(store.ApplyPoll(1342, new PollDto(88, false, [
+        Assert.True(store.ApplyPoll(42, 1342, new PollDto(88, false, [
             new PollOptionDto(5, "Pizza", [7]),
             new PollOptionDto(6, "Pasta", []),
         ])));
         Assert.Equal([7L], store.Message(1342)!.Poll!.Options[0].Votes);
-        Assert.False(store.ApplyPoll(1342, new PollDto(87, true, [])));
+        Assert.False(store.ApplyPoll(42, 1342, new PollDto(87, true, [])));
         Assert.False(store.Message(1342)!.Poll!.Closed);
         Assert.Equal(88, store.Chat(42)!.MaxPollSeq);
+    }
+
+    /// <summary>
+    /// A STATE FOR A MESSAGE THIS DEVICE DOES NOT HOLD IS DROPPED, AND THE CURSOR STILL MOVES.
+    /// History paging re-delivers such a state embedded on the message itself, while a cursor
+    /// left behind asks for a page that answers the same nothing — for ever, because the chat's
+    /// mark never comes back down.
+    /// </summary>
+    [Fact]
+    public void AStateForAnUnknownMessageIsDroppedAndTheCursorMovesAnyway()
+    {
+        var store = Store();
+        store.Replace([Row()]);
+
+        Assert.False(store.ApplyReactions(42, 9999, 124, [new ReactionDto(9, "❤️")]));
+        Assert.Null(store.Message(9999));
+        Assert.Equal(124, store.Chat(42)!.MaxReactionSeq);
+
+        Assert.False(store.ApplyPoll(42, 9998, new PollDto(88, false, [])));
+        Assert.Equal(88, store.Chat(42)!.MaxPollSeq);
+
+        // Evidence about a message this device has never seen is evidence about nothing.
+        Assert.False(store.ApplyReactions(
+            42, 9997, 300, [new ReactionDto(9, "👍")], SeqRoute.Evidence));
+        Assert.Equal(124, store.Chat(42)!.MaxReactionSeq);
     }
 
     /// <summary>
@@ -230,39 +255,62 @@ public class ChatStoreTests : IDisposable
         store.Apply(Message(2, body: "Pizza or pasta?"));
 
         // The answer to our own reaction: applied, cursor untouched.
-        Assert.True(store.ApplyReactions(1, 300, [new ReactionDto(7, "❤️")], SeqRoute.Evidence));
+        Assert.True(store.ApplyReactions(42, 1, 300, [new ReactionDto(7, "❤️")], SeqRoute.Evidence));
         Assert.Equal("❤️", Assert.Single(store.Message(1)!.Reactions!).Emoji);
         Assert.Null(store.Chat(42)!.MaxReactionSeq);
 
         // The answer to our own vote: the same.
         Assert.True(store.ApplyPoll(
-            2, new PollDto(400, false, [new PollOptionDto(5, "Pizza", [7])]), SeqRoute.Evidence));
+            42, 2, new PollDto(400, false, [new PollOptionDto(5, "Pizza", [7])]),
+            SeqRoute.Evidence));
         Assert.Equal([7L], store.Message(2)!.Poll!.Options[0].Votes);
         Assert.Null(store.Chat(42)!.MaxPollSeq);
 
         // A live frame and a catch-up page both move it.
-        store.ApplyReactions(1, 301, [], SeqRoute.LiveFrame);
+        store.ApplyReactions(42, 1, 301, [], SeqRoute.LiveFrame);
         Assert.Equal(301, store.Chat(42)!.MaxReactionSeq);
-        store.ApplyPoll(2, new PollDto(401, true, []), SeqRoute.CatchUpPage);
+        store.ApplyPoll(42, 2, new PollDto(401, true, []), SeqRoute.CatchUpPage);
         Assert.Equal(401, store.Chat(42)!.MaxPollSeq);
     }
 
     /// <summary>
-    /// The three cursors are HIGH-WATER MARKS: absent on the wire is 0 here, and a 0 never lowers
-    /// one — a chat whose polls retention has swept still reports its maximum.
+    /// THE THREE CURSORS ARE THIS DEVICE'S, NOT THE SERVER'S. A <c>GET /chats</c> row carries
+    /// <c>max_*_seq</c> too, with the same names and a different meaning — the server's maximum —
+    /// and a list read must not write them anywhere near these columns: step 3's catch-up runs
+    /// only "when the chat's max_reaction_seq from step 2 exceeds the locally stored reaction
+    /// cursor", so a device that stored the server's mark as its own would never ask for a page
+    /// again. They move under <see cref="ChatStore.Advance"/> alone, and there as high-water
+    /// marks: a 0 that arrives after a 124 is not a reset.
     /// </summary>
     [Fact]
-    public void TheCatchUpCursorsNeverGoBackDown()
+    public void TheCatchUpCursorsAreLocalAndAListReadDoesNotWriteThem()
     {
         var store = Store();
         store.Replace([Row(reactionSeq: 124, editSeq: 88, pollSeq: 89)]);
+        var fresh = store.Chat(42)!;
+        // The server says 124; this device has applied nothing, and says so.
+        Assert.Null(fresh.MaxReactionSeq);
+        Assert.Null(fresh.MaxEditSeq);
+        Assert.Null(fresh.MaxPollSeq);
+
+        // What this device applies is what its cursors read back as…
+        store.Advance(42, reactionSeq: 124, editSeq: 88, pollSeq: 89);
+        Assert.Equal(124, store.Chat(42)!.MaxReactionSeq);
+        Assert.Equal(88, store.Chat(42)!.MaxEditSeq);
+        Assert.Equal(89, store.Chat(42)!.MaxPollSeq);
+
+        // …and another list read neither lowers them nor raises them.
         store.Replace([Row()]);
-        var row = store.Chat(42)!;
-        Assert.Equal(124, row.MaxReactionSeq);
-        Assert.Equal(88, row.MaxEditSeq);
-        Assert.Equal(89, row.MaxPollSeq);
-        // Absent reads back as absent rather than as 0, which is the wire's own shape.
-        store.Replace([Row(chat: new ChatDto(44, "direct", "Bob", 11))]);
+        Assert.Equal(124, store.Chat(42)!.MaxReactionSeq);
+        store.Replace([Row(reactionSeq: 900)]);
+        Assert.Equal(124, store.Chat(42)!.MaxReactionSeq);
+
+        // A high-water mark: an older page cannot walk one back.
+        store.Advance(42, reactionSeq: 5);
+        Assert.Equal(124, store.Chat(42)!.MaxReactionSeq);
+
+        // And a chat this device has just learned of starts level with nothing.
+        store.Replace([Row(chat: new ChatDto(44, "direct", "Bob", 11), reactionSeq: 300)]);
         Assert.Null(store.Chat(44)!.MaxReactionSeq);
     }
 
@@ -284,23 +332,153 @@ public class ChatStoreTests : IDisposable
         Assert.Equal(1337, store.Chat(42)!.LastReadMessageId);
     }
 
+    /// <summary>
+    /// THE COUNT IS INCREMENTED BY A LIVE FRAME AND NEVER RECOMPUTED FROM WHAT IS HELD. Local
+    /// history is not the whole of it — retention has swept some of it, paging has not fetched
+    /// the rest — so a recount is a badge that silently falls to one the moment anything arrives:
+    /// a device told "12 unread" by the list, then handed one live message, would draw 1.
+    /// </summary>
     [Fact]
     public void TheUnreadCountIsTheOtherHalfOfTheMarker()
     {
         var store = Store();
         store.Replace([Row()]);
-        store.Apply([Message(1), Message(2), Message(3)]);
+        store.Apply(Message(1), SeqRoute.LiveFrame);
+        store.Apply(Message(2), SeqRoute.LiveFrame);
+        store.Apply(Message(3), SeqRoute.LiveFrame);
         Assert.Equal(3, store.Chat(42)!.UnreadCount);
         Assert.Equal(3, store.Unread());
 
         store.MarkRead(42, 2);
         Assert.Equal(1, store.Chat(42)!.UnreadCount);
         // An EDIT moves neither the count nor the ordering: it never re-notifies.
-        store.Apply(Message(1, body: "rewritten", editSeq: 5));
+        store.Apply(Message(1, body: "rewritten", editSeq: 5), SeqRoute.LiveFrame);
         Assert.Equal(1, store.Chat(42)!.UnreadCount);
 
         store.MarkRead(42, 3);
         Assert.Equal(0, store.Unread());
+    }
+
+    /// <summary>
+    /// The four conditions on raising the count, each of which is a badge bug on its own.
+    /// </summary>
+    [Fact]
+    public void OnlySomebodyElsesNewLiveMessageAboveTheMarkerCounts()
+    {
+        // Somebody who is NOT the fixture's default sender, so that "somebody else's message"
+        // and "my own" are told apart by the store and not by the test's luck.
+        var mine = 99L;
+        var store = new ChatStore(database, () => mine);
+        store.Replace([Row(read: 10)]);
+
+        // A page: the list read that preceded it already counted these.
+        store.Apply([Message(11), Message(12)]);
+        Assert.Equal(0, store.Chat(42)!.UnreadCount);
+
+        // A live frame from somebody else, above the marker: one.
+        store.Apply(Message(13), SeqRoute.LiveFrame);
+        Assert.Equal(1, store.Chat(42)!.UnreadCount);
+
+        // The same message again — a lost ack re-delivered as an ordinary message — is not two.
+        store.Apply(Message(13), SeqRoute.LiveFrame);
+        Assert.Equal(1, store.Chat(42)!.UnreadCount);
+
+        // This reader's own send, arriving at their other device: nothing.
+        store.Apply(Message(14, sender: mine), SeqRoute.LiveFrame);
+        Assert.Equal(1, store.Chat(42)!.UnreadCount);
+
+        // Something from BELOW the marker, arriving late: read before it got here.
+        store.Apply(Message(5), SeqRoute.LiveFrame);
+        Assert.Equal(1, store.Chat(42)!.UnreadCount);
+
+        // An EDIT never counts, not even for a message this device has never held: the frame
+        // exists precisely so that a rewrite bumps nothing and notifies nobody.
+        store.Apply(Message(20, body: "rewritten", editSeq: 7), SeqRoute.LiveFrame);
+        Assert.Equal("rewritten", store.Message(20)!.Body);
+        Assert.Equal(1, store.Chat(42)!.UnreadCount);
+    }
+
+    /// <summary>
+    /// A list read's count is the SERVER's and is never lowered to what this device can see —
+    /// but neither is it allowed to be lower than that: a message that arrived while the read
+    /// was in flight is not on that answer, and the two numbers are both lower bounds.
+    /// </summary>
+    [Fact]
+    public void AListReadTakesTheServersCountAndNeverLessThanWhatIsVisible()
+    {
+        var store = new ChatStore(database, () => 99);
+        store.Replace([Row(unread: 12)]);
+        Assert.Equal(12, store.Chat(42)!.UnreadCount);
+
+        // A frame lands while the next list read is in flight; that read says 12 again.
+        store.Apply(Message(99), SeqRoute.LiveFrame);
+        Assert.Equal(13, store.Chat(42)!.UnreadCount);
+        store.Replace([Row(unread: 12)]);
+        Assert.Equal(13, store.Chat(42)!.UnreadCount);
+
+        // And a read that reports the message as read brings it back down.
+        store.Replace([Row(unread: 0, read: 99)]);
+        Assert.Equal(0, store.Chat(42)!.UnreadCount);
+
+        // A message of the READER'S OWN, racing the same read, adds nothing: it was never
+        // unread, and the server did not count it either.
+        store.Apply(Message(150, sender: 99), SeqRoute.LiveFrame);
+        store.Replace([Row(unread: 0, read: 99, last: Message(120))]);
+        Assert.Equal(0, store.Chat(42)!.UnreadCount);
+    }
+
+    /// <summary>
+    /// READING PART OF A RUN IS SUBTRACTION, not a recount. A device told "12 unread" that holds
+    /// the last three of them and reads two is ten behind; a recount from local history would say
+    /// ONE, which is the badge quietly going out on a conversation nine messages deep.
+    /// </summary>
+    /// <remarks>
+    /// The marker is an id THRESHOLD, so reading up to the newest message this device holds means
+    /// everything at or below it is read — that is the other branch, and it is 0. Where the two
+    /// disagree is a PARTIAL read, and there the subtraction can leave the count too HIGH when
+    /// local history is sparse (the server had more messages in the range than this device holds).
+    /// Too high is the safe direction: the next list read replaces it.
+    /// </remarks>
+    [Fact]
+    public void ReadingPartOfARunSubtractsRatherThanRecounting()
+    {
+        var store = new ChatStore(database, () => 99);
+        store.Replace([Row(unread: 12)]);
+        store.Apply([Message(498), Message(499), Message(500)]);
+
+        store.MarkRead(42, 499);
+
+        Assert.Equal(10, store.Chat(42)!.UnreadCount);
+        Assert.Equal(499, store.Chat(42)!.LastReadMessageId);
+
+        // And reading to the bottom of what is held is the other branch: the threshold covers
+        // everything this device could know about.
+        store.MarkRead(42, 500);
+        Assert.Equal(0, store.Chat(42)!.UnreadCount);
+    }
+
+    /// <summary>
+    /// A MENTION THIS DEVICE RAISED IS NOT CLEARED BY AN ANSWER THAT DID NOT SEE IT. `mentioned`
+    /// rides on a list row only while an unread message names the caller, and a read that crossed
+    /// the frame carrying one would otherwise take the mark off a message still unread.
+    /// </summary>
+    [Fact]
+    public void AMentionRaisedByAFrameSurvivesAListReadThatMissedIt()
+    {
+        var store = new ChatStore(database, () => 99);
+        store.Replace([Row()]);
+        store.Apply(
+            Message(600, mentions: [new MentionDto(99, "Anna")]),
+            SeqRoute.LiveFrame);
+        Assert.True(store.Chat(42)!.Mentioned);
+
+        // The list read was in flight when the frame landed, so it says nothing about a mention.
+        store.Replace([Row(unread: 1)]);
+        Assert.True(store.Chat(42)!.Mentioned);
+
+        // Reading past it is what takes the mark off.
+        store.MarkRead(42, 600);
+        Assert.Null(store.Chat(42)!.Mentioned);
     }
 
     [Fact]
@@ -353,16 +531,126 @@ public class ChatStoreTests : IDisposable
     {
         var store = Store();
         store.Replace(
-            [new MemberDto(7, "anna", "Anna", Owner: true)],
+            [new MemberDto(7, "anna", "Anna", Role: "owner")],
             [new MemberDto(11, "junior", "Junior", HasLeft: true, Deleted: true)]);
         Assert.Equal(2, store.Members().Count);
         var gone = store.Member(11)!;
         Assert.True(gone.HasLeft);
         Assert.True(gone.Deleted);
+        Assert.True(gone.IsFormer);
+        // The ROLE is the wire's own word, and a former member has none — which is not the same
+        // answer as "a member who is not the owner".
+        Assert.Null(gone.Role);
         Assert.True(store.Member(7)!.Owner);
+        Assert.Equal("owner", store.Member(7)!.Role);
         // An id this device has never heard of is null, and naming it is the caller's job —
         // "Deleted account" is a client's word, not the server's.
         Assert.Null(store.Member(99));
+    }
+
+    /// <summary>
+    /// THE BLOCK LIST IS COMPLETE STATE. Both reads that carry it carry all of it, there is no
+    /// catch-up feed to cursor and nothing to miss, and an absent list means nobody rather than
+    /// "leave what you hold alone". An id on it may name somebody the roster cannot.
+    /// </summary>
+    [Fact]
+    public void TheBlockListIsCompleteStateAndNeedNotResolveToAName()
+    {
+        var store = Store();
+        store.Replace([new MemberDto(11, "bob", "Bob", Role: "member")]);
+        store.ReplaceBlocked([11, 14, 11]);
+        Assert.Equal([11L, 14L], store.Blocked());
+        Assert.True(store.IsBlocked(11));
+        // 14 is nobody this device has heard of — a blocked member who left, or whose account is
+        // gone — and the list carries them anyway.
+        Assert.True(store.IsBlocked(14));
+        Assert.Null(store.Member(14));
+
+        store.ReplaceBlocked([]);
+        Assert.Empty(store.Blocked());
+        Assert.False(store.IsBlocked(11));
+    }
+
+    /// <summary>
+    /// The `member_blocked` frame is a STATE-SET, and it is the one place a client applies the
+    /// consequence itself: the frame reaches the blocker's own devices and no list read is
+    /// coming. The chat leaves the list and comes back WHOLE, because nothing about it is ever
+    /// deleted (docs/protocol.md, "Blocking a member").
+    /// </summary>
+    [Fact]
+    public void BlockingAMemberHidesTheirChatAndUnblockingBringsItBackWhole()
+    {
+        var store = Store();
+        var direct = new ChatDto(43, "direct", "Bob", PeerUserId: 11);
+        store.Replace([Row(), Row(direct)]);
+        store.Apply(Message(500, chat: 43, body: "Are we still on?", sender: 11));
+
+        store.SetBlocked(11, true);
+        Assert.Equal([42L], store.Chats().Select(row => row.Chat.Id));
+        Assert.False(store.IsListed(43));
+        // Hidden, not deleted: the marker, the cursors and every word are still here.
+        Assert.NotNull(store.Chat(43));
+        Assert.Equal("Are we still on?", store.Message(500)!.Body);
+
+        store.SetBlocked(11, false);
+        Assert.Equal([42L, 43L], store.Chats().Select(row => row.Chat.Id).Order());
+        Assert.Equal("Are we still on?", store.Message(500)!.Body);
+
+        // The family chat is NOT hidden by a block: a blocked member's message still arrives,
+        // still counts and may still be the preview — the count is the other half of the read
+        // marker, and projecting one without the other desynchronises them.
+        store.SetBlocked(11, true);
+        Assert.Contains(42L, store.Chats().Select(row => row.Chat.Id));
+    }
+
+    /// <summary>
+    /// A complete-state read does NOT decide what is on the list — the list read that follows it
+    /// does, and two writers for one fact would fight over it.
+    /// </summary>
+    [Fact]
+    public void ReadingTheBlockListDoesNotRelistAChatTheServerLeftOut()
+    {
+        var store = Store();
+        var direct = new ChatDto(43, "direct", "Bob", PeerUserId: 11);
+        store.Replace([Row(), Row(direct)]);
+        // The server stopped listing it: this reader has blocked Bob.
+        store.Replace([Row()]);
+        Assert.False(store.IsListed(43));
+
+        // Reading `/me` again says the same thing about Bob and must not undo it.
+        store.ReplaceBlocked([11]);
+        Assert.False(store.IsListed(43));
+        // Nor does a list that no longer names him relist the chat on its own.
+        store.ReplaceBlocked([]);
+        Assert.False(store.IsListed(43));
+    }
+
+    /// <summary>
+    /// A birthday is a MONTH AND A DAY, arriving as one object — and it survives the store,
+    /// because the family calendar is drawn from the roster and nothing else replays it.
+    /// </summary>
+    [Fact]
+    public void ABirthdayIsAMonthAndADayAndItSurvivesTheRoster()
+    {
+        var store = Store();
+        var anna = Wire.Decode<MemberDto>(
+            """
+            {"id": 7, "username": "anna", "display_name": "Anna", "role": "owner",
+             "birthday": {"month": 3, "day": 14}}
+            """);
+        Assert.True(anna!.Owner);
+        // A field whose type is wrong does not degrade — it takes the whole answer with it.
+        Assert.NotNull(anna);
+        Assert.Equal(new BirthdayDto(3, 14), anna!.Birthday);
+
+        store.Replace([anna, new MemberDto(11, "bob", "Bob")]);
+        Assert.Equal(new BirthdayDto(3, 14), store.Member(7)!.Birthday);
+        // Nobody's birthday is not everybody's: absent stays absent.
+        Assert.Null(store.Member(11)!.Birthday);
+
+        // 29 February is a birthday here: there is no year for it to fail to exist in.
+        store.Replace([anna with { Birthday = new BirthdayDto(2, 29) }]);
+        Assert.Equal(new BirthdayDto(2, 29), store.Member(7)!.Birthday);
     }
 
     [Fact]

@@ -97,6 +97,39 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
             pollOptions is { Count: > 0 } ? new PollRequest([.. pollOptions]) : null,
             mentions is { Count: > 0 } ? [.. mentions] : null), ct: ct);
 
+    /// <summary>
+    /// The reconnect catch-up: strictly newer, OLDEST FIRST — the opposite direction to a history
+    /// page, and looped until a short one (docs/protocol.md, "Best-effort delivery").
+    /// </summary>
+    public Task<ApiResult<MessagesResponse>> MessagesAfter(
+        long chatId, long afterId, int limit = 50, CancellationToken ct = default) =>
+        Send<MessagesResponse>(
+            HttpMethod.Get, $"/chats/{chatId}/messages?after_id={afterId}&limit={limit}", ct: ct);
+
+    /// <summary>
+    /// The reaction catch-up, by its own sequence. `after_id` is `WHERE id > cursor` and can never
+    /// see a change to an OLDER row, which is why reactions have a sequence of their own.
+    /// </summary>
+    public Task<ApiResult<ReactionsResponse>> ReactionsAfter(
+        long chatId, long afterSeq, int limit = 50, CancellationToken ct = default) =>
+        Send<ReactionsResponse>(
+            HttpMethod.Get, $"/chats/{chatId}/reactions?after_seq={afterSeq}&limit={limit}", ct: ct);
+
+    /// <summary>The poll catch-up, the same shape one sequence over.</summary>
+    public Task<ApiResult<PollsResponse>> PollsAfter(
+        long chatId, long afterSeq, int limit = 50, CancellationToken ct = default) =>
+        Send<PollsResponse>(
+            HttpMethod.Get, $"/chats/{chatId}/polls?after_seq={afterSeq}&limit={limit}", ct: ct);
+
+    /// <summary>
+    /// The edit catch-up, which answers whole messages rather than a bespoke patch — so a client
+    /// applies them through exactly the same path as a page of history.
+    /// </summary>
+    public Task<ApiResult<MessagesResponse>> EditsAfter(
+        long chatId, long afterSeq, int limit = 50, CancellationToken ct = default) =>
+        Send<MessagesResponse>(
+            HttpMethod.Get, $"/chats/{chatId}/edits?after_seq={afterSeq}&limit={limit}", ct: ct);
+
     public Task<ApiResult<Nothing>> MarkRead(
         long chatId, long lastReadMessageId, CancellationToken ct = default) =>
         Send<Nothing>(HttpMethod.Post, $"/chats/{chatId}/read",

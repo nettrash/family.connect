@@ -67,6 +67,13 @@ public sealed record NotePatch(
 public sealed record TaskLineRequest(string Text, long? Id = null);
 
 // ---- what comes back ----------------------------------------------------
+//
+// EVERY LIST HERE IS NULLABLE, and every reader of one takes `?? []`. Not because the server ever
+// omits an array — it does not — but because a 200 is not a promise that the body is THIS body. A
+// rewriting proxy, a captive portal or a path the server has since moved all answer readable JSON
+// that simply has no `messages` key, and a page whose array came back null cost a whole resync a
+// NullReferenceException before this was written down. An answer that is not the documented one
+// carries nothing to apply, which is exactly what an empty page means.
 
 public sealed record AuthResponse(string Token, UserDto User);
 
@@ -77,14 +84,37 @@ public sealed record NoteResponse(NoteDto Note);
 public sealed record AttachmentResponse(AttachmentDto Attachment);
 
 public sealed record BoardResponse(
-    NoteDto[] Notes,
+    NoteDto[]? Notes,
     [property: JsonPropertyName("max_board_seq")] long MaxBoardSeq);
 
-public sealed record BoardChangesResponse(NoteDto[] Notes);
+public sealed record BoardChangesResponse(NoteDto[]? Notes);
 
-public sealed record MessagesResponse(MessageDto[] Messages);
+public sealed record MessagesResponse(MessageDto[]? Messages);
 
-public sealed record ChatsResponse(ChatRowDto[] Chats);
+public sealed record ChatsResponse(ChatRowDto[]? Chats);
+
+/// <summary>
+/// A page of the reaction catch-up, oldest sequence first.
+/// </summary>
+/// <remarks>
+/// The cursor advances with EVERY page, even for messages this client does not hold: states for
+/// unknown messages are dropped, and history paging re-delivers them embedded on the messages
+/// themselves.
+/// </remarks>
+public sealed record ReactionsResponse(
+    [property: JsonPropertyName("message_reactions")] MessageReactionsDto[]? MessageReactions);
+
+public sealed record MessageReactionsDto(
+    [property: JsonPropertyName("message_id")] long MessageId,
+    [property: JsonPropertyName("reaction_seq")] long ReactionSeq,
+    ReactionDto[] Reactions);
+
+/// <summary>A page of the poll catch-up, oldest sequence first.</summary>
+public sealed record PollsResponse(MessagePollDto[]? Polls);
+
+public sealed record MessagePollDto(
+    [property: JsonPropertyName("message_id")] long MessageId,
+    PollDto Poll);
 
 /// <summary>One row of the chat list: the chat, its preview, and this caller's own cursors.</summary>
 /// <remarks>
@@ -162,7 +192,20 @@ public sealed record FamilyResponse(
     MemberDto[]? Members = null,
     [property: JsonPropertyName("former_members")] MemberDto[]? FormerMembers = null,
     [property: JsonPropertyName("blocked_user_ids")] long[]? BlockedUserIds = null,
-    AssistantDto? Assistant = null)
+    AssistantDto? Assistant = null,
+    /// <summary>
+    /// The wall's high-water mark, and the ONLY place it is published. ABSENT while the board is
+    /// empty and untouched, which is what it is for: a client reads it to know whether a board
+    /// catch-up is worth a request at all.
+    /// </summary>
+    [property: JsonPropertyName("max_board_seq")] long? MaxBoardSeq = null,
+    /// <summary>
+    /// Who would inherit the family if the owner left RIGHT NOW — the owner's answer only, and a
+    /// PREDICTION with no frame of its own. Any join or leave changes it, so it is re-read
+    /// immediately before the leave dialog and never named from a cached value; absent on a fresh
+    /// read means the owner is the last member and leaving DELETES the family.
+    /// </summary>
+    [property: JsonPropertyName("next_owner_user_id")] long? NextOwnerUserId = null)
 {
     /// <summary>
     /// Whether this server can draw at all — the whole of the capability check for the board's

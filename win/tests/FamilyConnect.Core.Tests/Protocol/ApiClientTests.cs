@@ -342,7 +342,7 @@ public class ApiClientTests
     {
         var (client, _) = Client(new Fake().Then(HttpStatusCode.OK, """
             {"family": {"id": 3, "name": "The Smiths", "join_policy": "open", "ai_history": true},
-             "members": [{"id": 7, "username": "anna", "display_name": "Anna", "owner": true}],
+             "members": [{"id": 7, "username": "anna", "display_name": "Anna", "role": "owner"}],
              "blocked_user_ids": [],
              "assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai",
                            "draw": "/draw", "vision": true, "images": true}}

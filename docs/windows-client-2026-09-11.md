@@ -6,10 +6,30 @@ contains, which Windows facts are verified rather than assumed, where the four h
 what has to be decided.
 
 **Phase 1 has since been started** — `win/`, the portable core: the wire (REST and the socket),
-the local cache, the send queue and the board's shared arithmetic, with 140 tests that run on
-macOS and a differential oracle generated from the web client's own Rust. See `win/README.md` for what exists and "Phases" below for what
-does not. The stack question was answered the way this document recommends (WinUI 3 + C#/.NET 10,
-md.win's layout); calls, push, the minimum Windows build and where it ships are still open.
+the local cache, the send queue, the board's shared arithmetic, the reconnect resync, the live
+frame router, the app's session gate, the live connection's policy and the chat list, with
+**245 tests** that run on macOS and TWO differential oracles generated from the web client's own
+Rust (the wall's arithmetic, and the words a chat row is drawn with). The second assembly now
+exists too — `FamilyConnect.App.Logic`, everything the window DOES with none of the window, on
+md.win's split.
+See `win/README.md` for what exists and "Phases" below for what does not. The stack question was
+answered the way this document recommends (WinUI 3 + C#/.NET 10, md.win's layout); calls, push,
+the minimum Windows build and where it ships are still open.
+
+A FIFTH defect came out of writing the chat list: the unread count was RECOMPUTED from local
+history on every applied message, so a device told "12 unread" by `GET /chats` drew 1 the moment
+anything arrived — local history is not the whole of it. The count is now incremented by a live
+frame only (never by a page, an edit, or the reader's own send), a list read takes the server's
+number plus whatever raced it, and reading subtracts rather than recounts.
+
+Four defects in the wire layer were found by writing the resync against the document rather than
+against the other ports, and each is written up where it was fixed: a `GET /chats` row's
+`max_*_seq` is the SERVER's mark and had been stored as this device's catch-up cursor (which
+makes every catch-up gate false for ever); the edit feed was missing from the resync — and from
+step 3 of `protocol.md`'s own list, which has been amended; `Member.role` is a STRING and had been
+declared a boolean, so every owner read as a member; and a birthday is an OBJECT, which had been
+declared a string — that one made `GET /families/mine` unreadable for any family where somebody
+had set one, and took the whole resync down with it.
 
 The precedent is `md.win`: the Windows port of `md`, written here in C#/WinUI 3, with all of its
 logic in platform-independent libraries so that **1271 + 1215 tests run on this Mac** while the

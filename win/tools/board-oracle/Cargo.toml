@@ -6,6 +6,10 @@
 # actually answered. Regenerate with
 #
 #     cd win/tools/board-oracle && cargo run --quiet > ../../tests/FamilyConnect.Core.Tests/Fixtures/board-vectors.json
+#     cd win/tools/board-oracle && cargo run --quiet -- chat > ../../tests/FamilyConnect.Core.Tests/Fixtures/chat-vectors.json
+#
+# The second command prints the words a chat ROW is drawn with — a call record's line, what an
+# attachment is called when it has no name, and the notification sentences — from the same crate.
 #
 # and the C# suite (OracleTests) will fail on anything the port no longer matches. Its own
 # workspace on purpose: joining web/'s would put a native binary in the wasm crate's tree.

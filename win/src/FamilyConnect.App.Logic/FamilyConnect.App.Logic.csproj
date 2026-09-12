@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    FamilyConnect.App.Logic — everything the window DOES, with none of the window. The layer
+    exists so that the app's behaviour can be written and tested on the Mac this port is
+    developed on: XamlCompiler.exe is net472 and cannot run here, so a decision that lives in a
+    view's code-behind is a decision nobody here can verify. The same split md.win uses, and for
+    the same reason.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>FamilyConnect.App.Logic</RootNamespace>
+    <AssemblyName>FamilyConnect.App.Logic</AssemblyName>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\FamilyConnect.Core\FamilyConnect.Core.csproj" />
+  </ItemGroup>
+</Project>

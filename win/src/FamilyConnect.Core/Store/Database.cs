@@ -143,6 +143,30 @@ public sealed class Database : IDisposable
     /// One table's columns as <c>name TYPE [NOT NULL]</c>, in declaration order — enough to catch
     /// the failure that matters: a column a fresh schema has and a migrated one does not.
     /// </summary>
+    /// <summary>
+    /// Every row of every table, gone — the schema stays. What a sign-out, a session that
+    /// expired and being removed from a family all do.
+    /// </summary>
+    /// <remarks>
+    /// THE OUTBOX GOES WITH IT, and deliberately: a queued message belongs to the account that
+    /// wrote it, and a send that landed in the next person's family would be the worst bug this
+    /// app could have. The tables are read from the file rather than listed here, so a table
+    /// added later is wiped without anybody remembering to come back — which is exactly the
+    /// mistake a list would eventually make.
+    /// </remarks>
+    public void WipeAll()
+    {
+        using var transaction = connection.BeginTransaction();
+        foreach (var table in Tables())
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = $"DELETE FROM \"{table}\"";
+            command.ExecuteNonQuery();
+        }
+        transaction.Commit();
+    }
+
     public IReadOnlyList<string> Columns(string table)
     {
         var columns = new List<string>();
