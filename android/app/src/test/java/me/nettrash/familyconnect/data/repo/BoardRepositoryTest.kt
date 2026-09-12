@@ -23,6 +23,7 @@ import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
+import me.nettrash.familyconnect.data.net.dto.BoardResponse
 import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.TaskItemDto
 import me.nettrash.familyconnect.data.net.dto.TaskItemsCodec
@@ -211,6 +212,72 @@ class BoardRepositoryTest {
 
         assertThat(noteDao.observeNotes().first()).isEmpty()
     }
+
+    /**
+     * A TOMBSTONE IS THE LAST WORD (docs/protocol.md, "Board"). Board seqs commit out of order
+     * and a catch-up page carries the pre-delete copy, so a client that merely deleted the row
+     * was talked out of it by the next answer that mentioned the note — and nothing but a full
+     * read took it off the wall again. The web client keeps this set; so does Windows.
+     */
+    @Test
+    fun `a note a tombstone took does not come back when an older copy arrives`() =
+        runTest(dispatcher) {
+            val repository = repository()
+
+            repository.applyNote(noteDto(id = 1, boardSeq = 10))
+            repository.applyNote(noteTombstone(id = 1, boardSeq = 11))
+            runCurrent()
+            assertThat(noteDao.observeNotes().first()).isEmpty()
+
+            // The copy that was already travelling when the delete happened — a page, a frame,
+            // or the answer to somebody else's own change. Its seq is even NEWER than the
+            // tombstone's, which is what makes the seq guard alone no defence at all.
+            repository.applyNote(noteDto(id = 1, boardSeq = 99, text = "back from the dead"))
+            runCurrent()
+
+            assertThat(noteDao.observeNotes().first()).isEmpty()
+            assertThat(noteDao.isGone(1)).isTrue()
+        }
+
+    /** The second of the protocol's three doors to "gone": a full read that leaves it out. */
+    @Test
+    fun `a note a full read left out does not come back either`() = runTest(dispatcher) {
+        val repository = repository()
+        repository.applyNote(noteDto(id = 1, boardSeq = 10))
+        repository.applyNote(noteDto(id = 2, boardSeq = 11))
+        runCurrent()
+
+        // The wall as it now stands names only note 2 — note 1 was deleted while this device was
+        // not listening, and the full read never carries tombstones.
+        boardApi.board = BoardResponse(listOf(noteDto(id = 2, boardSeq = 11)), 11)
+        repository.loadBoard()
+        runCurrent()
+        assertThat(noteDao.observeNotes().first().map { it.id }).containsExactly(2L)
+
+        repository.applyNote(noteDto(id = 1, boardSeq = 50))
+        runCurrent()
+
+        assertThat(noteDao.observeNotes().first().map { it.id }).containsExactly(2L)
+    }
+
+    /** And the third: this client's own DELETE. */
+    @Test
+    fun `a note this client deleted does not come back on the frame that follows`() =
+        runTest(dispatcher) {
+            val repository = repository()
+            repository.applyNote(noteDto(id = 1, boardSeq = 10))
+            runCurrent()
+
+            assertThat(repository.deleteNote(1)).isTrue()
+            runCurrent()
+            assertThat(noteDao.observeNotes().first()).isEmpty()
+
+            // A frame that was serialised before the delete landed.
+            repository.applyNote(noteDto(id = 1, boardSeq = 9))
+            runCurrent()
+
+            assertThat(noteDao.observeNotes().first()).isEmpty()
+        }
 
     @Test
     fun `a stale tombstone does not delete a newer note`() = runTest(dispatcher) {

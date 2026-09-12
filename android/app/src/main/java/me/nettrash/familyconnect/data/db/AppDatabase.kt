@@ -41,9 +41,10 @@ fun interface LocalDataWiper {
         MessageEntity::class,
         MemberEntity::class,
         NoteEntity::class,
+        GoneNoteEntity::class,
         PendingAttachmentEntity::class,
     ],
-    version = 27,
+    version = 28,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -442,6 +443,27 @@ abstract class AppDatabase : RoomDatabase() {
          * "names nobody" and "is not a list", so nothing on a wall changes
          * when the columns arrive.
          */
+        /**
+         * v28: the notes a tombstone has taken, remembered so they cannot come back.
+         *
+         * A NEW ENTITY NEEDS BOTH HALVES — the `version` above and this step. The mentions
+         * column shipped without a migration once and would have crashed every upgraded install
+         * on the next launch (issue #70); a missing step for a new TABLE is the same mistake with
+         * a different error message.
+         *
+         * Nothing is backfilled, and nothing can be: a device upgrading today cannot know which
+         * notes it has already been told about. The set starts empty and fills from the next
+         * tombstone on, which is exactly the guarantee the protocol asks for going forward.
+         */
+        val MIGRATION_27_28: Migration = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS goneNotes " +
+                        "(noteId INTEGER NOT NULL, PRIMARY KEY(noteId))",
+                )
+            }
+        }
+
         val MIGRATION_26_27: Migration = object : Migration(26, 27) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE notes ADD COLUMN mentionsJson TEXT")
@@ -536,6 +558,7 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_24_25,
                 MIGRATION_25_26,
                 MIGRATION_26_27,
+                MIGRATION_27_28,
             )
         }
     }

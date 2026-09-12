@@ -94,6 +94,7 @@ struct FamilyConnectApp: App {
             ChatEntity.self, MessageEntity.self, MemberEntity.self, NoteEntity.self,
             PendingMediaItemEntity.self,
             BlockEntity.self,
+            GoneNoteEntity.self,
         ])
         let configuration = ModelConfiguration(
             schema: schema,

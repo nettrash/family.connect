@@ -38,6 +38,10 @@ struct BoardSyncTests {
             (try? context.fetch(FetchDescriptor<NoteEntity>())) ?? []
         }
 
+        func gone() -> [GoneNoteEntity] {
+            (try? context.fetch(FetchDescriptor<GoneNoteEntity>())) ?? []
+        }
+
         func note(_ id: Int64) -> NoteEntity? {
             let descriptor = FetchDescriptor<NoteEntity>(predicate: #Predicate { $0.noteID == id })
             return (try? context.fetch(descriptor))?.first
@@ -51,7 +55,7 @@ struct BoardSyncTests {
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self, NoteEntity.self,
-            PendingMediaItemEntity.self,
+            PendingMediaItemEntity.self, GoneNoteEntity.self,
             configurations: configuration)
         let api = APIClient(
             serverURL: URL(string: "https://\(host)")!,
@@ -168,6 +172,79 @@ struct BoardSyncTests {
         defer { harness.tearDown() }
 
         harness.coordinator.applyNote(tombstone(id: 99, boardSeq: 5))
+        #expect(harness.notes().isEmpty)
+    }
+
+    /// A TOMBSTONE IS THE LAST WORD (docs/protocol.md, "Board"). Board seqs commit out of order
+    /// and a catch-up page carries the PRE-delete copy, so a client that merely deleted the row
+    /// was talked out of it by the next answer that mentioned the note — and nothing but a full
+    /// read took it off the wall again. The per-note guard is no defence: the copy still in
+    /// flight may carry a seq ABOVE the tombstone's.
+    @Test("a note a tombstone took does not come back when an older copy arrives")
+    func aDeletedNoteStaysDeleted() throws {
+        let harness = try makeHarness(host: "board-gone.test")
+        defer { harness.tearDown() }
+
+        harness.coordinator.applyNote(note(id: 1, boardSeq: 10))
+        harness.coordinator.applyNote(tombstone(id: 1, boardSeq: 11))
+        #expect(harness.notes().isEmpty)
+
+        // The copy that was already travelling when the delete happened, and with a NEWER seq.
+        harness.coordinator.applyNote(note(id: 1, text: "back from the dead", boardSeq: 99))
+
+        #expect(harness.notes().isEmpty)
+        #expect(harness.coordinator.noteIsGone(1))
+    }
+
+    /// A second tombstone for the same note is the same news, and leaves one row rather than a
+    /// duplicate — the id is unique, and a delete re-delivered by a page after a frame is the
+    /// ordinary case rather than the exotic one.
+    @Test("a note is remembered gone once however often it is told")
+    func rememberingIsIdempotent() throws {
+        let harness = try makeHarness(host: "board-gone4.test")
+        defer { harness.tearDown() }
+
+        harness.coordinator.applyNote(note(id: 1, boardSeq: 10))
+        harness.coordinator.applyNote(tombstone(id: 1, boardSeq: 11))
+        harness.coordinator.applyNote(tombstone(id: 1, boardSeq: 12))
+        try harness.context.save()
+
+        #expect(harness.gone().map(\.noteID) == [1])
+        #expect(harness.notes().isEmpty)
+    }
+
+    /// The second of the protocol's three doors to "gone": a full read that leaves it out.
+    @Test("a note a full read left out does not come back either")
+    func aNoteAFullReadDroppedStaysDropped() throws {
+        let harness = try makeHarness(host: "board-gone2.test")
+        defer { harness.tearDown() }
+        harness.coordinator.applyNote(note(id: 1, boardSeq: 10))
+        harness.coordinator.applyNote(note(id: 2, boardSeq: 11))
+
+        // The wall as it now stands names only note 2: note 1 was deleted while this device was
+        // not listening, and a full read never carries tombstones.
+        harness.coordinator.replaceBoard(
+            with: BoardResponse(notes: [note(id: 2, boardSeq: 11)], maxBoardSeq: 11))
+        #expect(harness.notes().map(\.noteID) == [2])
+
+        harness.coordinator.applyNote(note(id: 1, boardSeq: 50))
+
+        #expect(harness.notes().map(\.noteID) == [2])
+    }
+
+    /// And the third: this client's own DELETE.
+    @Test("a note this client deleted does not come back on the frame that follows")
+    func aNoteThisClientDeletedStaysDeleted() async throws {
+        let harness = try makeHarness(host: "board-gone3.test")
+        defer { harness.tearDown() }
+        harness.coordinator.applyNote(note(id: 1, boardSeq: 10))
+
+        #expect(await harness.coordinator.deleteNote(id: 1))
+        #expect(harness.notes().isEmpty)
+
+        // A frame serialised before the delete landed.
+        harness.coordinator.applyNote(note(id: 1, boardSeq: 9))
+
         #expect(harness.notes().isEmpty)
     }
 

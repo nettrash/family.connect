@@ -911,6 +911,10 @@ final class ChatSyncCoordinator {
         // before the field existed needs its content mark seeded, or the
         // server's backfill badges the whole wall (BoardBadge).
         seedBoardContentMarkIfNeeded()
+        // A TOMBSTONE IS THE LAST WORD (docs/protocol.md, "Board"). Board seqs commit out of
+        // order and a catch-up page carries the pre-delete copy, so without this an older answer
+        // crossing the tombstone on the wire puts a note the family took down back on the wall.
+        if noteIsGone(dto.id) { return false }
         let existing = fetchNote(dto.id)
         // STRICTLY older is refused; the SAME seq is written. An equal seq is
         // the same server state, so writing it changes nothing — except for a
@@ -922,6 +926,10 @@ final class ChatSyncCoordinator {
         if let existing, dto.boardSeq < existing.boardSeq { return false }
 
         if dto.isTombstone {
+            // The guard above covers deletion too, so a stale tombstone never reaches here and
+            // removes nothing. One that does is remembered even when this device held no row for
+            // it: the copy it is about may still be on its way.
+            rememberNoteGone(dto.id)
             if let existing { modelContext.delete(existing) }
             return true
         }
@@ -1016,6 +1024,28 @@ final class ChatSyncCoordinator {
         return (try? modelContext.fetch(descriptor))?.first
     }
 
+    /// Whether this device has been told that note is gone (`GoneNoteEntity`).
+    ///
+    /// Asked before anything is written, because the copy still travelling may carry a seq ABOVE
+    /// the tombstone's and the per-note guard would let it straight through.
+    func noteIsGone(_ id: Int64) -> Bool {
+        var descriptor = FetchDescriptor<GoneNoteEntity>(
+            predicate: #Predicate { $0.noteID == id })
+        descriptor.fetchLimit = 1
+        return ((try? modelContext.fetch(descriptor))?.first) != nil
+    }
+
+    /// Remember that it is gone, once and for all.
+    ///
+    /// The guard is belt beside braces and a mutation run says so: `noteID` is `.unique`, so
+    /// SwiftData upserts a second insert of the same id rather than duplicating it or throwing.
+    /// It stays because a fetch is cheaper than an insert, and because the intent — one row per
+    /// note, ever — should be readable without knowing that.
+    func rememberNoteGone(_ id: Int64) {
+        guard !noteIsGone(id) else { return }
+        modelContext.insert(GoneNoteEntity(noteID: id))
+    }
+
     /// Full board read — used the first time a board is opened, and
     /// whenever the local cursor is 0 (nothing applied yet).
     ///
@@ -1038,6 +1068,9 @@ final class ChatSyncCoordinator {
         let held = (try? modelContext.fetch(FetchDescriptor<NoteEntity>())) ?? []
         for note in held
         where !listed.contains(note.noteID) && note.boardSeq <= response.maxBoardSeq {
+            // Remembered as well as removed: a note the read left out is a note that is gone,
+            // and the next page that carries it must not put it back.
+            rememberNoteGone(note.noteID)
             modelContext.delete(note)
         }
         for note in response.notes { applyNote(note) }
@@ -1273,6 +1306,10 @@ final class ChatSyncCoordinator {
         } catch {
             return false
         }
+        // The third of the protocol's three doors to "gone": a tombstone, a full read that left
+        // it out, and this client's own DELETE. The frame confirming it arrives later and finds
+        // the id already remembered, which is the point.
+        rememberNoteGone(id)
         if let existing = fetchNote(id) { modelContext.delete(existing) }
         saveContext()
         return true

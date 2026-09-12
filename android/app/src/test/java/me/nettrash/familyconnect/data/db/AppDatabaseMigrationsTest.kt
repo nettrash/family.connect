@@ -32,14 +32,20 @@ class AppDatabaseMigrationsTest {
         }
     }
 
+    /**
+     * The NEWEST step, named. It has to be edited by whoever adds one, which is the point: the
+     * generic guard is MigrationCoverageTest (every step from 1 to the version Room stamps is
+     * registered), and this is the one that makes a bump a deliberate act rather than a diff
+     * nobody read.
+     */
     @Test
-    fun `the note-lists migration is the last one and reaches the current schema`() {
+    fun `the gone-notes migration is the last one and reaches the current schema`() {
         val last = AppDatabase.ALL_MIGRATIONS.last()
-        assertThat(last).isSameInstanceAs(AppDatabase.MIGRATION_26_27)
-        assertThat(last.endVersion).isEqualTo(27)
-        // And the board-events one is still registered right before it.
+        assertThat(last).isSameInstanceAs(AppDatabase.MIGRATION_27_28)
+        assertThat(last.endVersion).isEqualTo(28)
+        // And the note-lists one is still registered right before it.
         assertThat(AppDatabase.ALL_MIGRATIONS[AppDatabase.ALL_MIGRATIONS.size - 2])
-            .isSameInstanceAs(AppDatabase.MIGRATION_25_26)
+            .isSameInstanceAs(AppDatabase.MIGRATION_26_27)
     }
 
     /**
