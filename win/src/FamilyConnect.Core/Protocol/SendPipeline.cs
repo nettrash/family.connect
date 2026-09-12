@@ -33,6 +33,13 @@ public sealed class SendPipeline
     private readonly Func<string> nextId;
     private readonly Func<TimeSpan, CancellationToken, Task> wait;
 
+    /// <summary>
+    /// The uploads a queued media row owes, pushed BEFORE anything is posted. A flush that
+    /// skipped them would pass over every media row for ever: the row may not be posted while it
+    /// owes a byte, and nothing else is going to move those bytes.
+    /// </summary>
+    private readonly Func<CancellationToken, Task>? uploads;
+
     /// <summary>Sends waiting for an <c>ack</c> or an <c>error</c>, by dedup key.</summary>
     private readonly Dictionary<string, TaskCompletionSource<Answered>> waiting = new();
     private readonly object gate = new();
@@ -50,8 +57,10 @@ public sealed class SendPipeline
         ReconnectBackoff? backoff = null,
         Func<DateTimeOffset>? now = null,
         Func<string>? nextId = null,
-        Func<TimeSpan, CancellationToken, Task>? wait = null)
+        Func<TimeSpan, CancellationToken, Task>? wait = null,
+        Func<CancellationToken, Task>? uploads = null)
     {
+        this.uploads = uploads;
         this.socket = socket;
         // The ack deadline is a real ten seconds in the app and a function in a test: a suite
         // that sleeps it is a suite nobody runs.
@@ -76,13 +85,14 @@ public sealed class SendPipeline
         ReconnectBackoff? backoff = null,
         Func<DateTimeOffset>? now = null,
         Func<string>? nextId = null,
-        Func<TimeSpan, CancellationToken, Task>? wait = null)
+        Func<TimeSpan, CancellationToken, Task>? wait = null,
+        Func<CancellationToken, Task>? uploads = null)
         : this(
             socket, outbox, chats,
             (row, ct) => api.SendMessage(
                 row.ChatId, row.ClientMsgId, row.Body, row.ReplyToMessageId,
                 row.AttachmentIds, row.PollOptions, row.Mentions, ct),
-            backoff, now, nextId, wait)
+            backoff, now, nextId, wait, uploads)
     {
     }
 
@@ -135,6 +145,12 @@ public sealed class SendPipeline
         }
         try
         {
+            if (uploads is not null)
+            {
+                // FIRST: a row that owes a byte is passed over below, so the bytes have to move
+                // here or they never move at all.
+                await uploads(ct).ConfigureAwait(false);
+            }
             var landed = 0;
             foreach (var row in outbox.Due(now()))
             {
@@ -288,7 +304,13 @@ public sealed class SendPipeline
         var what = outbox.Failed(
             row.ClientMsgId, error, now(), backoff,
             // A client that has thrown its copy away has no way to recover an expired upload.
-            holdsBytes: row.PendingFiles is not null || row.AttachmentIds is null);
+            holdsBytes: row.HoldsBytes);
+        if (what == SendRules.Outcome.ReuploadAndRetry)
+        {
+            // The one refusal with a way out: the ids are dead, the bytes are not. The row owes
+            // its uploads again, and the media pump pushes them before it may be posted.
+            outbox.Reupload(row.ClientMsgId);
+        }
         if (what == SendRules.Outcome.Failed)
         {
             // The one case the user is told about, and the only one with a retry affordance.

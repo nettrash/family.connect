@@ -17,7 +17,15 @@ namespace FamilyConnect.Core.Store;
 /// </para>
 /// <para>
 /// Seqs commit out of order, so every write is guarded by <c>board_seq</c>: a slower answer must
-/// never overwrite a newer one it crossed on the wire.
+/// never overwrite a newer one it crossed on the wire. A TOMBSTONE WINS FOR GOOD — it is
+/// remembered, so an older copy arriving afterwards cannot put the note back.
+/// </para>
+/// <para>
+/// And the CURSOR IS NOT MOVED BY EVERY WRITE. A live frame and a page of the changes feed move
+/// it; the answer to this client's OWN write is evidence about one note and says nothing about
+/// what else has happened, so moving the cursor from it would step the feed past somebody else's
+/// change — the same rule, and the same reasoning, as the chat cursors in
+/// <see cref="ChatStore.Advance"/>.
 /// </para>
 /// </remarks>
 public sealed class BoardStore(Database database)
@@ -25,6 +33,12 @@ public sealed class BoardStore(Database database)
     private const string MarkNoteId = "board.mark.note_id";
     private const string MarkContentSeq = "board.mark.content_seq";
     private const string CursorSeq = "board.cursor.board_seq";
+
+    /// <summary>
+    /// The <c>max_board_seq</c> of the newest FULL read applied. Two can be in flight at once and
+    /// land in either order, and an older one landing second must change nothing.
+    /// </summary>
+    private const string FullMark = "board.full.board_seq";
 
     /// <summary>The whole wall as it stands, newest change first — what the window draws.</summary>
     public IReadOnlyList<NoteDto> Notes()
@@ -55,19 +69,43 @@ public sealed class BoardStore(Database database)
     /// </summary>
     public void Replace(IReadOnlyList<NoteDto> notes, long maxBoardSeq)
     {
+        // TWO FULL READS CAN LAND IN EITHER ORDER, and an older one landing second must change
+        // nothing at all: it would drop every note written between the two and set the cursor
+        // back to its own mark.
+        if (maxBoardSeq < long.Parse(Meta(FullMark) ?? "0"))
+        {
+            return;
+        }
         using var transaction = database.Connection.BeginTransaction();
         using (var clear = database.Connection.CreateCommand())
         {
             clear.Transaction = transaction;
-            clear.CommandText = "DELETE FROM notes";
+            // EXCEPT what is NEWER THAN THE READ'S OWN MARK: a frame that landed while the read
+            // was in flight is not on that answer, and wiping it would take a note off the wall
+            // seconds after somebody pinned it — then put it back at the next catch-up.
+            clear.CommandText = "DELETE FROM notes WHERE board_seq <= $mark";
+            clear.Parameters.AddWithValue("$mark", maxBoardSeq);
             clear.ExecuteNonQuery();
         }
         foreach (var note in notes.Where(note => !note.Deleted))
         {
-            Write(note, transaction);
+            if (!IsGone(note.Id, transaction))
+            {
+                Write(note, transaction);
+            }
         }
         SetMeta(CursorSeq, maxBoardSeq.ToString(), transaction);
+        SetMeta(FullMark, maxBoardSeq.ToString(), transaction);
         transaction.Commit();
+    }
+
+    private bool IsGone(long noteId, SqliteTransaction transaction)
+    {
+        using var command = database.Connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT 1 FROM gone WHERE note_id = $id";
+        command.Parameters.AddWithValue("$id", noteId);
+        return command.ExecuteScalar() is not null;
     }
 
     /// <summary>
@@ -75,11 +113,22 @@ public sealed class BoardStore(Database database)
     /// deletes; anything older than what is held is dropped.
     /// </summary>
     /// <returns>Whether anything changed.</returns>
-    public bool Apply(NoteDto note)
+    public bool Apply(NoteDto note, SeqRoute route = SeqRoute.CatchUpPage)
     {
         using var transaction = database.Connection.BeginTransaction();
         var changed = Apply(note, transaction);
-        if (note.BoardSeq > Cursor)
+        // A FRAME MOVES THE CURSOR ONLY ONCE THIS DEVICE HAS READ THE BOARD. Before that the
+        // cursor is 0, which is what tells the resync to read the WHOLE wall — and a frame that
+        // jumped that queue would leave the cursor above changes nobody had read, so the wall
+        // would be whatever frames happened to arrive (docs/protocol.md, "The board cursor moves
+        // in three ways and no others").
+        var mayMove = route switch
+        {
+            SeqRoute.Evidence => false,
+            SeqRoute.LiveFrame => Cursor != 0,
+            _ => true,
+        };
+        if (mayMove && note.BoardSeq > Cursor)
         {
             SetMeta(CursorSeq, note.BoardSeq.ToString(), transaction);
         }
@@ -88,7 +137,7 @@ public sealed class BoardStore(Database database)
     }
 
     /// <summary>A page of the change feed, applied in order.</summary>
-    public int Apply(IReadOnlyList<NoteDto> notes)
+    public int Apply(IReadOnlyList<NoteDto> notes, SeqRoute route = SeqRoute.CatchUpPage)
     {
         using var transaction = database.Connection.BeginTransaction();
         var changed = 0;
@@ -101,7 +150,10 @@ public sealed class BoardStore(Database database)
             }
             highest = Math.Max(highest, note.BoardSeq);
         }
-        SetMeta(CursorSeq, highest.ToString(), transaction);
+        if (route != SeqRoute.Evidence)
+        {
+            SetMeta(CursorSeq, highest.ToString(), transaction);
+        }
         transaction.Commit();
         return changed;
     }
@@ -110,11 +162,28 @@ public sealed class BoardStore(Database database)
     {
         if (note.Deleted)
         {
+            // Remembered as well as removed: a note is taken down once and for all, and an
+            // older copy of it is still travelling.
+            using (var remember = database.Connection.CreateCommand())
+            {
+                remember.Transaction = transaction;
+                remember.CommandText = "INSERT OR IGNORE INTO gone (note_id) VALUES ($id)";
+                remember.Parameters.AddWithValue("$id", note.Id);
+                remember.ExecuteNonQuery();
+            }
             using var delete = database.Connection.CreateCommand();
             delete.Transaction = transaction;
             delete.CommandText = "DELETE FROM notes WHERE note_id = $id";
             delete.Parameters.AddWithValue("$id", note.Id);
+            // Whether the WALL changed, which a tombstone for a note this device never held did
+            // not — remembering it is not news.
             return delete.ExecuteNonQuery() > 0;
+        }
+        if (IsGone(note.Id, transaction))
+        {
+            // A tombstone is the last word. This is an older copy that crossed it on the wire,
+            // and writing it would put a note the family took down back on the wall.
+            return false;
         }
         using var held = database.Connection.CreateCommand();
         held.Transaction = transaction;

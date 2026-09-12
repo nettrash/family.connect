@@ -16,6 +16,9 @@ internal sealed class Server : HttpMessageHandler
 
     public List<string> Asked { get; } = [];
 
+    /// <summary>Every request body that carried one, in order.</summary>
+    public List<string> Bodies { get; } = [];
+
     public Server On(string what, string? json, HttpStatusCode status = HttpStatusCode.OK)
     {
         routes.Add(path => Endpoint(path) == "/api/v1" + what ? (status, json) : null);
@@ -50,6 +53,10 @@ internal sealed class Server : HttpMessageHandler
     {
         var path = request.RequestUri!.PathAndQuery;
         Asked.Add(path);
+        if (request.Content is { } body)
+        {
+            Bodies.Add(await body.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+        }
         foreach (var (what, answer) in slow)
         {
             if (Endpoint(path) == "/api/v1" + what)

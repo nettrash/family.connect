@@ -19,6 +19,12 @@ public sealed record OutboxRow(
     long? ReplyToMessageId = null,
     long[]? AttachmentIds = null,
     string[]? PendingFiles = null,
+    /// <summary>
+    /// Every file this send's media came from. NEVER SHRINKS, unlike
+    /// <see cref="PendingFiles"/>: <c>attachment_expired</c> means upload it again, and a row
+    /// that had forgotten where the bytes came from could only give up.
+    /// </summary>
+    string[]? StagedFiles = null,
     string[]? PollOptions = null,
     MentionDto[]? Mentions = null,
     DateTimeOffset QueuedAt = default,
@@ -35,6 +41,12 @@ public sealed record OutboxRow(
     /// happily, leaving a delivered bubble with the pictures gone.
     /// </summary>
     public bool OwesUploads => PendingFiles is { Length: > 0 };
+
+    /// <summary>
+    /// Whether this device can still recover this row's media — which is what decides whether an
+    /// expired upload is "push it again" or "tell the person it is gone".
+    /// </summary>
+    public bool HoldsBytes => StagedFiles is { Length: > 0 } || AttachmentIds is null;
 }
 
 /// <summary>
@@ -55,9 +67,9 @@ public sealed class OutboxStore(Database database)
         command.CommandText =
             """
             INSERT INTO outbox (client_msg_id, chat_id, body, reply_to_id, attachment_ids,
-                                pending_files, poll_json, mentions_json, queued_at, attempts,
-                                next_attempt_at, failed_code)
-            VALUES ($id, $chat, $body, $reply, $attachments, $files, $poll, $mentions,
+                                pending_files, staged_files, poll_json, mentions_json, queued_at,
+                                attempts, next_attempt_at, failed_code)
+            VALUES ($id, $chat, $body, $reply, $attachments, $files, $staged, $poll, $mentions,
                     $queued, $attempts, $next, $failed)
             ON CONFLICT(client_msg_id) DO UPDATE SET
                 body = excluded.body, attachment_ids = excluded.attachment_ids,
@@ -73,6 +85,12 @@ public sealed class OutboxStore(Database database)
             row.AttachmentIds is null ? DBNull.Value : Wire.Encode(row.AttachmentIds));
         command.Parameters.AddWithValue("$files",
             row.PendingFiles is null ? DBNull.Value : Wire.Encode(row.PendingFiles));
+        // Staged is what was written down; pending is what is still owed. A caller that names
+        // only the pending files at queue time is naming all of them.
+        command.Parameters.AddWithValue("$staged",
+            (row.StagedFiles ?? row.PendingFiles) is { } staged
+                ? Wire.Encode(staged)
+                : DBNull.Value);
         command.Parameters.AddWithValue("$poll",
             row.PollOptions is null ? DBNull.Value : Wire.Encode(row.PollOptions));
         command.Parameters.AddWithValue("$mentions",
@@ -174,6 +192,44 @@ public sealed class OutboxStore(Database database)
     }
 
     /// <summary>
+    /// Fail a row outright, without a verdict: the caller already knows nothing else is coming.
+    /// The one honest use is media this device can no longer find — an id cannot recover a
+    /// picture, so there is nothing for a backoff to wait for.
+    /// </summary>
+    public void Refuse(string clientMsgId, string code)
+    {
+        using var command = database.Connection.CreateCommand();
+        command.CommandText =
+            "UPDATE outbox SET failed_code = $code, next_attempt_at = NULL WHERE client_msg_id = $id";
+        command.Parameters.AddWithValue("$code", code);
+        command.Parameters.AddWithValue("$id", clientMsgId);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// The server has swept the uploads this row names: <c>attachment_expired</c>, which means
+    /// UPLOAD IT AGAIN and re-send the same <c>client_msg_id</c>. The dead ids go and every
+    /// staged file is owed again — the ids were only ever valid while the server still held them.
+    /// </summary>
+    /// <returns>Whether there was anything to push again.</returns>
+    public bool Reupload(string clientMsgId)
+    {
+        var row = Find(clientMsgId);
+        if (row?.StagedFiles is not { Length: > 0 } staged)
+        {
+            return false;
+        }
+        using var command = database.Connection.CreateCommand();
+        command.CommandText =
+            "UPDATE outbox SET attachment_ids = NULL, pending_files = $files " +
+            "WHERE client_msg_id = $id";
+        command.Parameters.AddWithValue("$files", Wire.Encode(staged));
+        command.Parameters.AddWithValue("$id", clientMsgId);
+        command.ExecuteNonQuery();
+        return true;
+    }
+
+    /// <summary>
     /// Somebody pressed retry: the budget starts again and the row is due at once. That is what
     /// the affordance promises, and a row that waited out a backoff after being asked would be a
     /// button that did nothing.
@@ -221,6 +277,9 @@ public sealed class OutboxStore(Database database)
             ReplyToMessageId: Number("reply_to_id"),
             AttachmentIds: Text("attachment_ids") is { } ids ? Wire.Decode<long[]>(ids) : null,
             PendingFiles: Text("pending_files") is { } files ? Wire.Decode<string[]>(files) : null,
+            StagedFiles: Text("staged_files") is { } staged
+                ? Wire.Decode<string[]>(staged)
+                : null,
             PollOptions: Text("poll_json") is { } poll ? Wire.Decode<string[]>(poll) : null,
             Mentions: Text("mentions_json") is { } mentions
                 ? Wire.Decode<MentionDto[]>(mentions)

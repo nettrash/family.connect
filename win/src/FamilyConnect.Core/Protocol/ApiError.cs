@@ -74,6 +74,13 @@ public static class ErrorCodes
     /// <summary>Not on the wire: this client's own name for "it never got there".</summary>
     public const string Transport = "__transport";
 
+    /// <summary>
+    /// Not on the wire either: this client's own name for "the bytes I was going to send are
+    /// gone". A staged copy the system reclaimed, or a reinstall — and there is nothing to retry,
+    /// because the picture cannot be recovered from an id alone.
+    /// </summary>
+    public const string MediaMissing = "__media_missing";
+
     public const string Unauthorized = "unauthorized";
     public const string InvalidCredentials = "invalid_credentials";
     public const string UsernameTaken = "username_taken";

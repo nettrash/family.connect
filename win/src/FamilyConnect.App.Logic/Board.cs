@@ -145,10 +145,13 @@ public sealed class BoardModel(BoardStore board, ChatStore chats, ApiClient api)
             return answer.Error;
         }
         // The frame and the catch-up both carry the tombstone; applying it here as well is what
-        // makes the note leave the wall as the tap lands rather than a round trip later.
-        board.Apply(board.Note(noteId) is { } held
-            ? held with { Deleted = true, BoardSeq = held.BoardSeq + 1 }
-            : new NoteDto(noteId, 0, Deleted: true, BoardSeq: long.MaxValue));
+        // makes the note leave the wall as the tap lands rather than a round trip later. As
+        // EVIDENCE, so it moves no cursor: the seq this delete was given is the server's to
+        // announce, and a cursor moved to a number nobody issued steps the feed past whatever
+        // really holds it.
+        board.Apply(
+            new NoteDto(noteId, 0, Deleted: true, BoardSeq: board.Note(noteId)?.BoardSeq ?? 0),
+            SeqRoute.Evidence);
         return null;
     }
 
@@ -182,20 +185,23 @@ public sealed class BoardModel(BoardStore board, ChatStore chats, ApiClient api)
         {
             return (null, answer.Error ?? ApiError.Transport("no answer"));
         }
-        board.Apply(answer.Value.Note);
+        board.Apply(answer.Value.Note, SeqRoute.Evidence);
         return (answer.Value.Note.Attachment, null);
     }
 
     private async Task<ApiError?> Applied(Func<Task<ApiResult<NoteResponse>>> write)
     {
         var answer = await write().ConfigureAwait(false);
+        // Both halves, though a failure always carries a null value: each alone would be relying
+        // on the other's invariant, and this is the one place the wall is written from an answer.
         if (!answer.Ok || answer.Value is null)
         {
             return answer.Error ?? ApiError.Transport("no answer");
         }
         // Applied under the board_seq guard, exactly as a frame is: this answer and the frame the
-        // same write raised can arrive in either order.
-        board.Apply(answer.Value.Note);
+        // same write raised can arrive in either order. As EVIDENCE: it is one note's news and
+        // says nothing about what else has changed, so it may not move the board's cursor.
+        board.Apply(answer.Value.Note, SeqRoute.Evidence);
         return null;
     }
 }

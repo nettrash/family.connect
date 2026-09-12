@@ -135,6 +135,11 @@ public static class Migrations
             -- the remainder; and the local files, so the bytes are still there to push.
             attachment_ids  TEXT,
             pending_files   TEXT,
+            -- EVERY file this send's media came from, and this list never shrinks. `pending_files`
+            -- is what is still owed and empties as the uploads land, which is exactly the wrong
+            -- thing to have when the server answers `attachment_expired`: that means UPLOAD IT
+            -- AGAIN, and a row that had forgotten where the bytes came from could only give up.
+            staged_files    TEXT,
             poll_json       TEXT,
             mentions_json   TEXT,
             queued_at       INTEGER NOT NULL,
@@ -146,6 +151,16 @@ public static class Migrations
         )
         """,
         "CREATE INDEX outbox_by_chat ON outbox(chat_id, queued_at)",
+        """
+        -- THE NOTES A TOMBSTONE HAS TAKEN, and they never come back. A delete is the last thing
+        -- that happens to a note, but seqs commit out of order and history pages carry the
+        -- pre-delete copy — so without this table an older answer crossing the tombstone on the
+        -- wire RESURRECTS a note the family took down (the web client keeps the same set; Apple
+        -- and Android do not, and that is a known gap there).
+        CREATE TABLE gone (
+            note_id INTEGER PRIMARY KEY
+        )
+        """,
         // ---- who this reader will not see ------------------------------
         """
         -- The CALLER'S OWN block list, which is complete state: `GET /me` and
