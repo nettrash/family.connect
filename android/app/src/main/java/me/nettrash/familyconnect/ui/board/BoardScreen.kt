@@ -487,7 +487,12 @@ internal fun NoteDateBlock(startsAt: Long, past: Boolean, modifier: Modifier = M
  */
 @Composable
 internal fun NotePicture(attachment: AttachmentDto, modifier: Modifier = Modifier) {
-    val bitmap = rememberAttachmentImage(attachment, preview = true)
+    // The preview is what a sticker wants — a 132dp card has no use for
+    // 1600 pixels — but only where there IS one: a picture with no preview
+    // (one the server drew, one whose preview upload was lost) is drawn from
+    // its full bytes rather than not at all. See NoteBackdrop for why this
+    // is the flag and not a fallback chain.
+    val bitmap = rememberAttachmentImage(attachment, preview = attachment.hasPreview)
     Box(
         modifier = modifier.clip(RoundedCornerShape(6.dp)),
         contentAlignment = Alignment.Center,
@@ -539,7 +544,21 @@ internal fun NotePicture(attachment: AttachmentDto, modifier: Modifier = Modifie
  */
 @Composable
 internal fun NoteBackdrop(attachment: AttachmentDto, modifier: Modifier = Modifier) {
-    val bitmap = rememberAttachmentImage(attachment, preview = true) ?: return
+    // ASK FOR WHAT EXISTS. This drew nothing at all because it asked only
+    // for the PREVIEW, and the server generates no previews for a picture
+    // it drew itself (`has_preview` stays false — server/src/handlers_ai.rs):
+    // `rememberAttachmentImage` answers null for a photo whose flag is down
+    // without asking the server anything, deliberately, because for a photo
+    // the full bytes are the fallback. The board never took it.
+    //
+    // The FLAG rather than a `?:` chain of both: a chain asks for the
+    // preview and, on the same first frame, for the original as well —
+    // every picture would cost two downloads and pull full-size bytes onto
+    // a phone. A stale flag can only be stale in the safe direction here (a
+    // preview uploaded after this device read the row), and then this draws
+    // the original, which is bigger and right.
+    val bitmap = rememberAttachmentImage(attachment, preview = attachment.hasPreview)
+        ?: return
     Box(modifier = modifier) {
         Image(
             bitmap = bitmap,

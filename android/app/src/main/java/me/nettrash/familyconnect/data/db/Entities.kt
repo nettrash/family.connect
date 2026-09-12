@@ -435,11 +435,14 @@ data class NoteEntity(
      */
     @ColumnInfo(defaultValue = "text") val kind: String = "text",
     /**
-     * The pinned picture, on a photo note: the wire's Attachment stored
-     * verbatim (AttachmentsCodec, a one-element list — the same codec a
-     * message's attachments use, so there is one shape to read). The PIXELS
-     * come from AttachmentRepository by the id inside it, exactly as a
-     * message's do; nothing about the file is duplicated here.
+     * The picture: the CONTENT on a photo note, and an EVENT's BACKDROP —
+     * the ground its card is drawn on (docs/protocol.md, "Board"). The
+     * wire's Attachment stored verbatim (AttachmentsCodec, a one-element
+     * list — the same codec a message's attachments use, so there is one
+     * shape to read). The PIXELS come from AttachmentRepository by the id
+     * inside it, exactly as a message's do; nothing about the file is
+     * duplicated here — including `has_preview`, which decides WHICH bytes
+     * the board asks for (see NoteBackdrop).
      */
     val attachmentJson: String? = null,
     /**
