@@ -437,6 +437,31 @@ pub fn is_compact(board_width: f64) -> bool {
     board_width < COMPACT_BELOW
 }
 
+/// A PICTURE IS DRAWN WHOLE: the size a photograph of `picture` pixels
+/// takes inside a `space`, fitted in BOTH dimensions (docs/protocol.md,
+/// "Board"). A tall photograph on a wide card comes back narrow and a wide
+/// one short; neither comes back cropped.
+///
+/// Also the size of a BARE photo's card, which is the picture itself: the
+/// note's box hugs what this returns, so the pin sits on the photograph
+/// rather than over bare wall.
+///
+/// A picture the server never gave dimensions for — an older row, an upload
+/// that lost them — takes the whole space, which costs a margin at worst:
+/// the client still fits the pixels inside it and never crops them.
+pub fn fitted_picture(space: (f64, f64), picture: (f64, f64)) -> (f64, f64) {
+    if !(picture.0 > 0.0 && picture.1 > 0.0 && space.0 > 0.0 && space.1 > 0.0) {
+        return space;
+    }
+    let scale = (space.0 / picture.0).min(space.1 / picture.1);
+    // Never below a hairline: a panorama 20 000 pixels wide would round its
+    // height to nothing, and a card of no height is a note nobody can tap.
+    (
+        (picture.0 * scale).min(space.0).max(1.0),
+        (picture.1 * scale).min(space.1).max(1.0),
+    )
+}
+
 /// A card's top-left corner held inside the board, so no part of it is off
 /// screen — which depends on the card, a large one running out of room
 /// sooner. A board smaller than the card pins it to the top-left.
@@ -530,6 +555,34 @@ mod tests {
         assert_eq!(wall_task_lines(5), (5, 0));
         assert_eq!(wall_task_lines(6), (5, 1));
         assert_eq!(wall_task_lines(20), (5, 15));
+    }
+
+    #[test]
+    fn a_picture_is_fitted_in_both_dimensions_and_never_cropped() {
+        // The portrait #71 was reported with: a 600x1200 photograph on the
+        // Mac's medium card comes back NARROW, not cut in half.
+        let (w, h) = fitted_picture((150.0, 110.0), (600.0, 1200.0));
+        assert!((w - 55.0).abs() < 0.01, "{w}");
+        assert!((h - 110.0).abs() < 0.01, "{h}");
+        // Whole: both sides of the same scale as the picture's own.
+        assert!((w / h - 0.5).abs() < 0.001);
+        // A wide one comes back SHORT, by the same rule.
+        let (w, h) = fitted_picture((150.0, 110.0), (1600.0, 900.0));
+        assert!((w - 150.0).abs() < 0.01, "{w}");
+        assert!((h - 84.375).abs() < 0.01, "{h}");
+        // A picture the shape of its space fills it exactly, and neither
+        // side ever grows past it.
+        assert_eq!(fitted_picture((150.0, 110.0), (300.0, 220.0)), (150.0, 110.0));
+        let (w, h) = fitted_picture((150.0, 110.0), (15.0, 11.0));
+        assert!(w <= 150.0 && h <= 110.0);
+        // Dimensions the server never recorded take the whole space: a
+        // margin at worst, never a crop.
+        assert_eq!(fitted_picture((150.0, 110.0), (0.0, 0.0)), (150.0, 110.0));
+        assert_eq!(fitted_picture((150.0, 110.0), (600.0, 0.0)), (150.0, 110.0));
+        assert_eq!(fitted_picture((150.0, 110.0), (-4.0, 8.0)), (150.0, 110.0));
+        // And a panorama still leaves something to tap.
+        let (_, h) = fitted_picture((150.0, 110.0), (20_000.0, 10.0));
+        assert!(h >= 1.0, "{h}");
     }
 
     #[test]

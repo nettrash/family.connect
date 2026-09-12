@@ -528,5 +528,6 @@
     <string name="s_draw_another_backdrop">別の背景を描く</string>
     <string name="s_drawing">描いています…</string>
     <string name="s_draw_failed">描けませんでした。</string>
+    <string name="s_tick_failed">チェックできませんでした。</string>
     <string name="s_no_calendar_app">追加できるカレンダーアプリがありません。</string>
 </resources>

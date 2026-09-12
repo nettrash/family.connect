@@ -60,6 +60,12 @@ struct MacBoardView: View {
     /// Pinning a picture: the upload it turns into, and what went wrong.
     @State private var pinning = false
     @State private var pinFailure: String?
+    /// What the server refused on a note, SAID rather than swallowed: a
+    /// tick that bounced puts its box back and a backdrop that never
+    /// arrived leaves the menu exactly as it was, and neither tells the
+    /// reader anything on its own. The web says both (docs/protocol.md,
+    /// "Board").
+    @State private var failure: String?
 
     var body: some View {
         GeometryReader { geometry in
@@ -137,6 +143,15 @@ struct MacBoardView: View {
             Button("OK", role: .cancel) { pinFailure = nil }
         } message: {
             Text(pinFailure ?? "")
+        }
+        // What the server refused on a note, in the reader's own words.
+        .alert(
+            Text(failure ?? ""),
+            isPresented: Binding(
+                get: { failure != nil },
+                set: { if !$0 { failure = nil } })
+        ) {
+            Button("OK", role: .cancel) { failure = nil }
         }
         .overlay {
             if pinning {
@@ -247,14 +262,20 @@ struct MacBoardView: View {
             },
             onTick: { itemID, done in
                 Task {
-                    await coordinator.tickTask(
-                        noteID: note.noteID, itemID: itemID, done: done)
+                    if await coordinator.tickTask(
+                        noteID: note.noteID, itemID: itemID, done: done) == false {
+                        failure = String(localized: "Couldn't tick that off.")
+                    }
                 }
             },
             names: displayName(for:),
             canDraw: AppSettings.assistantImages,
             onDrawBackdrop: {
-                Task { await coordinator.drawBackdrop(noteID: note.noteID) }
+                Task {
+                    if await coordinator.drawBackdrop(noteID: note.noteID) == false {
+                        failure = String(localized: "Couldn't draw that.")
+                    }
+                }
             })
     }
 
@@ -353,9 +374,27 @@ fileprivate struct MacNoteView: View {
         !isHidden && NoteKind(name: note.kind) == .photo && note.text.isEmpty
     }
 
+    /// The pinned picture's own shape, where the server recorded it — the
+    /// card of a bare photo, fitted (docs/protocol.md, "Board"). Nil
+    /// otherwise, and then the card is the step's own.
+    private var pictureShape: CGSize? {
+        guard let width = note.attachmentWidth, let height = note.attachmentHeight,
+            width > 0, height > 0
+        else { return nil }
+        return CGSize(width: CGFloat(width), height: CGFloat(height))
+    }
+
     var body: some View {
         let noteSize = NoteSize(name: note.size)
-        let size = noteSize.frame
+        // A BARE photo's CARD IS THE PICTURE, fitted in both dimensions
+        // (docs/protocol.md, "Board"): the box hugs the photograph, so the
+        // pin sits on it and the wall shows around it. Issue #71 — the card
+        // kept its own shape and the picture was cropped to fill a strip of
+        // it.
+        let size =
+            isBarePicture
+            ? BoardPicture.fitted(space: noteSize.frame, picture: pictureShape ?? .zero)
+            : noteSize.frame
         // Where it is drawn RIGHT NOW: its stored position plus whatever
         // the drag has moved it, held inside the board either way. Clamping
         // only on release would let a note be dragged off the edge and then
@@ -372,7 +411,9 @@ fileprivate struct MacNoteView: View {
             if !isHidden, NoteKind(name: note.kind) == .photo, let attachmentID = note.attachmentID {
                 NotePicture(
                     attachmentID: attachmentID,
-                    height: NotePicture.height(cardHeight: size.height, hasCaption: !note.text.isEmpty))
+                    height: NotePicture.height(
+                        cardHeight: size.height, hasCaption: !note.text.isEmpty),
+                    shape: pictureShape)
             }
             // An event says WHEN before it says what — the date is the reason
             // it is on the wall — and who is coming. The Mac drew an event as
@@ -862,6 +903,9 @@ private struct MacNoteEditorForExisting: View {
     /// answers the click at once and goes back to the note's own truth
     /// when the answer — or the refusal — lands.
     @State private var ticking: [Int64: Bool] = [:]
+    /// A refused tick, said rather than swallowed: the box going back on
+    /// its own tells nobody why (docs/protocol.md, "Board").
+    @State private var failure: String?
 
     private var kind: NoteKind { NoteKind(name: note.kind) }
 
@@ -899,9 +943,12 @@ private struct MacNoteEditorForExisting: View {
                 // first is in flight is the click that would undo it.
                 guard ticking[itemID] == nil else { return }
                 ticking[itemID] = done
+                failure = nil
                 Task {
-                    await coordinator.tickTask(
-                        noteID: note.noteID, itemID: itemID, done: done)
+                    if await coordinator.tickTask(
+                        noteID: note.noteID, itemID: itemID, done: done) == false {
+                        failure = String(localized: "Couldn't tick that off.")
+                    }
                     ticking[itemID] = nil
                 }
             }
@@ -929,6 +976,15 @@ private struct MacNoteEditorForExisting: View {
                     // list to read it an edit.
                     items: isList && written != held ? written : nil)
             }
+        }
+        // What the server refused, in the reader's own words.
+        .alert(
+            Text(failure ?? ""),
+            isPresented: Binding(
+                get: { failure != nil },
+                set: { if !$0 { failure = nil } })
+        ) {
+            Button("OK", role: .cancel) { failure = nil }
         }
         .onAppear {
             text = note.text

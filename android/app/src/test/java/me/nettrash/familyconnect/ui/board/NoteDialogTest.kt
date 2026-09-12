@@ -48,6 +48,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.shadows.ShadowToast
 
 @RunWith(RobolectricTestRunner::class)
 class NoteDialogTest {
@@ -330,6 +331,9 @@ class NoteDialogTest {
         compose.onNodeWithContentDescription("Bread").assertIsOff()
         // And the line that WAS done is still drawn done.
         compose.onNodeWithContentDescription("Milk").assertIsOn()
+        // A box that goes back on its own says nothing about why, so the
+        // refusal is SAID — as the web says it (docs/protocol.md, "Board").
+        assertThat(ShadowToast.getTextOfLatestToast()).isEqualTo("Couldn't tick that off.")
     }
 
     /** And one that landed keeps its mark, for the same reason. */
@@ -352,6 +356,8 @@ class NoteDialogTest {
         // The draft this dialog opened with says Bread was NOT done, so a
         // mark dropped here would show the tick undoing itself.
         compose.onNodeWithContentDescription("Bread").assertIsOn()
+        // And nothing is said: a tick that worked is not news.
+        assertThat(ShadowToast.getTextOfLatestToast()).isNull()
     }
 
     @Test
@@ -510,6 +516,36 @@ class NoteDialogTest {
         // Back to an offer — and the note this dialog was opened with had
         // no backdrop, so it is the first-time wording until it is
         // reopened on a note that has one.
+        compose.onNodeWithText("Draw a backdrop").assertIsDisplayed()
+    }
+
+    /**
+     * A backdrop that never arrived leaves a button that has merely
+     * stopped saying "Drawing…" — and an author who thinks a picture is
+     * still coming. So the refusal is SAID, as the web says it
+     * (docs/protocol.md, "Board").
+     */
+    @Test
+    fun aRefusedBackdropSaysSoAndOffersTheButtonAgain() {
+        compose.setContent {
+            NoteDialog(
+                draft = eventDraft(),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                names = guestNames,
+                canDraw = true,
+                onDrawBackdrop = { onSettled -> onSettled(false) },
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithText("Draw a backdrop").performClick()
+        compose.waitForIdle()
+
+        assertThat(ShadowToast.getTextOfLatestToast()).isEqualTo("Couldn't draw that.")
+        // And it can be asked again: nothing was drawn.
         compose.onNodeWithText("Draw a backdrop").assertIsDisplayed()
     }
 

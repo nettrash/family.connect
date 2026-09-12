@@ -905,6 +905,23 @@ another bare ones is not the same wall. What the reader loses on a bare photo is
 which is in the note when they open it, and nothing else: the pin, the tilt, the slot and the tap
 are the same.
 
+**A PHOTO IS DRAWN WHOLE.** A picture on the wall is FITTED into the space the note gives it — in
+both dimensions — and never cropped to fill it. Fitting the width alone and letting the height spill
+over the edge is what a picture box does by default in most toolkits, and it is wrong for the
+photograph a family actually pins: a portrait shot from a phone loses more than half its height, and
+the faces go with it. So the picture keeps its own proportions, sits centred in the space it is
+given, and whatever is left over shows what is behind it — a tall photo is drawn narrow, a wide one
+short. A BARE photo's space is the WHOLE note, so the note's box becomes the picture: it hugs the
+fitted photograph from the corner the fraction names, and the pin sits on the picture rather than
+over bare wall. A CAPTIONED one is fitted into the part of the sticker above the words, with the
+paper showing around it. A picture whose dimensions the server never recorded — an older row, an
+upload that lost them — is fitted into the whole space and centred there, which costs a margin and
+never a crop. Like the bare picture this is a drawing rule and not a wire one, and it is written
+down for the same reason — a wall where one device shows the whole photograph and another the middle
+third of it is not the same wall. Opening the note is not a second chance to see it either: the
+picture in the opened note is fitted too, and a photograph cropped on the wall is a photograph the
+family never knew was there.
+
 **The pin and the ground are the client's own.** A note may be drawn with a pin through it and the
 wall may have paper or cork behind it; both are decoration, neither is on the wire, and a client
 that draws neither is not wrong. They are mentioned here only so that nobody adds a `pin` field:

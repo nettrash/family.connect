@@ -475,11 +475,13 @@ private struct StickyNote: View {
     private var isHidden: Bool { isHiddenByBlock && !isRevealed }
 
     /// A top-left corner held inside the board, so no part of the note is
-    /// off-screen whatever its size.
-    private static func clamp(_ point: CGPoint, side: CGFloat, board: CGSize) -> CGPoint {
+    /// off-screen whatever its size — which depends on the CARD, a bare
+    /// picture's being the shape of the photograph rather than the step's
+    /// square (docs/protocol.md, "Board").
+    private static func clamp(_ point: CGPoint, card: CGSize, board: CGSize) -> CGPoint {
         CGPoint(
-            x: min(max(point.x, 0), max(board.width - side, 0)),
-            y: min(max(point.y, 0), max(board.height - side, 0)))
+            x: min(max(point.x, 0), max(board.width - card.width, 0)),
+            y: min(max(point.y, 0), max(board.height - card.height, 0)))
     }
 
     /// The iPad's sticker is bigger than the phone's — the same 132pt
@@ -498,19 +500,39 @@ private struct StickyNote: View {
         !isHidden && NoteKind(name: note.kind) == .photo && note.text.isEmpty
     }
 
+    /// The pinned picture's own shape, where the server recorded it. Nil
+    /// otherwise, and then the card is the step's own and the picture is
+    /// fitted inside it (BoardPicture.fitted).
+    private var pictureShape: CGSize? {
+        guard let width = note.attachmentWidth, let height = note.attachmentHeight,
+            width > 0, height > 0
+        else { return nil }
+        return CGSize(width: CGFloat(width), height: CGFloat(height))
+    }
+
     var body: some View {
         let size = NoteSize(name: note.size)
         let side = size.side * Self.noteScale
+        // A BARE photo's CARD IS THE PICTURE, fitted (docs/protocol.md,
+        // "Board"): the box hugs the photograph from the same corner, so
+        // the pin sits on it and the wall shows around it — rather than a
+        // square of nothing with a strip of picture at the top of it,
+        // which is what issue #71 drew.
+        let card =
+            isBarePicture
+            ? BoardPicture.fitted(
+                space: CGSize(width: side, height: side), picture: pictureShape ?? .zero)
+            : CGSize(width: side, height: side)
         // Where it is drawn RIGHT NOW: the stored corner, held inside the
         // board, plus whatever the drag has moved it, held inside again.
         // Clamping only on release would let a note be dragged off the
         // edge and then snap back.
         let origin = Self.clamp(
             CGPoint(x: note.x * boardSize.width, y: note.y * boardSize.height),
-            side: side, board: boardSize)
+            card: card, board: boardSize)
         let drawn = Self.clamp(
             CGPoint(x: origin.x + drag.width, y: origin.y + drag.height),
-            side: side, board: boardSize)
+            card: card, board: boardSize)
 
         VStack(alignment: .leading, spacing: 6) {
             // A pinned picture fills the sticker, with the caption under it
@@ -520,7 +542,9 @@ private struct StickyNote: View {
             if !isHidden, NoteKind(name: note.kind) == .photo, let attachmentID = note.attachmentID {
                 NotePicture(
                     attachmentID: attachmentID,
-                    height: NotePicture.height(cardHeight: side, hasCaption: !note.text.isEmpty))
+                    height: NotePicture.height(
+                        cardHeight: card.height, hasCaption: !note.text.isEmpty),
+                    shape: pictureShape)
             }
             // An event says WHEN before it says what: the date is the
             // reason it is on the wall (protocol.md, "Board").
@@ -575,7 +599,7 @@ private struct StickyNote: View {
             }
         }
         .padding(isBarePicture ? 0 : 10)
-        .frame(width: side, height: side, alignment: .topLeading)
+        .frame(width: card.width, height: card.height, alignment: .topLeading)
         .background(
             isBarePicture ? Color.clear : NoteColor.swiftUI(note.color),
             in: RoundedRectangle(cornerRadius: isBarePicture ? 4 : 10))
@@ -587,7 +611,7 @@ private struct StickyNote: View {
         .rotationEffect(.degrees(Self.tilt(for: note.noteID)))
         .scaleEffect(drag == .zero ? 1 : 1.04)
         // `position` places the CENTRE; the stored fraction is the corner.
-        .position(x: drawn.x + side / 2, y: drawn.y + side / 2)
+        .position(x: drawn.x + card.width / 2, y: drawn.y + card.height / 2)
         .animation(.spring(duration: 0.2), value: drag == .zero)
         .gesture(
             DragGesture()
@@ -704,6 +728,13 @@ private struct NoteEditor: View {
     @State private var drewBackdrop = false
     /// The `.ics` this sheet has written, if it is an event.
     @State private var calendarFile: URL?
+    /// What the server refused, SAID rather than swallowed. A tick that
+    /// bounced puts its box back and a backdrop that never arrived leaves
+    /// a button that has merely stopped saying "Drawing…" — neither tells
+    /// the reader anything on its own, and a picture nobody asked twice
+    /// for is a picture the author thinks is coming. The web says both
+    /// (docs/protocol.md, "Board").
+    @State private var failure: String?
 
     init(
         draft: NoteDraft,
@@ -778,9 +809,12 @@ private struct NoteEditor: View {
     private func drawBackdrop(_ noteID: Int64) {
         guard !drawing else { return }
         drawing = true
+        failure = nil
         Task {
             if await onDrawBackdrop(noteID) {
                 drewBackdrop = true
+            } else {
+                failure = String(localized: "Couldn't draw that.")
             }
             drawing = false
         }
@@ -797,9 +831,11 @@ private struct NoteEditor: View {
     private func tick(_ itemID: Int64, to done: Bool) {
         guard let noteID = draft.noteID, ticking[itemID] == nil else { return }
         ticking[itemID] = done
+        failure = nil
         Task {
             if await onTick(noteID, itemID, done) == false {
                 ticking[itemID] = nil
+                failure = String(localized: "Couldn't tick that off.")
             }
         }
     }
@@ -1146,6 +1182,16 @@ private struct NoteEditor: View {
             // The calendar copy is written once, when the sheet appears:
             // a ShareLink needs its file before anybody taps it.
             .onAppear { writeCalendarFile() }
+            // What the server refused, in the reader's own words — the
+            // same alert the wall shows for a photo it could not pin.
+            .alert(
+                Text(failure ?? ""),
+                isPresented: Binding(
+                    get: { failure != nil },
+                    set: { if !$0 { failure = nil } })
+            ) {
+                Button("OK", role: .cancel) { failure = nil }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

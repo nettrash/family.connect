@@ -547,5 +547,6 @@
     <string name="s_draw_another_backdrop">Nacrtaj drugu pozadinu</string>
     <string name="s_drawing">Crta…</string>
     <string name="s_draw_failed">Nije moglo da se nacrta.</string>
+    <string name="s_tick_failed">Nije moglo da se označi.</string>
     <string name="s_no_calendar_app">Nema aplikacije kalendara za dodavanje.</string>
 </resources>

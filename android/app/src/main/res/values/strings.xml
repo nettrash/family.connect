@@ -594,5 +594,6 @@
     <string name="s_draw_another_backdrop">Draw another backdrop</string>
     <string name="s_drawing">Drawing…</string>
     <string name="s_draw_failed">Couldn\'t draw that.</string>
+    <string name="s_tick_failed">Couldn\'t tick that off.</string>
     <string name="s_no_calendar_app">No calendar app to add it to.</string>
 </resources>

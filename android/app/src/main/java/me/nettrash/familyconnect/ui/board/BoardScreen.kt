@@ -477,11 +477,15 @@ internal fun NoteDateBlock(startsAt: Long, past: Boolean, modifier: Modifier = M
     }
 }
 
+/**
+ * A pinned picture, drawn WHOLE inside the room it is given
+ * (docs/protocol.md, "Board"): fitted in both dimensions, never cropped.
+ */
 @Composable
 internal fun NotePicture(attachment: AttachmentDto, modifier: Modifier = Modifier) {
     val bitmap = rememberAttachmentImage(attachment, preview = true)
     Box(
-        modifier = modifier.clip(RoundedCornerShape(6.dp)).background(Color.Black.copy(alpha = 0.06f)),
+        modifier = modifier.clip(RoundedCornerShape(6.dp)),
         contentAlignment = Alignment.Center,
     ) {
         if (bitmap != null) {
@@ -491,11 +495,23 @@ internal fun NotePicture(attachment: AttachmentDto, modifier: Modifier = Modifie
                 // already say what it is, so a second description here
                 // would have TalkBack read everything twice.
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
+                // FITTED, never cropped: `Crop` was issue #71 — it kept
+                // the middle of every portrait and threw the rest away.
+                // What shows around a fitted picture is the sticker's own
+                // paper, and on a bare photo the wall.
+                contentScale = BoardPicture.scale,
                 modifier = Modifier.fillMaxSize(),
             )
         } else {
-            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            // A ground only while the bytes are on their way: under a
+            // fitted picture it would be a grey frame around every
+            // portrait.
+            Box(
+                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.06f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            }
         }
     }
 }
@@ -915,6 +931,61 @@ object BoardWall {
     /** Never shorter than the window, or fractions of the wall would sit
      *  behind its edges. */
     fun heightPx(visiblePx: Int): Int = maxOf((visiblePx * SCREENS).toInt(), visiblePx)
+}
+
+/**
+ * How a PICTURE is drawn on the wall (docs/protocol.md, "Board").
+ *
+ * A PHOTO IS DRAWN WHOLE: fitted in both dimensions and never cropped to
+ * fill its box. Issue #71 is what filling cost — a portrait photograph
+ * pinned from a phone lost more than half its height, faces and all.
+ *
+ * Web counterpart: `fc_text::board::fitted_picture`.
+ * Apple counterpart: `BoardPicture` in Views/NoteSize.swift.
+ */
+object BoardPicture {
+    /**
+     * FITTED, never cropped (docs/protocol.md, "Board"): the whole
+     * photograph, in both dimensions.
+     *
+     * Named rather than written inline so a test can hold it: issue #71 was
+     * one word inside a composable — `ContentScale.Crop` — where nothing
+     * outside the drawing could see it. See BoardPictureTest.
+     */
+    val scale: ContentScale = ContentScale.Fit
+
+    /**
+     * The size a picture of `pictureWidth` x `pictureHeight` pixels takes
+     * inside a space, fitted in both dimensions: a tall photograph on a
+     * wide card comes back narrow, a wide one short, and neither comes back
+     * cropped.
+     *
+     * Also the size of a BARE photo's card, which is the picture itself:
+     * the note's box hugs this, so the pin sits on the photograph rather
+     * than over bare wall.
+     *
+     * A picture the server never gave dimensions for takes the whole space,
+     * which costs a margin at worst — the picture is still drawn fitted
+     * inside it and never cropped.
+     */
+    fun fitted(
+        spaceWidth: Float,
+        spaceHeight: Float,
+        pictureWidth: Int?,
+        pictureHeight: Int?,
+    ): Pair<Float, Float> {
+        val width = (pictureWidth ?: 0).toFloat()
+        val height = (pictureHeight ?: 0).toFloat()
+        if (width <= 0f || height <= 0f || spaceWidth <= 0f || spaceHeight <= 0f) {
+            return spaceWidth to spaceHeight
+        }
+        val scale = minOf(spaceWidth / width, spaceHeight / height)
+        // Never below a hairline: a panorama 20 000 pixels wide would round
+        // its height to nothing, and a card of no height is a note nobody
+        // can tap.
+        return minOf(spaceWidth, width * scale).coerceAtLeast(1f) to
+            minOf(spaceHeight, height * scale).coerceAtLeast(1f)
+    }
 }
 
 object NoteSizes {
@@ -1399,11 +1470,40 @@ internal fun StickyNote(
     // phone's 132dp medium is a stamp on a 10-inch tablet (iOS scales the
     // iPad's the same 1.45x).
     val side = NoteSizes.side(note.size) * (if (isWideWindow()) 1.45f else 1f)
-    val sidePx = with(LocalDensity.current) { side.roundToPx() }
+    // Remembered for the reason the note's names are: this function runs
+    // on every frame of a drag, and decoding the attachment's JSON each
+    // time would spend a gesture's worth of work on a string that cannot
+    // change while the finger is down.
+    val picture = remember(note.kind, note.attachmentJson, isHidden) {
+        if (!isHidden && NoteKinds.isPhoto(note.kind)) {
+            AttachmentsCodec.decode(note.attachmentJson)?.firstOrNull()
+        } else {
+            null
+        }
+    }
+    // A BARE photo's CARD IS THE PICTURE, fitted in both dimensions
+    // (docs/protocol.md, "Board"): the box hugs the photograph from the
+    // same corner, so the pin sits on it and the wall shows around it —
+    // rather than a square of card with the middle of a portrait cropped
+    // into it, which is what issue #71 drew.
+    val card = if (isBarePicture && picture != null) {
+        val (width, height) = BoardPicture.fitted(
+            spaceWidth = side.value,
+            spaceHeight = side.value,
+            pictureWidth = picture.width,
+            pictureHeight = picture.height,
+        )
+        width.dp to height.dp
+    } else {
+        side to side
+    }
+    val cardWidthPx = with(LocalDensity.current) { card.first.roundToPx() }
+    val cardHeightPx = with(LocalDensity.current) { card.second.roundToPx() }
     val geometry = NoteGeometry(
         boardWidthPx = boardWidthPx,
         boardHeightPx = boardHeightPx,
-        sidePx = sidePx,
+        cardWidthPx = cardWidthPx,
+        cardHeightPx = cardHeightPx,
         x = note.x,
         y = note.y,
     )
@@ -1419,7 +1519,7 @@ internal fun StickyNote(
             // The offset draws it and drag-end reports it from the same
             // arithmetic, so the two cannot disagree.
             .offset { IntOffset(geometry.drawnX(dragX), geometry.drawnY(dragY)) }
-            .size(side),
+            .size(width = card.first, height = card.second),
     ) {
     Box(
         modifier = Modifier
@@ -1476,22 +1576,20 @@ internal fun StickyNote(
             // — and NOTHING while the note is hidden by a block: the
             // picture is content, exactly as the text is (protocol.md,
             // "Board").
-            if (!isHidden && NoteKinds.isPhoto(note.kind)) {
-                AttachmentsCodec.decode(note.attachmentJson)?.firstOrNull()?.let { picture ->
-                    NotePicture(
-                        attachment = picture,
-                        modifier = if (isBarePicture) {
-                            // Nothing else on the card: the picture IS the
-                            // card.
-                            Modifier.fillMaxSize()
-                        } else {
-                            Modifier
-                                .fillMaxWidth()
-                                .height(84.dp)
-                        },
-                    )
-                    if (!isBarePicture) Spacer(Modifier.size(6.dp))
-                }
+            if (picture != null) {
+                NotePicture(
+                    attachment = picture,
+                    modifier = if (isBarePicture) {
+                        // Nothing else on the card: the picture IS the
+                        // card, and the card is already its shape.
+                        Modifier.fillMaxSize()
+                    } else {
+                        Modifier
+                            .fillMaxWidth()
+                            .height(84.dp)
+                    },
+                )
+                if (!isBarePicture) Spacer(Modifier.size(6.dp))
             }
             // An event says WHEN before it says what: the date is the
             // reason it is on the wall (docs/protocol.md, "Board").
@@ -1627,14 +1725,20 @@ internal fun StickyNote(
 private class NoteGeometry(
     boardWidthPx: Int,
     boardHeightPx: Int,
-    sidePx: Int,
+    /**
+     * The CARD's own size, which is not always the step's square: a bare
+     * photo's card is the shape of the photograph (docs/protocol.md,
+     * "Board"), and a wide one runs out of room lower down than a tall one.
+     */
+    cardWidthPx: Int,
+    cardHeightPx: Int,
     private val x: Double,
     private val y: Double,
 ) {
     private val width = boardWidthPx.coerceAtLeast(1)
     private val height = boardHeightPx.coerceAtLeast(1)
-    private val maxX = (boardWidthPx - sidePx).coerceAtLeast(0)
-    private val maxY = (boardHeightPx - sidePx).coerceAtLeast(0)
+    private val maxX = (boardWidthPx - cardWidthPx).coerceAtLeast(0)
+    private val maxY = (boardHeightPx - cardHeightPx).coerceAtLeast(0)
     private val originX = (x * boardWidthPx).roundToInt().coerceIn(0, maxX)
     private val originY = (y * boardHeightPx).roundToInt().coerceIn(0, maxY)
 
@@ -1703,6 +1807,12 @@ internal fun NoteDialog(
     onAddToCalendar: () -> Unit = {},
     onDelete: (() -> Unit)?,
 ) {
+    // What the server refused, SAID rather than swallowed: a tick that
+    // bounced puts its box back and a backdrop that never arrived leaves a
+    // button that has merely stopped saying "Drawing…", and neither tells
+    // the reader anything on its own. The web says both (docs/protocol.md,
+    // "Board"). A toast, like the missing-calendar refusal above it.
+    val context = LocalContext.current
     // A TextFieldValue, not a String: accepting a name off the strip
     // rewrites the tail, and the caret has to follow it to the end or the
     // next keystroke lands in the middle of the name just picked.
@@ -1838,7 +1948,16 @@ internal fun NoteDialog(
                                     // button pressed twice is two bills.
                                     if (!drawing) {
                                         drawing = true
-                                        onDrawBackdrop { drawing = false }
+                                        onDrawBackdrop { landed ->
+                                            drawing = false
+                                            if (!landed) {
+                                                Toast.makeText(
+                                                    context,
+                                                    R.string.s_draw_failed,
+                                                    Toast.LENGTH_SHORT,
+                                                ).show()
+                                            }
+                                        }
                                     }
                                 },
                                 enabled = !drawing,
@@ -1917,7 +2036,14 @@ internal fun NoteDialog(
                                             // BEFORE, so dropping the mark
                                             // would show the tick undoing
                                             // itself.
-                                            if (!landed) ticking = ticking - id
+                                            if (!landed) {
+                                                ticking = ticking - id
+                                                Toast.makeText(
+                                                    context,
+                                                    R.string.s_tick_failed,
+                                                    Toast.LENGTH_SHORT,
+                                                ).show()
+                                            }
                                         }
                                     }
                                 },

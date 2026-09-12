@@ -528,5 +528,6 @@
     <string name="s_draw_another_backdrop">重新绘制背景图</string>
     <string name="s_drawing">正在绘制…</string>
     <string name="s_draw_failed">无法绘制。</string>
+    <string name="s_tick_failed">无法勾选。</string>
     <string name="s_no_calendar_app">没有可添加的日历应用。</string>
 </resources>

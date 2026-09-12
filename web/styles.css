@@ -917,9 +917,19 @@ button.mention { cursor: pointer; }
     padding: 0;
     background: transparent !important;
     border-radius: 4px;
-    box-shadow: 0 3px 8px rgb(0 0 0 / 30%);
+    /* The shadow is on the PICTURE, not the card: the card is sized to the
+     * fitted photograph (Sticker), and a shadow drawn from the box would
+     * outline the box even where the last pixel rounds away. */
+    box-shadow: none;
 }
 .sticker.is-photo:not(.has-caption) .note-picture { border-radius: 3px; }
+.sticker.is-photo:not(.has-caption) .note-picture img {
+    border-radius: 3px;
+    filter: drop-shadow(0 3px 6px rgb(0 0 0 / 32%));
+}
+.sticker.is-photo:not(.has-caption).is-dragging .note-picture img {
+    filter: drop-shadow(0 8px 18px rgb(0 0 0 / 34%));
+}
 /* Lifted off the wall while in hand, and following the pointer exactly. */
 .sticker.is-dragging {
     cursor: grabbing;
@@ -950,19 +960,29 @@ button.mention { cursor: pointer; }
     text-overflow: ellipsis;
 }
 
-/* A pinned picture fills the card, with the caption under it. */
+/* A pinned picture takes the card, with the caption under it — and is
+ * SHOWN WHOLE: fitted in both dimensions and centred, never cropped to fill
+ * its box (docs/protocol.md, "Board"). `cover` was fitting the width and
+ * spilling the height off the edge, which took two thirds of an axis off
+ * every portrait photograph pinned from a phone (issue #71).
+ *
+ * No ground of its own: what shows around a fitted picture is the sticker's
+ * own paper, and on a bare photo the wall. A grey ground would have been a
+ * grey frame around every portrait. */
 .note-picture {
     flex: none;
     min-height: 0;
     border-radius: 6px;
     overflow: hidden;
-    background: rgb(0 0 0 / 6%);
+    background: transparent;
 }
 .sticker.is-photo .note-picture { flex: 1 1 auto; }
 .sticker.is-photo.has-caption .note-picture { flex: 0 0 55%; }
 .sticker.is-photo.has-caption .note-text { flex: 1 1 0; }
-.note-picture img { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
-.note-picture.is-loading { animation: pulse 1.2s ease-in-out infinite; }
+.note-picture img { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+/* The shape to reserve while the bytes are on their way — the only time
+ * the picture's box shows a ground of its own. */
+.note-picture.is-loading { background: rgb(0 0 0 / 6%); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .6; } }
 
 /* A TASK LIST on the wall: the first lines with their state, and then how
@@ -1092,7 +1112,20 @@ button.mention { cursor: pointer; }
 .sheet-preview { display: grid; place-items: center; padding: 8px 0; overflow-x: auto; }
 .sticker.is-preview { position: relative; cursor: default; transform: none; touch-action: auto; }
 .sheet-picture { padding: 0; background: transparent; border-radius: 8px; overflow: hidden; cursor: zoom-in; }
-.sheet-picture .note-picture { height: min(240px, 40vh); }
+/* The OPEN note shows the picture WHOLE as well (docs/protocol.md,
+ * "Board") — and its box hugs the picture, so a tall photograph gets the
+ * height instead of a stamp between two ribbons of margin. The fixed
+ * height stays for the moment before the bytes land, where there is
+ * nothing to take a shape from. */
+.sheet-picture .note-picture { height: auto; }
+.sheet-picture .note-picture img {
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: min(360px, 52vh);
+    margin: 0 auto;
+}
+.sheet-picture .note-picture.is-loading { height: min(240px, 40vh); }
 .sheet-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; }
 .sheet-when { margin: 0; display: grid; gap: 2px; font-weight: 600; }
 .sheet-place { font-weight: 400; color: var(--muted); }
