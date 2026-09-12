@@ -1,0 +1,24 @@
+<Project>
+  <!--
+    Shared settings for every project under win/. FamilyConnect.Core and its tests are plain
+    .NET and build wherever `dotnet` runs — that is deliberate, and it is what lets the whole
+    protocol layer be written and tested on the Mac this project is developed on
+    (docs/windows-client-2026-09-11.md). Only the WinUI app will need Windows.
+  -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningLevel>4</WarningLevel>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <Authors>nettrash</Authors>
+    <Company>nettrash</Company>
+    <Product>Family Connect</Product>
+    <Copyright>© 2026 nettrash</Copyright>
+    <Version>1.0.0</Version>
+    <NeutralLanguage>en</NeutralLanguage>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+</Project>

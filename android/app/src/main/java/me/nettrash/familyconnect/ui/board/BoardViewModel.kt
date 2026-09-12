@@ -43,6 +43,7 @@ import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.util.BoardBadge
 import me.nettrash.familyconnect.util.badgeMarks
 import me.nettrash.familyconnect.util.marks
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.TaskLineRequest
 import me.nettrash.familyconnect.util.MemberMention
@@ -329,7 +330,7 @@ class BoardViewModel @Inject constructor(
      * takes seconds, so the caller hears when it has landed
      * (docs/protocol.md, "Board").
      */
-    fun drawBackdrop(noteId: Long, onSettled: (Boolean) -> Unit = {}) {
+    fun drawBackdrop(noteId: Long, onSettled: (AttachmentDto?) -> Unit = {}) {
         viewModelScope.launch { onSettled(boardRepository.drawBackdrop(noteId)) }
     }
 

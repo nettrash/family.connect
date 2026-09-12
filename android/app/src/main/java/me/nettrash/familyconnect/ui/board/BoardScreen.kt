@@ -39,6 +39,9 @@ import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.rememberScrollState
@@ -154,6 +157,7 @@ import me.nettrash.familyconnect.data.net.dto.RsvpCodec
 import me.nettrash.familyconnect.data.net.dto.RsvpDto
 import me.nettrash.familyconnect.ui.components.rememberAttachmentImage
 import me.nettrash.familyconnect.ui.components.EmptyState
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -513,6 +517,47 @@ internal fun NotePicture(attachment: AttachmentDto, modifier: Modifier = Modifie
                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
             }
         }
+    }
+}
+
+/**
+ * AN EVENT'S BACKDROP: the picture the assistant drew, as the card's GROUND
+ * (docs/protocol.md, "Board").
+ *
+ * THE ONE PICTURE ON THIS WALL THAT IS NOT DRAWN WHOLE. A backdrop stands in
+ * for the paper an event's card would otherwise be, so it COVERS the card and
+ * is cropped to its shape; "a photo is drawn whole" is about a picture that IS
+ * the content, which somebody chose and pinned.
+ *
+ * It carries its own scrim, because a note's ink is forced dark — the pastels
+ * are fixed light colours in both themes — and a model's picture may be dark
+ * anywhere. Nothing at all while the bytes are on their way: the card keeps
+ * its colour, which is what it looked like a moment ago.
+ *
+ * Nobody drew this at all until 2026-09-12, which is why asking for another
+ * one looked like nothing happening.
+ */
+@Composable
+internal fun NoteBackdrop(attachment: AttachmentDto, modifier: Modifier = Modifier) {
+    val bitmap = rememberAttachmentImage(attachment, preview = true) ?: return
+    Box(modifier = modifier) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    // Lighter at the top, where the date block sits on its
+                    // own white paper, and heavier under the title.
+                    Brush.verticalGradient(
+                        listOf(Color.White.copy(alpha = 0.45f), Color.White.copy(alpha = 0.78f)),
+                    ),
+                ),
+        )
     }
 }
 
@@ -908,6 +953,67 @@ object BoardGround {
         0.55f to (if (isDark) corkDark else cork),
         1f to (if (isDark) Color(0xFF4C3D2C) else Color(0xFFBFA382)),
     )
+
+    /**
+     * THE SAME FOUR LAYERS THE WEB PAINTS, in the same order: the cork, a
+     * highlight where the light falls, a shadow in the far corner, and the
+     * WEAVE — two sets of hairlines at opposing angles, which is what stops
+     * a large wall reading as a flat brown rectangle.
+     *
+     * The web's wall was the one that looked like cork and this was a flat
+     * gradient, which is what "only on the web does the board look ok" was
+     * about. Drawn rather than shipped as an image: an asset would need
+     * three densities and would tile visibly on a wall this size.
+     */
+    fun Modifier.boardGround(isDark: Boolean): Modifier = this
+        .background(brush(isDark))
+        .drawBehind {
+            weave(38f, 4.dp.toPx(), Color.Black.copy(alpha = 0.04f))
+            weave(-52f, 5.dp.toPx(), Color.White.copy(alpha = 0.05f))
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color.White.copy(alpha = 0.26f), Color.Transparent),
+                    center = Offset(size.width * 0.15f, 0f),
+                    radius = size.minDimension * 1.1f,
+                ),
+                radius = size.minDimension * 1.1f,
+                center = Offset(size.width * 0.15f, 0f),
+            )
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color.Black.copy(alpha = 0.14f), Color.Transparent),
+                    center = Offset(size.width * 0.85f, size.height),
+                    radius = size.minDimension * 0.9f,
+                ),
+                radius = size.minDimension * 0.9f,
+                center = Offset(size.width * 0.85f, size.height),
+            )
+        }
+
+    /**
+     * One set of the weave's hairlines, at [degrees] from the vertical.
+     *
+     * Drawn from the middle out, across the wall's DIAGONAL: rotate a square
+     * of that size about the centre and it still covers the wall whatever
+     * the angle, so no line stops short of an edge — and it is the smallest
+     * box that does.
+     */
+    private fun DrawScope.weave(degrees: Float, spacing: Float, color: Color) {
+        if (spacing <= 0f) return
+        val reach = hypot(size.width, size.height) / 2f + spacing
+        rotate(degrees) {
+            var offset = -reach
+            while (offset <= reach) {
+                drawLine(
+                    color = color,
+                    start = Offset(size.width / 2f + offset, size.height / 2f - reach),
+                    end = Offset(size.width / 2f + offset, size.height / 2f + reach),
+                    strokeWidth = 1f,
+                )
+                offset += spacing
+            }
+        }
+    }
 }
 
 /**
@@ -1092,14 +1198,18 @@ data class NoteDraft(
     /** Everybody's answers, for naming who is coming. */
     val rsvps: List<RsvpDto> = emptyList(),
     /**
-     * Whether this event already has a backdrop — the difference between
-     * "Draw a backdrop" and "Draw another".
+     * The backdrop this event already has, if any: the picture is drawn over
+     * the note that is open as well as behind its card, and its presence is
+     * the difference between "Draw a backdrop" and "Draw another"
+     * (docs/protocol.md, "Board").
      */
-    val hasBackdrop: Boolean = false,
+    val backdrop: AttachmentDto? = null,
     val x: Double,
     val y: Double,
     val authorId: Long,
-)
+) {
+    val hasBackdrop: Boolean get() = backdrop != null
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1237,7 +1347,7 @@ fun BoardScreen(
                 .padding(padding)
                 // Cork, not the theme's surface: a wall is a wall
                 // (docs/protocol.md, "Board").
-                .background(BoardGround.brush(darkGround)),
+                .then(with(BoardGround) { Modifier.boardGround(darkGround) }),
         ) {
             val density = LocalDensity.current
             val boardWidthPx = with(density) { maxWidth.roundToPx() }
@@ -1294,8 +1404,8 @@ fun BoardScreen(
                             endsAt = note.endsAt,
                             place = note.place,
                             rsvps = RsvpCodec.decode(note.rsvpsJson),
-                            hasBackdrop = AttachmentsCodec.decode(note.attachmentJson)
-                                ?.isNotEmpty() == true,
+                            backdrop = AttachmentsCodec.decode(note.attachmentJson)
+                                ?.firstOrNull(),
                             x = note.x,
                             y = note.y,
                             authorId = note.authorId,
@@ -1486,6 +1596,15 @@ internal fun StickyNote(
     // same corner, so the pin sits on it and the wall shows around it —
     // rather than a square of card with the middle of a portrait cropped
     // into it, which is what issue #71 drew.
+    // AN EVENT'S picture is its BACKDROP, not its content: the ground the
+    // card is drawn on (docs/protocol.md, "Board").
+    val backdrop = remember(note.kind, note.attachmentJson, isHidden) {
+        if (!isHidden && NoteKinds.isEvent(note.kind)) {
+            AttachmentsCodec.decode(note.attachmentJson)?.firstOrNull()
+        } else {
+            null
+        }
+    }
     val card = if (isBarePicture && picture != null) {
         val (width, height) = BoardPicture.fitted(
             spaceWidth = side.value,
@@ -1568,10 +1687,21 @@ internal fun StickyNote(
             .semantics {
                 contentDescription = noteDescription
                 role = Role.Button
-            }
-            .padding(if (isBarePicture) 0.dp else 10.dp),
+            },
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        // The card's ground, under everything it says — and under the
+        // padding, so the picture reaches the card's own edges.
+        if (backdrop != null) {
+            NoteBackdrop(attachment = backdrop, modifier = Modifier.matchParentSize())
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                // The padding moved here from the card itself when the
+                // backdrop arrived: a ground inside the padding would have
+                // left a 10dp frame of bare colour around the picture.
+                .padding(if (isBarePicture) 0.dp else 10.dp),
+        ) {
             // A pinned picture fills the sticker, with the caption under it
             // — and NOTHING while the note is hidden by a block: the
             // picture is content, exactly as the text is (protocol.md,
@@ -1631,7 +1761,14 @@ internal fun StickyNote(
                 autoSize = NoteSizes.autoSize(note.size, MaterialTheme.typography),
                 maxLines = NoteSizes.FITTED_MAX_LINES,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
+                // A text note's words take the whole card, which is what
+                // the fitting measures against. A LIST's title does not:
+                // `fill` pushed the lines to the bottom of the sticker,
+                // half a card away from the title they belong under
+                // (docs/protocol.md, "Board": under its title). It is
+                // still WEIGHTED, so a long title is bounded by the room
+                // that is left rather than pushing the lines out.
+                modifier = Modifier.weight(1f, fill = !NoteKinds.isTasks(note.kind)),
             )
             // A LIST says what is on it, under its title: the first lines
             // with their state, and then how many are left. No tap here —
@@ -1680,6 +1817,9 @@ internal fun StickyNote(
                         )
                     }
                 }
+                // What is left of the card after the lines, so the byline
+                // stays on the bottom edge where every other kind has it.
+                Spacer(Modifier.weight(1f))
             }
             }
             // The byline keeps its small style at every size: it is who
@@ -1801,8 +1941,13 @@ internal fun NoteDialog(
     names: Map<Long, String> = emptyMap(),
     /** Whether this SERVER can draw at all (`assistant.images`). */
     canDraw: Boolean = false,
-    /** Ask the assistant for a backdrop; hears when it has landed. */
-    onDrawBackdrop: ((Boolean) -> Unit) -> Unit = {},
+    /**
+     * Ask the assistant for a backdrop; hears the PICTURE that landed, or
+     * null when none did. The picture rather than a flag, because a redraw
+     * replaces it with a new attachment and this dialog has to draw it
+     * (docs/protocol.md, "Board").
+     */
+    onDrawBackdrop: ((AttachmentDto?) -> Unit) -> Unit = {},
     /** Put a copy in this reader's own calendar. */
     onAddToCalendar: () -> Unit = {},
     onDelete: (() -> Unit)?,
@@ -1813,6 +1958,13 @@ internal fun NoteDialog(
     // the reader anything on its own. The web says both (docs/protocol.md,
     // "Board"). A toast, like the missing-calendar refusal above it.
     val context = LocalContext.current
+    /**
+     * A backdrop this dialog has just drawn, and whether one is on its way.
+     * Kept here rather than beside the button so the banner above can draw
+     * it: the draft says what the note held when it opened.
+     */
+    var drewBackdrop by remember(draft.noteId) { mutableStateOf<AttachmentDto?>(null) }
+    var drawing by remember(draft.noteId) { mutableStateOf(false) }
     // A TextFieldValue, not a String: accepting a name off the strip
     // rewrites the tail, and the caret has to follow it to the end or the
     // next keystroke lands in the middle of the name just picked.
@@ -1873,6 +2025,24 @@ internal fun NoteDialog(
                 // Answering sits ABOVE the author's fields and outside the
                 // canEdit gate: it is the one thing everybody may do here.
                 if (NoteKinds.isEvent(draft.kind) && draft.noteId != null) {
+                    // THE BACKDROP, over the note that is open: on the wall
+                    // it is the card's ground, and here it is the picture
+                    // the family asked for, big enough to look at
+                    // (docs/protocol.md, "Board"). `drewBackdrop` is what
+                    // makes a REDRAW visible — this dialog holds the note as
+                    // it was when it opened, and a redraw replaces the
+                    // picture with a new attachment.
+                    val shown = drewBackdrop ?: draft.backdrop
+                    if (shown != null) {
+                        NoteBackdrop(
+                            attachment = shown,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(140.dp)
+                                .clip(RoundedCornerShape(10.dp)),
+                        )
+                        Spacer(Modifier.size(8.dp))
+                    }
                     Text(
                         text = stringResource(R.string.s_rsvp_question),
                         style = MaterialTheme.typography.labelMedium,
@@ -1881,7 +2051,11 @@ internal fun NoteDialog(
                     Spacer(Modifier.size(4.dp))
                     var answered by remember(draft.noteId) { mutableStateOf(myAnswer) }
                     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                        val options = RsvpAnswers.all + listOf<String?>(null)
+                        // "No answer" FIRST, as the phone's picker and the
+                        // web both have it: the row reads from nothing said
+                        // to the three answers, and it is where a reader
+                        // looks to take an answer back.
+                        val options = listOf<String?>(null) + RsvpAnswers.all
                         options.forEachIndexed { index, option ->
                             SegmentedButton(
                                 selected = answered == option,
@@ -1890,13 +2064,31 @@ internal fun NoteDialog(
                                     onAnswer(option)
                                 },
                                 shape = SegmentedButtonDefaults.itemShape(index, options.size),
-                            ) {
-                                Text(
-                                    stringResource(
-                                        option?.let(RsvpAnswers::label) ?: R.string.s_rsvp_none,
-                                    ),
-                                )
-                            }
+                                // Equal quarters, one line each. "No answer"
+                                // is the longest of the four labels and it
+                                // was WRAPPING: that made its own segment
+                                // twice as wide as the others and stretched
+                                // the whole row's background down with it.
+                                modifier = Modifier.weight(1f),
+                                // No checkmark: on a phone the four labels
+                                // need the width more than the selected one
+                                // needs a tick, and the selection is already
+                                // drawn in the container's colour and
+                                // published to TalkBack as `selected`.
+                                icon = {},
+                                label = {
+                                    Text(
+                                        text = stringResource(
+                                            option?.let(RsvpAnswers::label)
+                                                ?: R.string.s_rsvp_none,
+                                        ),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                },
+                            )
                         }
                     }
                     Spacer(Modifier.size(4.dp))
@@ -1941,7 +2133,6 @@ internal fun NoteDialog(
                             Text(stringResource(R.string.s_add_to_calendar))
                         }
                         if (canEdit && canDraw) {
-                            var drawing by remember(draft.noteId) { mutableStateOf(false) }
                             TextButton(
                                 onClick = {
                                     // An image model takes seconds, and a
@@ -1950,7 +2141,8 @@ internal fun NoteDialog(
                                         drawing = true
                                         onDrawBackdrop { landed ->
                                             drawing = false
-                                            if (!landed) {
+                                            drewBackdrop = landed
+                                            if (landed == null) {
                                                 Toast.makeText(
                                                     context,
                                                     R.string.s_draw_failed,
@@ -1966,7 +2158,8 @@ internal fun NoteDialog(
                                     stringResource(
                                         when {
                                             drawing -> R.string.s_drawing
-                                            draft.hasBackdrop -> R.string.s_draw_another_backdrop
+                                            draft.hasBackdrop || drewBackdrop != null ->
+                                                R.string.s_draw_another_backdrop
                                             else -> R.string.s_draw_backdrop
                                         },
                                     ),

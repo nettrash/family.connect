@@ -1,0 +1,22 @@
+# The oracle that pins the Windows port's board arithmetic to the ORIGINAL.
+#
+# It depends on the repo's own `web/text` crate by path, so it cannot drift from the source it
+# claims to speak for: every vector in
+# `win/tests/FamilyConnect.Core.Tests/Fixtures/board-vectors.json` is what `fc_text::board`
+# actually answered. Regenerate with
+#
+#     cd win/tools/board-oracle && cargo run --quiet > ../../tests/FamilyConnect.Core.Tests/Fixtures/board-vectors.json
+#
+# and the C# suite (OracleTests) will fail on anything the port no longer matches. Its own
+# workspace on purpose: joining web/'s would put a native binary in the wasm crate's tree.
+[package]
+name = "board-oracle"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+fc-text = { path = "../../../web/text" }
+serde_json = "1"
+
+[workspace]

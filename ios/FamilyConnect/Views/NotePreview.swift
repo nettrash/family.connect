@@ -109,6 +109,65 @@ struct NotePreview: View {
     }
 }
 
+/// AN EVENT'S BACKDROP: the picture the assistant drew, as the card's GROUND
+/// (docs/protocol.md, "Board").
+///
+/// THE ONE PICTURE ON THIS WALL THAT IS NOT DRAWN WHOLE. A backdrop stands
+/// in for the paper an event's card would otherwise be, so it COVERS the
+/// card and is cropped to its shape; the rule above it — a photo is drawn
+/// whole — is about a picture that IS the content, which somebody chose and
+/// pinned. A letterboxed backdrop with paper showing around it would read as
+/// neither.
+///
+/// It carries its own scrim, because the ink on a note is forced dark (the
+/// pastels are fixed light colours in both appearances) and a model's
+/// picture may be dark anywhere.
+///
+/// Nobody drew this at all until 2026-09-12: the assistant spent the
+/// family's picture allowance, the note's attachment was replaced, and every
+/// client kept showing a plain card — so asking again looked like nothing
+/// happening.
+struct NoteBackdrop: View {
+    let attachmentID: Int64
+
+    @Environment(AttachmentStore.self) private var store
+
+    /// Reading `store.generation` here is load-bearing for the same reason
+    /// it is in NotePicture (issue #69): the caches are
+    /// `@ObservationIgnored`, so a view that never touches it never redraws
+    /// when its fetch lands — and a REDRAWN backdrop arrives as a new
+    /// attachment id, so this is also what makes "draw another" visible.
+    private var image: Image? {
+        _ = store.generation
+        return store.previewOrPhoto(id: attachmentID)
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .overlay {
+                        // Lighter at the top, where the date block sits on
+                        // its own white paper, and heavier under the title.
+                        LinearGradient(
+                            colors: [.white.opacity(0.45), .white.opacity(0.78)],
+                            startPoint: .top,
+                            endPoint: .bottom)
+                    }
+            } else {
+                // Nothing at all while it loads: the card keeps its colour,
+                // which is what it looked like a moment ago.
+                Color.clear
+            }
+        }
+        // The picture is the ground; the words over it are the content, and
+        // VoiceOver hears them from the note's own label.
+        .accessibilityHidden(true)
+    }
+}
+
 /// The picture on a photo note, drawn WHOLE inside the room the card gives
 /// it (docs/protocol.md, "Board").
 ///

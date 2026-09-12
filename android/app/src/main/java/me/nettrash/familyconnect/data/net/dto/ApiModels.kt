@@ -974,7 +974,10 @@ data class NoteDto(
      * predates the field, which reads as "text".
      */
     val kind: String? = null,
-    /** The picture, on a `photo` note and nowhere else. */
+    /**
+     * The picture: the content on a `photo` note, and an `event`'s BACKDROP
+     * — the ground its card is drawn on (docs/protocol.md, "Board").
+     */
     val attachment: AttachmentDto? = null,
     /** An `event` and nowhere else (docs/protocol.md, "Board"). */
     @SerialName("starts_at") val startsAt: String? = null,

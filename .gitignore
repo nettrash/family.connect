@@ -51,3 +51,11 @@ android/app/src/nettrash/google-services.json
 web/dist/
 web/target/
 web/Cargo.lock
+
+# Windows client (win/) — the .NET build output, and the board oracle's own Cargo output.
+# `bin/` and `obj/` are per-project and there are several, so they are globbed; the lock file
+# follows the same rule the other two Rust trees here follow (an application, not a library).
+win/**/bin/
+win/**/obj/
+win/tools/board-oracle/target/
+win/tools/board-oracle/Cargo.lock

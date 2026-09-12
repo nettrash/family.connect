@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    FamilyConnect.Core — everything in the Windows client that is not a window: the wire
+    (docs/protocol.md), the local cache, the send outbox, and the board's shared arithmetic.
+    Pure .NET with no Windows dependency, so it builds and tests on any OS: the Mac this is
+    written on cannot build a WinUI app at all (XamlCompiler.exe is net472), and a port whose
+    logic could only be verified on Windows would be a port nobody here could verify.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>FamilyConnect.Core</RootNamespace>
+    <AssemblyName>FamilyConnect.Core</AssemblyName>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+</Project>

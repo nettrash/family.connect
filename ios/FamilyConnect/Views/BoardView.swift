@@ -74,9 +74,11 @@ private struct NoteDraft: Identifiable {
     /// The things to do, as stored: the ids a rewrite keeps and the ticks
     /// the boxes draw (docs/protocol.md, "Board").
     var items: [TaskItemDTO] = []
-    /// Whether this event already has a backdrop, which is the difference
-    /// between "Draw a backdrop" and "Draw another".
-    var hasBackdrop: Bool = false
+    /// The backdrop this event already has, if any: the picture is drawn in
+    /// the note that is open, and its presence is the difference between
+    /// "Draw a backdrop" and "Draw another" (docs/protocol.md, "Board").
+    var backdropID: Int64?
+    var hasBackdrop: Bool { backdropID != nil }
     var x: Double
     var y: Double
     var authorID: Int64
@@ -339,7 +341,7 @@ struct BoardView: View {
             rsvps: note.rsvpList,
             mentions: note.mentionList,
             items: note.taskList,
-            hasBackdrop: note.attachmentID != nil,
+            backdropID: note.attachmentID,
             x: note.x,
             y: note.y,
             authorID: note.authorID)
@@ -500,6 +502,13 @@ private struct StickyNote: View {
         !isHidden && NoteKind(name: note.kind) == .photo && note.text.isEmpty
     }
 
+    /// An EVENT's picture is its BACKDROP — the card's ground, not its
+    /// content (docs/protocol.md, "Board").
+    private var backdropID: Int64? {
+        guard !isHidden, NoteKind(name: note.kind) == .event else { return nil }
+        return note.attachmentID
+    }
+
     /// The pinned picture's own shape, where the server recorded it. Nil
     /// otherwise, and then the card is the step's own and the picture is
     /// fitted inside it (BoardPicture.fitted).
@@ -600,9 +609,21 @@ private struct StickyNote: View {
         }
         .padding(isBarePicture ? 0 : 10)
         .frame(width: card.width, height: card.height, alignment: .topLeading)
-        .background(
-            isBarePicture ? Color.clear : NoteColor.swiftUI(note.color),
-            in: RoundedRectangle(cornerRadius: isBarePicture ? 4 : 10))
+        // The card's ground: its colour, and over that the assistant's
+        // backdrop where there is one (docs/protocol.md, "Board"). The
+        // colour stays underneath rather than being replaced, so a backdrop
+        // still on its way leaves the note looking like itself.
+        .background {
+            let shape = RoundedRectangle(cornerRadius: isBarePicture ? 4 : 10)
+            shape
+                .fill(isBarePicture ? Color.clear : NoteColor.swiftUI(note.color))
+                .overlay {
+                    if let backdropID {
+                        NoteBackdrop(attachmentID: backdropID)
+                    }
+                }
+                .clipShape(shape)
+        }
         .shadow(color: .black.opacity(drag == .zero ? 0.12 : 0.25), radius: drag == .zero ? 3 : 10, y: 2)
         // THE PIN, over the card's top edge: an overlay, so it takes none
         // of the room the words need — the wall's promise is that the text
@@ -692,9 +713,11 @@ private struct NoteEditor: View {
     /// Whether this SERVER can draw at all (`assistant.images`), which is
     /// what the backdrop action hangs on.
     var canDraw: Bool = false
-    /// Ask the assistant for a backdrop — the AUTHOR's, and answers
-    /// whether it landed so the button can stop saying "Drawing…".
-    var onDrawBackdrop: (Int64) async -> Bool = { _ in false }
+    /// Ask the assistant for a backdrop — the AUTHOR's. Answers with the
+    /// picture's id, so the sheet can stop saying "Drawing…" AND draw what
+    /// arrived: a redraw replaces the picture with a new attachment, and
+    /// this sheet holds the note as it was when it opened.
+    var onDrawBackdrop: (Int64) async -> Int64? = { _ in nil }
 
     @Environment(\.dismiss) private var dismiss
 
@@ -724,8 +747,9 @@ private struct NoteEditor: View {
     @State private var drawing = false
     /// A backdrop this sheet has drawn. The draft it was opened with says
     /// what the note held THEN, so without this the button would still
-    /// offer a first backdrop after one had just arrived.
-    @State private var drewBackdrop = false
+    /// offer a first backdrop after one had just arrived — and the banner
+    /// would still show the picture that was replaced.
+    @State private var drewBackdrop: Int64?
     /// The `.ics` this sheet has written, if it is an event.
     @State private var calendarFile: URL?
     /// What the server refused, SAID rather than swallowed. A tick that
@@ -749,7 +773,7 @@ private struct NoteEditor: View {
         mentionCandidates: @escaping (String) -> [MentionDTO] = { _ in [] },
         names: @escaping (Int64) -> String = { _ in "" },
         canDraw: Bool = false,
-        onDrawBackdrop: @escaping (Int64) async -> Bool = { _ in false }
+        onDrawBackdrop: @escaping (Int64) async -> Int64? = { _ in nil }
     ) {
         self.draft = draft
         self.canEdit = canEdit
@@ -811,8 +835,8 @@ private struct NoteEditor: View {
         drawing = true
         failure = nil
         Task {
-            if await onDrawBackdrop(noteID) {
-                drewBackdrop = true
+            if let drawn = await onDrawBackdrop(noteID) {
+                drewBackdrop = drawn
             } else {
                 failure = String(localized: "Couldn't draw that.")
             }
@@ -957,9 +981,26 @@ private struct NoteEditor: View {
         }
     }
 
+    /// The backdrop as it stands: what this sheet has just drawn, or what
+    /// the note held when it opened.
+    private var shownBackdrop: Int64? { drewBackdrop ?? draft.backdropID }
+
     var body: some View {
         NavigationStack {
             Form {
+                // THE BACKDROP, over the note that is open: on the wall it
+                // is the card's ground, and here it is the picture the
+                // family asked for, big enough to look at
+                // (docs/protocol.md, "Board").
+                if isEvent, let backdropID = shownBackdrop {
+                    Section {
+                        NoteBackdrop(attachmentID: backdropID)
+                            .frame(height: 140)
+                            .frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .listRowInsets(EdgeInsets())
+                    }
+                }
                 Section {
                     if canEdit {
                         TextField("Note", text: $text, axis: .vertical)
@@ -1082,7 +1123,7 @@ private struct NoteEditor: View {
                             } label: {
                                 if drawing {
                                     Label("Drawing…", systemImage: "paintbrush")
-                                } else if draft.hasBackdrop || drewBackdrop {
+                                } else if draft.hasBackdrop || drewBackdrop != nil {
                                     Label("Draw another backdrop", systemImage: "paintbrush")
                                 } else {
                                     Label("Draw a backdrop", systemImage: "paintbrush")
