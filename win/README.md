@@ -26,6 +26,8 @@ win/
                 Board — the wall: the stickers on it, the badge over it, the writes that change it
                 MediaOutbox — the uploads a queued message owes, and the bytes waiting for them
                 AttachmentCache — downloaded bytes, kept, with the preview rule in ONE place
+                Family — the door, the owner's console, and the numbers everybody may see
+                Notifications — when this client speaks up, and what it says when it does
   tests/FamilyConnect.Core.Tests/      xUnit, runs anywhere `dotnet` runs
   tests/FamilyConnect.App.Logic.Tests/ the same, for the app's own behaviour
   tools/board-oracle/                  Rust: regenerates the shared-arithmetic fixture
@@ -83,6 +85,22 @@ a picture the assistant drew, and none at all for a file, audio or a location �
 a fact, not a hint. Asking anyway answers 404, and a client that reads that as "no picture" draws
 an empty frame for ever (the Android board's backdrops, issue #71's follow-up). The rule lives in
 `AttachmentCache` rather than at every call site, where one of them will always forget.
+
+**The door takes the LOWER of two numbers.** A family's own `max_members` and the operator's
+ceiling are different questions with different answers — a family that set 40 under a ceiling of 50
+goes on reporting 40 after the operator drops it to 10, because a stored cap is never re-validated
+when the ceiling moves. `Seats` keeps both and answers what is actually left. And the assistant's
+two dependent switches (`ai_history_photos`, `ai_faces`) are never offered, never sent and never
+drawn as on while `ai_vision` is off — the server refuses that combination and clears them in the
+same write.
+
+**The statistics' rows do not add up to the totals, and the gap is the block.** The totals are the
+family's numbers; the rows are what this caller may see of them. Nothing here sums the rows.
+
+**A notification is never the message.** The body is the one a server with
+`include_message_body = false` would send, and the block reaches one step further than the sender:
+the assistant's answer to a blocked member's question raises nothing either, because it would light
+up a notification for a thread its reader cannot read.
 
 The send path is whole: `SendPipeline` writes the row down, tries the socket, gives the frame the
 ack deadline, falls back to `POST /chats/{id}/messages` with the same `client_msg_id`, and marks a
