@@ -75,6 +75,24 @@ public sealed class ClientWebSocketAdapter : IWebSocket
 }
 
 /// <summary>
+/// What the send pipeline needs of a socket: whether it can write, a write that reports rather
+/// than throws, and the frames coming back.
+/// </summary>
+/// <remarks>
+/// A seam and not an abstraction for its own sake: the pipeline's tests are about the ack deadline
+/// and the fall back to REST, and running a reconnect loop to exercise them would test the wrong
+/// thing twice.
+/// </remarks>
+public interface IFrameSender
+{
+    bool IsConnected { get; }
+
+    Task<bool> TrySend(string frame, CancellationToken ct = default);
+
+    event Action<ServerFrame>? Frame;
+}
+
+/// <summary>
 /// The realtime connection: one socket at a time, reconnected with full jitter, with the frames
 /// handed to whoever is listening (docs/protocol.md, "WebSocket protocol").
 /// </summary>
@@ -92,7 +110,7 @@ public sealed class ClientWebSocketAdapter : IWebSocket
 /// Apple counterpart: <c>ChatSocket</c>. Android: <c>ChatSocketImpl</c>. Web: <c>web/src/socket.rs</c>.
 /// </para>
 /// </remarks>
-public sealed class ChatSocket
+public sealed class ChatSocket : IFrameSender
 {
     /// <summary>The close code the server sends when the session expires mid-connection.</summary>
     public const int SessionExpiredCode = 4401;

@@ -44,6 +44,12 @@ public static class Migrations
             kind                 TEXT    NOT NULL,
             title                TEXT    NOT NULL,
             peer_user_id         INTEGER,
+            -- Whether the last list read carried this chat. A direct chat with somebody the
+            -- reader has BLOCKED is not listed, for the blocker alone, and **comes back whole on
+            -- unblock — nothing about it is deleted** (docs/protocol.md, "Blocking a member"). So
+            -- an absent chat is hidden here rather than removed: deleting the row would take its
+            -- messages with it (ON DELETE CASCADE) and an unblock would show an empty chat.
+            listed               INTEGER NOT NULL DEFAULT 1,
             unread_count         INTEGER NOT NULL DEFAULT 0,
             -- This caller's own marker, applied monotonically: a response still in flight while
             -- the reader is reading must never walk it backwards.
