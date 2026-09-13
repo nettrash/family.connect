@@ -155,9 +155,38 @@ ack deadline, falls back to `POST /chats/{id}/messages` with the same `client_ms
 row failed only on a terminal code. Both the deadline and the clock are injectable, because a suite
 that sleeps ten seconds per silent socket is a suite nobody runs.
 
+The conversation draws replies, reactions, edits, who is typing, and what is still on its way:
+
+- **A reaction tap is decided on this side.** The server's set is a state-set, so the emoji the
+  reader already holds means DELETE and anything else PUT, and a CHIP only ever joins — on the
+  reader's own chip it shows who reacted, where their row is the remove control. `Reactions` is a
+  port of `fc_text::reactions` and `fc_text::emoji`, held to it by `ChatOracleTests` (chips, who
+  reacted with blocked members left out of the names but not the count, the toggle, the capsule).
+  The server's answer is applied as EVIDENCE: it may not move the chat's catch-up cursor.
+- **A reply quote is cut per scalar** (`Excerpt`, pinned to `fc_text::excerpt`), and a reply to a
+  blocked member is "Replying to a hidden message".
+- **An edit is trimmed, an unchanged body sends nothing, and an empty one is refused here.** Only the
+  reader's own words may be edited — never a call record's placeholder or a poll's question.
+- **Typing stands for five seconds**, ignores the reader and blocked members, orders by member so the
+  line does not reshuffle, and ends when that person's message arrives.
+- **A message not yet landed is drawn under the newest one**: "Sending…", or — refused — Try Again
+  and Delete.
+
 What is NOT here yet in the window: attachments, the board, the family console and settings, threads,
-polls, reactions and mentions in the composer, notifications, and calls. Their logic is in
-App.Logic already (all but calls); the window draws the chat loop first.
+polls, mentions in the composer, notifications, and calls. Their logic is in App.Logic already (all
+but calls).
+
+**One cache, one connection, one operation at a time.** The socket applies frames on its own
+thread, the resync applies pages on the thread pool, and the window reads on the UI thread — all
+through the connection `Database` owns, which is not safe to share without a rule. So every store
+operation takes `Database.Hold()` for its whole length: per OPERATION and not per command, because
+a transaction spans several commands and a read slipped between two of them is exactly the failure
+("Execute requires the command to have a transaction object…"). The lock is re-entrant, and no
+store method awaits or raises an event while holding it. `CacheConcurrencyTests` holds the cache
+and insists every named operation WAITS — deterministically, so a method that forgot the lock
+fails every run — and a guard fails when a store grows an operation the list does not name. The
+first version of that test was a timed stress run, and CI failed it on both runners before the lock
+existed; that is how this was found.
 
 The cache is SQLite with numbered migrations and no destructive fallback. `DatabaseTests` compares
 a database that walked every step against one created fresh, table by table and column by column —

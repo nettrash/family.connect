@@ -387,6 +387,99 @@ fn chat() {
     }
     out.push_str("  ],\n");
 
+    // --- reactions and the reply excerpt ------------------------------------------------------
+    // The chips under a bubble, "See who reacted", the optimistic toggle, the capsule and the
+    // 120-scalar cut. Emoji are built from code points so this file stays plain ASCII to the eye.
+    {
+        use fc_text::{emoji, excerpt, reactions as r};
+        use std::collections::{HashMap, HashSet};
+        let quick = emoji::QUICK_REACTIONS;
+        let (heart, up, joy) = (quick[0].to_string(), quick[1].to_string(), quick[3].to_string());
+        let ring = char::from_u32(0xC5).unwrap().to_string();
+        let ring_combining = format!("A{}", char::from_u32(0x30A).unwrap());
+        let robot = char::from_u32(0x1F916).unwrap().to_string();
+        let lists: Vec<Vec<(i64, String)>> = vec![
+            vec![],
+            vec![(7, heart.clone())],
+            vec![(9, up.clone()), (7, heart.clone()), (11, up.clone())],
+            vec![(9, heart.clone()), (12, heart.clone()), (11, joy.clone()), (7, joy.clone())],
+            vec![(12, ring.clone()), (9, ring_combining.clone())],
+            vec![(11, heart.clone()), (12, heart.clone())],
+        ];
+        let names: HashMap<i64, String> =
+            [(9, "Anna".to_string()), (11, "Bob".to_string())].into_iter().collect();
+        let blocked_sets: Vec<Vec<i64>> = vec![vec![], vec![11], vec![11, 12]];
+        let as_json = |list: &[r::Reaction]| {
+            serde_json::Value::Array(
+                list.iter()
+                    .map(|x| serde_json::json!({"user_id": x.user_id, "emoji": x.emoji}))
+                    .collect(),
+            )
+        };
+        let (mut chip_rows, mut detail_rows, mut toggle_rows) = (Vec::new(), Vec::new(), Vec::new());
+        for list in &lists {
+            let reactions: Vec<r::Reaction> =
+                list.iter().map(|(user, emoji)| r::Reaction::new(*user, emoji)).collect();
+            for me in [7i64, 9] {
+                let chips: Vec<serde_json::Value> = r::reaction_chips(&reactions, me)
+                    .into_iter()
+                    .map(|c| serde_json::json!({"emoji": c.emoji, "count": c.count, "includes_me": c.includes_me}))
+                    .collect();
+                chip_rows.push(serde_json::json!({"reactions": as_json(&reactions), "me": me, "chips": chips}));
+                for blocked in &blocked_sets {
+                    let set: HashSet<i64> = blocked.iter().copied().collect();
+                    let details: Vec<serde_json::Value> = r::reaction_details(&reactions, &names, me, &set)
+                        .into_iter()
+                        .map(|d| serde_json::json!({"emoji": d.emoji, "names": d.names, "lead_user_id": d.lead_user_id}))
+                        .collect();
+                    detail_rows.push(serde_json::json!({
+                        "reactions": as_json(&reactions), "me": me, "blocked": blocked, "details": details}));
+                }
+                for choice in [heart.clone(), up.clone(), joy.clone(), robot.clone()] {
+                    let toggled = r::toggle_reaction(&reactions, me, &choice);
+                    toggle_rows.push(serde_json::json!({
+                        "reactions": as_json(&reactions), "me": me, "emoji": choice,
+                        "removing": toggled.removing, "after": as_json(&toggled.reactions)}));
+                }
+            }
+        }
+        let capsule_rows: Vec<serde_json::Value> = [None, Some(heart.clone()), Some(robot.clone())]
+            .iter()
+            .map(|mine| serde_json::json!({"mine": mine, "emojis": emoji::capsule_emojis(mine.as_deref())}))
+            .collect();
+        let family: String = [0x1F468u32, 0x200D, 0x1F469, 0x200D, 0x1F467, 0x200D, 0x1F466]
+            .iter()
+            .map(|c| char::from_u32(*c).unwrap())
+            .collect();
+        let cyrillic = char::from_u32(0x44F).unwrap().to_string();
+        let bodies = vec![
+            String::new(),
+            "short".to_string(),
+            "a".repeat(120),
+            "a".repeat(121),
+            family.repeat(20),
+            cyrillic.repeat(130),
+            format!("{}{}", "b".repeat(119), family),
+        ];
+        let excerpt_rows: Vec<serde_json::Value> = bodies
+            .iter()
+            .map(|body| serde_json::json!({"body": body, "excerpt": excerpt::excerpt(body)}))
+            .collect();
+        for (name, rows) in [
+            ("reaction_chips", chip_rows),
+            ("reaction_details", detail_rows),
+            ("reaction_toggle", toggle_rows),
+            ("capsule", capsule_rows),
+            ("excerpt", excerpt_rows),
+        ] {
+            out.push_str(&format!("  \"{}\": [\n", name));
+            for row in rows {
+                out.push_str(&format!("    {},\n", row));
+            }
+            out.push_str("  ],\n");
+        }
+    }
+
     out.push_str(&format!(
         "  \"bodies\": {{\"new_message\": {}, \"new_note\": {}}}\n",
         q(notify::new_message()),

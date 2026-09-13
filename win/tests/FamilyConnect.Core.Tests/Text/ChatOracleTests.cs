@@ -144,4 +144,105 @@ public class ChatOracleTests
         Assert.Equal(bodies.GetProperty("new_message").GetString(), NotifyText.NewMessage());
         Assert.Equal(bodies.GetProperty("new_note").GetString(), NotifyText.NewNote());
     }
+
+    private static List<FamilyConnect.Core.Protocol.ReactionDto> ReactionList(JsonElement array) =>
+        array.EnumerateArray()
+            .Select(item => new FamilyConnect.Core.Protocol.ReactionDto(
+                item.GetProperty("user_id").GetInt64(), item.GetProperty("emoji").GetString()!))
+            .ToList();
+
+    /// <summary>
+    /// The chips under a bubble: first-seen order, counting everybody, marking the reader — for
+    /// six lists including two spellings of one letter that are equal only canonically (they are
+    /// two chips here, as on the server and Android).
+    /// </summary>
+    [Fact]
+    public void ReactionChipsAreGroupedAsTheOriginalGroupsThem()
+    {
+        var vectors = Section("reaction_chips");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        foreach (var row in vectors.EnumerateArray())
+        {
+            var chips = Reactions.Chips(ReactionList(row.GetProperty("reactions")), row.GetProperty("me").GetInt64());
+            var expected = row.GetProperty("chips").EnumerateArray().ToList();
+            Assert.Equal(expected.Count, chips.Count);
+            for (var at = 0; at < chips.Count; at++)
+            {
+                Assert.Equal(expected[at].GetProperty("emoji").GetString(), chips[at].Emoji);
+                Assert.Equal(expected[at].GetProperty("count").GetInt32(), chips[at].Count);
+                Assert.Equal(expected[at].GetProperty("includes_me").GetBoolean(), chips[at].IncludesMe);
+            }
+        }
+    }
+
+    /// <summary>
+    /// "See who reacted": "You" first, names or "Someone", and a BLOCKED reactor left out of the
+    /// names while the chip still counts them.
+    /// </summary>
+    [Fact]
+    public void WhoReactedReadsAsTheOriginalReads()
+    {
+        var vectors = Section("reaction_details");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        string? NameOf(long id) => id switch { 9 => "Anna", 11 => "Bob", _ => null };
+        foreach (var row in vectors.EnumerateArray())
+        {
+            var blocked = row.GetProperty("blocked").EnumerateArray().Select(id => id.GetInt64()).ToHashSet();
+            var details = Reactions.Details(
+                ReactionList(row.GetProperty("reactions")), NameOf, row.GetProperty("me").GetInt64(), blocked);
+            var expected = row.GetProperty("details").EnumerateArray().ToList();
+            Assert.Equal(expected.Count, details.Count);
+            for (var at = 0; at < details.Count; at++)
+            {
+                Assert.Equal(expected[at].GetProperty("emoji").GetString(), details[at].Emoji);
+                Assert.Equal(
+                    expected[at].GetProperty("names").EnumerateArray().Select(name => name.GetString()!),
+                    details[at].Names);
+                Assert.Equal(Optional(expected[at], "lead_user_id"), details[at].LeadUserId);
+            }
+        }
+    }
+
+    /// <summary>A tap on the emoji already held removes it; any other appends it as the newest.</summary>
+    [Fact]
+    public void AToggleRewritesTheListAsTheOriginalDoes()
+    {
+        var vectors = Section("reaction_toggle");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        foreach (var row in vectors.EnumerateArray())
+        {
+            var toggled = Reactions.Toggle(
+                ReactionList(row.GetProperty("reactions")), row.GetProperty("me").GetInt64(),
+                row.GetProperty("emoji").GetString()!);
+            Assert.Equal(row.GetProperty("removing").GetBoolean(), toggled.Removing);
+            Assert.Equal(ReactionList(row.GetProperty("after")), toggled.Reactions);
+        }
+    }
+
+    [Fact]
+    public void TheCapsuleOffersWhatTheOriginalOffers()
+    {
+        foreach (var row in Section("capsule").EnumerateArray())
+        {
+            var mine = row.GetProperty("mine").ValueKind == JsonValueKind.Null ? null : row.GetProperty("mine").GetString();
+            Assert.Equal(
+                row.GetProperty("emojis").EnumerateArray().Select(emoji => emoji.GetString()!),
+                Reactions.Capsule(mine));
+        }
+    }
+
+    /// <summary>
+    /// The reply quote is cut per SCALAR, as the server cuts it — so a cut may land inside a family
+    /// emoji, and a client cutting per grapheme would quote a different length than the server.
+    /// </summary>
+    [Fact]
+    public void AQuoteIsCutWhereTheServerCutsIt()
+    {
+        var vectors = Section("excerpt");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        foreach (var row in vectors.EnumerateArray())
+        {
+            Assert.Equal(row.GetProperty("excerpt").GetString(), Excerpt.Cut(row.GetProperty("body").GetString()!));
+        }
+    }
 }

@@ -44,6 +44,7 @@ public sealed class BoardStore(Database database)
     /// <summary>The whole wall as it stands, newest change first — what the window draws.</summary>
     public IReadOnlyList<NoteDto> Notes()
     {
+        using var serialised = database.Hold();
         var notes = new List<NoteDto>();
         using var command = database.Connection.CreateCommand();
         command.CommandText = "SELECT * FROM notes ORDER BY board_seq DESC";
@@ -57,6 +58,7 @@ public sealed class BoardStore(Database database)
 
     public NoteDto? Note(long noteId)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText = "SELECT * FROM notes WHERE note_id = $id";
         command.Parameters.AddWithValue("$id", noteId);
@@ -70,6 +72,7 @@ public sealed class BoardStore(Database database)
     /// </summary>
     public void Replace(IReadOnlyList<NoteDto> notes, long maxBoardSeq)
     {
+        using var serialised = database.Hold();
         // TWO FULL READS CAN LAND IN EITHER ORDER, and an older one landing second must change
         // nothing at all: it would drop every note written between the two and set the cursor
         // back to its own mark.
@@ -116,6 +119,7 @@ public sealed class BoardStore(Database database)
     /// <returns>Whether anything changed.</returns>
     public bool Apply(NoteDto note, SeqRoute route = SeqRoute.CatchUpPage)
     {
+        using var serialised = database.Hold();
         using var transaction = database.Connection.BeginTransaction();
         var changed = Apply(note, transaction);
         // A FRAME MOVES THE CURSOR ONLY ONCE THIS DEVICE HAS READ THE BOARD. Before that the
@@ -140,6 +144,7 @@ public sealed class BoardStore(Database database)
     /// <summary>A page of the change feed, applied in order.</summary>
     public int Apply(IReadOnlyList<NoteDto> notes, SeqRoute route = SeqRoute.CatchUpPage)
     {
+        using var serialised = database.Hold();
         using var transaction = database.Connection.BeginTransaction();
         var changed = 0;
         var highest = Cursor;
@@ -226,6 +231,7 @@ public sealed class BoardStore(Database database)
     /// <summary>Monotonic in both fields: a cleared badge must not come back.</summary>
     public void Mark(BoardMarks marks)
     {
+        using var serialised = database.Hold();
         var later = BoardMarks.Later(Marks, marks);
         using var transaction = database.Connection.BeginTransaction();
         SetMeta(MarkNoteId, Text(later.NoteId), transaction);
@@ -234,13 +240,20 @@ public sealed class BoardStore(Database database)
     }
 
     /// <summary>The marks after the board has been on screen, applied.</summary>
-    public void MarkShown() =>
+    public void MarkShown()
+    {
+        // Read and write as ONE operation: a note landing between them would be marked unseen.
+        using var serialised = database.Hold();
         Mark(BoardBadge.AfterShowing(
             Notes().Select(note => (note.Id, (long?)(note.ContentSeq ?? 0))), Marks));
+    }
 
     /// <summary>How many notes have something new to READ — the badge.</summary>
-    public int Unread() =>
-        BoardBadge.Count(Notes().Select(note => (note.Id, (long?)(note.ContentSeq ?? 0))), Marks);
+    public int Unread()
+    {
+        using var serialised = database.Hold();
+        return BoardBadge.Count(Notes().Select(note => (note.Id, (long?)(note.ContentSeq ?? 0))), Marks);
+    }
 
     // ---- rows ------------------------------------------------------------
 
@@ -335,6 +348,7 @@ public sealed class BoardStore(Database database)
 
     private string? Meta(string key)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText = "SELECT value FROM meta WHERE key = $key";
         command.Parameters.AddWithValue("$key", key);

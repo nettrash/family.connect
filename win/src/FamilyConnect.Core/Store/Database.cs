@@ -29,6 +29,44 @@ public sealed class Database : IDisposable
     /// <summary>The one connection. SQLite is fine with one writer, and this client has one.</summary>
     public SqliteConnection Connection => connection;
 
+    private readonly object serial = new();
+
+    /// <summary>
+    /// Hold the cache for ONE WHOLE OPERATION: every store method takes this first, and nothing else
+    /// may use <see cref="Connection"/> while another thread holds it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>ONE CONNECTION, MANY THREADS.</b> In the app the socket applies frames on its own thread,
+    /// the resync applies pages on the thread pool, and the window reads on the UI thread — all
+    /// through this one connection, which is not safe to share without a rule. Without one, a read
+    /// that lands while another thread's transaction is open throws ("Execute requires the command
+    /// to have a transaction object…"), and worse can follow; CI caught exactly that on both runners.
+    /// </para>
+    /// <para>
+    /// <b>PER OPERATION, NOT PER COMMAND</b>, because a transaction spans several commands and a
+    /// read slipped between two of them is the failure. The lock is re-entrant, so an operation that
+    /// calls another (the chat list asking for each chat's newest message) simply holds it deeper.
+    /// No store method awaits or raises an event while holding it, which is what keeps one lock from
+    /// ever deadlocking.
+    /// </para>
+    /// </remarks>
+    public Held Hold()
+    {
+        Monitor.Enter(serial);
+        return new Held(serial);
+    }
+
+    /// <summary>The cache, held. Disposing it lets the next operation in.</summary>
+    public readonly struct Held : IDisposable
+    {
+        private readonly object serial;
+
+        internal Held(object serial) => this.serial = serial;
+
+        public void Dispose() => Monitor.Exit(serial);
+    }
+
     /// <summary>The schema this build expects.</summary>
     public static int SchemaVersion => Migrations.All.Count;
 
@@ -83,6 +121,7 @@ public sealed class Database : IDisposable
     /// </summary>
     public void Migrate()
     {
+        using var serialised = Hold();
         var from = UserVersion;
         if (from > Migrations.All.Count)
         {
@@ -118,6 +157,7 @@ public sealed class Database : IDisposable
     {
         get
         {
+            using var serialised = Hold();
             using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
             return Convert.ToInt32(command.ExecuteScalar() ?? 0);
@@ -127,6 +167,7 @@ public sealed class Database : IDisposable
     /// <summary>Every table in the file, in name order — what a schema test compares.</summary>
     public IReadOnlyList<string> Tables()
     {
+        using var serialised = Hold();
         var names = new List<string>();
         using var command = connection.CreateCommand();
         command.CommandText =
@@ -156,6 +197,7 @@ public sealed class Database : IDisposable
     /// </remarks>
     public void WipeAll()
     {
+        using var serialised = Hold();
         using var transaction = connection.BeginTransaction();
         foreach (var table in Tables())
         {
@@ -169,6 +211,7 @@ public sealed class Database : IDisposable
 
     public IReadOnlyList<string> Columns(string table)
     {
+        using var serialised = Hold();
         var columns = new List<string>();
         using var command = connection.CreateCommand();
         // `PRAGMA table_info` takes no parameters either; the name is checked against the file's
@@ -198,7 +241,11 @@ public sealed class Database : IDisposable
 
     public void Dispose()
     {
-        connection.Dispose();
+        // Waits for an operation in flight rather than pulling the connection out from under it.
+        lock (serial)
+        {
+            connection.Dispose();
+        }
         // The pool is off, so the file is actually released — which a test that opens the same
         // path twice depends on.
         SqliteConnection.ClearAllPools();
