@@ -2,9 +2,6 @@
   "profiles": {
     "FamilyConnect (Package)": {
       "commandName": "MsixPackage"
-    },
-    "FamilyConnect": {
-      "commandName": "Project"
     }
   }
 }
