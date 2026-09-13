@@ -156,9 +156,9 @@ public sealed class FamilyModel(ApiClient api, ChatStore chats)
     public async Task<(long? Successor, ApiError? Error)> LeaveAsync(CancellationToken ct = default)
     {
         var answer = await api.LeaveFamily(ct).ConfigureAwait(false);
-        return answer.Ok
-            ? (answer.Value.NewOwnerUserId, null)
-            : (null, answer.Error);
+        return answer is { Ok: true, Value: { } left }
+            ? (left.NewOwnerUserId, null)
+            : (null, answer.Error ?? ApiError.Transport("no answer"));
     }
 
     /// <summary>The requests waiting for an answer, oldest first.</summary>
