@@ -1,0 +1,20 @@
+<Window
+    x:Class="FamilyConnect.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Structure and x:Name only: the screens are chosen by the session's gate, in code. -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Grid x:Name="TitleBar" Height="40" Padding="16,0,0,0">
+            <TextBlock x:Name="TitleText" VerticalAlignment="Center" FontSize="12" />
+        </Grid>
+        <ContentControl
+            x:Name="Screen"
+            Grid.Row="1"
+            HorizontalContentAlignment="Stretch"
+            VerticalContentAlignment="Stretch" />
+    </Grid>
+</Window>

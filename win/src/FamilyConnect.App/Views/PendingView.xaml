@@ -1,0 +1,12 @@
+<UserControl
+    x:Class="FamilyConnect.App.Views.PendingView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Structure and x:Name only: every word is set from code, through the catalogue. -->
+    <StackPanel MaxWidth="420" Margin="24,48,24,24" Spacing="12">
+        <TextBlock x:Name="HeadingText" FontSize="28" FontWeight="SemiBold" />
+        <TextBlock x:Name="StatusText" FontSize="20" />
+        <TextBlock x:Name="FamilyText" TextWrapping="Wrap" Opacity="0.7" />
+        <Button x:Name="LogOutButton" Margin="0,24,0,0" />
+    </StackPanel>
+</UserControl>

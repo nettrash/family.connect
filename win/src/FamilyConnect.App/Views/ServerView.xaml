@@ -1,0 +1,19 @@
+<UserControl
+    x:Class="FamilyConnect.App.Views.ServerView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Structure and x:Name only: every word is set from code, through the catalogue. -->
+    <ScrollViewer>
+        <StackPanel MaxWidth="420" Margin="24,48,24,24" Spacing="12">
+            <TextBlock x:Name="HeadingText" FontSize="28" FontWeight="SemiBold" />
+            <TextBox x:Name="AddressBox" PlaceholderText="chat.example.com" IsSpellCheckEnabled="False" />
+            <TextBlock x:Name="HelpText" TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock x:Name="WarningText" TextWrapping="Wrap" Visibility="Collapsed" />
+            <TextBlock x:Name="ErrorText" TextWrapping="Wrap" Visibility="Collapsed" />
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button x:Name="ConnectButton" />
+                <ProgressRing x:Name="Working" IsActive="False" Width="20" Height="20" />
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

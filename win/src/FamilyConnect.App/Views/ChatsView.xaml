@@ -1,0 +1,45 @@
+<UserControl
+    x:Class="FamilyConnect.App.Views.ChatsView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Structure and x:Name only: every word is set from code, through the catalogue. -->
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="320" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid Padding="12,0,0,12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <StackPanel Orientation="Horizontal" Spacing="8" Margin="4,0,0,8">
+                <TextBlock x:Name="ChatsHeading" FontSize="20" FontWeight="SemiBold" />
+                <TextBlock x:Name="LinkText" VerticalAlignment="Bottom" Opacity="0.7" />
+            </StackPanel>
+            <ListView x:Name="ChatList" Grid.Row="1" SelectionMode="Single" />
+            <TextBlock x:Name="EmptyListText" Grid.Row="1" Margin="4,12,0,0" Opacity="0.7" Visibility="Collapsed" />
+            <Button x:Name="LogOutButton" Grid.Row="2" Margin="4,8,0,0" />
+        </Grid>
+        <Grid Grid.Column="1" Padding="12,0,12,12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <TextBlock x:Name="ConversationTitle" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,8" />
+            <ScrollViewer x:Name="MessageScroller" Grid.Row="1" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel x:Name="MessageStack" Padding="0,0,12,0" Spacing="2" />
+            </ScrollViewer>
+            <Grid x:Name="ComposerPanel" Grid.Row="2" ColumnSpacing="8" Margin="0,8,0,0" Visibility="Collapsed">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="ComposerBox" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" />
+                <Button x:Name="SendButton" Grid.Column="1" VerticalAlignment="Bottom" />
+            </Grid>
+        </Grid>
+    </Grid>
+</UserControl>

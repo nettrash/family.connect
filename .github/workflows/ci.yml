@@ -738,6 +738,16 @@ jobs:
           git diff --exit-code -- win/tests/FamilyConnect.Core.Tests/Fixtures \
             || { echo "::error::the oracle fixtures are out of date -- regenerate them (win/README.md)"; exit 1; }
 
+      # The WinUI app cannot build here (its XAML compiler is a .NET Framework executable), but
+      # everything short of that compiler can be checked: every XAML element, attribute and handler
+      # against the real WinUI metadata, and the code-behind compiled in a shadow library with the
+      # XAML compiler's generated fields stubbed in (win/tools/xamlcheck/README.md). The fast
+      # signal for app code written off Windows; the real proof is the win-app job below.
+      - name: The app's XAML and code-behind check out
+        if: matrix.os == 'ubuntu-24.04'
+        working-directory: win
+        run: tools/xamlcheck/run.sh .
+
       - name: Upload test log
         if: failure()
         uses: actions/upload-artifact@v4
@@ -746,6 +756,74 @@ jobs:
           path: ${{ runner.temp }}/win-test.log
           if-no-files-found: ignore
           retention-days: 7
+
+  win-app:
+    name: Windows app & MSIX (${{ matrix.platform }})
+    needs: changes
+    if: needs.changes.outputs.win == 'true'
+    # The only project under win/ that needs Windows. Unsigned on purpose: where the app ships (the
+    # Store signs what it publishes, a side-loaded build needs a certificate) is still open on #64,
+    # and an unsigned package proves the same thing — that the XAML compiles, the manifest is valid
+    # and the payload carries what the app reads at run time.
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64, ARM64]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: win/global.json
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Restore
+        run: >
+          msbuild win/src/FamilyConnect.App/FamilyConnect.App.csproj -t:Restore
+          -p:Configuration=Release -p:Platform=${{ matrix.platform }}
+          -p:RuntimeIdentifier=win-${{ matrix.platform == 'ARM64' && 'arm64' || 'x64' }}
+
+      - name: Build the app and an unsigned MSIX
+        run: >
+          msbuild win/src/FamilyConnect.App/FamilyConnect.App.csproj
+          -p:Configuration=Release
+          -p:Platform=${{ matrix.platform }}
+          -p:RuntimeIdentifier=win-${{ matrix.platform == 'ARM64' && 'arm64' || 'x64' }}
+          -p:GenerateAppxPackageOnBuild=true
+          -p:AppxPackageSigningEnabled=false
+          -p:AppxBundle=Never
+          -p:AppxPackageDir=${{ github.workspace }}\AppPackages\
+          -p:EnableWinAppRunSupport=false
+          -v:minimal
+
+      # The packaging bug a green build hides: Content only reaches the payload when it carries
+      # CopyToOutputDirectory (md.win measured it). Drop that and everything still builds and
+      # uploads — and the installed app has no icon for its title bar. An .msix is a zip, so list it.
+      - name: The package carries the executable and its assets
+        shell: pwsh
+        run: |
+          $msix = Get-ChildItem -Path "${{ github.workspace }}\AppPackages" -Recurse -Filter *.msix | Select-Object -First 1
+          if (-not $msix) { throw "no .msix was produced" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($msix.FullName)
+          try {
+            $names = $zip.Entries.FullName | ForEach-Object { [System.Uri]::UnescapeDataString($_).Replace('\', '/') }
+          } finally { $zip.Dispose() }
+          $required = @('FamilyConnect.exe', 'AppxManifest.xml', 'Assets/AppIcon.ico',
+            'Assets/Square44x44Logo.png', 'Assets/Square150x150Logo.png', 'Assets/StoreLogo.png')
+          $missing = $required | Where-Object { $names -notcontains $_ }
+          if ($missing) { throw "MSIX payload is missing: $($missing -join ', ')" }
+          Write-Host "MSIX payload OK: $($names.Count) entries."
+
+      - name: Upload the MSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: familyconnect-${{ matrix.platform }}-msix
+          path: AppPackages/**/*.msix
+          retention-days: 14
 
 # Deliberately not here, and why:
 #
@@ -772,11 +850,9 @@ jobs:
 #   * A required-check / branch-protection rule: this repo is private on the
 #     free plan, where branch protection is not available. CI here is advisory,
 #     which is part of why it triggers on push rather than on pull_request.
-#   * A Windows UI lane for FamilyConnect.App. There is no app project yet (win/ is the
-#     portable half by design), and when it arrives its XAML compiler is .NET Framework and
-#     Windows-only -- so the `win` job above builds and tests everything EXCEPT the window, on
-#     both platforms, which is the split the port was designed around. md.win's `tools/xamlcheck`
-#     is the trick for type-checking code-behind without it.
+#   * Running FamilyConnect.App in CI. win-app builds and packages it, but there is no UI test and
+#     no self-test mode yet: what the window DECIDES is App.Logic's and tested in the win lane,
+#     and what it looks like is checked on a real Windows machine.
 #   * A README badge. Every sibling has one, but an unparameterised badge URL
 #     reports the DEFAULT branch -- master, which is 39 commits behind -- so it
 #     would show a green tick for code nobody is running. Add one with
