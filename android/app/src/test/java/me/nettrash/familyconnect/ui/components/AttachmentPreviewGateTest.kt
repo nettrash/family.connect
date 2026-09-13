@@ -159,4 +159,66 @@ class AttachmentPreviewGateTest {
         pump { repo.cached(43, preview = true) != null }
         assertThat(api.downloads).containsExactly(43L to true)
     }
+
+    /**
+     * THE DOUBLE FETCH. A photo WITH a preview asks for the preview and for nothing else — and
+     * the way to get this wrong reads like the right thing:
+     *
+     *     rememberAttachmentImage(a, preview = true) ?: rememberAttachmentImage(a, preview = false)
+     *
+     * While the preview is merely PENDING the left side is null, so the fallback fires and the
+     * client downloads the ORIGINAL as well — megabytes over somebody's phone connection, for a
+     * thumbnail — and then abandons it mid-flight when the preview lands and the second call
+     * leaves the composition. Which bytes a tile wants is a question about the ATTACHMENT, so
+     * `rememberTileImage` asks the attachment.
+     */
+    @Test
+    fun aPhotoWithAPreviewDoesNotPullTheOriginalDownBehindIt() {
+        api.downloadHandler = { _, _, destination -> serve(destination) }
+        val repo = repository()
+        val photo = FakeAttachmentApi.attachment(id = 44, kind = "photo", hasPreview = true)
+
+        compose.setContent {
+            CompositionLocalProvider(LocalAttachments provides repo) {
+                AttachmentGroup(attachments = listOf(photo), onOpen = {})
+            }
+        }
+
+        pump { repo.cached(44, preview = true) != null }
+        // Turn everything a few more times: the fallback fired on the FIRST composition, before
+        // the preview had arrived, so a test that stopped at the first answer would miss it.
+        repeat(5) {
+            compose.waitForIdle()
+            ShadowLooper.idleMainLooper()
+        }
+
+        assertThat(api.downloads).containsExactly(44L to true)
+    }
+
+    /**
+     * And an ALBUM's cards follow the same rule: two photos with previews are two preview
+     * requests, not four downloads. The stack draws three cards from the same attachments, so a
+     * per-card fallback would have multiplied it.
+     */
+    @Test
+    fun anAlbumsCardsAskForPreviewsAndNothingElse() {
+        api.downloadHandler = { _, _, destination -> serve(destination) }
+        val repo = repository()
+        val first = FakeAttachmentApi.attachment(id = 45, kind = "photo", hasPreview = true)
+        val second = FakeAttachmentApi.attachment(id = 46, kind = "photo", hasPreview = true)
+
+        compose.setContent {
+            CompositionLocalProvider(LocalAttachments provides repo) {
+                AttachmentGroup(attachments = listOf(first, second), onOpen = {})
+            }
+        }
+
+        pump { repo.cached(45, preview = true) != null && repo.cached(46, preview = true) != null }
+        repeat(5) {
+            compose.waitForIdle()
+            ShadowLooper.idleMainLooper()
+        }
+
+        assertThat(api.downloads).containsExactly(45L to true, 46L to true)
+    }
 }

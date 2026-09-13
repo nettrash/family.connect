@@ -35,6 +35,11 @@ class MediaPrepNamingTest {
     private val context = RuntimeEnvironment.getApplication()
     private val mediaPrep = MediaPrep(context, context.contentResolver)
 
+    private companion object {
+        /** An ID3 tag: what the server's magic check wants of an `audio/mpeg` upload. */
+        val MP3_HEAD = "ID3".toByteArray() + ByteArray(29) { 0 }
+    }
+
     /** Bytes behind a Uri, the way a provider would serve them. */
     private fun item(uri: String, bytes: ByteArray = ByteArray(32) { 9 }): Uri =
         Uri.parse(uri).also {
@@ -102,11 +107,17 @@ class MediaPrepNamingTest {
         prepared.file.delete()
     }
 
-    /** Audio keeps its player, and a synthesised name gives it its type. */
+    /**
+     * Audio keeps its player, and a synthesised name gives it its type.
+     *
+     * The bytes are a real ID3 header, because the claim is now CHECKED against them: an audio
+     * upload whose bytes are not what it calls them is sent as a file instead of being refused by
+     * the server (MediaPrep.Magic, and MediaTypeHonestyTest).
+     */
     @Test
     fun `pasted audio is named and typed from what the clipboard said`(): Unit = runBlocking {
         val prepared = mediaPrep.prepareAudio(
-            item("content://media/external/audio/media/77"),
+            item("content://media/external/audio/media/77", MP3_HEAD),
             declaredMime = "audio/mpeg",
             fallbackName = "Pasted sound.mp3",
         )
