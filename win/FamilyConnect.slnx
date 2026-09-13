@@ -5,11 +5,9 @@
   </Configurations>
   <Folder Name="/src/">
     <!--
-      When FamilyConnect.App arrives it is the ONLY project that carries
-      <Platforms>x64;ARM64</Platforms>, and a .slnx needs an explicit rule for it or Visual
-      Studio refuses to open the solution and `dotnet build -p:Platform=x64` silently builds
-      the other architecture (md.win/docs/windows-facts.md, paid for once already). Everything
-      here is AnyCPU until then, which needs no rule.
+      The PORTABLE solution: everything here builds on any OS, and it is what the Mac and the ubuntu
+      CI runner build. The WinUI app is in FamilyConnect.Windows.slnx, because its XAML compiler
+      is a .NET Framework executable and would fail this solution everywhere but Windows.
     -->
     <Project Path="src/FamilyConnect.Core/FamilyConnect.Core.csproj" />
     <Project Path="src/FamilyConnect.App.Logic/FamilyConnect.App.Logic.csproj" />
@@ -17,5 +15,8 @@
   <Folder Name="/tests/">
     <Project Path="tests/FamilyConnect.Core.Tests/FamilyConnect.Core.Tests.csproj" />
     <Project Path="tests/FamilyConnect.App.Logic.Tests/FamilyConnect.App.Logic.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/xamlcheck/xamlcheck.csproj" />
   </Folder>
 </Solution>

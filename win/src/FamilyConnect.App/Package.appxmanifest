@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX manifest for Family Connect.
+
+  THE IDENTITY IS A PLACEHOLDER. There is no Partner Center product for this app yet, and where it
+  ships (the Store or a signed installer) is still nettrash's decision on issue #64. When a product
+  is reserved, Name, Publisher and PublisherDisplayName come from Partner Center ▸ Product identity
+  exactly as written there (md.win learned the Store validates all three against the account),
+  and <DisplayName> becomes the reserved name.
+
+  Version is written by hand and never by a build.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+  <Identity
+    Name="nettrash.FamilyConnect"
+    Publisher="CN=nettrash"
+    Version="1.0.0.0" />
+  <Properties>
+    <DisplayName>Family Connect</DisplayName>
+    <PublisherDisplayName>nettrash</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>Your family's own chat, on your family's own server.</Description>
+  </Properties>
+  <Dependencies>
+    <!-- Windows 11 (22000): assumed until the minimum build is decided (issue #64). -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Resources>
+    <Resource Language="x-generate"/>
+  </Resources>
+  <Applications>
+    <Application Id="App"
+      Executable="$targetnametoken$.exe"
+      EntryPoint="$targetentrypoint$">
+      <uap:VisualElements
+        DisplayName="Family Connect"
+        Description="Your family's own chat, on your family's own server."
+        BackgroundColor="#095DB1"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          Wide310x150Logo="Assets\Wide310x150Logo.png"
+          Square71x71Logo="Assets\SmallTile.png"
+          Square310x310Logo="Assets\LargeTile.png"
+          ShortName="Family Connect">
+          <uap:ShowNameOnTiles>
+            <uap:ShowOn Tile="square150x150Logo"/>
+            <uap:ShowOn Tile="wide310x150Logo"/>
+          </uap:ShowNameOnTiles>
+        </uap:DefaultTile>
+        <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#095DB1" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

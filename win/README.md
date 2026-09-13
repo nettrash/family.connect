@@ -4,14 +4,18 @@ The fourth client of the protocol in `docs/protocol.md`, alongside `ios/` (iOS +
 `android/` and `web/`. Issue #64; the assessment that scoped it is
 `docs/windows-client-2026-09-11.md`.
 
-**Status: phase 1, the portable core and the app's logic.** There is no window yet. What exists is
+**Status: the portable core, the app's logic, and the first window.** The core and the logic are
 the part of the client that has nothing to do with Windows — the wire, the local cache, the send
 queue, the board's arithmetic, the reconnect resync, the live frame router and the session gate —
-and it is deliberately the part that can be verified on the Mac this is developed on.
+and they are tested wherever `dotnet` runs. `FamilyConnect.App` is the WinUI 3 window over them: the
+server, sign-in, the family door and the chats with one open conversation. It is type-checked on
+the Mac by `tools/xamlcheck` and built into an MSIX by CI on Windows, and it has NOT yet been run on
+a Windows machine — what it looks like and how it behaves live is the next step, and needs one.
 
 ```
 win/
-  FamilyConnect.slnx
+  FamilyConnect.slnx                   the PORTABLE solution: builds on any OS (the Mac, ubuntu CI)
+  FamilyConnect.Windows.slnx           the same plus the app, for Visual Studio on Windows
   src/FamilyConnect.Core/
     Protocol/   ApiError, ServerUrl, Dtos, Frames, ApiClient, ChatSocket, SendPipeline,
                 SendRules, ReconnectBackoff, Resync, FrameRouter, ApiResult/ITokenStore
@@ -30,10 +34,15 @@ win/
                 Family — the door, the owner's console, and the numbers everybody may see
                 Notifications — when this client speaks up, and what it says when it does
                 Avatars — what a picture must be before it is sent, and a cache keyed by VERSION
+  src/FamilyConnect.App/               the WinUI 3 window: structure + code-behind, no decisions
+                Services/ Connection (one server, wired), LockerTokenStore (the credential
+                          locker), AppServices, ServerSetting, AppFolders
+                Views/    ServerView, SignInView, DoorView, PendingView, OfflineView, ChatsView
   i18n/                                generate.py + win.json (the port's own strings)
   tests/FamilyConnect.Core.Tests/      xUnit, runs anywhere `dotnet` runs
   tests/FamilyConnect.App.Logic.Tests/ the same, for the app's own behaviour
   tools/board-oracle/                  Rust: regenerates the shared-arithmetic fixture
+  tools/xamlcheck/                     md.win's off-Windows check of the app's XAML and code-behind
 ```
 
 `Resync` is what happens on every (re)connect, in the protocol's own order, and two of its rules
@@ -63,8 +72,8 @@ subtracts rather than recounts.
 **The board has three cursors' worth of rules and they are all in `BoardStore`.** A full read
 REPLACES the wall — except a note held above the read's own `max_board_seq`, which arrived after
 the read was taken; an older full read landing second is ignored outright. A tombstone is
-REMEMBERED (the `gone` table), so an older copy of a deleted note cannot put it back — the web
-client keeps the same set, and Apple and Android do not, which is a known gap there. And the
+REMEMBERED (the `gone` table), so an older copy of a deleted note cannot put it back — the web,
+Apple and Android clients keep the same set. And the
 cursor moves in three ways and no others: a full read sets it to its mark, a catch-up page to the
 page's highest seq, and a frame to its own — the frame only once this device has read the board at
 all, because a cursor of 0 is what asks for the whole wall and a frame that jumped that queue
@@ -146,8 +155,9 @@ ack deadline, falls back to `POST /chats/{id}/messages` with the same `client_ms
 row failed only on a terminal code. Both the deadline and the clock are injectable, because a suite
 that sleeps ten seconds per silent socket is a suite nobody runs.
 
-What is NOT here yet: the WinUI app, the credential store (`ITokenStore` is the seam; on Windows it
-belongs in the locker), the uploads a media send owes, and calls.
+What is NOT here yet in the window: attachments, the board, the family console and settings, threads,
+polls, reactions and mentions in the composer, notifications, and calls. Their logic is in
+App.Logic already (all but calls); the window draws the chat loop first.
 
 The cache is SQLite with numbered migrations and no destructive fallback. `DatabaseTests` compares
 a database that walked every step against one created fresh, table by table and column by column —
@@ -187,9 +197,41 @@ own culture. The same lane re-prints both oracle fixtures from `web/text` and fa
 
 .NET 10 (`global.json` pins the SDK band). Nothing here references a Windows API, on purpose: a
 WinUI **app** cannot be built on macOS at all — its XAML compiler is .NET Framework — so a port
-whose logic could only be tested on Windows would be a port nobody here could verify. When the app
-project arrives it is the only one that needs Windows, and md.win's `tools/xamlcheck` trick
-type-checks its code-behind here even then.
+whose logic could only be tested on Windows would be a port nobody here could verify.
+
+## The window
+
+`FamilyConnect.App` is the only project that needs Windows, and it holds no decisions: which screen
+shows is `AppSession`'s gate, what a refusal says is `DoorSentences`, what a row and a bubble say
+is `ChatListModel` and `BubbleText` — all in App.Logic, all tested. What is left in the window is
+structure and wiring, and **every visible word is set from code through the catalogue** (no
+`{Binding}`, no `x:Bind`, no text in XAML), which is what lets `CatalogueTests` scan it and
+`xamlcheck` prove it.
+
+```bash
+cd win
+tools/xamlcheck/run.sh .     # any OS: lint every XAML file, shadow-compile the code-behind
+```
+
+It proves the XAML's elements, attributes and handlers against the real WinUI 3 metadata and the
+code-behind against the real Windows App SDK — and nothing only the XAML compiler checks, and
+nothing at run time. On Windows:
+
+```powershell
+cd win
+dotnet run --project src/FamilyConnect.App -p:Platform=x64   # a debug package identity, registered for you
+```
+
+or open `FamilyConnect.Windows.slnx` in Visual Studio. The bare `bin\…\FamilyConnect.exe` does not
+start on its own: a packaged app's Deployment Manager needs its identity and fails before `Main`
+(build with `-p:WindowsPackageType=None` for a real unpackaged binary).
+
+Things chosen for the window that nettrash has not decided yet, and where they live:
+
+- **Windows 11 (22000) as the minimum** — `TargetPlatformMinVersion` and the manifest, md.win's floor.
+- **MSIX, unsigned** — the `win-app` CI job; the Store signs what it publishes.
+- **A placeholder package identity** — `Package.appxmanifest`; Partner Center supplies the real one.
+- **No calls** in the window.
 
 ## The oracle
 

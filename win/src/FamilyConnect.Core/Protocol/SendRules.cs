@@ -140,5 +140,8 @@ public static class SendRules
         WindowActivated,
         Timer,
         UserRetried,
+
+        /// <summary>A message was just written into the outbox, and there is no reason to wait.</summary>
+        Queued,
     }
 }

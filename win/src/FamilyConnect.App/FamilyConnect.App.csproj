@@ -1,0 +1,88 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    FamilyConnect.App — the window. A WinUI 3 (Windows App SDK) desktop app packaged as MSIX, and
+    the only project under win/ that needs Windows to build: the XAML compiler is a .NET Framework
+    executable. Everything the window DECIDES lives in FamilyConnect.App.Logic and is tested on any
+    OS; what is here is structure, wiring and drawing. tools/xamlcheck type-checks all of it off
+    Windows, and the `win-app` CI job builds the real thing.
+
+    Its shape is md.win's (docs/windows-client-2026-09-11.md), including the decisions that cost
+    md.win a day each — see the comments below rather than rediscovering them.
+  -->
+  <!--
+    Visual Studio's MSBuild without the "Desktop development with C++" workload CRASHES in the
+    WinUI XAML compiler's interop targets (GetVCInstallPath enumerates $(VsInstallRoot)\VC\Tools\MSVC
+    with no guard). The two paths it computes are unused by a C# project; blanking VsInstallRoot
+    when that folder does not exist makes the target a no-op, and installing the workload makes
+    this condition stop matching. `dotnet build` never sets VsInstallRoot and never hit it.
+  -->
+  <PropertyGroup Condition="'$(VsInstallRoot)' != '' and !Exists('$(VsInstallRoot)\VC\Tools\MSVC')">
+    <VsInstallRoot></VsInstallRoot>
+  </PropertyGroup>
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <!--
+      Windows 11 (22000) — ASSUMED, the same floor md.win chose, until nettrash decides the minimum
+      build on issue #64. It is also what puts WebView2 and the newer WinUI controls in the box.
+    -->
+    <TargetPlatformMinVersion>10.0.22000.0</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
+    <RootNamespace>FamilyConnect.App</RootNamespace>
+    <AssemblyName>FamilyConnect</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- No x86: Windows 11 has no 32-bit edition. -->
+    <Platforms>x64;ARM64</Platforms>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-$([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant())</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <WinUISDKReferences>false</WinUISDKReferences>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <!--
+      Packaged (MSIX) by default, which is what gives the app an identity — and what makes the bare
+      bin\…\FamilyConnect.exe unrunnable: the Deployment Manager initializer needs that identity and
+      dies with REGDB_E_CLASSNOTREG before Main. Run it with `dotnet run` (the WinApp build tools
+      register a debug identity), install the MSIX, or build with -p:WindowsPackageType=None.
+    -->
+    <GenerateAppInstallerFile>false</GenerateAppInstallerFile>
+    <AppxPackageSigningEnabled>false</AppxPackageSigningEnabled>
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+    <PublishReadyToRun Condition="'$(Configuration)' == 'Debug'">False</PublishReadyToRun>
+    <PublishReadyToRun Condition="'$(Configuration)' != 'Debug'">True</PublishReadyToRun>
+    <!-- WinRT projections are reflection-heavy; trimming is not worth the risk for a chat app. -->
+    <PublishTrimmed>False</PublishTrimmed>
+    <!--
+      Our own Program.Main. Since Windows App SDK 2.3.1 this switch RENAMES the generated entry point
+      instead of deleting it, so StartupObject is what makes ours the one that runs.
+    -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <StartupObject>FamilyConnect.App.Program</StartupObject>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\FamilyConnect.Core\FamilyConnect.Core.csproj" />
+    <ProjectReference Include="..\FamilyConnect.App.Logic\FamilyConnect.App.Logic.csproj" />
+  </ItemGroup>
+  <!--
+    CopyToOutputDirectory is load-bearing, not decoration: the MSIX tooling only packages Content
+    that carries it (md.win measured 160 items becoming 3 files without it), and AppWindow.SetIcon
+    reads Assets\AppIcon.ico from beside the executable.
+  -->
+  <ItemGroup>
+    <Content Include="Assets\**\*.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\AppIcon.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(DisableMsixProjectCapabilityAddedByProject)'!='true' and '$(EnableMsixTooling)'=='true'">
+    <ProjectCapability Include="Msix" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.7705" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
+    <!-- `dotnet run` with package identity (registers a debug identity via the winapp CLI). -->
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools.WinApp" Version="0.3.1" />
+  </ItemGroup>
+  <PropertyGroup Condition="'$(DisableHasPackageAndPublishMenuAddedByProject)'!='true' and '$(EnableMsixTooling)'=='true'">
+    <HasPackageAndPublishMenu>true</HasPackageAndPublishMenu>
+  </PropertyGroup>
+</Project>

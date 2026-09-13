@@ -1,0 +1,17 @@
+<Application
+    x:Class="FamilyConnect.App.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!--
+        The Fluent controls and nothing else. Every visible word is set from code through the
+        string catalogue — the key IS the apps' English sentence (win/README.md) — so no XAML here
+        carries text a reader sees, and tools/xamlcheck can prove every element and attribute.
+    -->
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
