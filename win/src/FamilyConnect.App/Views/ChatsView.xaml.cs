@@ -10,6 +10,8 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.Storage.Streams;
 using Windows.ApplicationModel.DataTransfer;
 
 namespace FamilyConnect.App.Views;
@@ -52,6 +54,7 @@ public sealed partial class ChatsView : UserControl
     private readonly Action<Link> onLink;
     private readonly Action<OutboxRow, ApiError> onRefused;
 
+    private readonly Dictionary<string, BitmapImage> pictures = [];
     private ConversationModel? open;
     private MessageDto? replyingTo;
     private MessageDto? editing;
@@ -132,6 +135,7 @@ public sealed partial class ChatsView : UserControl
     internal void Detach()
     {
         typingTimer.Stop();
+        pictures.Clear();
         connection.Router.Arrived -= onArrived;
         connection.Router.Edited -= onEdited;
         connection.Router.ChatChanged -= onChat;
@@ -141,6 +145,18 @@ public sealed partial class ChatsView : UserControl
         connection.Live.Resynced -= onResync;
         connection.Live.LinkChanged -= onLink;
         connection.Sending.Refused -= onRefused;
+    }
+
+    /// <summary>A clicked notification: open that chat, whatever was open before.</summary>
+    internal void OpenChat(long chatId)
+    {
+        if (open?.ChatId == chatId)
+        {
+            return;
+        }
+        // The list is drawn again so the row the notification named is the one selected.
+        listDrawn = string.Empty;
+        _ = OpenAsync(chatId);
     }
 
     /// <summary>The window came to the front: what is on screen may now count as read.</summary>
@@ -278,11 +294,14 @@ public sealed partial class ChatsView : UserControl
             outbox: connection.Outbox);
         open = chat;
         atNewest = true;
+        // What was said here has been seen now: its notifications go.
+        Toasts.Clear(NotificationRules.ChatTag(chatId));
         conversationDrawn = string.Empty;
         EndComposerMode(clear: true);
         ComposerError.Visibility = Visibility.Collapsed;
         ConversationTitle.Text = connection.Chats.Chat(chatId) is { } row ? list.Title(row.Chat) : string.Empty;
         ComposerPanel.Visibility = Visibility.Visible;
+        DrawList();
         DrawConversation(keepFromBottom: null);
         ShowTyping();
         var error = await chat.OpenAsync();
@@ -371,6 +390,10 @@ public sealed partial class ChatsView : UserControl
         {
             stack.Children.Add(QuoteElement(quote));
         }
+        if (bubble.Reads && message.Media.Count > 0)
+        {
+            stack.Children.Add(MediaElement(message));
+        }
         var words = new TextBlock
         {
             Text = BubbleText.Words(bubble, list, say),
@@ -385,7 +408,11 @@ public sealed partial class ChatsView : UserControl
             Opacity = 0.7,
             HorizontalAlignment = HorizontalAlignment.Right,
         };
-        stack.Children.Add(words);
+        // A caption-less photo is its picture: the words "Photo" under it would only repeat it.
+        if (!bubble.Reads || message.Body.Length > 0 || message.Call is not null || message.Media.Count == 0)
+        {
+            stack.Children.Add(words);
+        }
         if (bubble.Reads && message.Reactions is { Length: > 0 } reactions)
         {
             stack.Children.Add(ChipsElement(chat, message, reactions));
@@ -631,6 +658,313 @@ public sealed partial class ChatsView : UserControl
             Background = (Brush)resources["AccentFillColorDefaultBrush"],
             Opacity = row.Failed ? 0.9 : 0.6,
         };
+    }
+
+    // ---- attachments ---------------------------------------------------------------------------
+
+    /// <summary>
+    /// What a message carries: the pictures first — one at its own shape, several as a grid of four with
+    /// the rest counted — and then the rows that are read rather than looked at.
+    /// </summary>
+    private FrameworkElement MediaElement(MessageDto message)
+    {
+        var panel = new StackPanel { Spacing = 4 };
+        var looked = message.Media.Where(attachment => MediaText.IsMedia(attachment.Kind)).ToList();
+        if (looked.Count == 1)
+        {
+            var (width, height) = MediaText.TileSize(looked[0].Width, looked[0].Height);
+            panel.Children.Add(TileElement(looked, 0, width, height));
+        }
+        else if (looked.Count > 1)
+        {
+            var grid = new Grid { ColumnSpacing = 4, RowSpacing = 4 };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var shown = Math.Min(looked.Count, 4);
+            for (var at = 0; at < shown; at++)
+            {
+                if (at % 2 == 0)
+                {
+                    grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                }
+                var cell = TileElement(looked, at, 156, 156, more: at == shown - 1 ? looked.Count - shown : 0);
+                Grid.SetRow(cell, at / 2);
+                Grid.SetColumn(cell, at % 2);
+                grid.Children.Add(cell);
+            }
+            panel.Children.Add(grid);
+        }
+        foreach (var attachment in message.Media.Where(attachment => !MediaText.IsMedia(attachment.Kind)))
+        {
+            panel.Children.Add(attachment.Kind == "location" ? LocationElement(attachment) : FileElement(attachment));
+        }
+        return panel;
+    }
+
+    private FrameworkElement TileElement(IReadOnlyList<AttachmentDto> album, int index, double width, double height, int more = 0)
+    {
+        var attachment = album[index];
+        var say = services.Say;
+        var video = attachment.Kind == "video";
+        var frame = new Grid
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(8),
+            Background = (Brush)Application.Current.Resources["ControlFillColorSecondaryBrush"],
+        };
+        frame.Children.Add(new TextBlock
+        {
+            Text = video ? say.Get("Video") : say.Get("Photo"),
+            Opacity = 0.6,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var image = new Image { Stretch = Stretch.UniformToFill };
+        frame.Children.Add(image);
+        if (video)
+        {
+            // A glyph, not a sentence.
+            frame.Children.Add(new TextBlock
+            {
+                Text = "▶",
+                FontSize = 28,
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+        }
+        if (more > 0)
+        {
+            frame.Children.Add(new Border
+            {
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(128, 0, 0, 0)),
+                Child = new TextBlock
+                {
+                    Text = "+" + more.ToString(services.Culture),
+                    FontSize = 24,
+                    Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+            });
+        }
+        var source = AttachmentFiles.SourceFor(attachment);
+        if (source != AttachmentFiles.TileSource.None)
+        {
+            _ = ShowPictureAsync(image, attachment, preview: source == AttachmentFiles.TileSource.Preview);
+        }
+        frame.Tapped += (_, _) => _ = OpenMediaAsync(attachment);
+        return frame;
+    }
+
+    private async Task ShowPictureAsync(Image image, AttachmentDto attachment, bool preview)
+    {
+        var key = AttachmentCache.KeyFor(attachment.Id, preview && attachment.HasPreview);
+        if (!pictures.TryGetValue(key, out var picture))
+        {
+            var (bytes, error) = await connection.Attachments.BytesAsync(attachment, preview);
+            if (bytes is null)
+            {
+                if (error is not null)
+                {
+                    Diagnostics.Write($"a picture: {error.Code} {error.Status}");
+                }
+                return;
+            }
+            if (await DecodeAsync(bytes) is not { } decoded)
+            {
+                return;
+            }
+            picture = pictures[key] = decoded;
+        }
+        image.Source = picture;
+    }
+
+    private static async Task<BitmapImage?> DecodeAsync(byte[] bytes)
+    {
+        try
+        {
+            using var stream = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(stream))
+            {
+                writer.WriteBytes(bytes);
+                await writer.StoreAsync();
+                await writer.FlushAsync();
+                writer.DetachStream();
+            }
+            stream.Seek(0);
+            var picture = new BitmapImage();
+            await picture.SetSourceAsync(stream);
+            return picture;
+        }
+        catch (Exception e)
+        {
+            // A format this machine cannot decode (a HEIC without its codec, say) stays a labelled tile.
+            Diagnostics.Write($"decoding a picture: {e.GetType().Name}");
+            return null;
+        }
+    }
+
+    /// <summary>A photo opens whole, with a way to save it; a video opens in whatever plays videos here.</summary>
+    private async Task OpenMediaAsync(AttachmentDto attachment)
+    {
+        var say = services.Say;
+        if (attachment.Kind != "photo")
+        {
+            await OpenExternallyAsync(attachment);
+            return;
+        }
+        var (bytes, _) = await connection.Attachments.BytesAsync(attachment);
+        if (bytes is null || await DecodeAsync(bytes) is not { } picture)
+        {
+            ShowProblem(say.Get("The file could not be downloaded."));
+            return;
+        }
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Content = new Image { Source = picture, Stretch = Stretch.Uniform, MaxWidth = 900, MaxHeight = 640 },
+            PrimaryButtonText = say.Get("Save…"),
+            CloseButtonText = say.Get("Close"),
+            DefaultButton = ContentDialogButton.Close,
+        };
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+        {
+            await SaveBytesAsync(attachment, bytes);
+        }
+    }
+
+    /// <summary>A document or a recording: its name and its size, and a click that saves or plays it.</summary>
+    private FrameworkElement FileElement(AttachmentDto attachment)
+    {
+        var say = services.Say;
+        var lines = new StackPanel();
+        lines.Children.Add(new TextBlock
+        {
+            Text = AttachmentFiles.MiddleTruncate(AttachmentText.DisplayName(attachment.Kind, attachment.Name, say), 40),
+            FontWeight = FontWeights.SemiBold,
+        });
+        if (attachment.Size is { } size)
+        {
+            lines.Children.Add(new TextBlock
+            {
+                Text = MediaText.DisplaySize(size, say, services.Culture),
+                FontSize = 12,
+                Opacity = 0.7,
+            });
+        }
+        var row = new Grid { ColumnSpacing = 8 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.Children.Add(new TextBlock { Text = attachment.Kind == "audio" ? "🎵" : "📄", FontSize = 20, VerticalAlignment = VerticalAlignment.Center });
+        Grid.SetColumn(lines, 1);
+        row.Children.Add(lines);
+        var button = new Button
+        {
+            Content = row,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Padding = new Thickness(8),
+        };
+        button.Click += (_, _) => _ = attachment.Kind == "audio" ? OpenExternallyAsync(attachment) : SaveAttachmentAsync(attachment);
+        return button;
+    }
+
+    /// <summary>A place: its label and its coordinates, and a click that opens it in Maps.</summary>
+    private FrameworkElement LocationElement(AttachmentDto attachment)
+    {
+        var say = services.Say;
+        var lines = new StackPanel();
+        lines.Children.Add(new TextBlock
+        {
+            Text = AttachmentText.DisplayName("location", attachment.Name, say),
+            FontWeight = FontWeights.SemiBold,
+        });
+        var place = attachment.Latitude is { } latitude && attachment.Longitude is { } longitude
+            ? (Latitude: latitude, Longitude: longitude)
+            : ((double Latitude, double Longitude)?)null;
+        if (place is { } known)
+        {
+            lines.Children.Add(new TextBlock
+            {
+                Text = MediaText.LocationLine(known.Latitude, known.Longitude, attachment.AccuracyM),
+                FontSize = 12,
+                Opacity = 0.7,
+            });
+        }
+        var row = new Grid { ColumnSpacing = 8 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.Children.Add(new TextBlock { Text = "📍", FontSize = 20, VerticalAlignment = VerticalAlignment.Center });
+        Grid.SetColumn(lines, 1);
+        row.Children.Add(lines);
+        var button = new Button
+        {
+            Content = row,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Padding = new Thickness(8),
+            IsEnabled = place is not null,
+        };
+        button.Click += (_, _) =>
+        {
+            if (place is { } known)
+            {
+                _ = Windows.System.Launcher.LaunchUriAsync(
+                    new Uri(MediaText.MapsUrl(known.Latitude, known.Longitude, attachment.Name, say)));
+            }
+        };
+        return button;
+    }
+
+    private async Task SaveAttachmentAsync(AttachmentDto attachment)
+    {
+        var (bytes, _) = await connection.Attachments.BytesAsync(attachment);
+        if (bytes is null)
+        {
+            ShowProblem(services.Say.Get("The file could not be downloaded."));
+            return;
+        }
+        await SaveBytesAsync(attachment, bytes);
+    }
+
+    private async Task SaveBytesAsync(AttachmentDto attachment, byte[] bytes)
+    {
+        try
+        {
+            await AttachmentSaving.SaveAsync(services.WindowHandle, AttachmentFiles.FileName(attachment), bytes);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"saving an attachment: {e.GetType().Name}");
+            ShowProblem(services.Say.Get("Something went wrong. Try again."));
+        }
+    }
+
+    private async Task OpenExternallyAsync(AttachmentDto attachment)
+    {
+        var (bytes, _) = await connection.Attachments.BytesAsync(attachment);
+        if (bytes is null)
+        {
+            ShowProblem(services.Say.Get("The file could not be downloaded."));
+            return;
+        }
+        try
+        {
+            await AttachmentSaving.OpenAsync(AttachmentFiles.FileName(attachment), bytes);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"opening an attachment: {e.GetType().Name}");
+            ShowProblem(services.Say.Get("Something went wrong. Try again."));
+        }
+    }
+
+    private void ShowProblem(string sentence)
+    {
+        ComposerError.Text = sentence;
+        ComposerError.Visibility = Visibility.Visible;
     }
 
     /// <summary>A reaction or an edit: done, then drawn again — or said to have failed.</summary>

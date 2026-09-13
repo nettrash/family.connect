@@ -11,6 +11,9 @@ internal static class AppFolders
     public static string Root { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FamilyConnect");
 
+    /// <summary>Downloaded attachment bytes, one file each.</summary>
+    public static string BlobsPath => Path.Combine(Root, "blobs");
+
     /// <summary>The SQLite cache: history, the board, and the outbox this device still owes.</summary>
     public static string CachePath
     {

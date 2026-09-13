@@ -13,6 +13,8 @@
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
   IgnorableNamespaces="uap rescap">
   <Identity
@@ -54,6 +56,22 @@
         </uap:DefaultTile>
         <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#095DB1" />
       </uap:VisualElements>
+      <!--
+        A clicked notification launches or reaches the app through this COM class. The CLSID is this
+        app's own and must stay the same across versions: Windows keeps notifications addressed to it.
+      -->
+      <Extensions>
+        <desktop:Extension Category="windows.toastNotificationActivation">
+          <desktop:ToastNotificationActivation ToastActivatorCLSID="74271E14-83B7-4BCA-8DA5-6BEF8178A993" />
+        </desktop:Extension>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer Executable="FamilyConnect.exe" DisplayName="Family Connect" Arguments="----AppNotificationActivated:">
+              <com:Class Id="74271E14-83B7-4BCA-8DA5-6BEF8178A993" />
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
+      </Extensions>
     </Application>
   </Applications>
   <Capabilities>

@@ -25,6 +25,9 @@ public partial class App : Application
         // on a background thread, so the window is reached through its own queue.
         AppInstance.GetCurrent().Activated += (_, _) =>
             shown.DispatcherQueue.TryEnqueue(() => shown.Activate());
+        // A clicked notification opens its chat — including the click that launched the app.
+        ToastActivation.Attach(arguments =>
+            shown.DispatcherQueue.TryEnqueue(() => shown.OpenFromToast(arguments)));
         shown.Activate();
     }
 }

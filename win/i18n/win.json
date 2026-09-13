@@ -7,10 +7,16 @@
     "five it is waiting on."
   ],
   "strings": {
+    "%@ GB": {},
+    "%@ KB": {},
+    "%@ MB": {},
     "%@ — %@": {},
     "%@ — %@ mentioned you": {},
+    "%lld byte": {},
+    "%lld bytes": {},
     "Chat": {},
     "New note": {},
-    "Voice message": {}
+    "Voice message": {},
+    "Zero KB": {}
   }
 }
