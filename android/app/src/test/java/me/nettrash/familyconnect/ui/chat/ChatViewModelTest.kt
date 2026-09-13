@@ -1277,12 +1277,20 @@ class ChatViewModelTest {
         assertThat(staged.mime).isEqualTo("application/pdf")
     }
 
-    /** Audio the server can magic-check keeps its player, and its name. */
+    /**
+     * Audio the server can magic-check keeps its player, and its name — and the bytes here are a
+     * real ID3 header, because that claim is CHECKED against them now: an audio upload whose
+     * bytes are not what it calls them goes as a FILE rather than as a refused audio upload
+     * (MediaPrep.Magic).
+     */
     @Test
     fun pastedAudioIsStagedAsAudio() = runTest(dispatcher) {
         val viewModel = newViewModel()
 
-        viewModel.pasteAttachment(clipboardItem("blob"), "audio/mpeg")
+        viewModel.pasteAttachment(
+            clipboardItem("blob", "ID3".toByteArray() + ByteArray(29) { 0 }),
+            "audio/mpeg",
+        )
 
         val staged = viewModel.awaitStaged()
         assertThat(staged.kind).isEqualTo(AttachmentDto.KIND_AUDIO)
