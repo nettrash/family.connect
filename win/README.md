@@ -14,8 +14,8 @@ a Windows machine — what it looks like and how it behaves live is the next ste
 
 ```
 win/
-  FamilyConnect.slnx                   the PORTABLE solution: builds on any OS (the Mac, ubuntu CI)
-  FamilyConnect.Windows.slnx           the same plus the app, for Visual Studio on Windows
+  FamilyConnect.slnx                   everything, app included — open it in Visual Studio on Windows;
+                                       off Windows build the projects, not the solution (see below)
   src/FamilyConnect.Core/
     Protocol/   ApiError, ServerUrl, Dtos, Frames, ApiClient, ChatSocket, SendPipeline,
                 SendRules, ReconnectBackoff, Resync, FrameRouter, ApiResult/ITokenStore
@@ -195,10 +195,13 @@ that once (issue #70) and every upgraded install would have crashed on the next 
 
 ## Build and test — on any OS
 
+The solution holds the WinUI app, and the app's XAML compiler runs only on Windows — so off Windows
+(the Mac, the ubuntu CI runner) name the test projects, which build Core and App.Logic with them:
+
 ```bash
 cd win
-dotnet build FamilyConnect.slnx
-dotnet test FamilyConnect.slnx
+dotnet test tests/FamilyConnect.Core.Tests
+dotnet test tests/FamilyConnect.App.Logic.Tests
 python3 i18n/generate.py ..          # rewrite the nine catalogues from the apps' own
 python3 i18n/generate.py .. --check  # …or just say whether they are out of date
 ```
@@ -208,7 +211,9 @@ the reader's, and the way to know is to run it as they would:
 
 ```bash
 for loc in de_DE.UTF-8 tr_TR.ISO8859-9 ru_RU.UTF-8 fi_FI.UTF-8 ja_JP.UTF-8; do
-  LC_ALL=$loc DOTNET_CLI_UI_LANGUAGE=en dotnet test FamilyConnect.slnx --nologo -v q
+  for suite in tests/FamilyConnect.Core.Tests tests/FamilyConnect.App.Logic.Tests; do
+    LC_ALL=$loc DOTNET_CLI_UI_LANGUAGE=en dotnet test "$suite" --nologo -v q
+  done
 done
 ```
 
@@ -251,7 +256,7 @@ cd win
 dotnet run --project src/FamilyConnect.App -p:Platform=x64   # a debug package identity, registered for you
 ```
 
-or open `FamilyConnect.Windows.slnx` in Visual Studio. The bare `bin\…\FamilyConnect.exe` does not
+or open `FamilyConnect.slnx` in Visual Studio. The bare `bin\…\FamilyConnect.exe` does not
 start on its own: a packaged app's Deployment Manager needs its identity and fails before `Main`
 (build with `-p:WindowsPackageType=None` for a real unpackaged binary).
 

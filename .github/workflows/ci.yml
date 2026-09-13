@@ -657,17 +657,27 @@ jobs:
           dotnet --info
           dotnet --version
 
+      # The PROJECTS, not the solution: FamilyConnect.slnx also holds the WinUI app, whose XAML
+      # compiler runs only on Windows — the win-app job below builds that one.
       - name: Build
         working-directory: win
-        run: dotnet build FamilyConnect.slnx --configuration Release
+        run: |
+          dotnet build tests/FamilyConnect.Core.Tests --configuration Release
+          dotnet build tests/FamilyConnect.App.Logic.Tests --configuration Release
 
       - name: Run tests
         working-directory: win
         shell: bash
         run: |
           set -o pipefail
-          dotnet test FamilyConnect.slnx --configuration Release --no-build \
-            --logger "console;verbosity=normal" 2>&1 | tee "$RUNNER_TEMP/win-test.log"
+          : > "$RUNNER_TEMP/win-test.log"
+          status=0
+          # Both suites run even when the first fails: one red suite must not hide the other.
+          for suite in tests/FamilyConnect.Core.Tests tests/FamilyConnect.App.Logic.Tests; do
+            dotnet test "$suite" --configuration Release --no-build \
+              --logger "console;verbosity=normal" 2>&1 | tee -a "$RUNNER_TEMP/win-test.log" || status=1
+          done
+          exit $status
 
       # An exit code is not a result, which is this file's whole rule. `dotnet test` over a
       # solution prints one summary line per assembly and exits 0 for a run that matched no
