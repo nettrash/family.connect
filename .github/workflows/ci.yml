@@ -674,6 +674,10 @@ jobs:
       # tests at all — a mistyped filter, a project dropped from the .slnx, a test assembly that
       # failed to load — so the count is read back and a collapse fails the lane. A FLOOR rather
       # than an equality, so that adding a test does not break CI while losing a suite does.
+      # The pattern reads what the step ABOVE prints: at normal console verbosity that is a
+      # "Test Run …" / "Total tests:" block per assembly. It first matched the default-verbosity
+      # one-liner instead, which this step never prints, so the lane failed every run it had —
+      # green ones included (2026-09-12: all 355 passed on windows-2025, and it said "nothing ran").
       - name: Assert the tests actually ran
         if: ${{ !cancelled() }}
         shell: bash
@@ -683,18 +687,33 @@ jobs:
           python3 - "$log" <<'PY'
           import re, sys
           text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-          runs = re.findall(r"(Passed|Failed)!\s+-\s+Failed:\s+(\d+),\s+Passed:\s+(\d+)", text)
+          # `--logger "console;verbosity=normal"` ends each assembly with a block like
+          #   Test Run Successful.        (or: Test Run Failed.)
+          #   Total tests: 240
+          #        Passed: 240
+          #        Failed: 1              (only when something failed)
+          # The one-line "Passed!  - Failed: 0, Passed: 240" summary belongs to the default
+          # verbosity and never appears here. Any status but Successful (Failed, Aborted) fails.
+          runs = re.findall(
+              r"^Test Run (\w+)\.\s*\n"
+              r"Total tests:\s*(\d+)\s*\n"
+              r"((?:[ \t]+(?:Passed|Failed|Skipped|Not Run|Aborted):\s*\d+\s*\n)*)",
+              text, re.M)
           if not runs:
               print("::error::no summary line in the log -- nothing ran"); sys.exit(1)
-          failed = sum(int(f) for _, f, _ in runs)
-          passed = sum(int(p) for _, _, p in runs)
+          def count(block, word):
+              m = re.search(rf"{word}:\s*(\d+)", block)
+              return int(m.group(1)) if m else 0
+          failed = sum(count(b, "Failed") for _, _, b in runs)
+          passed = sum(count(b, "Passed") for _, _, b in runs)
+          unsuccessful = [status for status, _, _ in runs if status != "Successful"]
           print(f"assemblies={len(runs)} passed={passed} failed={failed}")
-          if failed:
-              print(f"::error::{failed} tests failed"); sys.exit(1)
+          if failed or unsuccessful:
+              print(f"::error::{failed} tests failed; runs not successful: {unsuccessful}"); sys.exit(1)
           if len(runs) < 2:
               print(f"::error::only {len(runs)} test assembly ran; expected Core and App.Logic"); sys.exit(1)
           if passed < 320:
-              print(f"::error::only {passed} tests ran; expected ~351"); sys.exit(1)
+              print(f"::error::only {passed} tests ran; expected ~355"); sys.exit(1)
           PY
 
       # The nine language tables are GENERATED from the apps' own catalogue, and a hand-edited or

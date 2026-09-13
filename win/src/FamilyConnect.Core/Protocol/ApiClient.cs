@@ -352,8 +352,13 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
     /// Leave. AN OWNER WHO LEAVES HANDS THE FAMILY ON and is never refused; the answer names the
     /// successor, or carries nobody when the family went with them.
     /// </summary>
+    /// <remarks>
+    /// Only an owner's leave has a body. A member's — the common one — and the last member's are
+    /// a <c>204</c> with none (protocol.md, <c>POST /families/leave</c>), and that means
+    /// <see cref="LeftAnswer"/> naming nobody: not "the answer could not be read".
+    /// </remarks>
     public Task<ApiResult<LeftAnswer>> LeaveFamily(CancellationToken ct = default) =>
-        Send<LeftAnswer>(HttpMethod.Post, "/families/leave", ct: ct);
+        Send(HttpMethod.Post, "/families/leave", noContent: new LeftAnswer(), ct: ct);
 
     public Task<ApiResult<Nothing>> RemoveMember(long userId, CancellationToken ct = default) =>
         Send<Nothing>(HttpMethod.Delete, $"/families/members/{userId}", ct: ct);
@@ -497,11 +502,16 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         return request;
     }
 
+    /// <param name="noContent">
+    /// What a <c>204</c> MEANS, for the few endpoints whose protocol row says a success may carry
+    /// no body. Absent everywhere else, where a 2xx this client cannot read stays a failure.
+    /// </param>
     private async Task<ApiResult<T>> Send<T>(
         HttpMethod method,
         string path,
         object? body = null,
         HttpContent? content = null,
+        T? noContent = default,
         CancellationToken ct = default)
     {
         // A read is safe to repeat and a write is not: only the outbox knows whether a send
@@ -546,7 +556,7 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
             {
                 if (response.IsSuccessStatusCode)
                 {
-                    return await Body<T>(response, ct).ConfigureAwait(false);
+                    return await Body(response, noContent, ct).ConfigureAwait(false);
                 }
                 var error = await Failure(response, ct).ConfigureAwait(false);
                 if (mayRetry && attempt == 0 && error.Transient)
@@ -575,11 +585,16 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         }
     }
 
-    private static async Task<ApiResult<T>> Body<T>(HttpResponseMessage response, CancellationToken ct)
+    private static async Task<ApiResult<T>> Body<T>(
+        HttpResponseMessage response, T? noContent, CancellationToken ct)
     {
         if (typeof(T) == typeof(Nothing))
         {
             return ApiResult<T>.Success((T)(object)Nothing.Value);
+        }
+        if (response.StatusCode == HttpStatusCode.NoContent && noContent is not null)
+        {
+            return ApiResult<T>.Success(noContent);
         }
         var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         var value = Wire.Decode<T>(text);

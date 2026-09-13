@@ -91,7 +91,7 @@ public class FamilyModelTests : IDisposable
             [new MemberDto(11, "bob", "Bob", HasLeft: true, Deleted: true)]);
         var (family, _) = Build(new Server());
 
-        Assert.Equal(1, family.Present().Count);
+        Assert.Single(family.Present());
         Assert.Equal(2, family.Members().Count);
         Assert.Equal(3, family.SeatsFor(Smiths(cap: 4), ceiling: 50).Left);
     }
@@ -234,6 +234,41 @@ public class FamilyModelTests : IDisposable
 
         Assert.Null(error);
         Assert.Equal(11, successor);
+    }
+
+    /// <summary>
+    /// The COMMON leave is a member's — or the last member's, whose family goes with them — and
+    /// its answer is a <c>204</c> with no body (protocol.md, <c>POST /families/leave</c>). It
+    /// names nobody, and it is not an error.
+    /// </summary>
+    [Fact]
+    public async Task LeavingAsAMemberIsANoContentAnswerThatNamesNobody()
+    {
+        var (family, _) = Build(new Server()
+            .On("/families/leave", null, HttpStatusCode.NoContent));
+
+        var (successor, error) = await family.LeaveAsync();
+
+        Assert.Null(error);
+        Assert.Null(successor);
+    }
+
+    /// <summary>
+    /// And ONLY there. An endpoint whose answer is a body — the join requests, here — does not
+    /// turn an empty <c>204</c> into a success with nothing in it: a 2xx this client cannot read
+    /// stays a failure it will not act on.
+    /// </summary>
+    [Fact]
+    public async Task AnAnswerThatPromisesABodyIsNotASuccessWithoutOne()
+    {
+        var (family, _) = Build(new Server()
+            .On("/families/join-requests", null, HttpStatusCode.NoContent));
+
+        var (requests, error) = await family.RequestsAsync();
+
+        Assert.Empty(requests);
+        Assert.NotNull(error);
+        Assert.Equal(ErrorCodes.Validation, error!.Code);
     }
 
     /// <summary>

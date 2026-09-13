@@ -218,6 +218,7 @@ public class LiveConnectionTests : IDisposable
     public async Task APassThatThrowsDoesNotStopTheNextOne()
     {
         var routed = 0;
+        var threw = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var rig = Build(new Server()
             .On("/auth/login", Token)
             .On("/me", Me)
@@ -228,6 +229,7 @@ public class LiveConnectionTests : IDisposable
             {
                 if (Interlocked.Increment(ref routed) == 1)
                 {
+                    threw.TrySetResult();
                     throw new InvalidOperationException("nothing there");
                 }
                 return Task.FromResult<(HttpStatusCode, string?)>(
@@ -240,6 +242,11 @@ public class LiveConnectionTests : IDisposable
         rig.Live.Resynced += report => reports.Add(report);
         rig.Wire.Comes();
         rig.Wire.Goes();
+        // The first pass has TAKEN its connection before the next one arrives — the same
+        // precondition ConnectionsThatArriveDuringAPassBecomeOneMorePass states. Two connections
+        // that both land before the pass loop is parked are ONE pass, and that one is the pass
+        // that throws, so the second would never come.
+        await threw.Task.WaitAsync(Patience);
         var second = await NextPass(rig.Live, rig.Wire.Comes);
 
         Assert.True(second.Complete);
@@ -317,6 +324,7 @@ public class LiveConnectionTests : IDisposable
     public async Task ConnectionsThatArriveDuringAPassBecomeOneMorePass()
     {
         var held = new TaskCompletionSource();
+        var stuck = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var reads = 0;
         // `/me` is the first read of a pass: the SECOND one (the first belongs to the sign-in)
         // is held open, so every connection that follows arrives while a pass is in flight.
@@ -328,6 +336,7 @@ public class LiveConnectionTests : IDisposable
             {
                 if (Interlocked.Increment(ref reads) == 2)
                 {
+                    stuck.TrySetResult();
                     await held.Task.WaitAsync(Patience).ConfigureAwait(false);
                 }
                 return (HttpStatusCode.OK, Me);
@@ -347,6 +356,11 @@ public class LiveConnectionTests : IDisposable
 
         // The first connection starts the pass that is now stuck on `/me`…
         rig.Wire.Comes();
+        // …and it IS stuck before anything else arrives. Without this wait the test assumed the
+        // pass loop was already parked: on a busy runner it may not be, and four connections that
+        // all land before it takes the first one are ONE pass — correctly, since none of them
+        // arrived during a pass — so the second never came (CI, ubuntu-24.04, 2026-09-12).
+        await stuck.Task.WaitAsync(Patience);
         // …and three more arrive while it is stuck.
         rig.Wire.Goes();
         rig.Wire.Comes();
@@ -431,7 +445,7 @@ public class LiveConnectionTests : IDisposable
 
         // No socket at all: the trigger is the network coming back.
         Assert.Equal(1, await rig.Live.FlushAsync(SendRules.FlushTrigger.ConnectivityRestored));
-        Assert.Equal(1, rig.Posts.Count);
+        Assert.Single(rig.Posts);
         // Posted, delivered, and the row is gone.
         Assert.Empty(rig.Outbox.All());
 
