@@ -4,6 +4,7 @@
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.Windows.AppLifecycle;
+using Microsoft.Windows.AppNotifications;
 
 namespace FamilyConnect.App;
 
@@ -32,13 +33,18 @@ internal static class Program
     private static int Run()
     {
         WinRT.ComWrappersSupport.InitializeComWrappers();
-        var activation = AppInstance.GetCurrent().GetActivatedEventArgs();
         var main = AppInstance.FindOrRegisterForKey(InstanceKey);
         if (!main.IsCurrent)
         {
-            Redirection.RedirectAndWait(main, activation);
+            Redirection.RedirectAndWait(main, AppInstance.GetCurrent().GetActivatedEventArgs());
             return 0;
         }
+        // Notifications, in the order the Windows App SDK requires: the handler BEFORE Register, and
+        // Register before anything reads this process's activation. A click while the app is not
+        // running launches it as an ordinary launch and delivers the click through the handler,
+        // which may be before any window exists — so ToastActivation holds it until one does.
+        AppNotificationManager.Default.NotificationInvoked += ToastActivation.Heard;
+        AppNotificationManager.Default.Register();
         Application.Start(callbackParams =>
         {
             // What the XAML-generated Main installs: without it every await in a view would resume

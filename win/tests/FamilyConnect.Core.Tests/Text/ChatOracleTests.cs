@@ -245,4 +245,83 @@ public class ChatOracleTests
             Assert.Equal(row.GetProperty("excerpt").GetString(), Excerpt.Cut(row.GetProperty("body").GetString()!));
         }
     }
+
+    /// <summary>A file's size, at every threshold where the unit or the rounding changes.</summary>
+    [Fact]
+    public void AFileSizeReadsAsTheOriginalReads()
+    {
+        var vectors = Section("display_size");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        foreach (var row in vectors.EnumerateArray())
+        {
+            Assert.Equal(
+                row.GetProperty("said").GetString(),
+                MediaText.DisplaySize(row.GetProperty("bytes").GetInt64(), culture: System.Globalization.CultureInfo.InvariantCulture));
+        }
+    }
+
+    /// <summary>A size is for a person: the reader's decimal separator, the same arithmetic.</summary>
+    [Fact]
+    public void AFileSizeUsesTheReadersDecimalSeparator()
+    {
+        var german = System.Globalization.CultureInfo.GetCultureInfo("de-DE");
+        Assert.Equal("1,2 MB", MediaText.DisplaySize(1_250_000, culture: german));
+        Assert.Equal("1,23 GB", MediaText.DisplaySize(1_234_567_890, culture: german));
+        Assert.Equal("10 GB", MediaText.DisplaySize(10_000_000_000, culture: german));
+    }
+
+    /// <summary>Tiles and album cards, from metadata alone — including sizes the uploader could not give.</summary>
+    [Fact]
+    public void AShapeIsMeasuredAsTheOriginalMeasuresIt()
+    {
+        var vectors = Section("shapes");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        int? Size(JsonElement row, string name) =>
+            row.GetProperty(name).ValueKind == JsonValueKind.Null ? null : row.GetProperty(name).GetInt32();
+        foreach (var row in vectors.EnumerateArray())
+        {
+            var (width, height) = (Size(row, "width"), Size(row, "height"));
+            Assert.Equal(row.GetProperty("aspect").GetDouble(), MediaText.AspectRatio(width, height));
+            var tile = MediaText.TileSize(width, height);
+            Assert.Equal(row.GetProperty("tile")[0].GetDouble(), tile.Width);
+            Assert.Equal(row.GetProperty("tile")[1].GetDouble(), tile.Height);
+            var card = MediaText.CardSize(width, height, 300);
+            Assert.Equal(row.GetProperty("card")[0].GetDouble(), card.Width);
+            Assert.Equal(row.GetProperty("card")[1].GetDouble(), card.Height);
+            var odd = MediaText.CardSize(width, height, 250.625);
+            Assert.Equal(row.GetProperty("card_odd")[0].GetDouble(), odd.Width);
+            Assert.Equal(row.GetProperty("card_odd")[1].GetDouble(), odd.Height);
+        }
+    }
+
+    [Fact]
+    public void WhatIsLookedAtIsWhatTheOriginalLooksAt()
+    {
+        foreach (var row in Section("is_media").EnumerateArray())
+        {
+            Assert.Equal(row.GetProperty("is_media").GetBoolean(), MediaText.IsMedia(row.GetProperty("kind").GetString()!));
+        }
+    }
+
+    /// <summary>
+    /// A place: coordinates always with a POINT, the accuracy only when it is a number, and the Maps
+    /// link percent-encoded byte by byte with the label trimmed — or "Location" when there is none.
+    /// </summary>
+    [Fact]
+    public void APlaceReadsAndLinksAsTheOriginalDoes()
+    {
+        var vectors = Section("locations");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        foreach (var row in vectors.EnumerateArray())
+        {
+            var latitude = row.GetProperty("latitude").GetDouble();
+            var longitude = row.GetProperty("longitude").GetDouble();
+            double? accuracy = row.GetProperty("accuracy_nan").GetBoolean()
+                ? double.NaN
+                : row.GetProperty("accuracy_m").ValueKind == JsonValueKind.Null ? null : row.GetProperty("accuracy_m").GetDouble();
+            var name = row.GetProperty("name").ValueKind == JsonValueKind.Null ? null : row.GetProperty("name").GetString();
+            Assert.Equal(row.GetProperty("line").GetString(), MediaText.LocationLine(latitude, longitude, accuracy));
+            Assert.Equal(row.GetProperty("maps").GetString(), MediaText.MapsUrl(latitude, longitude, name));
+        }
+    }
 }

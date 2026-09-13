@@ -387,6 +387,57 @@ fn chat() {
     }
     out.push_str("  ],\n");
 
+    // --- how an attachment is measured and labelled ----------------------------------------------
+    {
+        let mut rows = Vec::new();
+        for bytes in [0u64, 1, 2, 999, 1_000, 1_499, 1_500, 999_499, 999_500, 1_000_000, 1_049_999,
+                      1_050_000, 1_250_000, 999_949_999, 999_950_000, 1_000_000_000, 1_234_567_890,
+                      10_000_000_000, 99_999_999_999] {
+            rows.push(serde_json::json!({"bytes": bytes, "said": media::display_size(bytes)}));
+        }
+        let sizes: Vec<(Option<i64>, Option<i64>)> = vec![
+            (None, None), (Some(4032), Some(3024)), (Some(3024), Some(4032)), (Some(1920), Some(1080)),
+            (Some(1080), Some(1920)), (Some(1000), Some(1000)), (Some(0), Some(100)), (Some(100), None),
+            (Some(4000), Some(1000)), (Some(1000), Some(4000)), (Some(-5), Some(10)), (Some(5), Some(4)),
+        ];
+        let mut shapes = Vec::new();
+        for (w, h) in &sizes {
+            let tile = media::tile_size(*w, *h);
+            let card = media::card_size(*w, *h, 300.0);
+            // 250.625 over 5:4 is exactly 200.5: the one width where rounding half away from zero and
+            // rounding half to even disagree.
+            let odd = media::card_size(*w, *h, 250.625);
+            shapes.push(serde_json::json!({"width": w, "height": h, "aspect": media::aspect_ratio(*w, *h),
+                "tile": [tile.0, tile.1], "card": [card.0, card.1], "card_odd": [odd.0, odd.1]}));
+        }
+        let kinds: Vec<serde_json::Value> = ["photo", "video", "audio", "file", "location", "hologram"]
+            .iter().map(|k| serde_json::json!({"kind": k, "is_media": media::is_media(k)})).collect();
+        let places: Vec<(f64, f64, Option<f64>, Option<&str>)> = vec![
+            (55.7558, 37.6173, Some(12.0), Some("Home")),
+            (-33.868820, 151.209296, None, None),
+            (51.5, -0.12, Some(4.5), Some("  ")),
+            (0.000005, -0.000005, Some(0.49), Some("Gran's house, 2nd floor")),
+            (40.4406248, -3.7153898, Some(f64::NAN), Some("Plaza & Mayor")),
+            (89.9999999, -179.9999999, Some(1500.5), Some("  Caf\u{e9}  ")),
+            (48.8584, 2.2945, Some(3.0), Some("Tower~Top_2.0-west")),
+        ];
+        let locations: Vec<serde_json::Value> = places.iter().map(|(lat, lon, acc, name)| serde_json::json!({
+            "latitude": lat, "longitude": lon,
+            "accuracy_m": acc.filter(|a| a.is_finite()),
+            "accuracy_nan": acc.map(|a| a.is_nan()).unwrap_or(false),
+            "name": name,
+            "line": media::location_line(*lat, *lon, *acc),
+            "maps": media::maps_url(*lat, *lon, *name)})).collect();
+        out.push_str(&format!("  \"display_size\": [\n{}\n  ],\n",
+            rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        out.push_str(&format!("  \"shapes\": [\n{}\n  ],\n",
+            shapes.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        out.push_str(&format!("  \"is_media\": [\n{}\n  ],\n",
+            kinds.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        out.push_str(&format!("  \"locations\": [\n{}\n  ],\n",
+            locations.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+    }
+
     // --- reactions and the reply excerpt ------------------------------------------------------
     // The chips under a bubble, "See who reacted", the optimistic toggle, the capsule and the
     // 120-scalar cut. Emoji are built from code points so this file stays plain ASCII to the eye.

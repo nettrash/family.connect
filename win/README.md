@@ -172,8 +172,33 @@ The conversation draws replies, reactions, edits, who is typing, and what is sti
 - **A message not yet landed is drawn under the newest one**: "Sending…", or — refused — Try Again
   and Delete.
 
-What is NOT here yet in the window: attachments, the board, the family console and settings, threads,
-polls, mentions in the composer, notifications, and calls. Their logic is in App.Logic already (all
+**Notifications come from the live socket, and only from live frames.** A message or a note that
+says something new raises one while the window is not in front (`NotificationRules` decides; the
+body is never the message), a second one about the same chat REPLACES the first (its tag is
+`NotificationRules.ChatTag`), and opening the chat takes them away. A resync after a night asleep
+raises nothing — it moves the unread count, which is in the window's title and on the taskbar icon.
+Clicking one opens its chat, including the click that LAUNCHED the app: the manifest declares the
+notification COM activator (its CLSID must never change), `Program.Main` subscribes and registers
+before anything reads the activation, and `ToastActivation` holds a click until the window exists.
+What a click carries is untrusted input (`ToastArguments.Parse`: anything but a positive id opens
+nothing).
+
+**Attachments are drawn and handed over, not yet sent.** A photo or a video is a tile at its own
+shape from METADATA (`MediaText.TileSize`, so a row never changes height when its picture lands);
+several are a grid of four with the rest counted. A tile draws the preview when there is one, a
+photo's own bytes when there is not, and for a video with no poster nothing at all
+(`AttachmentFiles.SourceFor` — a tile never downloads a whole video to draw itself). A photo opens
+whole with Save…; a video or a recording opens in whatever plays it on this machine; a file row
+saves through the save picker; a place opens in Maps. Bytes are fetched once by `AttachmentCache`
+into `FileBlobStore` (one file per key, written whole or not at all, wiped with the SQLite cache
+when the server changes). The measuring — sizes in the reader's decimal format, shapes, the
+location line with a POINT, the Maps link — is `fc_text::media` ported and pinned by the oracle.
+File sizes, "Zero KB" and "%lld byte(s)" are English for now: the Apple apps use the system's byte
+formatter, so the shared catalogue has no such sentences, and this port's catalogue has no plural
+forms (two keys stand in for English's one and other).
+
+What is NOT here yet in the window: SENDING attachments, the board, the family console and settings,
+threads, polls, mentions in the composer, and calls. Their logic is in App.Logic already (all
 but calls).
 
 **One cache, one connection, one operation at a time.** The socket applies frames on its own

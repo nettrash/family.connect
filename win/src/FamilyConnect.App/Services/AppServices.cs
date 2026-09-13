@@ -24,6 +24,9 @@ internal sealed class AppServices : IAsyncDisposable
 
     public Uri? SavedServer => ServerSetting.Read();
 
+    /// <summary>The window's handle, which a desktop app's pickers must be given.</summary>
+    public nint WindowHandle { get; set; }
+
     public Connection? Current { get; private set; }
 
     /// <summary>Talk to <paramref name="server"/> from now on.</summary>
@@ -36,6 +39,11 @@ internal sealed class AppServices : IAsyncDisposable
             await old.DisposeAsync();
         }
         ServerSetting.Write(server);
+        if (previous is not null && previous != server)
+        {
+            // Attachment ids are one server's own: another server's files must not answer for them.
+            FileBlobStore.Wipe(AppFolders.BlobsPath);
+        }
         var next = new Connection(server, AppFolders.CachePath);
         if (previous is not null && previous != server)
         {

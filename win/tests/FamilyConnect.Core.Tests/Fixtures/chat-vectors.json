@@ -180,6 +180,58 @@
     {"uid": "fc-note-20@nettrash", "title": "яяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяя", "starts_at": "20270101T080000Z", "ends_at": null, "place": "бббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббббб", "file": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//nettrash//Family Connect//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nBEGIN:VEVENT\r\nUID:fc-note-20@nettrash\r\nDTSTAMP:20260912T120000Z\r\nDTSTART:20270101T080000Z\r\nSUMMARY:яяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяя\r\n яяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяя\r\n яяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяя\r\n яяяяяяяяяяяяя\r\nLOCATION:ббббббббббббббббббббббббббббббббб\r\n ббббббббббббббббббббббббббббббббббббб\r\n бббббббббббббббббббб\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"},
     {"uid": "fc-note-18@nettrash", "title": "A very long title indeed, long enough to fold right here 👨‍👩‍👧‍👦 and then some more", "starts_at": "20261230T080000Z", "ends_at": null, "place": null, "file": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//nettrash//Family Connect//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nBEGIN:VEVENT\r\nUID:fc-note-18@nettrash\r\nDTSTAMP:20260912T120000Z\r\nDTSTART:20261230T080000Z\r\nSUMMARY:A very long title indeed\\, long enough to fold right here 👨‍\r\n 👩‍👧‍👦 and then some more\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"}
   ],
+  "display_size": [
+    {"bytes":0,"said":"Zero KB"},
+    {"bytes":1,"said":"1 byte"},
+    {"bytes":2,"said":"2 bytes"},
+    {"bytes":999,"said":"999 bytes"},
+    {"bytes":1000,"said":"1 KB"},
+    {"bytes":1499,"said":"1 KB"},
+    {"bytes":1500,"said":"2 KB"},
+    {"bytes":999499,"said":"999 KB"},
+    {"bytes":999500,"said":"1 MB"},
+    {"bytes":1000000,"said":"1 MB"},
+    {"bytes":1049999,"said":"1 MB"},
+    {"bytes":1050000,"said":"1.1 MB"},
+    {"bytes":1250000,"said":"1.2 MB"},
+    {"bytes":999949999,"said":"999.9 MB"},
+    {"bytes":999950000,"said":"1 GB"},
+    {"bytes":1000000000,"said":"1 GB"},
+    {"bytes":1234567890,"said":"1.23 GB"},
+    {"bytes":10000000000,"said":"10 GB"},
+    {"bytes":99999999999,"said":"100 GB"}
+  ],
+  "shapes": [
+    {"aspect":1.3333333333333333,"card":[300.0,225.0],"card_odd":[250.625,188.0],"height":null,"tile":[320.0,240.0],"width":null},
+    {"aspect":1.3333333333333333,"card":[300.0,225.0],"card_odd":[250.625,188.0],"height":3024,"tile":[320.0,240.0],"width":4032},
+    {"aspect":0.75,"card":[300.0,400.0],"card_odd":[250.625,334.0],"height":4032,"tile":[240.0,320.0],"width":3024},
+    {"aspect":1.7777777777777777,"card":[300.0,200.0],"card_odd":[250.625,167.0],"height":1080,"tile":[320.0,180.0],"width":1920},
+    {"aspect":0.5625,"card":[300.0,400.0],"card_odd":[250.625,334.0],"height":1920,"tile":[180.0,320.0],"width":1080},
+    {"aspect":1.0,"card":[300.0,300.0],"card_odd":[250.625,251.0],"height":1000,"tile":[320.0,320.0],"width":1000},
+    {"aspect":1.3333333333333333,"card":[300.0,225.0],"card_odd":[250.625,188.0],"height":100,"tile":[320.0,240.0],"width":0},
+    {"aspect":1.3333333333333333,"card":[300.0,225.0],"card_odd":[250.625,188.0],"height":null,"tile":[320.0,240.0],"width":100},
+    {"aspect":4.0,"card":[300.0,200.0],"card_odd":[250.625,167.0],"height":1000,"tile":[320.0,80.0],"width":4000},
+    {"aspect":0.25,"card":[300.0,400.0],"card_odd":[250.625,334.0],"height":4000,"tile":[80.0,320.0],"width":1000},
+    {"aspect":1.3333333333333333,"card":[300.0,225.0],"card_odd":[250.625,188.0],"height":10,"tile":[320.0,240.0],"width":-5},
+    {"aspect":1.25,"card":[300.0,240.0],"card_odd":[250.625,201.0],"height":4,"tile":[320.0,256.0],"width":5}
+  ],
+  "is_media": [
+    {"is_media":true,"kind":"photo"},
+    {"is_media":true,"kind":"video"},
+    {"is_media":false,"kind":"audio"},
+    {"is_media":false,"kind":"file"},
+    {"is_media":false,"kind":"location"},
+    {"is_media":true,"kind":"hologram"}
+  ],
+  "locations": [
+    {"accuracy_m":12.0,"accuracy_nan":false,"latitude":55.7558,"line":"55.75580, 37.61730 · ±12 m","longitude":37.6173,"maps":"https://maps.apple.com/?ll=55.7558000,37.6173000&q=Home","name":"Home"},
+    {"accuracy_m":null,"accuracy_nan":false,"latitude":-33.86882,"line":"-33.86882, 151.20930","longitude":151.209296,"maps":"https://maps.apple.com/?ll=-33.8688200,151.2092960&q=Location","name":null},
+    {"accuracy_m":4.5,"accuracy_nan":false,"latitude":51.5,"line":"51.50000, -0.12000 · ±5 m","longitude":-0.12,"maps":"https://maps.apple.com/?ll=51.5000000,-0.1200000&q=Location","name":"  "},
+    {"accuracy_m":0.49,"accuracy_nan":false,"latitude":5e-6,"line":"0.00001, -0.00001 · ±0 m","longitude":-5e-6,"maps":"https://maps.apple.com/?ll=0.0000050,-0.0000050&q=Gran%27s%20house%2C%202nd%20floor","name":"Gran's house, 2nd floor"},
+    {"accuracy_m":null,"accuracy_nan":true,"latitude":40.4406248,"line":"40.44062, -3.71539","longitude":-3.7153898,"maps":"https://maps.apple.com/?ll=40.4406248,-3.7153898&q=Plaza%20%26%20Mayor","name":"Plaza & Mayor"},
+    {"accuracy_m":1500.5,"accuracy_nan":false,"latitude":89.9999999,"line":"90.00000, -180.00000 · ±1501 m","longitude":-179.9999999,"maps":"https://maps.apple.com/?ll=89.9999999,-179.9999999&q=Caf%C3%A9","name":"  Café  "},
+    {"accuracy_m":3.0,"accuracy_nan":false,"latitude":48.8584,"line":"48.85840, 2.29450 · ±3 m","longitude":2.2945,"maps":"https://maps.apple.com/?ll=48.8584000,2.2945000&q=Tower~Top_2.0-west","name":"Tower~Top_2.0-west"}
+  ],
   "reaction_chips": [
     {"chips":[],"me":7,"reactions":[]},
     {"chips":[],"me":9,"reactions":[]},

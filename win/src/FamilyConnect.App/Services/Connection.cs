@@ -31,6 +31,7 @@ internal sealed class Connection : IAsyncDisposable
         Socket = new ChatSocket(() => new ClientWebSocketAdapter(), () => Api.SocketUrl, Tokens);
         Sending = new SendPipeline(Socket, Outbox, Chats, Api);
         Router = new FrameRouter(Chats, Board);
+        Attachments = new AttachmentCache(Api, new FileBlobStore(AppFolders.BlobsPath));
         Live = new LiveConnection(Session, Socket, new Resync(Api, Chats, Board, Sending), Sending, Router);
     }
 
@@ -59,6 +60,9 @@ internal sealed class Connection : IAsyncDisposable
     public FrameRouter Router { get; }
 
     public LiveConnection Live { get; }
+
+    /// <summary>Attachment bytes: fetched once, kept, and a preview asked for only where one exists.</summary>
+    public AttachmentCache Attachments { get; }
 
     /// <summary>Whether a token is stored for this server — which is not the same as a session.</summary>
     public bool HasToken => Tokens.Token is not null;

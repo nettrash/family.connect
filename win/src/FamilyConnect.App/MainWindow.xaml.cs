@@ -16,6 +16,8 @@ public sealed partial class MainWindow : Window
     private readonly AppServices services;
     private readonly DispatcherQueueTimer flushTimer;
     private Connection? connection;
+    private Attention? attention;
+    private int attentionQueued;
     private ChatsView? chats;
     private Gate? shown;
 
@@ -23,6 +25,7 @@ public sealed partial class MainWindow : Window
     {
         this.services = services;
         InitializeComponent();
+        services.WindowHandle = WinRT.Interop.WindowNative.GetWindowHandle(this);
 
         // The product's name, which is the same in every language.
         Title = "Family Connect";
@@ -58,6 +61,8 @@ public sealed partial class MainWindow : Window
         var next = await services.UseAsync(server);
         connection = next;
         next.Session.Changed += OnSessionChanged;
+        attention = new Attention(services, next, QueueAttention);
+        RefreshAttention();
         if (!next.HasToken)
         {
             Show(Gate.SignedOut);
@@ -94,7 +99,45 @@ public sealed partial class MainWindow : Window
     }
 
     private void OnSessionChanged(SessionState state) =>
-        DispatcherQueue.TryEnqueue(() => Show(state.Gate));
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            Show(state.Gate);
+            RefreshAttention();
+        });
+
+    /// <summary>The unread count may have moved, on whatever thread noticed: one refresh, on this one.</summary>
+    private void QueueAttention()
+    {
+        if (Interlocked.Exchange(ref attentionQueued, 1) == 1)
+        {
+            return;
+        }
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            Interlocked.Exchange(ref attentionQueued, 0);
+            RefreshAttention();
+        });
+    }
+
+    /// <summary>The count in the title and on the taskbar icon — and neither while nobody is chatting.</summary>
+    private void RefreshAttention()
+    {
+        var chatting = connection?.Session.State.CanChat == true && attention is not null;
+        var title = chatting ? attention!.Title : "Family Connect";
+        Title = title;
+        TitleText.Text = title;
+        Toasts.Badge(chatting ? attention!.Unread : 0);
+    }
+
+    /// <summary>A clicked notification: to the front, and to the chat it was about.</summary>
+    internal void OpenFromToast(IReadOnlyDictionary<string, string> arguments)
+    {
+        Activate();
+        if (ToastArguments.Parse(arguments) is { ChatId: { } chatId })
+        {
+            chats?.OpenChat(chatId);
+        }
+    }
 
     private void Show(Gate gate)
     {
@@ -128,6 +171,8 @@ public sealed partial class MainWindow : Window
         chats?.Detach();
         chats = null;
         shown = null;
+        attention?.Dispose();
+        attention = null;
         if (connection is { } old)
         {
             old.Session.Changed -= OnSessionChanged;
@@ -150,6 +195,7 @@ public sealed partial class MainWindow : Window
         {
             Flush(SendRules.FlushTrigger.WindowActivated);
             chats?.ReaderReturned();
+            RefreshAttention();
         }
     }
 
@@ -157,6 +203,8 @@ public sealed partial class MainWindow : Window
     {
         flushTimer.Stop();
         Detach();
+        Toasts.Badge(0);
+        Toasts.Unregister();
         _ = services.DisposeAsync().AsTask();
     }
 }

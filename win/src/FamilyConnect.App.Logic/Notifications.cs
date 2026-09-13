@@ -84,7 +84,7 @@ public sealed class NotificationRules(ChatStore chats, IStringCatalog? words = n
         }
         var mentioned = (message.Mentions ?? []).Any(mention => mention.UserId == me);
         return new Toast(
-            $"chat-{message.ChatId}",
+            ChatTag(message.ChatId),
             NotifyText.Title(
                 chat.Chat.Kind == "family" ? FamilyName : null, NameOf(message.SenderId),
                 mentioned, say),
@@ -117,6 +117,13 @@ public sealed class NotificationRules(ChatStore chats, IStringCatalog? words = n
     /// the exact number stops being the point.
     /// </summary>
     public string WindowTitle(string brand) => NotifyText.WindowTitle(brand, chats.Unread());
+
+    /// <summary>
+    /// The tag every notification about one chat carries, so a second replaces the first and opening
+    /// the chat can take them all away. Invariant: it is an identifier, not a sentence.
+    /// </summary>
+    public static string ChatTag(long chatId) =>
+        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"chat-{chatId}");
 
     /// <summary>Whether anything is worth saying at all.</summary>
     private bool Speaking => Wanted && !InFront;

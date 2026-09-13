@@ -42,7 +42,8 @@ public class CatalogueTests
 
     /// <summary>The five sentences nobody has translated yet, named rather than pretended.</summary>
     private static readonly string[] EnglishForNow =
-        ["%@ — %@", "%@ — %@ mentioned you", "Chat", "New note", "Voice message"];
+        ["%@ — %@", "%@ — %@ mentioned you", "Chat", "New note", "Voice message",
+         "%@ GB", "%@ KB", "%@ MB", "%lld byte", "%lld bytes", "Zero KB"];
 
     [Fact]
     public void ThisPortActuallyDrawsSomething()
