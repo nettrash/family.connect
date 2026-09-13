@@ -73,6 +73,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </remarks>
     public void Replace(IReadOnlyList<ChatRowDto> rows)
     {
+        using var serialised = database.Hold();
         using var transaction = database.Connection.BeginTransaction();
         var keep = rows.Select(row => row.Chat.Id).ToHashSet();
         foreach (var id in Ids(transaction).Where(id => !keep.Contains(id)))
@@ -99,6 +100,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
 
     public IReadOnlyList<ChatRowDto> Chats()
     {
+        using var serialised = database.Hold();
         var rows = new List<ChatRowDto>();
         using var command = database.Connection.CreateCommand();
         // Hidden chats are not on the list and count towards nothing: "there is nothing here for
@@ -119,6 +121,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </summary>
     public ChatRowDto? Chat(long chatId)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText = "SELECT * FROM chats WHERE chat_id = $id";
         command.Parameters.AddWithValue("$id", chatId);
@@ -131,6 +134,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// <summary>Whether this chat is on the list — false while the reader has its peer blocked.</summary>
     public bool IsListed(long chatId)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText = "SELECT listed FROM chats WHERE chat_id = $id";
         command.Parameters.AddWithValue("$id", chatId);
@@ -147,6 +151,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </summary>
     public void MarkRead(long chatId, long lastReadMessageId)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             """
@@ -196,6 +201,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </remarks>
     public void Advance(long chatId, long? reactionSeq = null, long? editSeq = null, long? pollSeq = null)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             """
@@ -229,6 +235,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// <returns>Whether anything changed — false for an answer this device had already applied.</returns>
     public bool Apply(MessageDto message, SeqRoute route = SeqRoute.CatchUpPage)
     {
+        using var serialised = database.Hold();
         using var transaction = database.Connection.BeginTransaction();
         var changed = Apply(message, transaction, isPreview: false, route);
         transaction.Commit();
@@ -239,6 +246,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     public int Apply(
         IReadOnlyList<MessageDto> messages, SeqRoute route = SeqRoute.CatchUpPage)
     {
+        using var serialised = database.Hold();
         using var transaction = database.Connection.BeginTransaction();
         var changed = messages.Count(
             message => Apply(message, transaction, isPreview: false, route));
@@ -265,6 +273,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         ReactionDto[] reactions,
         SeqRoute route = SeqRoute.LiveFrame)
     {
+        using var serialised = database.Hold();
         if (route != SeqRoute.Evidence)
         {
             Advance(chatId, reactionSeq: reactionSeq);
@@ -288,6 +297,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     public bool ApplyPoll(
         long chatId, long messageId, PollDto poll, SeqRoute route = SeqRoute.LiveFrame)
     {
+        using var serialised = database.Hold();
         if (route != SeqRoute.Evidence)
         {
             Advance(chatId, pollSeq: poll.PollSeq);
@@ -307,6 +317,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
 
     public MessageDto? Message(long messageId)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText = "SELECT * FROM messages WHERE message_id = $id";
         command.Parameters.AddWithValue("$id", messageId);
@@ -320,6 +331,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </summary>
     public IReadOnlyList<MessageDto> Messages(long chatId, long? beforeId = null, int limit = 50)
     {
+        using var serialised = database.Hold();
         var messages = new List<MessageDto>();
         using var command = database.Connection.CreateCommand();
         command.CommandText = beforeId is null
@@ -346,6 +358,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </summary>
     public IReadOnlyList<MessageDto> Thread(long rootId)
     {
+        using var serialised = database.Hold();
         var messages = new List<MessageDto>();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
@@ -372,6 +385,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </summary>
     public void Replace(IReadOnlyList<MemberDto> members, IReadOnlyList<MemberDto>? former = null)
     {
+        using var serialised = database.Hold();
         using var transaction = database.Connection.BeginTransaction();
         foreach (var member in members.Concat(former ?? []))
         {
@@ -406,6 +420,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
 
     public IReadOnlyList<MemberDto> Members()
     {
+        using var serialised = database.Hold();
         var members = new List<MemberDto>();
         using var command = database.Connection.CreateCommand();
         command.CommandText = "SELECT * FROM members ORDER BY display_name, user_id";
@@ -447,6 +462,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </remarks>
     public void Joined(UserDto user)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             """
@@ -476,6 +492,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </summary>
     public void Left(long userId)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             "UPDATE members SET has_left = 1, role = NULL WHERE user_id = $id";
@@ -495,6 +512,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </remarks>
     public void Deleted(MemberDto tombstone)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             """
@@ -519,6 +537,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </summary>
     public void SetOwner(long userId)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             """
@@ -545,6 +564,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </remarks>
     public void ReplaceBlocked(IReadOnlyList<long> userIds)
     {
+        using var serialised = database.Hold();
         using var transaction = database.Connection.BeginTransaction();
         using (var clear = database.Connection.CreateCommand())
         {
@@ -575,6 +595,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </remarks>
     public void SetBlocked(long userId, bool blocked)
     {
+        using var serialised = database.Hold();
         using var transaction = database.Connection.BeginTransaction();
         using (var command = database.Connection.CreateCommand())
         {
@@ -600,6 +621,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// <summary>Everyone this reader has blocked, whether or not the roster can name them.</summary>
     public IReadOnlyList<long> Blocked()
     {
+        using var serialised = database.Hold();
         var ids = new List<long>();
         using var command = database.Connection.CreateCommand();
         command.CommandText = "SELECT user_id FROM blocked ORDER BY user_id";
@@ -619,6 +641,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// </summary>
     public bool IsBlocked(long userId)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText = "SELECT 1 FROM blocked WHERE user_id = $id";
         command.Parameters.AddWithValue("$id", userId);

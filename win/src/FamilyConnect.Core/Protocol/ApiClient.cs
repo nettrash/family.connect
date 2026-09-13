@@ -122,6 +122,30 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
             HttpMethod.Get, $"/chats/{chatId}/polls?after_seq={afterSeq}&limit={limit}", ct: ct);
 
     /// <summary>
+    /// Set the caller's reaction. A STATE-SET, not a toggle: the client decides whether a tap means
+    /// set or remove (see <see cref="Reactions.Toggle"/>), and the answer is the message's whole list.
+    /// </summary>
+    public Task<ApiResult<MessageReactionsDto>> React(
+        long chatId, long messageId, string emoji, CancellationToken ct = default) =>
+        Send<MessageReactionsDto>(
+            HttpMethod.Put, $"/chats/{chatId}/messages/{messageId}/reaction", new { emoji }, ct: ct);
+
+    /// <summary>Take the caller's reaction off. Idempotent: removing nothing answers the list unchanged.</summary>
+    public Task<ApiResult<MessageReactionsDto>> Unreact(
+        long chatId, long messageId, CancellationToken ct = default) =>
+        Send<MessageReactionsDto>(
+            HttpMethod.Delete, $"/chats/{chatId}/messages/{messageId}/reaction", ct: ct);
+
+    /// <summary>
+    /// Replace the body of the caller's own message. The send rules apply (trimmed, non-empty, at
+    /// most 4000 characters), and re-sending the body it already has changes nothing.
+    /// </summary>
+    public Task<ApiResult<MessageResponse>> EditMessage(
+        long chatId, long messageId, string body, CancellationToken ct = default) =>
+        Send<MessageResponse>(
+            HttpMethod.Patch, $"/chats/{chatId}/messages/{messageId}", new { body }, ct: ct);
+
+    /// <summary>
     /// The edit catch-up, which answers whole messages rather than a bespoke patch — so a client
     /// applies them through exactly the same path as a page of history.
     /// </summary>

@@ -63,6 +63,7 @@ public sealed class ConversationModel
     private readonly SendPipeline sending;
     private readonly IFrameSender socket;
     private readonly Func<DateTimeOffset> clock;
+    private readonly OutboxStore? outbox;
     private readonly HashSet<long> revealed = [];
 
     private int window = Page;
@@ -75,7 +76,8 @@ public sealed class ConversationModel
         ApiClient api,
         SendPipeline sending,
         IFrameSender socket,
-        Func<DateTimeOffset>? clock = null)
+        Func<DateTimeOffset>? clock = null,
+        OutboxStore? outbox = null)
     {
         ChatId = chatId;
         this.chats = chats;
@@ -83,6 +85,7 @@ public sealed class ConversationModel
         this.sending = sending;
         this.socket = socket;
         this.clock = clock ?? (() => DateTimeOffset.UtcNow);
+        this.outbox = outbox;
         reported = chats.Chat(chatId)?.LastReadMessageId ?? 0;
     }
 
@@ -234,4 +237,85 @@ public sealed class ConversationModel
 
     /// <summary>Hide it again.</summary>
     public void Hide(long messageId) => revealed.Remove(messageId);
+
+    // ---- what is still on its way ----------------------------------------------------------
+
+    /// <summary>
+    /// This chat's own messages that have not landed — waiting, sending, or refused — oldest first.
+    /// They are drawn under the newest message until the ack or the feed brings the real one and
+    /// the row goes; a refused one stays, with a way to try again or give up.
+    /// </summary>
+    public IReadOnlyList<OutboxRow> Pending() => outbox?.ForChat(ChatId) ?? [];
+
+    /// <summary>Try a refused or waiting row again, now — the budget starts over. The caller flushes.</summary>
+    public void Retry(string clientMsgId) => outbox?.Retry(clientMsgId);
+
+    /// <summary>Give up on a row. It never reached the server, so nobody else has to know.</summary>
+    public bool Discard(string clientMsgId) => outbox?.Discard(clientMsgId) ?? false;
+
+    // ---- reactions and edits -----------------------------------------------------------------
+
+    /// <summary>
+    /// React, or take a reaction off: the server's set is a STATE-SET and not a toggle, so the tap
+    /// is decided here — the emoji already held means DELETE, anything else means PUT
+    /// (<see cref="Reactions.Toggle"/>). The answer is the message's whole list, applied as
+    /// EVIDENCE: it may not move the chat's catch-up cursor.
+    /// </summary>
+    /// <remarks>
+    /// Nothing is drawn before the server answers. An optimistic list would have to live in the
+    /// cache without a sequence of its own, and the next frame for the same message would be judged
+    /// against a list the server never minted.
+    /// </remarks>
+    public async Task<ApiError?> ReactAsync(long messageId, string emoji, CancellationToken ct = default)
+    {
+        if (chats.Message(messageId) is not { } held)
+        {
+            return null;
+        }
+        var toggle = Reactions.Toggle(held.Reactions ?? [], chats.Reader, emoji);
+        var answer = toggle.Removing
+            ? await api.Unreact(ChatId, messageId, ct).ConfigureAwait(false)
+            : await api.React(ChatId, messageId, emoji, ct).ConfigureAwait(false);
+        if (!answer.Ok || answer.Value is null)
+        {
+            return answer.Error ?? ApiError.Transport("no answer");
+        }
+        chats.ApplyReactions(
+            ChatId, messageId, answer.Value.ReactionSeq, answer.Value.Reactions, SeqRoute.Evidence);
+        return null;
+    }
+
+    /// <summary>
+    /// Whether a bubble's words may be edited: the reader's own, with words to edit. A call record's
+    /// body is a placeholder nobody wrote, and a poll's question is the poll.
+    /// </summary>
+    public static bool MayEdit(Bubble bubble) =>
+        bubble.Mine
+        && bubble.Message.Call is null
+        && bubble.Message.Poll is null
+        && bubble.Message.Body.Length > 0;
+
+    /// <summary>
+    /// Replace the words of one of the reader's messages. Trimmed, as the server trims them; an
+    /// empty body is refused here, and the words it already has send nothing at all.
+    /// </summary>
+    public async Task<ApiError?> EditAsync(long messageId, string body, CancellationToken ct = default)
+    {
+        var trimmed = body.Trim();
+        if (trimmed.Length == 0)
+        {
+            return new ApiError(ErrorCodes.MessageEmpty, "a message cannot be empty", 400);
+        }
+        if (chats.Message(messageId) is { } held && held.Body == trimmed)
+        {
+            return null;
+        }
+        var answer = await api.EditMessage(ChatId, messageId, trimmed, ct).ConfigureAwait(false);
+        if (!answer.Ok || answer.Value is null)
+        {
+            return answer.Error ?? ApiError.Transport("no answer");
+        }
+        chats.Apply(answer.Value.Message, SeqRoute.Evidence);
+        return null;
+    }
 }

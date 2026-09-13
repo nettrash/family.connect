@@ -63,6 +63,7 @@ public sealed class OutboxStore(Database database)
     /// <summary>Write a send down — before the first byte of it moves.</summary>
     public void Queue(OutboxRow row)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             """
@@ -129,6 +130,7 @@ public sealed class OutboxStore(Database database)
     /// </summary>
     public bool Delivered(string clientMsgId)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText = "DELETE FROM outbox WHERE client_msg_id = $id";
         command.Parameters.AddWithValue("$id", clientMsgId);
@@ -146,6 +148,7 @@ public sealed class OutboxStore(Database database)
         ReconnectBackoff backoff,
         bool holdsBytes = true)
     {
+        using var serialised = database.Hold();
         var row = Find(clientMsgId);
         if (row is null)
         {
@@ -175,6 +178,7 @@ public sealed class OutboxStore(Database database)
     /// </summary>
     public void Uploaded(string clientMsgId, long attachmentId, string file)
     {
+        using var serialised = database.Hold();
         var row = Find(clientMsgId);
         if (row is null)
         {
@@ -198,6 +202,7 @@ public sealed class OutboxStore(Database database)
     /// </summary>
     public void Refuse(string clientMsgId, string code)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             "UPDATE outbox SET failed_code = $code, next_attempt_at = NULL WHERE client_msg_id = $id";
@@ -214,6 +219,7 @@ public sealed class OutboxStore(Database database)
     /// <returns>Whether there was anything to push again.</returns>
     public bool Reupload(string clientMsgId)
     {
+        using var serialised = database.Hold();
         var row = Find(clientMsgId);
         if (row?.StagedFiles is not { Length: > 0 } staged)
         {
@@ -236,6 +242,7 @@ public sealed class OutboxStore(Database database)
     /// </summary>
     public void Retry(string clientMsgId)
     {
+        using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             "UPDATE outbox SET attempts = 0, next_attempt_at = NULL, failed_code = NULL " +
@@ -249,6 +256,7 @@ public sealed class OutboxStore(Database database)
 
     private IReadOnlyList<OutboxRow> Select(string sql, params (string Name, object Value)[] bind)
     {
+        using var serialised = database.Hold();
         var rows = new List<OutboxRow>();
         using var command = database.Connection.CreateCommand();
         command.CommandText = sql;
