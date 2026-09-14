@@ -280,6 +280,8 @@ public sealed record FamilyOnlyResponse(FamilyDto Family);
 
 public sealed record MemberResponse(MemberDto Member);
 
+public sealed record ChatResponse(ChatDto Chat);
+
 public sealed record UserResponse(UserDto User);
 
 public sealed record InviteCodeResponse(

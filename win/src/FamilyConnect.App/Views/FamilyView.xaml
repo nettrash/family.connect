@@ -1,0 +1,69 @@
+<UserControl
+    x:Class="FamilyConnect.App.Views.FamilyView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Structure and x:Name only: every word is set from code, through the catalogue. -->
+    <Grid Padding="24,0,24,16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Grid Margin="0,0,0,12" MaxWidth="640">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="Heading" Style="{StaticResource TitleTextBlockStyle}" />
+            <Button x:Name="DoneButton" Grid.Column="1" VerticalAlignment="Center" Style="{StaticResource AccentButtonStyle}" />
+        </Grid>
+        <ScrollViewer Grid.Row="1" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel MaxWidth="640" Spacing="24" Padding="0,0,16,16">
+                <StackPanel Orientation="Horizontal" Spacing="12">
+                    <PersonPicture x:Name="FamilyPicture" Width="44" Height="44" />
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock x:Name="FamilyNameText" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        <TextBlock x:Name="MembersText" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                </StackPanel>
+                <TextBlock x:Name="NoticeText" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock x:Name="ProblemText" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+
+                <StackPanel x:Name="OwnerSections" Spacing="24">
+                    <StackPanel Spacing="8">
+                        <TextBlock x:Name="InviteHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="InviteCodeText" VerticalAlignment="Center" FontFamily="Consolas" FontSize="18" IsTextSelectionEnabled="True" />
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                <Button x:Name="CopyButton" />
+                                <Button x:Name="RotateButton" />
+                            </StackPanel>
+                        </Grid>
+                        <TextBlock x:Name="InviteFootnote" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+
+                    <StackPanel x:Name="RequestsSection" Spacing="8">
+                        <TextBlock x:Name="RequestsHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <StackPanel x:Name="RequestsList" Spacing="8" />
+                        <TextBlock x:Name="RequestsError" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="8">
+                        <TextBlock x:Name="ReportsHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <TextBlock x:Name="ReportsEmpty" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <StackPanel x:Name="ReportsList" Spacing="12" />
+                        <TextBlock x:Name="ReportsError" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                    </StackPanel>
+                </StackPanel>
+
+                <StackPanel Spacing="8">
+                    <TextBlock x:Name="MembersHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <StackPanel x:Name="MembersList" Spacing="10" />
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

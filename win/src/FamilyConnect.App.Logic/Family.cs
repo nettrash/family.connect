@@ -152,6 +152,27 @@ public sealed class FamilyModel(ApiClient api, ChatStore chats)
         return (false, chats.Member(successor), null);
     }
 
+    /// <summary>
+    /// The roster read again from the family's own document — after an owner's change to somebody
+    /// (a removal, a birthday, an approval), so the screen draws what the server now holds rather
+    /// than what this device asked for.
+    /// </summary>
+    public async Task<ApiError?> ReadAsync(CancellationToken ct = default)
+    {
+        var family = await api.Family(ct).ConfigureAwait(false);
+        if (!family.Ok || family.Value is null)
+        {
+            return family.Error ?? ApiError.Transport("no answer");
+        }
+        chats.Replace(family.Value.Members ?? [], family.Value.FormerMembers);
+        // Applied only when it is THERE: an absent list is an older server, not an empty one.
+        if (family.Value.BlockedUserIds is { } blocked)
+        {
+            chats.ReplaceBlocked(blocked);
+        }
+        return null;
+    }
+
     /// <summary>Leave. The answer names the successor the server actually chose.</summary>
     public async Task<(long? Successor, ApiError? Error)> LeaveAsync(CancellationToken ct = default)
     {
