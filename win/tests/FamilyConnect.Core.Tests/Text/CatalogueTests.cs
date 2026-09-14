@@ -64,7 +64,11 @@ public class CatalogueTests
          "Add Event",
          "Couldn't send your answer.",
          "Keep",
-         "Say something about it (optional)"];
+         "Say something about it (optional)",
+         "A photo is still being pinned. Add the next one when it is on the board.",
+         "Couldn't move the note.",
+         "Pinning…",
+         "The board pins one photo at a time — the first is on its way."];
 
     [Fact]
     public void ThisPortActuallyDrawsSomething()
