@@ -16,6 +16,8 @@
             BorderThickness="1">
             <StackPanel Spacing="14">
                 <Image Width="56" Height="56" HorizontalAlignment="Left" Source="ms-appx:///Assets/Square150x150Logo.png" />
+                <!-- The one refusal nothing announces: a request that vanished while this device waited on it. -->
+                <InfoBar x:Name="DeclinedBar" Severity="Warning" IsClosable="False" IsOpen="False" />
                 <TextBlock x:Name="JoinHeading" Style="{StaticResource TitleTextBlockStyle}" TextWrapping="Wrap" />
                 <TextBox x:Name="CodeBox" PlaceholderText="ABCD2345" IsSpellCheckEnabled="False" />
                 <TextBlock x:Name="CodeHelp" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />

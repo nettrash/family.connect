@@ -95,6 +95,10 @@ public static class SettingsText
 
     public static string LeaveFailed(IStringCatalog say) => say.Get("Couldn't leave right now. Try again.");
 
+    /// <summary>An owner who left handed the family on: who has it now (ios and web "Ownership passed on").</summary>
+    public static (string Title, string Message) OwnershipPassed(string heir, IStringCatalog say) =>
+        (say.Get("Ownership passed on"), say.Format("%@ is now the owner of the family.", heir));
+
     /// <summary>Why a picture did not go up, or come down (ios AvatarFailure).</summary>
     public static string PictureFailure(ApiError error, bool uploading, IStringCatalog say) => error switch
     {

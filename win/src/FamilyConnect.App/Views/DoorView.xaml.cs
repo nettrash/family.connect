@@ -26,6 +26,8 @@ public sealed partial class DoorView : UserControl
         NameBox.Header = say.Get("Family name");
         NameHelp.Text = say.Get("This names your family chat too. 1–64 characters.");
         LogOutButton.Content = say.Get("Log Out");
+        DeclinedBar.Message = say.Get("Your request to join was declined. You can ask for a new invite code and try again.");
+        DeclinedBar.IsOpen = connection.Session.State.JoinDeclined;
         // The door a closed server has shut is not drawn at all (docs/protocol.md, "Starting a family").
         CreatePanel.Visibility = connection.Session.State.FamilyRegistrationEnabled
             ? Visibility.Visible

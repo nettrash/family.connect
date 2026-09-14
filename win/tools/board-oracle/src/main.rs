@@ -776,7 +776,17 @@ fn chat() {
         ];
         let draft_rows: Vec<serde_json::Value> = drafts.iter()
             .map(|draft| serde_json::json!({"draft": draft, "with": assistant::with_assistant_mention(draft)})).collect();
-        for (name, rows) in [("assistant_bodies", body_rows), ("assistant_mention_drafts", draft_rows)] {
+        // The ai chat's picture button: `/draw ` in front of the words, once (fc_text::assistant::with_draw_token).
+        // Its own cases on top: a request already there, `/draw` alone, the trims only Foundation's set takes, a CRLF.
+        let mut draw_drafts = drafts.clone();
+        draw_drafts.extend([
+            "/draw a cat".to_string(), "/draw".into(), "/DRAW  a cat".into(), "  a cat \n".into(), ch(0x200B).to_string(),
+            format!("{}cat{}", ch(0x200B), ch(0x3000)), format!("{}cat", ch(0x85)), "@ai /draw a cat".into(), "@ai a cat".into(),
+            "кот".into(), "a\r\nb\r\n".into(), format!("/draw{}a", ch(0x301)), format!("{}a", ch(0xFEFF)),
+        ]);
+        let draw_rows: Vec<serde_json::Value> = draw_drafts.iter()
+            .map(|draft| serde_json::json!({"draft": draft, "with": assistant::with_draw_token(draft)})).collect();
+        for (name, rows) in [("assistant_bodies", body_rows), ("assistant_mention_drafts", draft_rows), ("draw_token_drafts", draw_rows)] {
             out.push_str(&format!("  \"{}\": [\n{}\n  ],\n", name,
                 rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
         }

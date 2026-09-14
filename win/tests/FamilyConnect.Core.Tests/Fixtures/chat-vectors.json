@@ -1238,6 +1238,30 @@
     {"draft":"؀ ","with":"؀  @ai "},
     {"draft":"@AI please","with":"@AI please"}
   ],
+  "draw_token_drafts": [
+    {"draft":"","with":"/draw "},
+    {"draft":"hi","with":"/draw hi"},
+    {"draft":"hi ","with":"/draw hi"},
+    {"draft":"hi @ai","with":"/draw hi @ai"},
+    {"draft":"a  ","with":"/draw a"},
+    {"draft":"a ́","with":"/draw a ́"},
+    {"draft":"hello\n","with":"/draw hello"},
+    {"draft":"؀ ","with":"/draw ؀"},
+    {"draft":"@AI please","with":"/draw @AI please"},
+    {"draft":"/draw a cat","with":"/draw a cat"},
+    {"draft":"/draw","with":"/draw /draw"},
+    {"draft":"/DRAW  a cat","with":"/DRAW  a cat"},
+    {"draft":"  a cat \n","with":"/draw a cat"},
+    {"draft":"​","with":"/draw "},
+    {"draft":"​cat　","with":"/draw cat"},
+    {"draft":"cat","with":"/draw cat"},
+    {"draft":"@ai /draw a cat","with":"@ai /draw a cat"},
+    {"draft":"@ai a cat","with":"/draw @ai a cat"},
+    {"draft":"кот","with":"/draw кот"},
+    {"draft":"a\r\nb\r\n","with":"/draw a\r\nb"},
+    {"draft":"/draẃa","with":"/draw /draẃa"},
+    {"draft":"﻿a","with":"/draw ﻿a"}
+  ],
   "pictures_private": [
     {"can_see":false,"said":null,"staged":[]},
     {"can_see":true,"said":null,"staged":[]},

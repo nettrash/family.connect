@@ -137,6 +137,13 @@
                 </Border>
 
                 <TextBlock x:Name="PrivacyHeading" Style="{StaticResource Section}" />
+                <!-- The one switch that changes who this app talks to, so it says so plainly. -->
+                <Border Style="{StaticResource Card}" Padding="16,10,16,14" Margin="0,0,0,8">
+                    <StackPanel Spacing="4">
+                        <ToggleSwitch x:Name="LinkPreviewSwitch" />
+                        <TextBlock x:Name="LinkPreviewFootnote" Style="{StaticResource Footnote}" />
+                    </StackPanel>
+                </Border>
                 <!-- No rule between the two: the support link is absent on a server that publishes no contact. -->
                 <Border Style="{StaticResource Card}" Padding="16,6,16,6">
                     <StackPanel Spacing="2">

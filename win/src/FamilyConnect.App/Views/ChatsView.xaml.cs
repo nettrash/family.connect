@@ -58,6 +58,10 @@ public sealed partial class ChatsView : UserControl
     private readonly Action<Link> onLink;
     private readonly Action<OutboxRow, ApiError> onRefused;
     private readonly Action<long> onMarks;
+    /// <summary>A link's card landed, or the reader switched cards on or off.</summary>
+    private readonly Action onPreviews;
+    /// <summary>Card pictures decoded once, so a redraw reuses them instead of decoding (and flashing) again.</summary>
+    private readonly Dictionary<string, BitmapImage?> previewPictures = new(StringComparer.Ordinal);
     private readonly AvatarFaces faces;
 
     private readonly Dictionary<string, BitmapImage> pictures = [];
@@ -74,6 +78,9 @@ public sealed partial class ChatsView : UserControl
     private DispatcherQueueTimer? recordingTimer;
     /// <summary>A link clicked a beat ago and waiting to open: a double click on it is the heart, which cancels it.</summary>
     private DispatcherQueueTimer? pendingLink;
+    /// <summary>The album the viewer is showing, and a count that makes a load for an earlier page land nowhere.</summary>
+    private MediaAlbum? viewing;
+    private int viewerShown;
     private long lastHeart;
 
     /// <summary>
@@ -148,6 +155,49 @@ public sealed partial class ChatsView : UserControl
         ChatList.SelectionChanged += OnChatPicked;
         SendButton.Click += (_, _) => Send();
         AttachButton.Click += (_, _) => ShowAttachMenu();
+        AskAssistantButton.Content = "✨";
+        AskPictureButton.Content = "🎨";
+        ToolTipService.SetToolTip(AskAssistantButton, say.Get("Ask the assistant"));
+        AutomationProperties.SetName(AskAssistantButton, say.Get("Ask the assistant"));
+        ToolTipService.SetToolTip(AskPictureButton, say.Get("Ask for a picture"));
+        AutomationProperties.SetName(AskPictureButton, say.Get("Ask for a picture"));
+        AskAssistantButton.Click += (_, _) => PutInComposer(AssistantText.WithAssistantMention(ComposerBox.Text));
+        AskPictureButton.Click += (_, _) => PutInComposer(AssistantText.WithDrawToken(ComposerBox.Text));
+
+        ViewerSave.Content = say.Get("Save…");
+        foreach (var (button, name) in new (Button, string)[]
+        {
+            (ViewerClose, say.Get("Close")),
+            (ViewerPrevious, say.Get("Previous")),
+            (ViewerNext, say.Get("Next")),
+            (ViewerZoomIn, say.Get("Zoom in")),
+            (ViewerZoomOut, say.Get("Zoom out")),
+        })
+        {
+            ToolTipService.SetToolTip(button, name);
+            AutomationProperties.SetName(button, name);
+        }
+        ViewerClose.Click += (_, _) => CloseViewer();
+        ViewerPrevious.Click += (_, _) => StepViewer(-1);
+        ViewerNext.Click += (_, _) => StepViewer(1);
+        ViewerZoomIn.Click += (_, _) => ZoomViewer(album => album.ZoomIn());
+        ViewerZoomOut.Click += (_, _) => ZoomViewer(album => album.ZoomOut());
+        ViewerSave.Click += (_, _) => _ = SaveViewedAsync();
+        ViewerImage.DoubleTapped += (_, e) =>
+        {
+            e.Handled = true;
+            ZoomViewer(album => album.ToggleZoom());
+        };
+        ViewerScroller.ViewChanged += (_, e) =>
+        {
+            if (!e.IsIntermediate && viewing is { IsVideo: false } album)
+            {
+                album.ZoomedTo(ViewerScroller.ZoomFactor);
+                ShowZoom();
+            }
+        };
+        ViewerScroller.SizeChanged += (_, _) => FitViewerImage();
+        ViewerOverlay.PreviewKeyDown += OnViewerKey;
         OpenPollsButton.Click += (_, _) => _ = ShowOpenPollsAsync();
         ComposerPanel.DragOver += OnDragOver;
         ComposerPanel.Drop += OnDrop;
@@ -222,6 +272,9 @@ public sealed partial class ChatsView : UserControl
         onMarks = _ => QueueRedraw();
         connection.PeerReads.Changed += onMarks;
         connection.Answers.Changed += onMarks;
+        onPreviews = QueueRedraw;
+        connection.Previews.Landed += onPreviews;
+        LinkPreviewSetting.Changed += onPreviews;
         connection.Router.Arrived += onArrived;
         connection.Router.Edited += onEdited;
         connection.Router.ChatChanged += onChat;
@@ -260,10 +313,13 @@ public sealed partial class ChatsView : UserControl
         connection.Media.Refused -= onRefused;
         connection.PeerReads.Changed -= onMarks;
         connection.Answers.Changed -= onMarks;
+        connection.Previews.Landed -= onPreviews;
+        LinkPreviewSetting.Changed -= onPreviews;
         // A microphone nothing can reach is a microphone left on.
         CancelRecording();
         StopAudio();
         locationHunt?.Cancel();
+        CloseViewer();
         thread = null;
         audio.Dispose();
         gone = true;
@@ -317,8 +373,29 @@ public sealed partial class ChatsView : UserControl
         DrawThread();
         ShowPollsBadge();
         ShowCallButtons();
+        ShowAssistantButtons();
         ShowTyping();
         _ = ReportReadAsync();
+    }
+
+    /// <summary>The composer's assistant doors, for this chat, this server's assistant, and whether an edit is open.</summary>
+    private void ShowAssistantButtons()
+    {
+        var kind = open is { } chat ? connection.Chats.Chat(chat.ChatId)?.Chat.Kind : null;
+        var (ask, picture) = AssistantButtons.Offered(kind, connection.Session.State.Assistant, editing is not null);
+        AskAssistantButton.Visibility = ask ? Visibility.Visible : Visibility.Collapsed;
+        AskPictureButton.Visibility = picture ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// A draft an assistant door rewrote: appended or put first, never inserted at the caret, and the caret put back at the
+    /// end with the box focused — so the next thing typed goes where the request needs it.
+    /// </summary>
+    private void PutInComposer(string draft)
+    {
+        ComposerBox.Text = draft;
+        ComposerBox.SelectionStart = draft.Length;
+        ComposerBox.Focus(FocusState.Programmatic);
     }
 
     // ---- the list ------------------------------------------------------------------------------
@@ -478,6 +555,8 @@ public sealed partial class ChatsView : UserControl
         CancelRecording();
         StopAudio();
         locationHunt?.Cancel();
+        // What was being looked at belongs to the chat it came from.
+        CloseViewer();
         // A chain belongs to the chat it was opened in.
         CloseThread();
         var chat = new ConversationModel(
@@ -553,6 +632,8 @@ public sealed partial class ChatsView : UserControl
             $"{Field}{connection.PeerReads.UpTo(chat.ChatId)}{Field}{connection.Answers.Version}{Field}{anchor}" +
             // A call record's "Call back" follows whether a call is on, and what the server carries.
             $"{Field}{callBusy}{Field}{connection.Session.State.CallsEnabled}{Field}{connection.Session.State.VideoCallsEnabled}" +
+            // A card under a link appears once its fetch lands, and not at all while the reader has cards switched off.
+            $"{Field}{connection.Previews.Generation}{Field}{LinkPreviewSetting.Enabled}" +
             $"{Field}{DateOnly.FromDateTime(DateTime.Now)}{Row}{drawn}";
         if (drawn == conversationDrawn)
         {
@@ -802,6 +883,16 @@ public sealed partial class ChatsView : UserControl
                 TextWrapping = TextWrapping.Wrap,
                 Opacity = 0.8,
             });
+        }
+        // The card under the first https link the body draws. ASKED FOR whether or not the row reads — a hidden row fetches
+        // exactly what a visible one would and draws none of it (docs/protocol.md, "A hidden row still fetches") — and drawn
+        // once its fetch has landed, never as a placeholder that would grow the bubble twice.
+        if (!awaited && message.Call is null
+            && BubbleBody.PreviewLink(body, emojiOnly: emojiSize is not null) is { } previewLink
+            && connection.Previews.State(previewLink) is { Status: PreviewStatus.Loaded, Preview: { } preview }
+            && bubble.Reads)
+        {
+            stack.Children.Add(PreviewCard(preview));
         }
         if (bubble.Reads && message.Poll is not null)
         {
@@ -1385,7 +1476,7 @@ public sealed partial class ChatsView : UserControl
         {
             _ = ShowPictureAsync(image, attachment, preview: source == AttachmentFiles.TileSource.Preview);
         }
-        frame.Tapped += (_, _) => _ = OpenMediaAsync(attachment);
+        frame.Tapped += (_, _) => OpenViewer(album, index);
         return frame;
     }
 
@@ -1438,32 +1529,225 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>A photo opens whole, with a way to save it; a video opens in whatever plays videos here.</summary>
-    private async Task OpenMediaAsync(AttachmentDto attachment)
+    // ---- the viewer ---------------------------------------------------------------------------------
+
+    /// <summary>Open a message's photos and videos at full size, at the one clicked.</summary>
+    private void OpenViewer(IReadOnlyList<AttachmentDto> items, int index)
     {
+        viewing = new MediaAlbum(items, index);
+        ViewerOverlay.Visibility = Visibility.Visible;
+        ShowViewerItem();
+        ViewerClose.Focus(FocusState.Programmatic);
+    }
+
+    /// <summary>Close it — and a video with it, or the stream keeps running behind a closed viewer.</summary>
+    private void CloseViewer()
+    {
+        viewing = null;
+        viewerShown++;
+        StopViewerVideo();
+        ViewerImage.Source = null;
+        ViewerOverlay.Visibility = Visibility.Collapsed;
+    }
+
+    private void StepViewer(int direction)
+    {
+        if (viewing is { } album && album.Step(direction))
+        {
+            ShowViewerItem();
+            // An arrow that just reached the end is disabled, and a disabled button hands its focus to whatever comes next —
+            // the composer under the viewer. The keys have to stay here.
+            if (FocusManager.GetFocusedElement(XamlRoot) is not Control { IsEnabled: true })
+            {
+                ViewerClose.Focus(FocusState.Programmatic);
+            }
+        }
+    }
+
+    private void OnViewerKey(object sender, KeyRoutedEventArgs e)
+    {
+        if (viewing is not { } album)
+        {
+            return;
+        }
+        switch (album.Key(e.Key.ToString()))
+        {
+            case ViewerKey.Close:
+                e.Handled = true;
+                CloseViewer();
+                break;
+            case ViewerKey.Previous:
+                e.Handled = true;
+                StepViewer(-1);
+                break;
+            case ViewerKey.Next:
+                e.Handled = true;
+                StepViewer(1);
+                break;
+        }
+    }
+
+    /// <summary>The page the album is on: its words and arrows at once, its bytes as they come — the preview first when held.</summary>
+    private void ShowViewerItem()
+    {
+        if (viewing is not { } album)
+        {
+            return;
+        }
         var say = services.Say;
-        if (attachment.Kind != "photo")
+        var token = ++viewerShown;
+        var paged = album.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+        ViewerTitle.Text = album.Title(say);
+        ViewerPosition.Text = album.Position(say) ?? string.Empty;
+        ViewerPosition.Visibility = paged;
+        ViewerPrevious.Visibility = paged;
+        ViewerNext.Visibility = paged;
+        ViewerPrevious.IsEnabled = album.HasPrevious;
+        ViewerNext.IsEnabled = album.HasNext;
+        ViewerProblem.Visibility = Visibility.Collapsed;
+        StopViewerVideo();
+        ViewerImage.Source = null;
+        ViewerScroller.ChangeView(0, 0, 1, disableAnimation: true);
+        ViewerScroller.Visibility = album.IsVideo ? Visibility.Collapsed : Visibility.Visible;
+        ViewerVideo.Visibility = album.IsVideo ? Visibility.Visible : Visibility.Collapsed;
+        ViewerZoomBar.Visibility = album.IsVideo ? Visibility.Collapsed : Visibility.Visible;
+        ShowZoom();
+        ViewerLoading.IsActive = true;
+        _ = LoadViewerItemAsync(album.Current, album.IsVideo, token);
+    }
+
+    private async Task LoadViewerItemAsync(AttachmentDto item, bool video, int token)
+    {
+        try
         {
-            await OpenExternallyAsync(attachment);
+            if (item.HasPreview && pictures.TryGetValue(AttachmentCache.KeyFor(item.Id, preview: true), out var small))
+            {
+                if (video)
+                {
+                    ViewerVideo.PosterSource = small;
+                }
+                else
+                {
+                    ViewerImage.Source = small;
+                }
+            }
+            // The ORIGINAL, never the preview a bubble draws.
+            var (bytes, _) = await connection.Attachments.BytesAsync(item);
+            if (token != viewerShown)
+            {
+                return;
+            }
+            if (bytes is null)
+            {
+                ViewerFailed();
+                return;
+            }
+            if (video)
+            {
+                var stream = new InMemoryRandomAccessStream();
+                using (var writer = new DataWriter(stream))
+                {
+                    writer.WriteBytes(bytes);
+                    await writer.StoreAsync();
+                    await writer.FlushAsync();
+                    writer.DetachStream();
+                }
+                stream.Seek(0);
+                if (token != viewerShown)
+                {
+                    stream.Dispose();
+                    return;
+                }
+                ViewerVideo.Source = Windows.Media.Core.MediaSource.CreateFromStream(stream, item.Mime ?? "video/mp4");
+                ViewerLoading.IsActive = false;
+                return;
+            }
+            var picture = await DecodeAsync(bytes);
+            if (token != viewerShown)
+            {
+                return;
+            }
+            if (picture is null)
+            {
+                ViewerFailed();
+                return;
+            }
+            ViewerImage.Source = picture;
+            ViewerLoading.IsActive = false;
+            FitViewerImage();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"viewing an attachment: {e.GetType().Name}");
+            if (token == viewerShown)
+            {
+                ViewerFailed();
+            }
+        }
+    }
+
+    private void ViewerFailed()
+    {
+        ViewerLoading.IsActive = false;
+        ViewerProblem.Text = services.Say.Get("The file could not be downloaded.");
+        ViewerProblem.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>The picture sized to the stage, times the zoom the scroller applies — which is what makes 1× show all of it.</summary>
+    private void FitViewerImage()
+    {
+        if (ViewerScroller.ActualWidth > 0 && ViewerScroller.ActualHeight > 0)
+        {
+            ViewerImage.Width = ViewerScroller.ActualWidth;
+            ViewerImage.Height = ViewerScroller.ActualHeight;
+        }
+    }
+
+    private void ZoomViewer(Action<MediaAlbum> change)
+    {
+        if (viewing is not { IsVideo: false } album)
+        {
             return;
         }
-        var (bytes, _) = await connection.Attachments.BytesAsync(attachment);
-        if (bytes is null || await DecodeAsync(bytes) is not { } picture)
+        change(album);
+        ViewerScroller.ChangeView(null, null, (float)album.Zoom);
+        ShowZoom();
+    }
+
+    private void ShowZoom()
+    {
+        if (viewing is not { } album)
         {
-            ShowProblem(say.Get("The file could not be downloaded."));
             return;
         }
-        var dialog = new ContentDialog
+        ViewerZoomText.Text = album.ZoomText(services.Culture);
+        ViewerZoomIn.IsEnabled = album.CanZoomIn;
+        ViewerZoomOut.IsEnabled = album.CanZoomOut;
+    }
+
+    private void StopViewerVideo()
+    {
+        ViewerVideo.MediaPlayer?.Pause();
+        (ViewerVideo.Source as Windows.Media.Core.MediaSource)?.Dispose();
+        ViewerVideo.Source = null;
+        ViewerVideo.PosterSource = null;
+    }
+
+    /// <summary>Save hands over the page that is up when it is clicked — the original's bytes.</summary>
+    private async Task SaveViewedAsync()
+    {
+        if (viewing is not { } album)
         {
-            XamlRoot = XamlRoot,
-            Content = new Image { Source = picture, Stretch = Stretch.Uniform, MaxWidth = 900, MaxHeight = 640 },
-            PrimaryButtonText = say.Get("Save…"),
-            CloseButtonText = say.Get("Close"),
-            DefaultButton = ContentDialogButton.Close,
-        };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
-        {
-            await SaveBytesAsync(attachment, bytes);
+            return;
         }
+        var item = album.Current;
+        var (bytes, _) = await connection.Attachments.BytesAsync(item);
+        if (bytes is null)
+        {
+            ViewerFailed();
+            return;
+        }
+        await SaveBytesAsync(item, bytes);
     }
 
     // ---- calls --------------------------------------------------------------------------------------
@@ -1602,6 +1886,7 @@ public sealed partial class ChatsView : UserControl
             bubble.Message.ReplyCount, bubble.Reads, connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0))));
         drawn = $"{chain.RootId}{Field}{chain.Loaded}{Field}{chain.Failure?.Code}{Field}{string.Join(',', connection.Chats.Blocked())}" +
             $"{Field}{connection.Chats.Members().Count}{Field}{connection.Answers.Version}{Field}{DateOnly.FromDateTime(DateTime.Now)}" +
+            $"{Field}{connection.Previews.Generation}{Field}{LinkPreviewSetting.Enabled}" +
             $"{Row}{drawn}{Row}{string.Join(Row, pending.Select(row => string.Join(Field, row.ClientMsgId, row.Failed)))}";
         if (drawn == threadDrawn)
         {
@@ -2434,6 +2719,7 @@ public sealed partial class ChatsView : UserControl
         BannerCancel.Content = services.Say.Get("Cancel editing");
         BannerPanel.Visibility = Visibility.Visible;
         SendButton.Content = services.Say.Get("Save");
+        ShowAssistantButtons();
         ComposerBox.Text = message.Body;
         ComposerBox.SelectionStart = ComposerBox.Text.Length;
         ComposerBox.Focus(FocusState.Programmatic);
@@ -2446,6 +2732,7 @@ public sealed partial class ChatsView : UserControl
         editing = null;
         BannerPanel.Visibility = Visibility.Collapsed;
         SendButton.Content = services.Say.Get("Send");
+        ShowAssistantButtons();
         if (clear)
         {
             ComposerBox.Text = string.Empty;
@@ -2733,6 +3020,129 @@ public sealed partial class ChatsView : UserControl
             AddRow(cells, header: false);
         }
         return grid;
+    }
+
+    /// <summary>
+    /// The preview under a link (ios LinkPreviewCard): the page's picture when it offered one, the site, the title in two lines
+    /// and the description in two. Its own solid ground with a hairline, so it reads the same on the accent of an own bubble as
+    /// on a card. A click opens the link a beat late, like the link itself, so a double click is still the heart.
+    /// </summary>
+    private FrameworkElement PreviewCard(LinkPreview preview)
+    {
+        var resources = Application.Current.Resources;
+        var column = new StackPanel();
+        if (connection.Previews.Image(preview.Url) is { } bytes && PreviewPicture(preview.Url.AbsoluteUri, bytes) is { } picture)
+        {
+            column.Children.Add(new Image { Source = picture, Height = 120, Stretch = Stretch.UniformToFill, HorizontalAlignment = HorizontalAlignment.Stretch });
+        }
+        var words = new StackPanel { Spacing = 2, Padding = new Thickness(10, 8, 10, 8) };
+        words.Children.Add(new TextBlock
+        {
+            Text = preview.SiteName,
+            FontSize = 11,
+            MaxLines = 1,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Foreground = (Brush)resources["TextFillColorSecondaryBrush"],
+        });
+        words.Children.Add(new TextBlock
+        {
+            Text = preview.Title,
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            MaxLines = 2,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Foreground = (Brush)resources["TextFillColorPrimaryBrush"],
+        });
+        if (preview.Description is { } description)
+        {
+            words.Children.Add(new TextBlock
+            {
+                Text = description,
+                FontSize = 11,
+                MaxLines = 2,
+                TextWrapping = TextWrapping.Wrap,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Foreground = (Brush)resources["TextFillColorSecondaryBrush"],
+            });
+        }
+        column.Children.Add(words);
+        var card = new Border
+        {
+            Child = column,
+            MaxWidth = 360,
+            Margin = new Thickness(0, 4, 0, 0),
+            CornerRadius = new CornerRadius(12),
+            Background = (Brush)resources["SolidBackgroundFillColorTertiaryBrush"],
+            BorderBrush = (Brush)resources["CardStrokeColorDefaultBrush"],
+            BorderThickness = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        AutomationProperties.SetName(card, $"{preview.Title}, {preview.SiteName}");
+        AutomationProperties.SetHelpText(card, services.Say.Get("Opens the link"));
+        ToolTipService.SetToolTip(card, preview.Url.AbsoluteUri);
+        var url = preview.Url;
+        card.Tapped += (_, e) =>
+        {
+            e.Handled = true;
+            OpenLinkSoon(url);
+        };
+        return card;
+    }
+
+    /// <summary>
+    /// A card's picture, decoded once and at most 1200 pixels on its longest edge — a 6000 by 4000 photo under the byte cap
+    /// would otherwise cost ~96 MB decoded. Null when the bytes are no picture.
+    /// </summary>
+    private BitmapImage? PreviewPicture(string key, byte[] bytes)
+    {
+        if (previewPictures.TryGetValue(key, out var known))
+        {
+            return known;
+        }
+        if (previewPictures.Count >= 64)
+        {
+            previewPictures.Clear();
+        }
+        var picture = new BitmapImage();
+        previewPictures[key] = picture;
+        _ = DecodePreviewPictureAsync(key, picture, bytes);
+        return picture;
+    }
+
+    private async Task DecodePreviewPictureAsync(string key, BitmapImage picture, byte[] bytes)
+    {
+        try
+        {
+            using var stream = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(stream))
+            {
+                writer.WriteBytes(bytes);
+                await writer.StoreAsync();
+                await writer.FlushAsync();
+                writer.DetachStream();
+            }
+            stream.Seek(0);
+            var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
+            const uint Longest = 1200;
+            if (decoder.PixelWidth >= decoder.PixelHeight && decoder.PixelWidth > Longest)
+            {
+                picture.DecodePixelWidth = (int)Longest;
+            }
+            else if (decoder.PixelHeight > decoder.PixelWidth && decoder.PixelHeight > Longest)
+            {
+                picture.DecodePixelHeight = (int)Longest;
+            }
+            stream.Seek(0);
+            await picture.SetSourceAsync(stream);
+        }
+        catch (Exception e)
+        {
+            // Not a picture after all: the card keeps its words, and the next redraw draws it without one.
+            Diagnostics.Write($"decoding a link preview picture: {e.GetType().Name}");
+            previewPictures[key] = null;
+            QueueRedraw();
+        }
     }
 
     /// <summary>Open a link a beat late — the Mac's 350 ms — unless the click was the second half of a heart.</summary>

@@ -73,6 +73,8 @@ public sealed partial class SettingsView : UserControl
         NotificationsHeading.Text = say.Get("Notifications");
         NotifySwitch.Header = say.Get("Tell me when a message arrives");
         PrivacyHeading.Text = say.Get("Privacy");
+        LinkPreviewSwitch.Header = say.Get("Link Previews");
+        LinkPreviewFootnote.Text = say.Get("Shows a preview under links in messages. Building one asks the linked website for its title and image, so that site sees a request from this device.");
         PrivacyLink.Content = say.Get("Privacy Policy");
         PrivacyLink.NavigateUri = new Uri(PrivacyUrl);
         SupportLink.Content = say.Get("Support");
@@ -94,6 +96,13 @@ public sealed partial class SettingsView : UserControl
             if (!drawingSwitch && Toasts.Available)
             {
                 NotifySetting.Wanted = NotifySwitch.IsOn;
+            }
+        };
+        LinkPreviewSwitch.Toggled += (_, _) =>
+        {
+            if (!drawingSwitch)
+            {
+                LinkPreviewSetting.Enabled = LinkPreviewSwitch.IsOn;
             }
         };
         LogOutButton.Click += (_, _) => _ = LogOutAsync();
@@ -132,6 +141,7 @@ public sealed partial class SettingsView : UserControl
         drawingSwitch = true;
         NotifySwitch.IsEnabled = Toasts.Available;
         NotifySwitch.IsOn = Toasts.Available && NotifySetting.Wanted;
+        LinkPreviewSwitch.IsOn = LinkPreviewSetting.Enabled;
         drawingSwitch = false;
         NotifyFootnote.Text = Toasts.Available
             ? say.Get("While this window is not in front, a notification says who wrote — never what they wrote.")
@@ -349,11 +359,20 @@ public sealed partial class SettingsView : UserControl
             {
                 return;
             }
-            var (_, failed) = await family.LeaveAsync();
+            var (chosen, failed) = await family.LeaveAsync();
             if (failed is not null)
             {
                 ShowProblem(LeaveError, SettingsText.LeaveFailed(say));
                 return;
+            }
+            // Who inherits is named from the roster as it stood BEFORE the gate moves — afterwards there is none to read.
+            if (chosen is { } heirId && connection.Chats.Member(heirId)?.DisplayName is { Length: > 0 } heir)
+            {
+                var (title, message) = SettingsText.OwnershipPassed(heir, say);
+                var notice = Dialogs.Create(XamlRoot, title, Text(message));
+                notice.CloseButtonText = say.Get("OK");
+                notice.DefaultButton = ContentDialogButton.Close;
+                await notice.ShowAsync();
             }
             // The gate moves on what `GET /me` now says: no family, and the window follows it.
             await connection.Session.RefreshAsync();
