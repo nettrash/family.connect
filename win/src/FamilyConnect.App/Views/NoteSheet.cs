@@ -11,6 +11,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Shapes;
@@ -37,8 +38,8 @@ namespace FamilyConnect.App.Views;
 /// </para>
 /// <para>
 /// Under the author's fields, the note as the wall will draw it (<see cref="NotePreview"/>, drawn by the wall's
-/// own <see cref="StickerFace"/>). Not here yet, and in the web client: the strip of names a half-typed
-/// <c>@</c> could mean — a name typed in full is still resolved at save.
+/// own <see cref="StickerFace"/>), and under the words the names a half-typed <c>@</c> could mean. Opened by a
+/// reader, a name the note says is a door to the chat with that member, where there is one.
 /// </para>
 /// </remarks>
 internal sealed class NoteSheet
@@ -58,6 +59,7 @@ internal sealed class NoteSheet
     private readonly StackPanel answers = new() { Spacing = 6 };
     private readonly StickerFace face;
     private readonly bool compact;
+    private readonly Func<long, Task> openDirect;
     private readonly Grid preview = new() { HorizontalAlignment = HorizontalAlignment.Center, Padding = new Thickness(0, 16, 0, 16) };
     private ContentDialog dialog = null!;
     private RsvpAnswer? answering;
@@ -67,11 +69,12 @@ internal sealed class NoteSheet
 
     private NoteSheet(
         XamlRoot root, AppServices services, Connection connection, BoardModel board, StickerFace face, bool compact,
-        NoteDto? opened, NoteKind kind, bool mine)
+        Func<long, Task> openDirect, NoteDto? opened, NoteKind kind, bool mine)
     {
         this.root = root;
         this.face = face;
         this.compact = compact;
+        this.openDirect = openDirect;
         this.services = services;
         this.connection = connection;
         this.board = board;
@@ -87,8 +90,8 @@ internal sealed class NoteSheet
     /// <summary>Open a note (or a blank of <paramref name="kind"/> when <paramref name="opened"/> is null), and wait until it closes.</summary>
     public static Task ShowAsync(
         XamlRoot root, AppServices services, Connection connection, BoardModel board, StickerFace face, bool compact,
-        NoteDto? opened, NoteKind kind, bool mine) =>
-        new NoteSheet(root, services, connection, board, face, compact, opened, kind, mine).RunAsync();
+        Func<long, Task> openDirect, NoteDto? opened, NoteKind kind, bool mine) =>
+        new NoteSheet(root, services, connection, board, face, compact, openDirect, opened, kind, mine).RunAsync();
 
     private NoteDto? Current => opened is null ? null : connection.Board.Note(opened.Id) ?? opened;
 
@@ -166,14 +169,59 @@ internal sealed class NoteSheet
             counter.Visibility = NoteText.ShowsCounter(draft.Text) ? Visibility.Visible : Visibility.Collapsed;
             counter.Text = say.Format("%lld characters left", NoteText.Remaining(draft.Text));
         }
+        // The names a half-typed @ could mean, as buttons under the words rather than the chat's arrow-key list: this is
+        // a dialog whose Tab moves between fields, and a picker that took the arrows would fight the editor. A name
+        // typed in full works without them — the names are resolved from the text at save.
+        var names = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        AutomationProperties.SetName(names, say.Get("Members"));
+        var strip = new ScrollViewer
+        {
+            Content = names,
+            HorizontalScrollMode = ScrollMode.Enabled,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollMode = ScrollMode.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Visibility = Visibility.Collapsed,
+        };
+        void DrawNames()
+        {
+            var offered = ComposerMentions.Offered(
+                draft.Text, connection.Chats.Members(), connection.Chats.Reader, connection.Chats.IsBlocked,
+                familyChat: true, editing: false);
+            names.Children.Clear();
+            strip.Visibility = offered.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            foreach (var member in offered)
+            {
+                var label = new TextBlock();
+                label.Inlines.Add(new Run { Text = member.DisplayName, FontWeight = FontWeights.SemiBold });
+                if (member.Username.Length > 0)
+                {
+                    label.Inlines.Add(new Run { Text = $"  @{member.Username}", Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"] });
+                }
+                var chip = new Button { Content = label };
+                var name = member.DisplayName;
+                chip.Click += (_, _) =>
+                {
+                    words.Text = Mentions.Accept(words.Text, name);
+                    words.SelectionStart = words.Text.Length;
+                    // Back to the words: picking a name is not leaving the field.
+                    words.Focus(FocusState.Programmatic);
+                };
+                names.Children.Add(chip);
+            }
+        }
         Capped(words, NoteText.MaxTextChars, value =>
         {
             draft.Text = value;
             Count();
+            DrawNames();
             RefreshSave();
         });
         Count();
+        // Words that already end mid-name offer the names at once, not after the next key.
+        DrawNames();
         body.Children.Add(words);
+        body.Children.Add(strip);
         body.Children.Add(counter);
 
         if (kind == NoteKind.Event)
@@ -649,14 +697,39 @@ internal sealed class NoteSheet
         }
         if (WallText.CaptionOf(note).Length > 0)
         {
-            body.Children.Add(new TextBlock
+            var text = new TextBlock
             {
-                Text = note.Text,
                 TextWrapping = TextWrapping.Wrap,
                 IsTextSelectionEnabled = true,
                 FontSize = 16,
                 FontFamily = new FontFamily(Notes.FontFamily(Notes.FontFrom(note.Font))),
-            });
+            };
+            // Opened, a name IS a door — where there is somebody to open it with. On the wall it is not: a sticker's
+            // whole face is a drag handle (docs/protocol.md, "Board").
+            var reader = connection.Chats.Reader;
+            foreach (var run in ComposerMentions.Runs(note.Text ?? string.Empty, note.Mentions, connection.Chats.Members(), reader, connection.Chats.IsBlocked))
+            {
+                if (run.UserId is not { } id)
+                {
+                    text.Inlines.Add(new Run { Text = run.Text });
+                    continue;
+                }
+                if (!run.Opens)
+                {
+                    text.Inlines.Add(new Run { Text = run.Text, FontWeight = FontWeights.SemiBold });
+                    continue;
+                }
+                var door = new Hyperlink { UnderlineStyle = UnderlineStyle.None, FontWeight = FontWeights.SemiBold };
+                door.Inlines.Add(new Run { Text = run.Text });
+                door.Click += (_, _) =>
+                {
+                    // The chat, not the note: the sheet goes, and the conversation opens.
+                    dialog.Hide();
+                    _ = openDirect(id);
+                };
+                text.Inlines.Add(door);
+            }
+            body.Children.Add(text);
         }
         var author = WallText.AuthorName(note, connection.Chats.Reader, id => connection.Chats.Member(id)?.DisplayName, say);
         body.Children.Add(Footnote(say.Format("Written by %@", author)));

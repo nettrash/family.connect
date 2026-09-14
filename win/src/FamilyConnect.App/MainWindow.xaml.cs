@@ -204,20 +204,28 @@ public sealed partial class MainWindow : Window
         });
     }
 
-    /// <summary>The wall, over the chats as Settings is. Drawn, it moves the board's marks, and the badge follows.</summary>
+    /// <summary>
+    /// The wall, over the chats as Settings is. Drawn, it moves the board's marks, and the badge follows. A name in an
+    /// opened note puts the chats back and opens that conversation, as "Message" in the family does.
+    /// </summary>
     private void ShowBoard()
     {
         if (connection is not { } current || chats is null)
         {
             return;
         }
-        Screen.Content = new BoardView(services, current, close: () =>
+        void Back()
         {
             if (connection == current && chats is { } open && shown is Gate.Member or Gate.Owner)
             {
                 Screen.Content = open;
             }
-        }, shown: RefreshAttention);
+        }
+        Screen.Content = new BoardView(services, current, close: Back, shown: RefreshAttention, openChat: chatId =>
+        {
+            Back();
+            chats?.OpenChat(chatId);
+        });
     }
 
     private void ShowServer(Uri? prefill)

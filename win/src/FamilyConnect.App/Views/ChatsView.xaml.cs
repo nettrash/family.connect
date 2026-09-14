@@ -1278,23 +1278,22 @@ public sealed partial class ChatsView : UserControl
     private void NamedRuns(TextBlock words, string body, MentionDto[] named, bool mine)
     {
         var ink = (Brush)Application.Current.Resources[mine ? "TextOnAccentFillColorPrimaryBrush" : "TextFillColorPrimaryBrush"];
-        var members = connection.Chats.Members();
         words.Text = string.Empty;
         words.Inlines.Clear();
-        foreach (var (text, userId) in Mentions.Runs(body, [.. named.Select(mention => new Named(mention.UserId, mention.Name))]))
+        foreach (var run in ComposerMentions.Runs(body, named, connection.Chats.Members(), Reader, connection.Chats.IsBlocked))
         {
-            if (userId is not { } id)
+            if (run.UserId is not { } id)
             {
-                words.Inlines.Add(new Run { Text = text });
+                words.Inlines.Add(new Run { Text = run.Text });
                 continue;
             }
-            if (!ComposerMentions.OpensChat(id, members, Reader, connection.Chats.IsBlocked))
+            if (!run.Opens)
             {
-                words.Inlines.Add(new Run { Text = text, FontWeight = FontWeights.SemiBold });
+                words.Inlines.Add(new Run { Text = run.Text, FontWeight = FontWeights.SemiBold });
                 continue;
             }
             var door = new Hyperlink { UnderlineStyle = UnderlineStyle.None, Foreground = ink, FontWeight = FontWeights.SemiBold };
-            door.Inlines.Add(new Run { Text = text });
+            door.Inlines.Add(new Run { Text = run.Text });
             door.Click += (_, _) => _ = OpenDirectAsync(id);
             words.Inlines.Add(door);
         }
