@@ -235,13 +235,7 @@ public sealed class NoteDraft
         at?.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
 
     private static MentionDto[] Named(string text, IReadOnlyList<MemberDto> roster) =>
-    [
-        .. Mentions.Resolve(
-                text,
-                [.. roster.Where(member => !member.Deleted && !member.IsFormer).Select(member => new Named(member.Id, member.DisplayName))])
-            .Take(Mentions.MaxPerMessage)
-            .Select(member => new MentionDto(member.UserId, member.Name)),
-    ];
+        ComposerMentions.Resolve(text, roster);
 }
 
 /// <summary>The words the board's sheet says about itself and its refusals (the web client's board pane and <c>board_failure</c>).</summary>

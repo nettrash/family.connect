@@ -530,4 +530,31 @@ public class ChatOracleTests
                 Mentions.Tokens(row.GetProperty("text").GetString()!, named).Select(token => (token.Start, token.End, token.Member.UserId)));
         }
     }
+
+    /// <summary>The composer's strip — the @ being typed, who it could mean, and the name accepted — as the original has it.</summary>
+    [Fact]
+    public void TheComposersStripReadsADraftAsTheOriginalReadsIt()
+    {
+        var queries = Section("strip_query");
+        Assert.NotEmpty(queries.EnumerateArray());
+        foreach (var row in queries.EnumerateArray())
+        {
+            Assert.Equal(Nullable(row, "query"), Mentions.Query(row.GetProperty("draft").GetString()!));
+        }
+        var roster = Section("strip_roster").EnumerateArray()
+            .Select(row => new Named(row.GetProperty("id").GetInt64(), row.GetProperty("name").GetString()!)).ToList();
+        foreach (var row in Section("strip_candidates").EnumerateArray())
+        {
+            var excluding = row.GetProperty("excluding").EnumerateArray().Select(id => id.GetInt64()).ToList();
+            Assert.Equal(
+                row.GetProperty("ids").EnumerateArray().Select(id => id.GetInt64()),
+                Mentions.Candidates(roster, row.GetProperty("query").GetString()!, excluding).Select(member => member.UserId));
+        }
+        foreach (var row in Section("strip_accept").EnumerateArray())
+        {
+            Assert.Equal(
+                row.GetProperty("accepted").GetString(),
+                Mentions.Accept(row.GetProperty("draft").GetString()!, row.GetProperty("name").GetString()!));
+        }
+    }
 }

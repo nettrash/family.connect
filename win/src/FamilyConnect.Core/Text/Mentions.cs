@@ -132,6 +132,140 @@ public static class Mentions
         return [.. found.OrderBy(token => token.Start)];
     }
 
+    /// <summary>
+    /// A text cut into its plain stretches and the names it says, as UTF-16 strings — what a bubble or a
+    /// sticker draws a name bold from. A text naming nobody is one plain run.
+    /// </summary>
+    public static IReadOnlyList<(string Text, long? UserId)> Runs(string text, IReadOnlyList<Named> mentions)
+    {
+        var tokens = Tokens(text, mentions);
+        if (tokens.Count == 0)
+        {
+            return [(text, null)];
+        }
+        // Byte offsets onto character offsets: every token boundary is a cluster boundary, so it is on a rune.
+        var charAt = new Dictionary<int, int>();
+        var bytes = 0;
+        var chars = 0;
+        foreach (var rune in text.EnumerateRunes())
+        {
+            charAt[bytes] = chars;
+            bytes += rune.Utf8SequenceLength;
+            chars += rune.Utf16SequenceLength;
+        }
+        charAt[bytes] = chars;
+        var runs = new List<(string Text, long? UserId)>();
+        var at = 0;
+        foreach (var token in tokens)
+        {
+            var (start, end) = (charAt[token.Start], charAt[token.End]);
+            if (start > at)
+            {
+                runs.Add((text[at..start], null));
+            }
+            runs.Add((text[start..end], token.Member.UserId));
+            at = end;
+        }
+        if (at < text.Length)
+        {
+            runs.Add((text[at..], null));
+        }
+        return runs;
+    }
+
+    // ---- the composer's @ strip (fc_text::mentions query / candidates / accept) ------------------------
+
+    /// <summary>
+    /// The prefix being typed after a trailing <c>@</c>, or null when the composer is not mid-mention: no
+    /// <c>@</c>, one that follows an ASCII letter, digit or <c>_</c> (an address), or a line break after it.
+    /// Empty when the <c>@</c> was just typed — every candidate is offered then. The <c>@</c> is the last
+    /// CHARACTER that is exactly <c>@</c>, and a line break is a character equal to a lone LF, so a CR LF pair
+    /// does not end it — the Swift answers, ported.
+    /// </summary>
+    public static string? Query(string draft)
+    {
+        if (LastAt(draft) is not { } at)
+        {
+            return null;
+        }
+        if (at > 0 && draft[at - 1] is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '_')
+        {
+            return null;
+        }
+        var tail = draft[(at + 1)..];
+        return Graphemes(tail).Any(character => character == "\n") ? null : tail;
+    }
+
+    /// <summary>
+    /// The roster narrowed to what <paramref name="query"/> could be the start of, minus
+    /// <paramref name="excluding"/>, in roster order — each name lowercased scalar by scalar with no context,
+    /// and compared character by character.
+    /// </summary>
+    public static IReadOnlyList<Named> Candidates(IReadOnlyList<Named> roster, string query, IReadOnlyCollection<long> excluding)
+    {
+        var needle = Lowercased(query);
+        return [.. roster.Where(member =>
+            !excluding.Contains(member.UserId) && (needle.Length == 0 || HasPrefix(Lowercased(member.Name), needle)))];
+    }
+
+    /// <summary>The draft with its trailing <c>@prefix</c> replaced by <c>@Name </c> — or, with no <c>@</c> at all, <c>@Name </c> appended.</summary>
+    public static string Accept(string draft, string name) =>
+        LastAt(draft) is { } at ? $"{draft[..at]}@{name} " : $"{draft}@{name} ";
+
+    private static int? LastAt(string text)
+    {
+        int? found = null;
+        var elements = StringInfo.GetTextElementEnumerator(text);
+        while (elements.MoveNext())
+        {
+            if (elements.GetTextElement() == "@")
+            {
+                found = elements.ElementIndex;
+            }
+        }
+        return found;
+    }
+
+    private static IEnumerable<string> Graphemes(string text)
+    {
+        var elements = StringInfo.GetTextElementEnumerator(text);
+        while (elements.MoveNext())
+        {
+            yield return elements.GetTextElement();
+        }
+    }
+
+    /// <summary>Every scalar's full lowercase mapping with no context — the one multi-scalar mapping, U+0130, spelled out.</summary>
+    private static string Lowercased(string text)
+    {
+        var lower = new StringBuilder(text.Length);
+        foreach (var rune in text.EnumerateRunes())
+        {
+            if (rune.Value == 0x130)
+            {
+                lower.Append('i').Append((char)0x307);
+            }
+            else
+            {
+                lower.Append(Rune.ToLowerInvariant(rune).ToString());
+            }
+        }
+        return lower.ToString();
+    }
+
+    private static bool HasPrefix(string text, string prefix)
+    {
+        using var characters = Graphemes(text).GetEnumerator();
+        foreach (var expected in Graphemes(prefix))
+        {
+            if (!characters.MoveNext() || characters.Current != expected)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// <summary>Longest name first — UTF-8 bytes — then the lower id; stable, so exact duplicates keep their order.</summary>
     private static IEnumerable<Named> LongestFirst(IReadOnlyList<Named> members) =>
         members.OrderByDescending(member => Encoding.UTF8.GetByteCount(member.Name)).ThenBy(member => member.UserId);

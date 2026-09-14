@@ -63,15 +63,19 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <ScrollViewer x:Name="StagingScroller" Grid.ColumnSpan="3" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" Visibility="Collapsed">
                     <StackPanel x:Name="StagingStrip" Orientation="Horizontal" Spacing="6" />
                 </ScrollViewer>
-                <Button x:Name="AttachButton" Grid.Row="1" VerticalAlignment="Bottom">
+                <ScrollViewer x:Name="SuggestionScroller" Grid.Row="1" Grid.ColumnSpan="3" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                    <StackPanel x:Name="SuggestionStrip" Orientation="Horizontal" Spacing="6" />
+                </ScrollViewer>
+                <Button x:Name="AttachButton" Grid.Row="2" VerticalAlignment="Bottom">
                     <SymbolIcon Symbol="Attach" />
                 </Button>
-                <TextBox x:Name="ComposerBox" Grid.Row="1" Grid.Column="1" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" />
-                <Button x:Name="SendButton" Grid.Row="1" Grid.Column="2" VerticalAlignment="Bottom" />
+                <TextBox x:Name="ComposerBox" Grid.Row="2" Grid.Column="1" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" />
+                <Button x:Name="SendButton" Grid.Row="2" Grid.Column="2" VerticalAlignment="Bottom" />
             </Grid>
             <TextBlock x:Name="ComposerError" Grid.Row="4" Margin="0,4,0,0" TextWrapping="Wrap" Visibility="Collapsed" />
         </Grid>

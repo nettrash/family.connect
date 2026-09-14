@@ -681,6 +681,16 @@ public sealed partial class BoardView : UserControl
             Foreground = new SolidColorBrush(Ink(hidden ? (byte)0x73 : (byte)0xD9)),
         };
         panel.Children.Add(title);
+        // The names the note says, BOLD in the note's own ink — and no door on the wall: a sticker's whole face is a drag handle.
+        if (!hidden && sticker.Note.Mentions is { Length: > 0 } named)
+        {
+            title.Text = string.Empty;
+            title.Inlines.Clear();
+            foreach (var (text, userId) in Mentions.Runs(words, [.. named.Select(mention => new Named(mention.UserId, mention.Name))]))
+            {
+                title.Inlines.Add(new Run { Text = text, FontWeight = userId is null ? FontWeights.Normal : FontWeights.SemiBold });
+            }
+        }
 
         var lines = new List<TextBlock>();
         if (!hidden && sticker.IsTasks)
