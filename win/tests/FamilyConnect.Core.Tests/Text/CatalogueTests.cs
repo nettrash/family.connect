@@ -49,7 +49,22 @@ public class CatalogueTests
          "While this window is not in front, a notification says who wrote — never what they wrote.",
          "Windows is not showing notifications for Family Connect. Allow them in Windows Settings, under Notifications.",
          "Family Connect for Windows %@", "Locations", "Notifications",
-         "Report sent.", "Message %@", "Safety for %@", "More for %@", "a photo"];
+         "Report sent.", "Message %@", "Safety for %@", "More for %@", "a photo",
+         "Caption",
+         "Event",
+         "Only the person who wrote a note can change it.",
+         "Pick when it ends, or turn the end off.",
+         "Pick when it starts.",
+         "That note has been taken down.",
+         "That's more things than one list holds.",
+         "The end can't be before the start.",
+         "The photo took too long to pin. Try again.",
+         "Title",
+         "You're not in a family, so there is no board.",
+         "Add Event",
+         "Couldn't send your answer.",
+         "Keep",
+         "Say something about it (optional)"];
 
     [Fact]
     public void ThisPortActuallyDrawsSomething()

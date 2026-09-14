@@ -175,7 +175,7 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
 
     public Task<ApiResult<NoteResponse>> PatchNote(
         long noteId, NotePatch patch, CancellationToken ct = default) =>
-        Send<NoteResponse>(HttpMethod.Patch, $"/families/mine/board/notes/{noteId}", patch, ct: ct);
+        Send<NoteResponse>(HttpMethod.Patch, $"/families/mine/board/notes/{noteId}", NoteBody(patch), ct: ct);
 
     /// <summary>An idempotent state-set, not a toggle; ANY member may send it.</summary>
     public Task<ApiResult<NoteResponse>> Answer(
@@ -390,6 +390,21 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
     /// </summary>
     public Task<ApiResult<ChatResponse>> DirectChat(long userId, CancellationToken ct = default) =>
         Send<ChatResponse>(HttpMethod.Post, "/chats/direct", new { user_id = userId }, ct: ct);
+
+    /// <summary>
+    /// A note patch as the wire takes it. Absent means "leave alone" and every null is left out — so an
+    /// event's end taken OFF has to be written in by hand, as the null the protocol says clears it.
+    /// </summary>
+    private static object NoteBody(NotePatch patch)
+    {
+        if (!patch.ClearsEnd)
+        {
+            return patch;
+        }
+        var body = JsonSerializer.SerializeToNode(patch, Wire.Options)!.AsObject();
+        body["ends_at"] = null;
+        return body;
+    }
 
     public Task<ApiResult<Nothing>> RemoveMember(long userId, CancellationToken ct = default) =>
         Send<Nothing>(HttpMethod.Delete, $"/families/members/{userId}", ct: ct);

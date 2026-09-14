@@ -492,4 +492,42 @@ public class ChatOracleTests
             HouseRules.FamilyLanguages);
         Assert.Equal(Section("house_pictures_per_question").GetInt32(), HouseRules.MaxPicturesPerQuestion);
     }
+
+    /// <summary>The server's byte grammar and the grapheme widening, as the original finds them.</summary>
+    [Fact]
+    public void AMentionIsFoundWhereTheOriginalFindsIt()
+    {
+        var vectors = Section("mention_ranges");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        foreach (var row in vectors.EnumerateArray())
+        {
+            var body = row.GetProperty("body").GetString()!;
+            var name = row.GetProperty("name").GetString()!;
+            var expected = row.GetProperty("ranges").EnumerateArray()
+                .Select(pair => (pair[0].GetInt32(), pair[1].GetInt32())).ToList();
+            Assert.Equal(expected, Mentions.Ranges(body, name).Select(range => (range.Start, range.End)).ToList());
+            Assert.Equal(expected.Count > 0, Mentions.Names(body, name));
+        }
+    }
+
+    [Fact]
+    public void TheNamesATextCarriesAreResolvedAsTheOriginalResolvesThem()
+    {
+        var roster = Section("mention_roster").EnumerateArray()
+            .Select(row => new Named(row.GetProperty("id").GetInt64(), row.GetProperty("name").GetString()!)).ToList();
+        foreach (var row in Section("mention_resolve").EnumerateArray())
+        {
+            Assert.Equal(
+                row.GetProperty("ids").EnumerateArray().Select(id => id.GetInt64()),
+                Mentions.Resolve(row.GetProperty("body").GetString()!, roster).Select(member => member.UserId));
+        }
+        foreach (var row in Section("mention_tokens").EnumerateArray())
+        {
+            var named = row.GetProperty("mentions").EnumerateArray()
+                .Select(item => new Named(item.GetProperty("id").GetInt64(), item.GetProperty("name").GetString()!)).ToList();
+            Assert.Equal(
+                row.GetProperty("tokens").EnumerateArray().Select(token => (token[0].GetInt32(), token[1].GetInt32(), token[2].GetInt64())),
+                Mentions.Tokens(row.GetProperty("text").GetString()!, named).Select(token => (token.Start, token.End, token.Member.UserId)));
+        }
+    }
 }

@@ -57,7 +57,12 @@ public sealed record NotePatch(
     [property: JsonPropertyName("ends_at")] string? EndsAt = null,
     string? Place = null,
     MentionDto[]? Mentions = null,
-    TaskLineRequest[]? Items = null);
+    TaskLineRequest[]? Items = null)
+{
+    /// <summary>Send <c>"ends_at": null</c> — take an event's end off, rather than leave it alone.</summary>
+    [JsonIgnore]
+    public bool ClearsEnd { get; init; }
+}
 
 /// <summary>
 /// One line of a list as the author wrote it: the id where the note already holds one — which is
