@@ -416,6 +416,31 @@ fn chat() {
             "edge": fc_text::avatar::EDGE, "qualities": fc_text::avatar::QUALITIES, "max_bytes": fc_text::avatar::MAX_BYTES})));
     }
 
+    // --- the owner's house rules ----------------------------------------------------------------------
+    {
+        let caps: &[(Option<i64>, i64, i64)] = &[(None, 3, 10), (Some(4), 3, 10), (Some(3), 3, 10), (Some(2), 3, 10),
+            (Some(40), 3, 10), (Some(40), 10, 10), (Some(40), 12, 10), (Some(1), 0, 50), (None, 0, 0), (Some(5), 4, 5)];
+        let cap_rows: Vec<serde_json::Value> = caps.iter().map(|(cap, members, ceiling)| {
+            let state = match fc_text::account::cap_state(*cap, *members, *ceiling) {
+                fc_text::account::CapState::OpenToCeiling { ceiling } => serde_json::json!({"kind": "open", "ceiling": ceiling}),
+                fc_text::account::CapState::Frozen { members } => serde_json::json!({"kind": "frozen", "members": members}),
+                fc_text::account::CapState::Room { members, seats } => serde_json::json!({"kind": "room", "members": members, "seats": seats}),
+            };
+            serde_json::json!({"cap": cap, "members": members, "ceiling": ceiling, "state": state})
+        }).collect();
+        let clamps: &[(i64, i64)] = &[(0, 10), (1, 10), (5, 10), (10, 10), (11, 10), (-3, 10), (5, 0), (0, 0), (7, 1)];
+        let clamp_rows: Vec<serde_json::Value> = clamps.iter().map(|(value, ceiling)| serde_json::json!({
+            "value": value, "ceiling": ceiling,
+            "clamp": fc_text::account::clamp_cap(*value, *ceiling), "seed": fc_text::account::seed_cap(*value, *ceiling)})).collect();
+        let language_rows: Vec<serde_json::Value> = fc_text::account::LANGUAGES.iter()
+            .map(|(tag, name)| serde_json::json!({"tag": tag, "name": name})).collect();
+        for (name, rows) in [("house_caps", cap_rows), ("house_clamps", clamp_rows), ("house_languages", language_rows)] {
+            out.push_str(&format!("  \"{}\": [\n{}\n  ],\n", name,
+                rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        }
+        out.push_str(&format!("  \"house_pictures_per_question\": {},\n", fc_text::assistant_pictures::MAX_PER_QUESTION));
+    }
+
     // --- how a picked file is prepared ---------------------------------------------------------------
     {
         let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();

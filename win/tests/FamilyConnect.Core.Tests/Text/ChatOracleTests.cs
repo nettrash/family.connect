@@ -452,4 +452,44 @@ public class ChatOracleTests
         Assert.Equal(budget.GetProperty("max_bytes").GetInt32(), AvatarPrep.MaxBytes);
         Assert.Equal(budget.GetProperty("qualities").EnumerateArray().Select(q => q.GetDouble()), AvatarPrep.Qualities);
     }
+
+    /// <summary>The member limit's three states, the clamp and the seed, as the original computes them.</summary>
+    [Fact]
+    public void TheMemberLimitIsTheOriginals()
+    {
+        var vectors = Section("house_caps");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        foreach (var row in vectors.EnumerateArray())
+        {
+            int? cap = row.GetProperty("cap").ValueKind == JsonValueKind.Null ? null : row.GetProperty("cap").GetInt32();
+            var state = HouseRules.Cap(cap, row.GetProperty("members").GetInt32(), row.GetProperty("ceiling").GetInt32());
+            var said = row.GetProperty("state");
+            switch (said.GetProperty("kind").GetString())
+            {
+                case "open":
+                    Assert.Equal(CapKind.OpenToCeiling, state.Kind);
+                    Assert.Equal(said.GetProperty("ceiling").GetInt32(), state.Ceiling);
+                    break;
+                case "frozen":
+                    Assert.Equal(CapKind.Frozen, state.Kind);
+                    Assert.Equal(said.GetProperty("members").GetInt32(), state.Members);
+                    break;
+                default:
+                    Assert.Equal(CapKind.Room, state.Kind);
+                    Assert.Equal(said.GetProperty("members").GetInt32(), state.Members);
+                    Assert.Equal(said.GetProperty("seats").GetInt32(), state.Seats);
+                    break;
+            }
+        }
+        foreach (var row in Section("house_clamps").EnumerateArray())
+        {
+            var (value, ceiling) = (row.GetProperty("value").GetInt32(), row.GetProperty("ceiling").GetInt32());
+            Assert.Equal(row.GetProperty("clamp").GetInt32(), HouseRules.ClampCap(value, ceiling));
+            Assert.Equal(row.GetProperty("seed").GetInt32(), HouseRules.SeedCap(value, ceiling));
+        }
+        Assert.Equal(
+            Section("house_languages").EnumerateArray().Select(row => (row.GetProperty("tag").GetString()!, row.GetProperty("name").GetString()!)),
+            HouseRules.FamilyLanguages);
+        Assert.Equal(Section("house_pictures_per_question").GetInt32(), HouseRules.MaxPicturesPerQuestion);
+    }
 }
