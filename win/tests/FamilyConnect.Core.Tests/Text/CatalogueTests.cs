@@ -52,6 +52,7 @@ public class CatalogueTests
          "Report sent.", "Message %@", "Safety for %@", "More for %@", "a photo",
          "Caption",
          "+%lld",
+         "View the photo",
          "Event",
          "Only the person who wrote a note can change it.",
          "Pick when it ends, or turn the end off.",

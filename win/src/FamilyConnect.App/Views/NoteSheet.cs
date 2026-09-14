@@ -36,7 +36,8 @@ namespace FamilyConnect.App.Views;
 /// reason beside them.
 /// </para>
 /// <para>
-/// Not here yet, and in the web client: the sticker preview, and the strip of names a half-typed
+/// Under the author's fields, the note as the wall will draw it (<see cref="NotePreview"/>, drawn by the wall's
+/// own <see cref="StickerFace"/>). Not here yet, and in the web client: the strip of names a half-typed
 /// <c>@</c> could mean — a name typed in full is still resolved at save.
 /// </para>
 /// </remarks>
@@ -55,15 +56,22 @@ internal sealed class NoteSheet
     private readonly TextBlock problem = Problem();
     private readonly StackPanel lines = new() { Spacing = 6 };
     private readonly StackPanel answers = new() { Spacing = 6 };
+    private readonly StickerFace face;
+    private readonly bool compact;
+    private readonly Grid preview = new() { HorizontalAlignment = HorizontalAlignment.Center, Padding = new Thickness(0, 16, 0, 16) };
     private ContentDialog dialog = null!;
     private RsvpAnswer? answering;
     private bool answerSending;
     private (bool Queued, RsvpAnswer? Choice) answerQueued;
     private bool drawing;
 
-    private NoteSheet(XamlRoot root, AppServices services, Connection connection, BoardModel board, NoteDto? opened, NoteKind kind, bool mine)
+    private NoteSheet(
+        XamlRoot root, AppServices services, Connection connection, BoardModel board, StickerFace face, bool compact,
+        NoteDto? opened, NoteKind kind, bool mine)
     {
         this.root = root;
+        this.face = face;
+        this.compact = compact;
         this.services = services;
         this.connection = connection;
         this.board = board;
@@ -78,8 +86,9 @@ internal sealed class NoteSheet
 
     /// <summary>Open a note (or a blank of <paramref name="kind"/> when <paramref name="opened"/> is null), and wait until it closes.</summary>
     public static Task ShowAsync(
-        XamlRoot root, AppServices services, Connection connection, BoardModel board, NoteDto? opened, NoteKind kind, bool mine) =>
-        new NoteSheet(root, services, connection, board, opened, kind, mine).RunAsync();
+        XamlRoot root, AppServices services, Connection connection, BoardModel board, StickerFace face, bool compact,
+        NoteDto? opened, NoteKind kind, bool mine) =>
+        new NoteSheet(root, services, connection, board, face, compact, opened, kind, mine).RunAsync();
 
     private NoteDto? Current => opened is null ? null : connection.Board.Note(opened.Id) ?? opened;
 
@@ -184,14 +193,46 @@ internal sealed class NoteSheet
             NoteSize.Small => "Small",
             NoteSize.Large => "Large",
             _ => "Medium",
-        }), size => draft.Size = size, _ => null));
+        }), size =>
+        {
+            draft.Size = size;
+            RefreshSave();
+        }, _ => null));
         body.Children.Add(Choices(say.Get("Font"), Notes.Fonts, font => font == draft.Font, font => say.Get(font switch
         {
             NoteFont.Serif => "Serif",
             NoteFont.Mono => "Mono",
             NoteFont.Casual => "Casual",
             _ => "Plain",
-        }), font => draft.Font = font, font => new FontFamily(Notes.FontFamily(font))));
+        }), font =>
+        {
+            draft.Font = font;
+            RefreshSave();
+        }, font => new FontFamily(Notes.FontFamily(font))));
+
+        // The sticker as the wall will draw it, type already fitted: the size is a choice with its result in
+        // front of the author, not a name.
+        body.Children.Add(new TextBlock { Text = say.Get("Preview"), FontWeight = FontWeights.SemiBold });
+        var cork = new Border
+        {
+            Child = preview,
+            CornerRadius = new CornerRadius(8),
+            Background = new SolidColorBrush(StickerFace.Hex("#cbb391")),
+        };
+        AutomationProperties.SetName(cork, say.Get("Preview"));
+        body.Children.Add(cork);
+        DrawPreview();
+    }
+
+    private void DrawPreview()
+    {
+        if (!editable)
+        {
+            return;
+        }
+        var reader = connection.Chats.Reader;
+        preview.Children.Clear();
+        preview.Children.Add(face.Build(NotePreview.Of(draft, kind, Current, reader, compact, say), reader, []));
     }
 
     /// <summary>The cap where the typing is, counted as the server counts — a full field, never a refused save.</summary>
@@ -215,6 +256,7 @@ internal sealed class NoteSheet
         {
             dialog.IsPrimaryButtonEnabled = draft.Problem(kind, say) != string.Empty;
         }
+        DrawPreview();
     }
 
     private StackPanel WhenFields()
@@ -278,7 +320,11 @@ internal sealed class NoteSheet
             endRow.Visibility = Visibility.Collapsed;
             RefreshSave();
         };
-        Capped(place, NoteText.MaxPlaceChars, value => draft.Place = value);
+        Capped(place, NoteText.MaxPlaceChars, value =>
+        {
+            draft.Place = value;
+            RefreshSave();
+        });
 
         var fields = new StackPanel { Spacing = 8 };
         fields.Children.Add(new TextBlock { Text = say.Get("When"), FontWeight = FontWeights.SemiBold });
@@ -460,6 +506,7 @@ internal sealed class NoteSheet
             swatch.Click += (_, _) =>
             {
                 draft.Color = name;
+                RefreshSave();
                 foreach (var other in buttons)
                 {
                     other.IsChecked = ReferenceEquals(other, swatch);
@@ -734,6 +781,8 @@ internal sealed class NoteSheet
                 drawing = false;
                 backdrop.IsEnabled = true;
                 backdrop.Content = BackdropLabel(Current ?? note);
+                // The preview is where the author sees what arrived.
+                DrawPreview();
                 if (answer.Error is not null)
                 {
                     ShowProblem(problem, say.Get("Couldn't draw that."));
@@ -785,12 +834,84 @@ internal sealed class NoteSheet
         return trimmed.Length == 0 ? "event" : trimmed;
     }
 
-    /// <summary>A photo drawn whole, or an event's backdrop as a banner over the note.</summary>
-    private Border Picture(AttachmentDto attachment, bool whole)
+    /// <summary>A photo drawn whole, or an event's backdrop as a banner over the note — and either, clicked, at full size.</summary>
+    private Button Picture(AttachmentDto attachment, bool whole)
     {
         var image = new Image { Stretch = whole ? Stretch.Uniform : Stretch.UniformToFill, MaxHeight = whole ? 360 : 140 };
         _ = LoadAsync(image, attachment);
-        return new Border { Child = image, CornerRadius = new CornerRadius(8), MaxHeight = whole ? 360 : 140 };
+        var button = new Button
+        {
+            Content = new Border { Child = image, CornerRadius = new CornerRadius(8), MaxHeight = whole ? 360 : 140 },
+            Padding = new Thickness(0),
+            BorderThickness = new Thickness(0),
+            Background = new SolidColorBrush(Colors.Transparent),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+        };
+        AutomationProperties.SetName(button, say.Get("View the photo"));
+        ToolTipService.SetToolTip(button, say.Get("View the photo"));
+        button.Click += (_, _) => _ = ShowWholeAsync(button, attachment);
+        return button;
+    }
+
+    /// <summary>
+    /// The picture at full size — the ORIGINAL, never the preview a note draws — with a way to save it. A flyout and
+    /// not a dialog: the sheet is a dialog already, and two cannot be open at once.
+    /// </summary>
+    private async Task ShowWholeAsync(FrameworkElement anchor, AttachmentDto attachment)
+    {
+        var image = new Image { Stretch = Stretch.Uniform, MaxWidth = 860, MaxHeight = 600 };
+        var ring = new ProgressRing { IsActive = true, Width = 32, Height = 32, Margin = new Thickness(48) };
+        var said = Footnote(string.Empty);
+        said.Visibility = Visibility.Collapsed;
+        var save = new Button { Content = say.Get("Save…"), IsEnabled = false, HorizontalAlignment = HorizontalAlignment.Right };
+        var panel = new StackPanel { Spacing = 8 };
+        panel.Children.Add(ring);
+        panel.Children.Add(image);
+        panel.Children.Add(said);
+        panel.Children.Add(save);
+        var presenter = new Style(typeof(FlyoutPresenter));
+        presenter.Setters.Add(new Setter(FrameworkElement.MaxWidthProperty, 920.0));
+        presenter.Setters.Add(new Setter(FrameworkElement.MaxHeightProperty, 760.0));
+        var flyout = new Flyout { Content = panel, FlyoutPresenterStyle = presenter, Placement = FlyoutPlacementMode.Full };
+        flyout.ShowAt(anchor);
+
+        byte[]? bytes;
+        try
+        {
+            (bytes, _) = await connection.Attachments.BytesAsync(attachment);
+            if (bytes is not null)
+            {
+                image.Source = await BitmapAsync(bytes);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"a note's picture at full size: {e.GetType().Name}");
+            bytes = null;
+        }
+        ring.IsActive = false;
+        ring.Visibility = Visibility.Collapsed;
+        if (bytes is null)
+        {
+            said.Text = say.Get("The file could not be downloaded.");
+            said.Visibility = Visibility.Visible;
+            return;
+        }
+        save.IsEnabled = true;
+        save.Click += async (_, _) =>
+        {
+            try
+            {
+                await AttachmentSaving.SaveAsync(services.WindowHandle, AttachmentFiles.FileName(attachment), bytes);
+            }
+            catch (Exception e)
+            {
+                Diagnostics.Write($"saving a note's picture: {e.GetType().Name}");
+                said.Text = say.Get("Something went wrong. Try again.");
+                said.Visibility = Visibility.Visible;
+            }
+        };
     }
 
     private async Task LoadAsync(Image image, AttachmentDto attachment)
