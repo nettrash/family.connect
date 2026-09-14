@@ -127,6 +127,7 @@ public sealed partial class MainWindow : Window
         Title = title;
         TitleText.Text = title;
         Toasts.Badge(chatting ? attention!.Unread : 0);
+        chats?.ShowBoardBadge(chatting && connection is { } live ? live.Board.Unread() : 0);
     }
 
     /// <summary>A clicked notification: to the front, and to the chat it was about.</summary>
@@ -155,7 +156,7 @@ public sealed partial class MainWindow : Window
         {
             Gate.NoFamily => new DoorView(services, current),
             Gate.Pending => new PendingView(services, current),
-            Gate.Member or Gate.Owner => chats ??= new ChatsView(services, current, ShowSettings, ShowFamily),
+            Gate.Member or Gate.Owner => chats ??= new ChatsView(services, current, ShowSettings, ShowFamily, ShowBoard),
             _ => new SignInView(services, current, changeServer: () => ShowServer(current.Server)),
         };
     }
@@ -203,6 +204,22 @@ public sealed partial class MainWindow : Window
         });
     }
 
+    /// <summary>The wall, over the chats as Settings is. Drawn, it moves the board's marks, and the badge follows.</summary>
+    private void ShowBoard()
+    {
+        if (connection is not { } current || chats is null)
+        {
+            return;
+        }
+        Screen.Content = new BoardView(services, current, close: () =>
+        {
+            if (connection == current && chats is { } open && shown is Gate.Member or Gate.Owner)
+            {
+                Screen.Content = open;
+            }
+        }, shown: RefreshAttention);
+    }
+
     private void ShowServer(Uri? prefill)
     {
         shown = null;
@@ -238,6 +255,7 @@ public sealed partial class MainWindow : Window
         {
             Flush(SendRules.FlushTrigger.WindowActivated);
             chats?.ReaderReturned();
+            (Screen.Content as BoardView)?.ReaderReturned();
             RefreshAttention();
         }
     }

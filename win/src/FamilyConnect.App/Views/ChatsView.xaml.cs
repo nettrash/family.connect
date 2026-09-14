@@ -58,6 +58,7 @@ public sealed partial class ChatsView : UserControl
     private readonly Action<OutboxRow, ApiError> onRefused;
     private readonly Action openSettings;
     private readonly Action openFamily;
+    private readonly Action openBoard;
 
     private readonly Dictionary<string, BitmapImage> pictures = [];
 
@@ -75,11 +76,12 @@ public sealed partial class ChatsView : UserControl
     private string listDrawn = string.Empty;
     private string conversationDrawn = string.Empty;
 
-    internal ChatsView(AppServices services, Connection connection, Action openSettings, Action openFamily)
+    internal ChatsView(AppServices services, Connection connection, Action openSettings, Action openFamily, Action openBoard)
     {
         this.services = services;
         this.openSettings = openSettings;
         this.openFamily = openFamily;
+        this.openBoard = openBoard;
         this.connection = connection;
         InitializeComponent();
         var say = services.Say;
@@ -88,6 +90,7 @@ public sealed partial class ChatsView : UserControl
 
         ChatsHeading.Text = say.Get("Chats");
         EmptyListText.Text = say.Get("No chats yet");
+        BoardText.Text = say.Get("Board");
         FamilyButton.Content = say.Get("Family");
         SettingsButton.Content = say.Get("Settings");
         SendButton.Content = say.Get("Send");
@@ -113,6 +116,7 @@ public sealed partial class ChatsView : UserControl
         // Logging out lives in Settings, where it asks first.
         SettingsButton.Click += (_, _) => this.openSettings();
         FamilyButton.Click += (_, _) => this.openFamily();
+        BoardButton.Click += (_, _) => this.openBoard();
 
         onArrived = message =>
         {
@@ -180,6 +184,13 @@ public sealed partial class ChatsView : UserControl
         // The list is drawn again so the row the notification named is the one selected.
         listDrawn = string.Empty;
         _ = OpenAsync(chatId);
+    }
+
+    /// <summary>How many notes on the wall have something new to read — nothing drawn at none.</summary>
+    internal void ShowBoardBadge(int unread)
+    {
+        BoardBadge.Value = unread;
+        BoardBadge.Visibility = unread > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>The window came to the front: what is on screen may now count as read.</summary>
