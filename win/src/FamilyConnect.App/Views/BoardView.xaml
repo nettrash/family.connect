@@ -14,15 +14,19 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <TextBlock x:Name="Heading" Style="{StaticResource TitleTextBlockStyle}" />
+            <StackPanel VerticalAlignment="Center">
+                <TextBlock x:Name="Heading" Style="{StaticResource TitleTextBlockStyle}" />
+                <TextBlock x:Name="StatusText" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+            </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
                 <Button x:Name="AddNoteButton" />
                 <Button x:Name="AddEventButton" />
                 <Button x:Name="AddListButton" />
+                <Button x:Name="PinPhotoButton" />
             </StackPanel>
             <Button x:Name="DoneButton" Grid.Column="2" VerticalAlignment="Center" Style="{StaticResource AccentButtonStyle}" />
         </Grid>
-        <ScrollViewer x:Name="Scroller" Grid.Row="1" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer x:Name="Scroller" Grid.Row="1" AllowDrop="True" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
             <Canvas x:Name="Wall" />
         </ScrollViewer>
         <StackPanel x:Name="Empty" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="2" IsHitTestVisible="False" Visibility="Collapsed">

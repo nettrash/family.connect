@@ -52,6 +52,11 @@ public sealed class NoteDraftTests
         Assert.Equal(string.Empty, patch.Place);
         Assert.Null(patch.StartsAt);
 
+        // An event with no end offers an hour after its start to begin from, with the end still off.
+        var open = NoteDraft.Of(EventNote(3));
+        Assert.False(open.HasEnd);
+        Assert.Equal(open.Starts!.Value.AddHours(1), open.Ends);
+
         var moved = NoteDraft.Of(ended);
         moved.Starts = moved.Starts!.Value.AddHours(1);
         Assert.Equal("2026-09-12T12:00:00Z", moved.Patch(ended, []).StartsAt);
@@ -85,6 +90,8 @@ public sealed class NoteDraftTests
         Assert.Equal("The end can't be before the start.", @event.Problem(NoteKind.Event, Say));
         @event.Ends = null;
         Assert.Equal("Pick when it ends, or turn the end off.", @event.Problem(NoteKind.Event, Say));
+        // An end picked and then switched off is not sent: the switch is the answer, not the picker.
+        @event.Ends = @event.Starts!.Value.AddHours(2);
         @event.HasEnd = false;
         @event.Place = " The park ";
         var created = @event.NewNote(NoteKind.Event, (0.3, 0.4), []);
