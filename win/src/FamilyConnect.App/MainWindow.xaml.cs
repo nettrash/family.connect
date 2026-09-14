@@ -38,6 +38,7 @@ public sealed partial class MainWindow : Window
     {
         this.services = services;
         InitializeComponent();
+        Startup.Step("window XAML loaded");
         services.WindowHandle = WinRT.Interop.WindowNative.GetWindowHandle(this);
 
         // The product's name, which is the same in every language.
@@ -51,6 +52,7 @@ public sealed partial class MainWindow : Window
         BuildRail();
         callMedia = new Services.WebViewCallMedia(CallMediaView);
         callCard = new Views.CallCardView(services, CallCard, CallFace, CallName, CallStatus, CallPicture, CallActions, DispatcherQueue);
+        Startup.Step("call card ready");
 
         // The outbox retries on its own schedule (SendRules); something has to ask it to.
         flushTimer = DispatcherQueue.CreateTimer();
@@ -173,6 +175,7 @@ public sealed partial class MainWindow : Window
             return;
         }
         shown = gate;
+        Startup.Step($"screen {gate}");
         var member = gate is Gate.Member or Gate.Owner;
         if (!member)
         {

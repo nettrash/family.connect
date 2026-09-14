@@ -16,6 +16,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        Startup.Watch();
+        Startup.Step("main");
         // Everything here can fail before a window exists, and WinUI's own handlers are installed
         // inside Application.Start — so a throw here would end the process with nothing written
         // down. The log is the only thing that can tell the next person why.
@@ -45,6 +47,7 @@ internal static class Program
         // which may be before any window exists — so ToastActivation holds it until one does.
         AppNotificationManager.Default.NotificationInvoked += ToastActivation.Heard;
         AppNotificationManager.Default.Register();
+        Startup.Step("starting WinUI");
         Application.Start(callbackParams =>
         {
             // What the XAML-generated Main installs: without it every await in a view would resume
@@ -54,5 +57,56 @@ internal static class Program
             _ = new App();
         });
         return 0;
+    }
+}
+
+/// <summary>
+/// What a launch leaves in the log: how far it got, and the first exceptions it met, thrown or caught.
+/// </summary>
+/// <remarks>
+/// <b>A CRASH WINUI TURNS INTO A FAIL-FAST (0xc000027b) NEVER REACHES AN UNHANDLED-EXCEPTION HANDLER</b>, and without these the
+/// log is silent about why a window never appeared. Only the first 45 seconds of a launch, and at most 40 exceptions — type,
+/// HRESULT and where, NEVER the message, which can carry what somebody wrote.
+/// </remarks>
+internal static class Startup
+{
+    private static readonly DateTime Until = DateTime.UtcNow.AddSeconds(45);
+    private static int logged;
+
+    [ThreadStatic]
+    private static bool writing;
+
+    public static void Watch() => AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
+    {
+        if (writing || DateTime.UtcNow > Until || Interlocked.Increment(ref logged) > 40)
+        {
+            return;
+        }
+        writing = true;
+        try
+        {
+            var where = new System.Diagnostics.StackTrace(1, false).GetFrames()
+                .Select(frame => frame.GetMethod())
+                .Where(method => method is not null)
+                .Take(10)
+                .Select(method => $"{method!.DeclaringType?.Name}.{method.Name}");
+            Diagnostics.Write($"launch exception: {e.Exception.GetType().FullName} 0x{e.Exception.HResult:X8} at {string.Join(" < ", where)}");
+        }
+        catch (Exception)
+        {
+            // Nothing a breadcrumb does may take the launch down.
+        }
+        finally
+        {
+            writing = false;
+        }
+    };
+
+    public static void Step(string what)
+    {
+        if (DateTime.UtcNow <= Until)
+        {
+            Diagnostics.Write($"launch: {what}");
+        }
     }
 }
