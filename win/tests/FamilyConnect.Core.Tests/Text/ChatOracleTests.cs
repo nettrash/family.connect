@@ -25,6 +25,51 @@ public class ChatOracleTests
             ? null
             : row.GetProperty(name).GetInt64();
 
+    /// <summary>A poll option is trimmed as the server trims it: Rust's White_Space, no more and no less.</summary>
+    [Fact]
+    public void APollOptionIsTrimmedTheWayRustTrims()
+    {
+        Assert.NotEmpty(Section("poll_trim").EnumerateArray());
+        foreach (var row in Section("poll_trim").EnumerateArray())
+        {
+            Assert.Equal(row.GetProperty("trimmed").GetString(), Polls.Trimmed(row.GetProperty("text").GetString()!));
+        }
+    }
+
+    /// <summary>
+    /// Two options are the same when Rust's <c>str::to_lowercase</c> says so — a word-final capital sigma
+    /// and a dotted capital I included, which .NET's invariant lowercase gets wrong.
+    /// </summary>
+    [Fact]
+    public void APollOptionIsFoldedTheWayRustLowercases()
+    {
+        Assert.NotEmpty(Section("poll_lower").EnumerateArray());
+        foreach (var row in Section("poll_lower").EnumerateArray())
+        {
+            Assert.Equal(row.GetProperty("lower").GetString(), Polls.Lowercase(row.GetProperty("text").GetString()!));
+        }
+    }
+
+    /// <summary>The composer refuses exactly what the server would answer <c>invalid_poll</c>, and sends what it checked.</summary>
+    [Fact]
+    public void APollIsRefusedExactlyWhereTheServerRefusesIt()
+    {
+        Assert.NotEmpty(Section("poll_options").EnumerateArray());
+        foreach (var row in Section("poll_options").EnumerateArray())
+        {
+            string[] options = [.. row.GetProperty("options").EnumerateArray().Select(option => option.GetString()!)];
+            var sent = row.GetProperty("sent");
+            if (sent.ValueKind == JsonValueKind.Null)
+            {
+                Assert.Null(Polls.Sanitized(options));
+            }
+            else
+            {
+                Assert.Equal(sent.EnumerateArray().Select(option => option.GetString()!), Polls.Sanitized(options));
+            }
+        }
+    }
+
     /// <summary>
     /// A record's line, for every outcome the wire names and one it does not, at every duration
     /// and on both sides of the call. 120 vectors, because "whose call was it" changes four of

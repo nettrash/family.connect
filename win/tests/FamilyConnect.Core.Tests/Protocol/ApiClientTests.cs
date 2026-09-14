@@ -404,6 +404,40 @@ public class ApiClientTests
         Assert.Equal("https://chat.example.com/", client.BaseUrl.ToString());
     }
 
+    /// <summary>
+    /// A vote PUTs the option, a retraction DELETEs and a close POSTs, neither with a body — and each is
+    /// answered with the poll's whole state. The open polls are a plain read of messages.
+    /// </summary>
+    [Fact]
+    public async Task APollIsVotedRetractedClosedAndListedOnItsOwnPaths()
+    {
+        const string State = """{"message_id": 5, "poll": {"poll_seq": 12, "closed": false, "options": [{"id": 1, "text": "Pizza", "votes": [7, 9]}, {"id": 2, "text": "Pasta", "votes": []}]}}""";
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.OK, State)
+            .Then(HttpStatusCode.OK, State)
+            .Then(HttpStatusCode.OK, State)
+            .Then(HttpStatusCode.OK, """{"messages": [{"id": 5, "chat_id": 42, "sender_id": 7, "body": "Dinner?", "created_at": "2026-09-14T10:00:00Z", "poll": {"poll_seq": 12, "closed": false, "options": [{"id": 1, "text": "Pizza", "votes": [7]}]}}]}"""));
+
+        var voted = await client.Vote(42, 5, 1);
+        Assert.Equal(5, voted.Value!.MessageId);
+        Assert.Equal(12, voted.Value.Poll.PollSeq);
+        Assert.Equal([7L, 9L], voted.Value.Poll.Options[0].Votes);
+        Assert.True((await client.Unvote(42, 5)).Ok);
+        Assert.True((await client.ClosePoll(42, 5)).Ok);
+        var open = await client.OpenPolls(42);
+        Assert.Equal("Dinner?", Assert.Single(open.Value!.Messages!).Body);
+
+        Assert.Equal(
+            [
+                (HttpMethod.Put, "https://chat.example.com/api/v1/chats/42/messages/5/vote"),
+                (HttpMethod.Delete, "https://chat.example.com/api/v1/chats/42/messages/5/vote"),
+                (HttpMethod.Post, "https://chat.example.com/api/v1/chats/42/messages/5/poll/close"),
+                (HttpMethod.Get, "https://chat.example.com/api/v1/chats/42/polls/open"),
+            ],
+            handler.Sent.Select(request => (request.Method, request.RequestUri!.ToString())));
+        Assert.Equal(["{\"option_id\":1}", null, null, null], handler.Bodies);
+    }
+
     [Fact]
     public async Task ADirectChatIsAskedForByTheMembersId()
     {

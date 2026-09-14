@@ -17,6 +17,25 @@ public class ChatStoreTests : IDisposable
 
     private static ChatDto Family => new(42, "family", "The Smiths");
 
+    /// <summary>The unanswered count reads every poll a chat holds, oldest first, and nothing else — not another chat's.</summary>
+    [Fact]
+    public void AChatsPollsAreEveryPollItHoldsOldestFirst()
+    {
+        var store = Store();
+        store.Replace([Row(), Row(new ChatDto(43, "direct", "Bob"))]);
+        var poll = new PollDto(1, false, [new PollOptionDto(1, "Pizza", []), new PollOptionDto(2, "Pasta", [])]);
+        store.Apply([
+            Message(9) with { Poll = poll },
+            Message(3) with { Poll = poll with { Closed = true } },
+            Message(5),
+            Message(7, chat: 43) with { Poll = poll },
+        ]);
+
+        Assert.Equal([3L, 9L], store.Polls(42).Select(message => message.Id));
+        Assert.True(store.Polls(42)[0].Poll!.Closed);
+        Assert.Empty(store.Polls(44));
+    }
+
     private static ChatRowDto Row(
         ChatDto? chat = null,
         MessageDto? last = null,

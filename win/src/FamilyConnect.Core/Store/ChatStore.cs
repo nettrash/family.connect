@@ -373,6 +373,23 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         return messages;
     }
 
+    /// <summary>Every poll this device holds for one chat, oldest first — what the unanswered count reads.</summary>
+    public IReadOnlyList<MessageDto> Polls(long chatId)
+    {
+        using var serialised = database.Hold();
+        var messages = new List<MessageDto>();
+        using var command = database.Connection.CreateCommand();
+        command.CommandText =
+            "SELECT * FROM messages WHERE chat_id = $chat AND poll_json IS NOT NULL ORDER BY message_id";
+        command.Parameters.AddWithValue("$chat", chatId);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            messages.Add(ReadMessage(reader));
+        }
+        return messages;
+    }
+
     /// <summary>The newest message of a chat — the row's preview.</summary>
     public MessageDto? Newest(long chatId) => Messages(chatId, limit: 1).FirstOrDefault();
 

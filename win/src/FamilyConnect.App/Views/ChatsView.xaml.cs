@@ -72,6 +72,9 @@ public sealed partial class ChatsView : UserControl
     private int activeName;
     private bool gone;
     private ConversationModel? open;
+
+    /// <summary>The open chat's open polls, when it is the family chat — the only one that holds any.</summary>
+    private OpenPollsModel? openPolls;
     private MessageDto? replyingTo;
     private MessageDto? editing;
     private int redrawQueued;
@@ -102,10 +105,15 @@ public sealed partial class ChatsView : UserControl
         ComposerBox.PlaceholderText = say.Get("Message");
         ToolTipService.SetToolTip(AttachButton, say.Get("Attach a photo, video or file"));
         AutomationProperties.SetName(AttachButton, say.Get("Attach a photo, video or file"));
+        PollButton.Content = say.Get("Poll");
+        ToolTipService.SetToolTip(PollButton, say.Get("New poll"));
+        OpenPollsText.Text = say.Get("Open polls");
 
         ChatList.SelectionChanged += OnChatPicked;
         SendButton.Click += (_, _) => Send();
         AttachButton.Click += (_, _) => _ = PickAsync();
+        PollButton.Click += (_, _) => _ = AskPollAsync();
+        OpenPollsButton.Click += (_, _) => _ = ShowOpenPollsAsync();
         ComposerPanel.DragOver += OnDragOver;
         ComposerPanel.Drop += OnDrop;
         BannerCancel.Click += (_, _) => EndComposerMode(clear: editing is not null);
@@ -233,6 +241,7 @@ public sealed partial class ChatsView : UserControl
     {
         DrawList();
         DrawConversation(keepFromBottom: null);
+        ShowPollsBadge();
         ShowTyping();
         _ = ReportReadAsync();
     }
@@ -343,6 +352,12 @@ public sealed partial class ChatsView : UserControl
         ComposerError.Visibility = Visibility.Collapsed;
         ConversationTitle.Text = connection.Chats.Chat(chatId) is { } row ? list.Title(row.Chat) : string.Empty;
         ComposerPanel.Visibility = Visibility.Visible;
+        // Polls are the family chat's alone: anywhere else the server answers invalid_poll.
+        var family = connection.Chats.Chat(chatId)?.Chat.Kind == "family";
+        openPolls = family ? new OpenPollsModel(chatId, connection.Chats, connection.Api) : null;
+        PollButton.Visibility = family ? Visibility.Visible : Visibility.Collapsed;
+        OpenPollsButton.Visibility = PollButton.Visibility;
+        ShowPollsBadge();
         DrawList();
         DrawConversation(keepFromBottom: null);
         ShowTyping();
@@ -370,10 +385,11 @@ public sealed partial class ChatsView : UserControl
         var bubbles = chat.Bubbles();
         var pending = chat.Pending();
         var drawn = string.Join(Row, bubbles.Select(bubble => string.Join(Field,
-            bubble.Message.Id, bubble.Message.EditSeq, bubble.Message.ReactionSeq, bubble.Reads,
+            bubble.Message.Id, bubble.Message.EditSeq, bubble.Message.ReactionSeq, bubble.Message.Poll?.PollSeq, bubble.Reads,
             connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0))));
         drawn += Row + string.Join(Row, pending.Select(row => string.Join(Field, row.ClientMsgId, row.Failed)));
-        drawn = $"{chat.ChatId}{Row}{drawn}";
+        // A poll draws voters' names and "N of M voted": a block or a roster change redraws it.
+        drawn = $"{chat.ChatId}{Field}{string.Join(',', connection.Chats.Blocked())}{Field}{connection.Chats.Members().Count}{Row}{drawn}";
         if (drawn == conversationDrawn)
         {
             return;
@@ -458,6 +474,15 @@ public sealed partial class ChatsView : UserControl
         if (!bubble.Reads || message.Body.Length > 0 || message.Call is not null || message.Media.Count == 0)
         {
             stack.Children.Add(words);
+        }
+        if (bubble.Reads && message.Poll is not null)
+        {
+            // The question is the body, drawn above: the options go under it.
+            var poll = message.Id;
+            stack.Children.Add(PollCard.Build(
+                message, bubble.Mine, PollSeen(),
+                option => ActAsync(() => chat.VoteAsync(poll, option)),
+                () => ActAsync(() => chat.ClosePollAsync(poll))));
         }
         if (bubble.Reads && message.Reactions is { Length: > 0 } reactions)
         {
@@ -1129,6 +1154,78 @@ public sealed partial class ChatsView : UserControl
         {
             ComposerBox.Text = string.Empty;
         }
+    }
+
+    // ---- polls ---------------------------------------------------------------------------------------
+
+    private PollCard.Seen PollSeen() => new(
+        services.Say, Reader, connection.Chats.Member, connection.Chats.IsBlocked,
+        PollText.MemberCount(connection.Chats.Members()));
+
+    /// <summary>How many open polls the reader has still to answer — nothing drawn at none.</summary>
+    private void ShowPollsBadge()
+    {
+        var unanswered = openPolls?.Unanswered() ?? 0;
+        OpenPollsBadge.Value = unanswered;
+        OpenPollsBadge.Visibility = unanswered > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// A poll: the question is the message and the options ride with it, through the outbox like any other
+    /// message. It names members the way a message does, and answers the reply being written, if any.
+    /// </summary>
+    private async Task AskPollAsync()
+    {
+        if (open is not { } chat || !IsFamily(chat))
+        {
+            return;
+        }
+        (string Question, string[] Options)? asked;
+        try
+        {
+            asked = await PollComposer.AskAsync(XamlRoot, services.Say);
+        }
+        catch (Exception e)
+        {
+            // Only one dialog may be up at a time.
+            Diagnostics.Write($"asking a poll: {e.GetType().Name}");
+            return;
+        }
+        if (asked is not { } poll || open != chat)
+        {
+            return;
+        }
+        chat.Send(
+            poll.Question, replyToMessageId: replyingTo?.Id, pollOptions: poll.Options,
+            mentions: ComposerMentions.ForSend(poll.Question, connection.Chats.Members(), familyChat: true));
+        if (replyingTo is not null)
+        {
+            EndComposerMode(clear: false);
+        }
+        Queued();
+    }
+
+    private async Task ShowOpenPollsAsync()
+    {
+        if (openPolls is not { } model)
+        {
+            return;
+        }
+        try
+        {
+            await OpenPollsSheet.ShowAsync(XamlRoot, model, PollSeen, connection);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"showing the open polls: {e.GetType().Name}");
+        }
+        if (openPolls != model)
+        {
+            return;
+        }
+        ShowPollsBadge();
+        conversationDrawn = string.Empty;
+        DrawConversation(keepFromBottom: atNewest ? null : DistanceFromBottom);
     }
 
     // ---- mentioning a member ---------------------------------------------------------------------
