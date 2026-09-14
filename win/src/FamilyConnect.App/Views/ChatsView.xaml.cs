@@ -72,6 +72,9 @@ public sealed partial class ChatsView : UserControl
     /// <summary>A voice note being recorded, and the clock that redraws its bar.</summary>
     private VoiceRecorder? recorder;
     private DispatcherQueueTimer? recordingTimer;
+    /// <summary>A link clicked a beat ago and waiting to open: a double click on it is the heart, which cancels it.</summary>
+    private DispatcherQueueTimer? pendingLink;
+    private long lastHeart;
 
     /// <summary>
     /// The one recording playing — one at a time — and the latest row drawn for each, which a redraw replaces; ended, it
@@ -548,6 +551,8 @@ public sealed partial class ChatsView : UserControl
         // A poll draws voters' names and "N of M voted": a block or a roster change redraws it.
         drawn = $"{chat.ChatId}{Field}{string.Join(',', connection.Chats.Blocked())}{Field}{connection.Chats.Members().Count}" +
             $"{Field}{connection.PeerReads.UpTo(chat.ChatId)}{Field}{connection.Answers.Version}{Field}{anchor}" +
+            // A call record's "Call back" follows whether a call is on, and what the server carries.
+            $"{Field}{callBusy}{Field}{connection.Session.State.CallsEnabled}{Field}{connection.Session.State.VideoCallsEnabled}" +
             $"{Field}{DateOnly.FromDateTime(DateTime.Now)}{Row}{drawn}";
         if (drawn == conversationDrawn)
         {
@@ -769,14 +774,22 @@ public sealed partial class ChatsView : UserControl
         {
             AutomationProperties.SetName(words, say.Get("The assistant is answering"));
         }
-        if (!awaited && bubble.Reads && message.Call is null && body.Length > 0 && message.Mentions is { Length: > 0 } named)
+        // The body as the apps draw it — markdown, links, the assistant's tokens and names (MessageBody). Only a table makes
+        // it more than the one block of words.
+        FrameworkElement? laidOut = null;
+        if (!awaited && bubble.Reads && message.Call is null && body.Length > 0)
         {
-            NamedRuns(words, body, named, mine);
+            laidOut = BodyElement(words, body, message.Mentions, mine);
         }
-        // A caption-less photo is its picture: the words "Photo" under it would only repeat it.
-        if (!bubble.Reads || body.Length > 0 || message.Call is not null || message.Media.Count == 0)
+        // A call record draws its own row instead of its placeholder body; a caption-less photo is its picture, and the
+        // words "Photo" under it would only repeat it.
+        if (bubble.Reads && message.Call is { } call)
         {
-            stack.Children.Add(words);
+            stack.Children.Add(CallRecordElement(chat, call, mine, inThread));
+        }
+        else if (!bubble.Reads || body.Length > 0 || message.Call is not null || message.Media.Count == 0)
+        {
+            stack.Children.Add(laidOut ?? words);
         }
         if (bubble.Reads && !awaited && failed)
         {
@@ -932,7 +945,11 @@ public sealed partial class ChatsView : UserControl
             balloon.ContextFlyout = MenuFor(chat, bubble, assistantChat, assistantId, balloon, inThread);
             // The Tapback-heart idiom, the same emoji on every client — on the balloon, not the row, so a double click beside
             // a message leaves nothing on it.
-            balloon.DoubleTapped += (_, _) => _ = ActAsync(() => React(chat, inThread, message.Id, Reactions.DoubleTap));
+            balloon.DoubleTapped += (_, _) =>
+            {
+                CancelLinkForHeart();
+                _ = ActAsync(() => React(chat, inThread, message.Id, Reactions.DoubleTap));
+            };
         }
         else if (BubbleRules.IsOtherMember(message, Reader, assistantChat, assistantId))
         {
@@ -1465,6 +1482,48 @@ public sealed partial class ChatsView : UserControl
     {
         callBusy = busy;
         ShowCallButtons();
+        DrawConversation(keepFromBottom: atNewest ? null : DistanceFromBottom);
+    }
+
+    /// <summary>
+    /// A call record (ios CallRecordView, web bubble.rs): a phone or a camera — red for a call the reader missed — the record's
+    /// own words in place of its placeholder body, and "Call back" wherever a call can be placed from here.
+    /// </summary>
+    private FrameworkElement CallRecordElement(ConversationModel chat, CallRecordDto call, bool mine, ThreadModel? inThread)
+    {
+        var say = services.Say;
+        var resources = Application.Current.Resources;
+        var ink = (Brush)resources[mine ? "TextOnAccentFillColorPrimaryBrush" : "TextFillColorPrimaryBrush"];
+        var label = CallRecordText.Label(call.Outcome, call.DurationSecs, call.Video, mine, say);
+        // A camera or a phone, in Segoe Fluent Icons.
+        var glyph = new FontIcon
+        {
+            Glyph = ((char)(call.Video ? 0xE714 : 0xE717)).ToString(),
+            FontSize = 18,
+            Foreground = CallRecords.IsMissed(call, mine) ? (Brush)resources["SystemFillColorCriticalBrush"] : ink,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var lines = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        lines.Children.Add(new TextBlock { Text = label, Foreground = ink, TextWrapping = TextWrapping.Wrap });
+        var state = connection.Session.State;
+        var direct = connection.Chats.Chat(chat.ChatId)?.Chat is { Kind: "direct", PeerUserId: not null };
+        var (offered, video) = CallRecords.CallBack(call, direct, state.CallsEnabled, state.VideoCallsEnabled, inThread is not null);
+        if (offered)
+        {
+            var back = new HyperlinkButton { Content = say.Get("Call back"), Padding = new Thickness(0, 2, 0, 0), IsEnabled = !callBusy };
+            if (mine)
+            {
+                back.Foreground = ink;
+            }
+            AutomationProperties.SetHelpText(back, say.Get("Calls back"));
+            back.Click += (_, _) => RequestCall(video);
+            lines.Children.Add(back);
+        }
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        row.Children.Add(glyph);
+        row.Children.Add(lines);
+        AutomationProperties.SetName(row, label);
+        return row;
     }
 
     /// <summary>
@@ -2510,31 +2569,204 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>
-    /// A body's names drawn BOLD in the bubble's own ink — never a colour of their own, which a tinted ground would
-    /// swallow — and, for somebody this reader can message, a door onto that chat.
+    /// A body laid out (<see cref="BubbleBody"/>): one text block fills the bubble's words and answers null; a body with a
+    /// table answers its blocks, text and tables in turn.
     /// </summary>
-    private void NamedRuns(TextBlock words, string body, MentionDto[] named, bool mine)
+    private FrameworkElement? BodyElement(TextBlock words, string body, MentionDto[]? named, bool mine)
+    {
+        var blocks = BubbleBody.Lay(body, named, connection.Chats.Members(), Reader, connection.Chats.IsBlocked);
+        if (blocks is [BodyTextBlock { Runs: var only }])
+        {
+            FillRuns(words, only, mine);
+            return null;
+        }
+        var ink = (Brush)Application.Current.Resources[mine ? "TextOnAccentFillColorPrimaryBrush" : "TextFillColorPrimaryBrush"];
+        var panel = new StackPanel { Spacing = 6 };
+        foreach (var block in blocks)
+        {
+            if (block is BodyTableBlock { Table: var table })
+            {
+                panel.Children.Add(TableElement(table, ink));
+            }
+            else if (block is BodyTextBlock { Runs: var runs })
+            {
+                var text = new TextBlock { TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, Foreground = ink };
+                FillRuns(text, runs, mine);
+                panel.Children.Add(text);
+            }
+        }
+        return panel;
+    }
+
+    /// <summary>
+    /// A text block's runs as inlines. Links in the accent — underlined in the bubble's own ink on an own bubble — opening a
+    /// beat late; names and the assistant's tokens BOLD in the bubble's own ink, never a colour of their own, which a tinted
+    /// ground would swallow; and a name this reader can message, a door onto that chat.
+    /// </summary>
+    private void FillRuns(TextBlock words, IReadOnlyList<BodyRun> runs, bool mine)
     {
         var ink = (Brush)Application.Current.Resources[mine ? "TextOnAccentFillColorPrimaryBrush" : "TextFillColorPrimaryBrush"];
         words.Text = string.Empty;
         words.Inlines.Clear();
-        foreach (var run in ComposerMentions.Runs(body, named, connection.Chats.Members(), Reader, connection.Chats.IsBlocked))
+        foreach (var run in runs)
         {
-            if (run.UserId is not { } id)
+            var styled = StyledRun(run.Text, run.Style, run.Marked);
+            if (run.MemberId is { } id && run.Opens)
             {
-                words.Inlines.Add(new Run { Text = run.Text });
-                continue;
+                var door = new Hyperlink { UnderlineStyle = UnderlineStyle.None, Foreground = ink };
+                door.Inlines.Add(styled);
+                door.Click += (_, _) => _ = OpenDirectAsync(id);
+                words.Inlines.Add(door);
             }
-            if (!run.Opens)
+            else if (BubbleBody.Openable(run.Link) is { } uri)
             {
-                words.Inlines.Add(new Run { Text = run.Text, FontWeight = FontWeights.SemiBold });
-                continue;
+                var link = new Hyperlink();
+                if (mine)
+                {
+                    link.Foreground = ink;
+                }
+                link.Inlines.Add(styled);
+                link.Click += (_, _) => OpenLinkSoon(uri);
+                words.Inlines.Add(link);
             }
-            var door = new Hyperlink { UnderlineStyle = UnderlineStyle.None, Foreground = ink, FontWeight = FontWeights.SemiBold };
-            door.Inlines.Add(new Run { Text = run.Text });
-            door.Click += (_, _) => _ = OpenDirectAsync(id);
-            words.Inlines.Add(door);
+            else
+            {
+                words.Inlines.Add(styled);
+            }
         }
+    }
+
+    /// <summary>
+    /// One run in its markdown style: bold, italic, struck, code in a monospaced face, and a heading on the apps' ladder
+    /// (1.29, 1.18 and 1.00 of the body). A name or an assistant token is semibold whatever it sits in.
+    /// </summary>
+    private static Run StyledRun(string text, MarkdownStyle style, bool marked)
+    {
+        var run = new Run { Text = text };
+        if (marked)
+        {
+            run.FontWeight = FontWeights.SemiBold;
+        }
+        else if (style.Strong)
+        {
+            run.FontWeight = FontWeights.Bold;
+        }
+        if (style.Emphasis)
+        {
+            run.FontStyle = Windows.UI.Text.FontStyle.Italic;
+        }
+        if (style.Strikethrough)
+        {
+            run.TextDecorations = Windows.UI.Text.TextDecorations.Strikethrough;
+        }
+        if (style.Code || style.Face == MarkdownFace.Monospaced)
+        {
+            run.FontFamily = new FontFamily("Cascadia Mono, Consolas");
+        }
+        switch (style.Face)
+        {
+            case MarkdownFace.Heading1:
+                run.FontSize = 18;
+                run.FontWeight = FontWeights.Bold;
+                break;
+            case MarkdownFace.Heading2:
+                run.FontSize = 16.5;
+                run.FontWeight = FontWeights.Bold;
+                break;
+            case MarkdownFace.Heading3:
+                run.FontWeight = FontWeights.SemiBold;
+                break;
+        }
+        return run;
+    }
+
+    /// <summary>
+    /// A table (ios MessageBodyView): the header semibold above a one-pixel rule, the columns sharing the width, cells
+    /// wrapping and aligned as the delimiter row says. Cells carry their styles and nothing else — no links, no names.
+    /// </summary>
+    private static FrameworkElement TableElement(MarkdownTable table, Brush ink)
+    {
+        var grid = new Grid { ColumnSpacing = 12, RowSpacing = 4, Margin = new Thickness(0, 2, 0, 2) };
+        for (var column = 0; column < table.ColumnCount; column++)
+        {
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        }
+        void AddRow(IReadOnlyList<MarkdownText> cells, bool header)
+        {
+            var row = grid.RowDefinitions.Count;
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            for (var column = 0; column < cells.Count && column < table.ColumnCount; column++)
+            {
+                var cell = new TextBlock
+                {
+                    TextWrapping = TextWrapping.Wrap,
+                    IsTextSelectionEnabled = true,
+                    Foreground = ink,
+                    TextAlignment = table.Alignment(column) switch
+                    {
+                        MarkdownAlignment.Center => TextAlignment.Center,
+                        MarkdownAlignment.Trailing => TextAlignment.Right,
+                        _ => TextAlignment.Left,
+                    },
+                };
+                if (header)
+                {
+                    cell.FontWeight = FontWeights.SemiBold;
+                }
+                foreach (var run in cells[column].Runs)
+                {
+                    cell.Inlines.Add(StyledRun(run.Text, run.Style, marked: false));
+                }
+                Grid.SetRow(cell, row);
+                Grid.SetColumn(cell, column);
+                grid.Children.Add(cell);
+            }
+        }
+        AddRow(table.Header, header: true);
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var rule = new Border { Height = 1, Background = ink, Opacity = 0.3 };
+        Grid.SetRow(rule, 1);
+        Grid.SetColumnSpan(rule, Math.Max(1, table.ColumnCount));
+        grid.Children.Add(rule);
+        foreach (var cells in table.Rows)
+        {
+            AddRow(cells, header: false);
+        }
+        return grid;
+    }
+
+    /// <summary>Open a link a beat late — the Mac's 350 ms — unless the click was the second half of a heart.</summary>
+    private void OpenLinkSoon(Uri uri)
+    {
+        pendingLink?.Stop();
+        pendingLink = null;
+        // A double click reaches the link twice: once the heart has landed, the second click opens nothing.
+        if (Environment.TickCount64 - lastHeart < BubbleBody.LinkDelay.TotalMilliseconds)
+        {
+            return;
+        }
+        var timer = DispatcherQueue.CreateTimer();
+        timer.Interval = BubbleBody.LinkDelay;
+        timer.IsRepeating = false;
+        timer.Tick += (sender, _) =>
+        {
+            sender.Stop();
+            if (pendingLink != sender)
+            {
+                return;
+            }
+            pendingLink = null;
+            _ = Windows.System.Launcher.LaunchUriAsync(uri);
+        };
+        pendingLink = timer;
+        timer.Start();
+    }
+
+    private void CancelLinkForHeart()
+    {
+        lastHeart = Environment.TickCount64;
+        pendingLink?.Stop();
+        pendingLink = null;
     }
 
     /// <summary>Get-or-create the chat with a member, put it in the list, and open it.</summary>
