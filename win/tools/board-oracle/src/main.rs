@@ -490,6 +490,42 @@ fn chat() {
         }
     }
 
+    // --- the composer's @ strip ----------------------------------------------------------------------
+    {
+        use fc_text::mentions;
+        let ch = |c: u32| char::from_u32(c).unwrap().to_string();
+        let drafts: Vec<String> = vec![
+            "@".into(), "hi @An".into(), "mail@An".into(), format!("@An{}x", ch(10)), "no at".into(),
+            "@Anna @Bo".into(), format!("a{}@x", ch(0x301)), "x_@y".into(), format!("@x{}{}y", ch(13), ch(10)),
+            format!("@{} x", ch(0x301)), "(@Ann".into(), "Ж@Ann".into(), "9@x".into(), "@@".into(), String::new(),
+        ];
+        let query_rows: Vec<serde_json::Value> = drafts.iter()
+            .map(|draft| serde_json::json!({"draft": draft, "query": mentions::query(draft)})).collect();
+        let names: Vec<(i64, String)> = vec![(1, "Anna".into()), (2, "anna lee".into()), (3, format!("Zo{}", ch(0xEB))),
+            (4, format!("Zoe{}", ch(0x308))), (5, format!("{}lker", ch(0x130))), (6, "Σοφία".into()), (7, "Bob".into()),
+            (8, "ẞtraße".into())];
+        let roster: Vec<mentions::Member> = names.iter().map(|(id, name)| mentions::Member { user_id: *id, name }).collect();
+        let cases: Vec<(String, Vec<i64>)> = vec![(String::new(), vec![]), ("an".into(), vec![]), ("AN".into(), vec![]),
+            ("zoe".into(), vec![]), ("zo".into(), vec![]), ("i".into(), vec![]), (format!("i{}", ch(0x307)), vec![]),
+            ("σο".into(), vec![]), ("ΣΟ".into(), vec![]), ("b".into(), vec![]), ("x".into(), vec![]),
+            ("anna l".into(), vec![]), ("a".into(), vec![1, 7]), ("ß".into(), vec![]), (String::new(), vec![2, 3, 4, 5, 6])];
+        let candidate_rows: Vec<serde_json::Value> = cases.iter().map(|(query, excluding)| serde_json::json!({
+            "query": query, "excluding": excluding,
+            "ids": mentions::candidates(&roster, query, excluding).iter().map(|member| member.user_id).collect::<Vec<_>>()
+        })).collect();
+        let roster_rows: Vec<serde_json::Value> = names.iter().map(|(id, name)| serde_json::json!({"id": id, "name": name})).collect();
+        let accepts: Vec<(String, String)> = vec![("hi @An".into(), "Anna".into()), ("no at".into(), "Bob".into()),
+            ("@Anna and @Bo".into(), "Bob".into()), (String::new(), format!("Zo{}", ch(0xEB))),
+            (format!("@{} x", ch(0x301)), "Anna".into())];
+        let accept_rows: Vec<serde_json::Value> = accepts.iter()
+            .map(|(draft, name)| serde_json::json!({"draft": draft, "name": name, "accepted": mentions::accept(draft, name)})).collect();
+        for (name, rows) in [("strip_query", query_rows), ("strip_candidates", candidate_rows),
+                             ("strip_roster", roster_rows), ("strip_accept", accept_rows)] {
+            out.push_str(&format!("  \"{}\": [\n{}\n  ],\n", name,
+                rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        }
+    }
+
     // --- how a picked file is prepared ---------------------------------------------------------------
     {
         let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();

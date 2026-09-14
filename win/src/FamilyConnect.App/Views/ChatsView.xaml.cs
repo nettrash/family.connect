@@ -9,6 +9,7 @@ using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -65,6 +66,10 @@ public sealed partial class ChatsView : UserControl
     /// <summary>What each chat has staged for its next message, kept while the reader looks elsewhere.</summary>
     private readonly Dictionary<long, ComposerStaging> strips = [];
     private bool sendingMedia;
+
+    /// <summary>The names a half-typed @ could mean, and which of them Enter or Tab would take.</summary>
+    private IReadOnlyList<MemberDto> offered = [];
+    private int activeName;
     private bool gone;
     private ConversationModel? open;
     private MessageDto? replyingTo;
@@ -111,6 +116,8 @@ public sealed partial class ChatsView : UserControl
             {
                 _ = chat.TypingAsync();
             }
+            activeName = 0;
+            DrawSuggestions();
         };
         MessageScroller.ViewChanged += OnScrolled;
         // Logging out lives in Settings, where it asks first.
@@ -436,6 +443,10 @@ public sealed partial class ChatsView : UserControl
             IsTextSelectionEnabled = bubble.Reads,
             FontStyle = bubble.Reads ? Windows.UI.Text.FontStyle.Normal : Windows.UI.Text.FontStyle.Italic,
         };
+        if (bubble.Reads && message.Call is null && message.Body.Length > 0 && message.Mentions is { Length: > 0 } named)
+        {
+            NamedRuns(words, message.Body, named, bubble.Mine);
+        }
         var when = new TextBlock
         {
             Text = BubbleText.When(message, services.Culture, say),
@@ -1120,8 +1131,127 @@ public sealed partial class ChatsView : UserControl
         }
     }
 
+    // ---- mentioning a member ---------------------------------------------------------------------
+
+    private bool IsFamily(ConversationModel chat) => connection.Chats.Chat(chat.ChatId)?.Chat.Kind == "family";
+
+    /// <summary>
+    /// The strip over the composer: the names a half-typed @ could mean, in the family chat alone. The arrows walk
+    /// it, Enter or Tab takes the highlighted name, and a click takes that one.
+    /// </summary>
+    private void DrawSuggestions()
+    {
+        offered = open is { } chat
+            ? ComposerMentions.Offered(ComposerBox.Text, connection.Chats.Members(), Reader, connection.Chats.IsBlocked, IsFamily(chat), editing is not null)
+            : [];
+        SuggestionStrip.Children.Clear();
+        SuggestionScroller.Visibility = offered.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        AutomationProperties.SetName(SuggestionStrip, services.Say.Get("Members"));
+        for (var index = 0; index < offered.Count; index++)
+        {
+            var member = offered[index];
+            var label = new TextBlock();
+            label.Inlines.Add(new Run { Text = member.DisplayName, FontWeight = FontWeights.SemiBold });
+            if (member.Username.Length > 0)
+            {
+                label.Inlines.Add(new Run { Text = $"  @{member.Username}", Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"] });
+            }
+            var button = new Button { Content = label, IsTabStop = false };
+            if (index == Math.Min(activeName, offered.Count - 1))
+            {
+                button.Style = (Style)Application.Current.Resources["AccentButtonStyle"];
+            }
+            button.Click += (_, _) => AcceptName(member.DisplayName);
+            SuggestionStrip.Children.Add(button);
+        }
+    }
+
+    /// <summary>The trailing @prefix replaced by the whole name — which is what makes the resolution at send find somebody.</summary>
+    private void AcceptName(string name)
+    {
+        ComposerBox.Text = Mentions.Accept(ComposerBox.Text, name);
+        ComposerBox.SelectionStart = ComposerBox.Text.Length;
+        ComposerBox.Focus(FocusState.Programmatic);
+    }
+
+    /// <summary>
+    /// A body's names drawn BOLD in the bubble's own ink — never a colour of their own, which a tinted ground would
+    /// swallow — and, for somebody this reader can message, a door onto that chat.
+    /// </summary>
+    private void NamedRuns(TextBlock words, string body, MentionDto[] named, bool mine)
+    {
+        var ink = (Brush)Application.Current.Resources[mine ? "TextOnAccentFillColorPrimaryBrush" : "TextFillColorPrimaryBrush"];
+        var members = connection.Chats.Members();
+        words.Text = string.Empty;
+        words.Inlines.Clear();
+        foreach (var (text, userId) in Mentions.Runs(body, [.. named.Select(mention => new Named(mention.UserId, mention.Name))]))
+        {
+            if (userId is not { } id)
+            {
+                words.Inlines.Add(new Run { Text = text });
+                continue;
+            }
+            if (!ComposerMentions.OpensChat(id, members, Reader, connection.Chats.IsBlocked))
+            {
+                words.Inlines.Add(new Run { Text = text, FontWeight = FontWeights.SemiBold });
+                continue;
+            }
+            var door = new Hyperlink { UnderlineStyle = UnderlineStyle.None, Foreground = ink, FontWeight = FontWeights.SemiBold };
+            door.Inlines.Add(new Run { Text = text });
+            door.Click += (_, _) => _ = OpenDirectAsync(id);
+            words.Inlines.Add(door);
+        }
+    }
+
+    /// <summary>Get-or-create the chat with a member, put it in the list, and open it.</summary>
+    private async Task OpenDirectAsync(long userId)
+    {
+        try
+        {
+            var answer = await connection.Api.DirectChat(userId);
+            if (answer is not { Ok: true, Value: { } opened })
+            {
+                ShowProblem(FamilyText.GenericFailure(answer.Error ?? ApiError.Transport("no answer"), services.Say));
+                return;
+            }
+            var chats = await connection.Api.Chats();
+            if (chats is { Ok: true, Value.Chats: { } rows })
+            {
+                connection.Chats.Replace(rows);
+            }
+            OpenChat(opened.Chat.Id);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"opening a mentioned member's chat: {e.GetType().Name}");
+            ShowProblem(services.Say.Get("Something went wrong. Try again."));
+        }
+    }
+
     private void OnComposerKey(object sender, KeyRoutedEventArgs e)
     {
+        if (offered.Count > 0)
+        {
+            var shifted = InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift)
+                .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+            switch (e.Key)
+            {
+                case Windows.System.VirtualKey.Down:
+                    e.Handled = true;
+                    activeName = (activeName + 1) % offered.Count;
+                    DrawSuggestions();
+                    return;
+                case Windows.System.VirtualKey.Up:
+                    e.Handled = true;
+                    activeName = (activeName + offered.Count - 1) % offered.Count;
+                    DrawSuggestions();
+                    return;
+                case Windows.System.VirtualKey.Enter or Windows.System.VirtualKey.Tab when !shifted:
+                    e.Handled = true;
+                    AcceptName(offered[Math.Min(activeName, offered.Count - 1)].DisplayName);
+                    return;
+            }
+        }
         if (e.Key == Windows.System.VirtualKey.Escape && BannerPanel.Visibility == Visibility.Visible)
         {
             e.Handled = true;
@@ -1179,7 +1309,8 @@ public sealed partial class ChatsView : UserControl
         }
         // Written down first; the outbox owns it from here, and a send interrupted by anything at
         // all is a message that can be finished rather than one that never happened.
-        chat.Send(body, replyToMessageId: replyTo);
+        // The names are resolved from the text at send: a name typed by hand mentions too.
+        chat.Send(body, replyToMessageId: replyTo, mentions: ComposerMentions.ForSend(body, connection.Chats.Members(), IsFamily(chat)));
         EndComposerMode(clear: true);
         Queued();
     }
@@ -1210,7 +1341,9 @@ public sealed partial class ChatsView : UserControl
                     handles.Add(store.Stage(item));
                 }
             });
-            chat.Send(body, replyToMessageId: replyTo, pendingFiles: handles);
+            chat.Send(
+                body, replyToMessageId: replyTo, pendingFiles: handles,
+                mentions: ComposerMentions.ForSend(body, connection.Chats.Members(), IsFamily(chat)));
             Queued();
         }
         catch (Exception e)

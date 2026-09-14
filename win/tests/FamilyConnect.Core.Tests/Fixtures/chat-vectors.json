@@ -620,6 +620,57 @@
     {"mentions":[{"id":6,"name":"Bo"},{"id":3,"name":"Bob"}],"text":"@Bo @Bob @Bo","tokens":[[0,3,6],[4,8,3],[9,12,6]]},
     {"mentions":[{"id":1,"name":"Anna"}],"text":"nothing here","tokens":[]}
   ],
+  "strip_query": [
+    {"draft":"@","query":""},
+    {"draft":"hi @An","query":"An"},
+    {"draft":"mail@An","query":null},
+    {"draft":"@An\nx","query":null},
+    {"draft":"no at","query":null},
+    {"draft":"@Anna @Bo","query":"Bo"},
+    {"draft":"á@x","query":"x"},
+    {"draft":"x_@y","query":null},
+    {"draft":"@x\r\ny","query":"x\r\ny"},
+    {"draft":"@́ x","query":null},
+    {"draft":"(@Ann","query":"Ann"},
+    {"draft":"Ж@Ann","query":"Ann"},
+    {"draft":"9@x","query":null},
+    {"draft":"@@","query":""},
+    {"draft":"","query":null}
+  ],
+  "strip_candidates": [
+    {"excluding":[],"ids":[1,2,3,4,5,6,7,8],"query":""},
+    {"excluding":[],"ids":[1,2],"query":"an"},
+    {"excluding":[],"ids":[1,2],"query":"AN"},
+    {"excluding":[],"ids":[],"query":"zoe"},
+    {"excluding":[],"ids":[3,4],"query":"zo"},
+    {"excluding":[],"ids":[],"query":"i"},
+    {"excluding":[],"ids":[5],"query":"i̇"},
+    {"excluding":[],"ids":[6],"query":"σο"},
+    {"excluding":[],"ids":[6],"query":"ΣΟ"},
+    {"excluding":[],"ids":[7],"query":"b"},
+    {"excluding":[],"ids":[],"query":"x"},
+    {"excluding":[],"ids":[2],"query":"anna l"},
+    {"excluding":[1,7],"ids":[2],"query":"a"},
+    {"excluding":[],"ids":[8],"query":"ß"},
+    {"excluding":[2,3,4,5,6],"ids":[1,7,8],"query":""}
+  ],
+  "strip_roster": [
+    {"id":1,"name":"Anna"},
+    {"id":2,"name":"anna lee"},
+    {"id":3,"name":"Zoë"},
+    {"id":4,"name":"Zoë"},
+    {"id":5,"name":"İlker"},
+    {"id":6,"name":"Σοφία"},
+    {"id":7,"name":"Bob"},
+    {"id":8,"name":"ẞtraße"}
+  ],
+  "strip_accept": [
+    {"accepted":"hi @Anna ","draft":"hi @An","name":"Anna"},
+    {"accepted":"no at@Bob ","draft":"no at","name":"Bob"},
+    {"accepted":"@Anna and @Bob ","draft":"@Anna and @Bo","name":"Bob"},
+    {"accepted":"@Zoë ","draft":"","name":"Zoë"},
+    {"accepted":"@́ x@Anna ","draft":"@́ x","name":"Anna"}
+  ],
   "prep_types": [
     {"audio":null,"declared":"image/jpeg","essence":"","extension":"jpg","mime":"","mime_for":"image/jpeg","name":"photo.JPG"},
     {"audio":null,"declared":"video/quicktime","essence":"application/octet-stream","extension":"mov","mime":"application/octet-stream","mime_for":"video/quicktime","name":"clip.mov"},
