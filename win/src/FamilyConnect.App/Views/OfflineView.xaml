@@ -2,11 +2,29 @@
     x:Class="FamilyConnect.App.Views.OfflineView"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <!-- Structure and x:Name only: every word is set from code, through the catalogue. -->
-    <StackPanel MaxWidth="420" Margin="24,48,24,24" Spacing="12">
-        <TextBlock x:Name="HeadingText" FontSize="28" FontWeight="SemiBold" />
-        <TextBlock x:Name="BodyText" TextWrapping="Wrap" />
-        <Button x:Name="RetryButton" />
-        <HyperlinkButton x:Name="ChangeServerButton" Margin="0,24,0,0" />
-    </StackPanel>
+    <!-- Structure and x:Name only: every word is set from code, through the catalogue. A server that could not be reached, on one card. -->
+    <ScrollViewer>
+        <Border
+            MaxWidth="440"
+            Margin="24,56,24,24"
+            Padding="32,28,32,24"
+            HorizontalAlignment="Stretch"
+            VerticalAlignment="Top"
+            CornerRadius="12"
+            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1">
+            <StackPanel Spacing="12">
+                <Grid Width="56" Height="56" HorizontalAlignment="Left">
+                    <Ellipse Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                    <SymbolIcon Symbol="World" />
+                </Grid>
+                <TextBlock x:Name="HeadingText" Style="{StaticResource TitleTextBlockStyle}" TextWrapping="Wrap" />
+                <TextBlock x:Name="BodyText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Button x:Name="RetryButton" Margin="0,8,0,0" HorizontalAlignment="Stretch" Style="{StaticResource AccentButtonStyle}" />
+                <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" Margin="0,8,0,0" />
+                <HyperlinkButton x:Name="ChangeServerButton" Padding="0,4,0,4" />
+            </StackPanel>
+        </Border>
+    </ScrollViewer>
 </UserControl>

@@ -103,7 +103,10 @@ public sealed class FolderMediaStore(string folder) : IMediaStore
                 Number(root, "height"),
                 Number(root, "duration_ms"),
                 Text(root, "name"),
-                preview);
+                preview,
+                Real(root, "latitude"),
+                Real(root, "longitude"),
+                Real(root, "accuracy_m"));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -160,6 +163,19 @@ public sealed class FolderMediaStore(string folder) : IMediaStore
             {
                 writer.WriteString("name", name);
             }
+            // Written as the doubles they are: a place read back a centimetre off is a different place.
+            if (media.Latitude is { } latitude)
+            {
+                writer.WriteNumber("latitude", latitude);
+            }
+            if (media.Longitude is { } longitude)
+            {
+                writer.WriteNumber("longitude", longitude);
+            }
+            if (media.AccuracyM is { } accuracy && double.IsFinite(accuracy))
+            {
+                writer.WriteNumber("accuracy_m", accuracy);
+            }
             writer.WriteEndObject();
         }
         return buffer.ToArray();
@@ -170,6 +186,11 @@ public sealed class FolderMediaStore(string folder) : IMediaStore
 
     private static int? Number(JsonElement root, string name) =>
         root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)
+            ? number
+            : null;
+
+    private static double? Real(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number)
             ? number
             : null;
 

@@ -53,6 +53,16 @@ public static class MediaText
     public static bool IsMedia(string kind) => kind is not ("file" or "audio" or "location");
 
     /// <summary>
+    /// "3:42" — the elapsed or total time of a recording (<c>fc_text::media::time_label</c>, ios <c>AudioRecorder.timeLabel</c>):
+    /// whole seconds, rounded half away from zero as Rust rounds, never below zero, and nothing for a time that is not one.
+    /// </summary>
+    public static string TimeLabel(double seconds)
+    {
+        var whole = double.IsFinite(seconds) ? (long)Math.Max(0, Math.Round(seconds, MidpointRounding.AwayFromZero)) : 0;
+        return $"{whole / 60}:{whole % 60:00}";
+    }
+
+    /// <summary>
     /// "1.2 MB": decimal units, whole kilobytes, one decimal of a megabyte, two of a gigabyte, and no
     /// trailing zero — the way the Apple apps' byte formatter writes a file's size.
     /// </summary>

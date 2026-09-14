@@ -298,6 +298,41 @@ public class ResyncTests : IDisposable
     }
 
     /// <summary>
+    /// The messages catch-up delivers only what is newer than everything held, so a reply on it raises its root; the edits
+    /// catch-up delivers copies the root's recomputed count already includes, and raises nothing (docs/protocol.md,
+    /// "Threads").
+    /// </summary>
+    [Fact]
+    public async Task OnlyTheMessagesCatchUpRaisesARootsCount()
+    {
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine/board", """{"notes": [], "max_board_seq": 0}""")
+            .Always("/families/mine", Family)
+            .Always("/chats", """
+                {"chats": [{"chat": {"id": 42, "kind": "family", "title": "The Smiths"},
+                            "max_edit_seq": 5}]}
+                """)
+            .Always("/chats/42/messages", """
+                {"messages": [{"id": 12, "chat_id": 42, "sender_id": 9, "body": "at 8",
+                               "created_at": "2026-09-12T10:02:00Z", "thread_root_id": 9}]}
+                """)
+            .Always("/chats/42/edits", """
+                {"messages": [{"id": 11, "chat_id": 42, "sender_id": 9, "body": "at 7!",
+                               "created_at": "2026-09-12T10:01:00Z", "thread_root_id": 9,
+                               "edited_at": "2026-09-12T11:00:00Z", "edit_seq": 5}]}
+                """);
+        var (resync, _, chats, _) = Build(server);
+        chats.Replace([new ChatRowDto(new ChatDto(42, "family", "The Smiths"))]);
+        chats.Apply(Wire.Decode<MessageDto>(Message(9, body: "Dinner?"))! with { ReplyCount = 1 }, FamilyConnect.Core.Store.SeqRoute.Evidence);
+
+        await resync.RunAsync();
+
+        Assert.Equal("at 7!", chats.Message(11)!.Body);
+        Assert.Equal(2, chats.Message(9)!.ReplyCount);
+    }
+
+    /// <summary>
     /// The three feeds are asked for in the protocol's own order, after the messages and before
     /// the wall — and each only when its own mark is above its own cursor.
     /// </summary>

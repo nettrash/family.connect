@@ -600,7 +600,11 @@ of its own; tapping it opens the chain on its own surface — the root at the to
 it in order, a composer at the bottom. "View thread" is also offered on any reply in a chain. Rows
 on that surface draw exactly as they do in the chat — the same bubbles, the same quotes, the same
 hidden-row rule for a blocked member, the same reactions — because a second, simpler renderer is a
-second place for those rules to drift. The web client draws it too; Windows is not asked to yet.
+second place for those rules to drift. The web client and Windows draw it too, as a panel beside the
+conversation rather than a sheet over it — a desktop window has the width for both, and the chat
+stays readable while the chain is open. Both keep the chain's rows OUT of the cached window unless
+that window already holds them, folding in only the copies of rows it does (their recomputed count
+and any edit), for the paging-cursor reason above.
 
 ### Editing
 
@@ -4203,7 +4207,9 @@ it is the fact of the call, and the device does the ringing itself.
 Who is woken: the callee's devices that have no live socket of their own — the same per-device
 rule as everything above — that can present a call: an `ios` device with a `voip_token`, and an
 `android` device with a push token. An iOS device that never registered a VoIP token is not woken;
-a Mac is never woken, because a Mac that is not running is not a phone in a pocket. A browser is
+a Mac is never woken, because a Mac that is not running is not a phone in a pocket — and neither is
+Windows, for the same reason and because it registers no device: a running window holds its socket
+and rings on it, and a closed one hears nothing. A browser is
 never woken either, for that reason and one more: it registers no device to wake (see "A browser is
 a client too"), so a closed tab hears nothing and the call is missed. What a woken
 device does next is connect its socket, and the server's registration-time replay ("Late arrivals")

@@ -108,6 +108,23 @@ public class FrameRouterTests : IDisposable
     }
 
     /// <summary>
+    /// A live reply raises its held root's count; an edit frame does not — not even one for a reply this device never
+    /// held, because an edit is not an arrival (docs/protocol.md, "Threads").
+    /// </summary>
+    [Fact]
+    public void ALiveReplyRaisesItsRootAndAnEditFrameDoesNot()
+    {
+        chats.Apply(Message(1338) with { ReplyCount = 1 }, FamilyConnect.Core.Store.SeqRoute.Evidence);
+
+        router.Hear(new ServerFrame.Message(Message(1339) with { ThreadRootId = 1338 }));
+        Assert.Equal(2, chats.Message(1338)!.ReplyCount);
+
+        router.Hear(new ServerFrame.MessageEdited(Message(1340, body: "at 8", editSeq: 92) with { ThreadRootId = 1338 }));
+        Assert.Equal(2, chats.Message(1338)!.ReplyCount);
+        Assert.Equal("at 8", chats.Message(1340)!.Body);
+    }
+
+    /// <summary>
     /// A `read` FRAME IS TWO DIFFERENT FACTS. One naming YOURSELF is your own marker from your
     /// other device; one naming somebody else is roster data, and clearing your unread count from
     /// it would be reading somebody else's reading as your own.

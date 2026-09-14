@@ -743,6 +743,240 @@ fn chat() {
         }
     }
 
+    // --- @ai and /draw: what a body asks the assistant for ---------------------------------------------
+    {
+        use fc_text::assistant;
+        let ch = |c: u32| char::from_u32(c).unwrap().to_string();
+        let bodies: Vec<String> = vec![
+            "@ai hello".into(), "@AI".into(), "hello @Ai!".into(), "anna@ai.example".into(), "@aiden".into(), "(@ai)".into(),
+            "@ai_".into(), "Я@ai".into(), format!("@ai{}", ch(0x301)), format!("{}@ai", ch(0x600)), "@ai /draw a cat".into(),
+            "/draw a cat".into(), "/DRAW  a cat ".into(), "/drawer".into(), "/draw".into(), "/draw ".into(), "hey @ai /draw a cat".into(),
+            "  @ai   /draw   dogs  ".into(), format!("/draw{} a cat", ch(0x301)), "@ai/draw a cat".into(),
+            format!("/draw{}moon", ch(0x3000)), format!("/draw{}moon", ch(0x200B)), String::new(), "@a".into(), "x @ai".into(),
+            "look @ai /draw a cat".into(), "@ai @ai /draw a cat".into(), "/draw,a cat".into(), format!("/draw\t{}", ch(0x85)),
+            format!("{}/draw sun", ch(0xA0)), "@ai\n/draw\nsun".into(), "@ai9".into(), "9@ai".into(), "@ai.".into(), "ai".into(),
+        ];
+        let body_rows: Vec<serde_json::Value> = bodies.iter().map(|body| serde_json::json!({
+            "body": body, "mentions": assistant::mentions(body), "prompt": assistant::draw_prompt(body),
+            "asks": assistant::asks_for_picture(body),
+        })).collect();
+        let drafts: Vec<String> = vec![
+            String::new(), "hi".into(), "hi ".into(), "hi @ai".into(), "a  ".into(), format!("a {}", ch(0x301)), "hello\n".into(),
+            format!("{} ", ch(0x600)), "@AI please".into(),
+        ];
+        let draft_rows: Vec<serde_json::Value> = drafts.iter()
+            .map(|draft| serde_json::json!({"draft": draft, "with": assistant::with_assistant_mention(draft)})).collect();
+        for (name, rows) in [("assistant_bodies", body_rows), ("assistant_mention_drafts", draft_rows)] {
+            out.push_str(&format!("  \"{}\": [\n{}\n  ],\n", name,
+                rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        }
+    }
+
+    // --- the assistant and a photograph: what a composer says before the pixels leave --------------------
+    {
+        use fc_text::assistant_pictures::{self as pictures, Candidate, MentionNotice, Switches};
+        let jpeg = |bytes: Option<u64>| Candidate::new("photo", "image/jpeg", bytes);
+        let png = Candidate::new("photo", "image/png", Some(10));
+        let heic = Candidate::new("photo", "image/heic", Some(10));
+        let big = jpeg(Some(5 * 1024 * 1024 + 1));
+        let video = Candidate::new("video", "video/mp4", Some(10));
+        let as_json = |list: &[Candidate]| list.iter()
+            .map(|c| serde_json::json!({"kind": c.kind, "mime": c.mime, "bytes": c.bytes})).collect::<Vec<_>>();
+        let stagings: Vec<Vec<Candidate>> = vec![
+            vec![], vec![jpeg(Some(10))], vec![video.clone()], vec![heic.clone()], vec![big.clone()], vec![jpeg(None); 5],
+            vec![jpeg(Some(10)), video.clone()], vec![png.clone(), heic.clone()], vec![jpeg(Some(10)); 4],
+        ];
+        let mut private_rows: Vec<serde_json::Value> = Vec::new();
+        for staged in &stagings {
+            for can_see in [false, true] {
+                private_rows.push(serde_json::json!({
+                    "staged": as_json(staged), "can_see": can_see, "said": pictures::private_notice(staged, can_see),
+                }));
+            }
+        }
+        let drafts = ["@ai look at this", "hello", "@ai /draw a cat", "look @ai"];
+        let staged_sets: Vec<Vec<Candidate>> = vec![
+            vec![], vec![jpeg(Some(10))], vec![jpeg(Some(10)); 3], vec![heic.clone(), jpeg(Some(10))],
+            // Unreadable AND past the budget at once: which sentence wins is a rule.
+            vec![heic.clone(), jpeg(Some(10)), jpeg(Some(10)), jpeg(Some(10))],
+        ];
+        let quoted_sets: Vec<Vec<Candidate>> = vec![vec![], vec![jpeg(None)], vec![jpeg(None); 3], vec![big.clone()]];
+        let switch_sets = [
+            (true, true, true, false, false), (true, true, true, true, false), (true, true, false, true, false),
+            (false, true, true, true, false), (true, false, true, true, false), (true, true, true, true, true),
+        ];
+        let mut mention_rows: Vec<serde_json::Value> = Vec::new();
+        for draft in drafts {
+            for staged in &staged_sets {
+                for quoted in &quoted_sets {
+                    for (see, allows, history, photos, draw) in switch_sets {
+                        let switches = Switches { server_can_see: see, family_allows: allows, family_history: history,
+                            family_history_photos: photos, server_can_draw: draw };
+                        let notice = MentionNotice::of(draft, staged, quoted, switches);
+                        mention_rows.push(serde_json::json!({
+                            "draft": draft, "staged": as_json(staged), "quoted": as_json(quoted),
+                            "switches": [see, allows, history, photos, draw],
+                            "said": notice.as_ref().map(|n| n.sentence()),
+                            "counts": notice.as_ref().map(|n| [n.shown_on_mention, n.shown_on_quote, n.extra, n.unreadable]),
+                            "recent": notice.as_ref().and_then(|n| n.recent_up_to),
+                        }));
+                    }
+                }
+            }
+        }
+        let shown_cases: Vec<(&str, &str, Option<u64>)> = vec![
+            ("photo", "image/jpeg", Some(5 * 1024 * 1024)), ("photo", "image/jpeg", Some(5 * 1024 * 1024 + 1)), ("photo", "image/jpeg", None),
+            ("photo", "IMAGE/PNG", Some(1)), ("photo", "image/webp", Some(1)), ("file", "image/jpeg", Some(1)), ("video", "video/mp4", Some(1)),
+        ];
+        let shown_rows: Vec<serde_json::Value> = shown_cases.iter().map(|(kind, mime, bytes)| serde_json::json!({
+            "kind": kind, "mime": mime, "bytes": bytes, "shown": pictures::is_shown_to_model(kind, mime, *bytes),
+        })).collect();
+        let attachment_cases: Vec<(&str, &str, Option<u64>, bool)> = vec![
+            ("photo", "image/heic", Some(9_000_000), true), ("photo", "image/heic", Some(9_000_000), false), ("photo", "image/png", None, false),
+        ];
+        let attachment_rows: Vec<serde_json::Value> = attachment_cases.iter().map(|(kind, mime, size, preview)| {
+            let candidate = Candidate::of_attachment(kind, mime, *size, *preview);
+            serde_json::json!({"kind": kind, "mime": mime, "size": size, "preview": preview,
+                "as": {"kind": candidate.kind, "mime": candidate.mime, "bytes": candidate.bytes}})
+        }).collect();
+        let offer_rows: Vec<serde_json::Value> = [(true, true, true), (false, true, true), (true, false, true), (true, true, false)].iter()
+            .map(|(chat, see, allows)| serde_json::json!({"chat": chat, "see": see, "allows": allows,
+                "offers": pictures::offers_picture_attach(*chat, *see, *allows)})).collect();
+        for (name, rows) in [("pictures_private", private_rows), ("pictures_mention", mention_rows), ("pictures_shown", shown_rows),
+                             ("pictures_attachment", attachment_rows), ("pictures_offer", offer_rows)] {
+            out.push_str(&format!("  \"{}\": [\n{}\n  ],\n", name,
+                rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        }
+    }
+
+    // --- a paste: attach its files, type its words, or nothing ---------------------------------------
+    {
+        use fc_text::media;
+        let ch = |c: u32| char::from_u32(c).unwrap().to_string();
+        let v = |list: &[&str]| list.iter().map(|item| item.to_string()).collect::<Vec<String>>();
+        let decisions: Vec<(Vec<String>, String)> = vec![
+            (v(&[]), "hello".into()), (v(&[]), "   ".into()), (v(&[]), String::new()),
+            (v(&["a.png"]), String::new()), (v(&["a.png"]), "a.png".into()), (v(&["a.png", "b.pdf"]), "a.png\nb.pdf\n".into()),
+            (v(&["a.png", "b.pdf"]), "a.png\r\nb.pdf".into()), (v(&["a.png"]), "a.png\nsomething else".into()),
+            (v(&["a.png"]), "  a.png  ".into()), (v(&["a.png"]), "A.PNG".into()), (v(&["a.png"]), "\n\n a.png \n\n".into()),
+            (v(&["a.png"]), "caption words".into()), (v(&[]), format!("{}x{}", ch(0xA0), ch(0x3000))),
+            (v(&["a.png"]), format!("a.png{}", ch(0x2028))), (v(&["a.png"]), ch(0x85)), (v(&["a b.png"]), "a b.png".into()),
+            (v(&["a.png"]), "a.png\rb.png".into()),
+            // Each LINE is trimmed, and only a line feed ends one: a carriage return alone is inside a name.
+            (v(&["a.png", "b.pdf"]), "a.png  \n  b.pdf".into()), (v(&["a.png", "b.png"]), "a.png\rb.png".into()),
+        ];
+        let decision_rows: Vec<serde_json::Value> = decisions.iter().map(|(names, text)| serde_json::json!({
+            "names": names, "text": text, "said": format!("{:?}", media::paste_decision(names, text)),
+        })).collect();
+        let offers: Vec<Vec<String>> = vec![
+            v(&["image/png", "image/gif"]), v(&["text/plain", "image/png"]), v(&["text/plain", "text/html"]), v(&["application/zip"]),
+            v(&["weird"]), v(&[]), v(&["video/quicktime", "application/pdf"]), v(&["text/uri-list", "application/x-thing"]),
+            v(&["IMAGE/PNG"]),
+        ];
+        let type_rows: Vec<serde_json::Value> = offers.iter()
+            .map(|offered| serde_json::json!({"offered": offered, "chosen": media::chosen_paste_type(offered)})).collect();
+        let mimes = ["image/gif", "image/webp", "image/heic", "image/heif", "image/png", "image/jpeg", "image/bmp", "image/tiff",
+            "video/mp4", "video/quicktime", "audio/mp4", "audio/mpeg", "audio/wav", "application/pdf", "application/zip",
+            "image/svg+xml", "", "text/plain", "video/x-matroska", "audio"];
+        let name_rows: Vec<serde_json::Value> = mimes.iter()
+            .map(|mime| serde_json::json!({"mime": mime, "name": media::pasted_name(mime)})).collect();
+        // A recording's elapsed or total time.
+        let seconds = [0.0, 0.4, 0.5, 4.4, 4.5, 59.5, 60.0, 222.0, 300.0, 3599.5, 3600.0, 36000.0, -3.0, f64::INFINITY, f64::NAN, 1.5, 2.5];
+        let time_rows: Vec<serde_json::Value> = seconds.iter()
+            .map(|s| serde_json::json!({"seconds": if s.is_finite() { serde_json::json!(s) } else { serde_json::json!(s.to_string()) },
+                "label": media::time_label(*s)})).collect();
+        for (name, rows) in [("paste_decision", decision_rows), ("paste_type", type_rows), ("pasted_name", name_rows), ("time_label", time_rows)] {
+            out.push_str(&format!("  \"{}\": [\n{}\n  ],\n", name,
+                rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        }
+    }
+
+    // --- location: the query a shared place is uploaded with (web api.rs upload_query) -----------------
+    {
+        // The formatting IS the rule here: Rust's `{:.7}` and `round() as i64`, which a port must match on the ties.
+        let places: Vec<(f64, f64, Option<f64>)> = vec![
+            (55.7558, 37.6173, Some(12.0)), (55.7558, 37.6173, None), (0.00390625, -0.00390625, Some(0.5)),
+            (55.00390625, 37.12890625, Some(2.5)), (-33.8688, 151.2093, Some(-3.0)), (90.0, 180.0, Some(0.49)),
+            (-90.0, -180.0, Some(1.5)), (-0.0, 0.0, Some(99.5)), (12.3456789, -98.76543215, Some(f64::NAN)),
+            (1e-8, -4e-8, Some(f64::INFINITY)), (51.47782, -0.00148, Some(65.0)), (35.6895, 139.69171, Some(1234.5678)),
+            (-0.00000005, 0.00000015, Some(-0.4)), (40.7128, -74.006, Some(3_000_000_000.0)), (45.12345675, -45.12345665, Some(100.5)),
+        ];
+        let rows: Vec<serde_json::Value> = places.iter().map(|(latitude, longitude, accuracy)| {
+            let mut query = vec!["kind=location".to_string(), format!("latitude={latitude:.7}"), format!("longitude={longitude:.7}")];
+            if let Some(accuracy) = accuracy.filter(|accuracy| accuracy.is_finite()) {
+                query.push(format!("accuracy_m={}", accuracy.round().max(0.0) as i64));
+            }
+            serde_json::json!({"latitude": latitude, "longitude": longitude,
+                "accuracy_m": match accuracy {
+                    None => serde_json::Value::Null,
+                    Some(a) if a.is_finite() => serde_json::json!(a),
+                    Some(a) => serde_json::json!(a.to_string()),
+                },
+                "query": query.join("&")})
+        }).collect();
+        out.push_str(&format!("  \"location_query\": [\n{}\n  ],\n",
+            rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+    }
+
+    // --- emoji: an emoji-only message's size, and the "More reactions…" catalogue ----------------------
+    {
+        use fc_text::emoji;
+        let ch = |c: u32| char::from_u32(c).unwrap().to_string();
+        let s = |scalars: &[u32]| scalars.iter().map(|c| ch(*c)).collect::<String>();
+        let texts: Vec<String> = vec![
+            s(&[0x1F600]), s(&[0x1F600, 0x1F600]), s(&[0x1F600, 0x20, 0x1F600, 0x20, 0x1F600]), s(&[0x1F600; 4]), s(&[0x1F600; 5]),
+            format!("hi {}", ch(0x1F600)), String::new(), "   ".into(), s(&[0x2764, 0xFE0F]), s(&[0x2764, 0xFE0E]), s(&[0x2764]),
+            s(&[0x1F44D, 0x1F3FD]), s(&[0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467, 0x200D, 0x1F466]), s(&[0x1F1FA, 0x1F1E6]),
+            s(&[0x1F1FA]), s(&[0x1F1FA, 0x1F1E6, 0x1F1FA]), s(&[0x35, 0xFE0F, 0x20E3]), "5".into(), s(&[0x23, 0x20E3]), s(&[0x2A, 0xFE0F]),
+            s(&[0x1F3F4, 0xE0067, 0xE0062, 0xE0073, 0xE0063, 0xE0074, 0xE007F]), s(&[0xA9]), s(&[0x2122, 0xFE0F]), s(&[0x2602]),
+            s(&[0x1F600, 0x200D]), format!("{}a", s(&[0x1F600, 0x200D])), s(&[0x85, 0x1F600]), s(&[0x1C, 0x1F600]), s(&[0x1F90C]),
+            s(&[0x1FAE0]), s(&[0x1FB00]), s(&[0x3030, 0x303D]), s(&[0x2B50, 0x2B55, 0x2B1B, 0x2B1C]), s(&[0x3000, 0x1F600, 0x2028]),
+            s(&[0x1F600, 0xFE0E, 0x1F600]), s(&[0x200D, 0x1F600]), s(&[0x1F3FB]), s(&[0xE0067]), s(&[0x1F004, 0x1F0CF]),
+            // A lone regional indicator is one emoji, and what follows it is its own.
+            s(&[0x1F1FA, 0x1F600]), s(&[0x1F1FA, 0x20, 0x1F1E6]),
+        ];
+        let only_rows: Vec<serde_json::Value> = texts.iter().map(|text| serde_json::json!({
+            "text": text,
+            "count": emoji::emoji_only_count(text),
+            "size": emoji::display_font_size(text),
+            "at13": emoji::display_font_size_for_body(text, 13.0),
+        })).collect();
+        let catalog_rows: Vec<serde_json::Value> = emoji::EMOJI_CATALOG.iter()
+            .map(|category| serde_json::json!({"name": category.name, "emoji": category.emoji})).collect();
+        for (name, rows) in [("emoji_only", only_rows), ("emoji_catalog", catalog_rows)] {
+            out.push_str(&format!("  \"{}\": [\n{}\n  ],\n", name,
+                rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        }
+    }
+
+    // --- a profile circle's initials ----------------------------------------------------------------
+    // `fc_text::avatar::initials` uppercases with `str::to_uppercase`, the FULL mapping (ß → SS, ﬁ → FI, a Greek
+    // letter with a subscript iota → two capitals), so every scalar Rust uppercases is a vector.
+    {
+        use fc_text::avatar;
+        let ch = |c: u32| char::from_u32(c).unwrap().to_string();
+        let family = [0x1F468u32, 0x200D, 0x1F469, 0x200D, 0x1F467].iter().map(|c| ch(*c)).collect::<String>();
+        let titles: Vec<String> = vec![
+            "Anna Smith".into(), "anna maria smith".into(), "Anna".into(), "  Anna   Smith  ".into(), String::new(),
+            "   ".into(), format!("{} Smiths", family), format!("e{}mile zola", ch(0x301)),
+            format!("{}en stra{}e", ch(0xDF), ch(0xDF)), format!("{} fo", ch(0xFB01)), format!("Anna{}Smith", ch(0xA0)),
+            "Anna\tSmith".into(), format!("{}lker {}zmir", ch(0x130), ch(0x131)), format!("{}emal {}uro", ch(0x1C6), ch(0x1C5)),
+            format!("{}{} {}", ch(0x3B6), ch(0x3C9), ch(0x1F50)), "александр пушкин".into(), format!("{} {}", ch(0x674E), ch(0x5C0F)),
+            format!("{}x", ch(0x1FB3)), "a".into(), format!("{} {}", ch(0x1F3), ch(0x587)),
+        ];
+        let initial_rows: Vec<serde_json::Value> = titles.iter()
+            .map(|title| serde_json::json!({"title": title, "said": avatar::initials(title)})).collect();
+        let upper_rows: Vec<serde_json::Value> = (0u32..0x110000)
+            .filter_map(char::from_u32)
+            .filter(|c| c.to_uppercase().collect::<String>() != c.to_string())
+            .map(|c| serde_json::json!({"c": c as u32, "upper": c.to_uppercase().collect::<String>()}))
+            .collect();
+        for (name, rows) in [("avatar_initials", initial_rows), ("avatar_upper", upper_rows)] {
+            out.push_str(&format!("  \"{}\": [\n{}\n  ],\n", name,
+                rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        }
+    }
+
     // --- a poll's options, checked the server's way -------------------------------------------------
     // Not fc_text: the rule lives in server/src/handlers_chat.rs (`validate_poll_options`) and the web
     // composer's `validate`, and what both lean on is Rust's own std — `str::trim`, `chars().count()`

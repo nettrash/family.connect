@@ -101,7 +101,7 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board)
                 break;
 
             case ServerFrame.MessageEdited edited:
-                chats.Apply(edited.Value);
+                chats.Apply(edited.Value, SeqRoute.Evidence);
                 if (edited.Value.EditSeq is { } editSeq)
                 {
                     chats.Advance(edited.Value.ChatId, editSeq: editSeq);

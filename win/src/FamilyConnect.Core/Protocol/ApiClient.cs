@@ -107,6 +107,25 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
             HttpMethod.Get, $"/chats/{chatId}/messages?after_id={afterId}&limit={limit}", ct: ct);
 
     /// <summary>
+    /// The STUN and TURN servers for a call — fetched at the start of every call, because a stale credential is a call that
+    /// silently cannot relay (docs/protocol.md, "Where the servers come from"). <c>calls_disabled</c> when the server has none.
+    /// </summary>
+    public Task<ApiResult<IceServersResponse>> IceServers(CancellationToken ct = default) =>
+        Send<IceServersResponse>(HttpMethod.Get, "/calls/ice", ct: ct);
+
+    /// <summary>
+    /// One chain: the root first, then every reply, oldest first — named by the root OR any reply in it, so a client
+    /// holding only a reply learns its root. <c>after_id</c> pages it, looped until a short page. A plain read and never
+    /// a cursor (docs/protocol.md, "Threads").
+    /// </summary>
+    public Task<ApiResult<MessagesResponse>> Thread(
+        long chatId, long messageId, long? afterId = null, int limit = 50, CancellationToken ct = default) =>
+        Send<MessagesResponse>(
+            HttpMethod.Get,
+            $"/chats/{chatId}/messages/{messageId}/thread?limit={limit}" + (afterId is { } after ? $"&after_id={after}" : string.Empty),
+            ct: ct);
+
+    /// <summary>
     /// The reaction catch-up, by its own sequence. `after_id` is `WHERE id > cursor` and can never
     /// see a change to an OLDER row, which is why reactions have a sequence of their own.
     /// </summary>
@@ -542,6 +561,15 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         return await Send<AttachmentResponse>(
             HttpMethod.Post, "/attachments?" + string.Join("&", query), content: content, ct: ct);
     }
+
+    /// <summary>
+    /// A place: no bytes and no body — its three numbers in the query are the whole upload (docs/protocol.md, "Locations").
+    /// Claimed and swept like any other attachment.
+    /// </summary>
+    public async Task<ApiResult<AttachmentResponse>> UploadLocation(
+        double latitude, double longitude, double? accuracyM, string? name = null, CancellationToken ct = default) =>
+        await Send<AttachmentResponse>(
+            HttpMethod.Post, "/attachments?" + UploadQueries.Location(latitude, longitude, accuracyM, name), ct: ct);
 
     /// <summary>
     /// The downscaled photo or the video's poster, as JPEG. Uploader only, idempotent, and not closed by
