@@ -14,6 +14,10 @@
       "one": "%lld member",
       "other": "%lld members"
     },
+    "%lld members now. Nobody new can join until somebody leaves; no one is removed.": {
+      "one": "%lld member now. Nobody new can join until somebody leaves; no one is removed.",
+      "other": "%lld members now. Nobody new can join until somebody leaves; no one is removed."
+    },
     "%lld pictures from the assistant": {
       "one": "%lld picture from the assistant",
       "other": "%lld pictures from the assistant"

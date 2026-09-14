@@ -57,6 +57,46 @@
                         <StackPanel x:Name="ReportsList" Spacing="12" />
                         <TextBlock x:Name="ReportsError" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
                     </StackPanel>
+
+                    <StackPanel Spacing="8">
+                        <TextBlock x:Name="PolicyHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <RadioButtons x:Name="PolicyChoice" />
+                        <TextBlock x:Name="PolicyCaption" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock x:Name="PolicyError" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                    </StackPanel>
+
+                    <StackPanel x:Name="LimitSection" Spacing="8">
+                        <TextBlock x:Name="LimitHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <ToggleSwitch x:Name="LimitSwitch" />
+                        <NumberBox x:Name="LimitBox" HorizontalAlignment="Left" MinWidth="180" Minimum="1" SmallChange="1" LargeChange="5" SpinButtonPlacementMode="Inline" ValidationMode="InvalidInputOverwritten" />
+                        <TextBlock x:Name="LimitFooter" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock x:Name="LimitError" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                    </StackPanel>
+
+                    <StackPanel x:Name="AssistantSection" Spacing="24">
+                        <StackPanel Spacing="8">
+                            <TextBlock x:Name="LanguageHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                            <ComboBox x:Name="LanguageChoice" MinWidth="220" />
+                            <TextBlock x:Name="LanguageFootnote" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ToggleSwitch x:Name="HistorySwitch" />
+                            <TextBlock x:Name="HistoryFootnote" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                        <StackPanel Spacing="8">
+                            <TextBlock x:Name="PicturesHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                            <ToggleSwitch x:Name="VisionSwitch" />
+                            <TextBlock x:Name="VisionFootnote" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ToggleSwitch x:Name="RecentPhotosSwitch" />
+                            <TextBlock x:Name="RecentPhotosFootnote" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ToggleSwitch x:Name="FacesSwitch" />
+                            <TextBlock x:Name="FacesFootnote" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                        <StackPanel Spacing="8">
+                            <TextBlock x:Name="GreetingHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                            <ToggleSwitch x:Name="GreetingSwitch" />
+                            <TextBlock x:Name="GreetingFootnote" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                        <TextBlock x:Name="AssistantError" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                    </StackPanel>
                 </StackPanel>
 
                 <StackPanel Spacing="8">

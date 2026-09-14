@@ -539,6 +539,41 @@
     {"height":1024,"square":{"edge":512,"side":1024,"x":0,"y":0},"width":1025}
   ],
   "avatar_budget": {"edge":512,"max_bytes":57344,"qualities":[0.8,0.65,0.5,0.4]},
+  "house_caps": [
+    {"cap":null,"ceiling":10,"members":3,"state":{"ceiling":10,"kind":"open"}},
+    {"cap":4,"ceiling":10,"members":3,"state":{"kind":"room","members":3,"seats":4}},
+    {"cap":3,"ceiling":10,"members":3,"state":{"kind":"frozen","members":3}},
+    {"cap":2,"ceiling":10,"members":3,"state":{"kind":"frozen","members":3}},
+    {"cap":40,"ceiling":10,"members":3,"state":{"kind":"room","members":3,"seats":10}},
+    {"cap":40,"ceiling":10,"members":10,"state":{"kind":"frozen","members":10}},
+    {"cap":40,"ceiling":10,"members":12,"state":{"kind":"frozen","members":12}},
+    {"cap":1,"ceiling":50,"members":0,"state":{"kind":"room","members":0,"seats":1}},
+    {"cap":null,"ceiling":0,"members":0,"state":{"ceiling":0,"kind":"open"}},
+    {"cap":5,"ceiling":5,"members":4,"state":{"kind":"room","members":4,"seats":5}}
+  ],
+  "house_clamps": [
+    {"ceiling":10,"clamp":1,"seed":1,"value":0},
+    {"ceiling":10,"clamp":1,"seed":1,"value":1},
+    {"ceiling":10,"clamp":5,"seed":5,"value":5},
+    {"ceiling":10,"clamp":10,"seed":10,"value":10},
+    {"ceiling":10,"clamp":10,"seed":10,"value":11},
+    {"ceiling":10,"clamp":1,"seed":1,"value":-3},
+    {"ceiling":0,"clamp":1,"seed":1,"value":5},
+    {"ceiling":0,"clamp":1,"seed":1,"value":0},
+    {"ceiling":1,"clamp":1,"seed":1,"value":7}
+  ],
+  "house_languages": [
+    {"name":"English","tag":"en"},
+    {"name":"Deutsch","tag":"de"},
+    {"name":"Español","tag":"es"},
+    {"name":"Français","tag":"fr"},
+    {"name":"日本語","tag":"ja"},
+    {"name":"Русский","tag":"ru"},
+    {"name":"Српски","tag":"sr"},
+    {"name":"Srpski (latinica)","tag":"sr-Latn"},
+    {"name":"简体中文","tag":"zh-Hans"}
+  ],
+  "house_pictures_per_question": 4,
   "prep_types": [
     {"audio":null,"declared":"image/jpeg","essence":"","extension":"jpg","mime":"","mime_for":"image/jpeg","name":"photo.JPG"},
     {"audio":null,"declared":"video/quicktime","essence":"application/octet-stream","extension":"mov","mime":"application/octet-stream","mime_for":"video/quicktime","name":"clip.mov"},

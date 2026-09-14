@@ -1,6 +1,7 @@
 using System.Globalization;
 using FamilyConnect.App.Logic;
 using FamilyConnect.App.Services;
+using FamilyConnect.Core;
 using FamilyConnect.Core.Protocol;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
@@ -51,6 +52,12 @@ public sealed partial class FamilyView : UserControl
     private long? resolving;
     private int redrawQueued;
 
+    // The house rules: what is on its way, and whether this redraw is the screen talking to itself.
+    private readonly CapDraft limit;
+    private string? policyAsked;
+    private FamilyPatch? pending;
+    private bool drawing;
+
     internal FamilyView(AppServices services, Connection connection, Action close, Action<long> openChat)
     {
         this.services = services;
@@ -70,6 +77,29 @@ public sealed partial class FamilyView : UserControl
         ReportsHeading.Text = say.Get("Reports");
         ReportsEmpty.Text = say.Get("Members can report a message or a person to you.");
         MembersHeading.Text = say.Get("Members");
+        PolicyHeading.Text = say.Get("Join policy");
+        AutomationProperties.SetName(PolicyChoice, say.Get("New members"));
+        foreach (var (_, key) in HouseRules.Policies)
+        {
+            PolicyChoice.Items.Add(say.Get(key));
+        }
+        LimitHeading.Text = say.Get("Member limit");
+        LimitSwitch.Header = say.Get("Limit members");
+        LimitBox.Header = say.Get("Most members");
+        LanguageHeading.Text = say.Get("Assistant language");
+        LanguageChoice.Header = say.Get("Answers in");
+        LanguageChoice.Items.Add(say.Get("Not set"));
+        foreach (var (_, name) in HouseRules.FamilyLanguages)
+        {
+            LanguageChoice.Items.Add(name);
+        }
+        HistorySwitch.Header = say.Get("Sees recent history");
+        PicturesHeading.Text = say.Get("Pictures");
+        VisionSwitch.Header = say.Get("Can be shown photos");
+        RecentPhotosSwitch.Header = say.Get("Recent photos");
+        FacesSwitch.Header = say.Get("Member faces");
+        GreetingHeading.Text = say.Get("Daily greeting");
+        GreetingSwitch.Header = say.Get("Good morning message");
 
         DoneButton.Click += (_, _) => close();
         CopyButton.Click += (_, _) =>
@@ -82,6 +112,48 @@ public sealed partial class FamilyView : UserControl
             }
         };
         RotateButton.Click += (_, _) => _ = RotateAsync();
+
+        limit = new CapDraft(
+            to => SendFamilyAsync(to is { } cap ? new FamilyPatch { MaxMembers = cap } : new FamilyPatch { ClearsCap = true }),
+            Task.Delay);
+        limit.Changed += () => DispatcherQueue.TryEnqueue(Draw);
+        PolicyChoice.SelectionChanged += (_, _) =>
+        {
+            if (!drawing && PolicyChoice.SelectedIndex >= 0)
+            {
+                _ = ChangePolicyAsync(HouseRules.Policies[PolicyChoice.SelectedIndex].Code);
+            }
+        };
+        LimitSwitch.Toggled += (_, _) =>
+        {
+            if (!drawing)
+            {
+                limit.Toggle(LimitSwitch.IsOn, FamilyText.Roster(family.Present()).Count, connection.Session.State.MaxFamilyMembers);
+            }
+        };
+        LimitBox.ValueChanged += (_, args) =>
+        {
+            var held = connection.Session.State.Family?.MaxMembers;
+            if (drawing || double.IsNaN(args.NewValue) || (int)Math.Round(args.NewValue) == limit.Drawn(held))
+            {
+                return;
+            }
+            limit.Typed((int)Math.Round(args.NewValue), connection.Session.State.MaxFamilyMembers);
+        };
+        LanguageChoice.SelectionChanged += (_, _) =>
+        {
+            if (!drawing && LanguageChoice.SelectedIndex >= 0)
+            {
+                _ = ChangeAssistantAsync(LanguageChoice.SelectedIndex == 0
+                    ? new FamilyPatch { ClearsLanguage = true }
+                    : new FamilyPatch { Language = HouseRules.FamilyLanguages[LanguageChoice.SelectedIndex - 1].Tag });
+            }
+        };
+        HistorySwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiHistory = HistorySwitch.IsOn });
+        VisionSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiVision = VisionSwitch.IsOn });
+        RecentPhotosSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiHistoryPhotos = RecentPhotosSwitch.IsOn });
+        FacesSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiFaces = FacesSwitch.IsOn });
+        GreetingSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiGreeting = GreetingSwitch.IsOn });
 
         onRoster = QueueRedraw;
         onBlock = (_, _) => QueueRedraw();
@@ -138,6 +210,7 @@ public sealed partial class FamilyView : UserControl
             RotateButton.IsEnabled = !busy;
             DrawRequests();
             DrawReports();
+            DrawHouseRules(state, house);
         }
 
         MembersList.Children.Clear();
@@ -420,6 +493,196 @@ public sealed partial class FamilyView : UserControl
     {
         ProblemText.Visibility = Visibility.Collapsed;
         NoticeText.Visibility = Visibility.Collapsed;
+    }
+
+    // ---- the house rules -----------------------------------------------------------------------
+
+    /// <summary>
+    /// The owner's rules, drawn into controls that STAY — rebuilding a number box on every frame would
+    /// take it from under somebody typing in it — with each set only when it differs, and every event a
+    /// set raises ignored while <see cref="drawing"/>.
+    /// </summary>
+    private void DrawHouseRules(SessionState state, FamilyDto held)
+    {
+        var say = services.Say;
+        drawing = true;
+        try
+        {
+            // What was chosen is drawn while its save is out: the family holds the old one until the answer.
+            var policy = policyAsked ?? held.JoinPolicy ?? "open";
+            var chosen = HouseRules.Policies.Select(known => known.Code).ToList().IndexOf(policy);
+            if (PolicyChoice.SelectedIndex != chosen)
+            {
+                PolicyChoice.SelectedIndex = chosen;
+            }
+            PolicyChoice.IsEnabled = policyAsked is null;
+            PolicyCaption.Text = HouseRules.PolicyCaption(policy, say);
+
+            var ceiling = state.MaxFamilyMembers;
+            LimitSection.Visibility = ceiling > 0 ? Visibility.Visible : Visibility.Collapsed;
+            if (ceiling > 0)
+            {
+                var drawn = limit.Drawn(held.MaxMembers);
+                LimitSwitch.IsOn = drawn is not null;
+                LimitBox.Visibility = drawn is null ? Visibility.Collapsed : Visibility.Visible;
+                LimitBox.Maximum = Math.Max(1, ceiling);
+                if (drawn is { } value && (int)Math.Round(LimitBox.Value) != value)
+                {
+                    LimitBox.Value = value;
+                }
+                LimitFooter.Text = HouseRules.CapFooter(
+                    HouseRules.Cap(drawn, FamilyText.Roster(family.Present()).Count, ceiling), say);
+                if (limit.Failed)
+                {
+                    ShowProblem(LimitError, say.Get("Couldn't change the member limit. Try again."));
+                }
+                else
+                {
+                    LimitError.Visibility = Visibility.Collapsed;
+                }
+            }
+
+            AssistantSection.Visibility = state.Assistant is null ? Visibility.Collapsed : Visibility.Visible;
+            if (state.Assistant is { } assistant)
+            {
+                DrawAssistant(state, assistant, pending is null ? held : FamilyModel.AsApplied(held, pending));
+            }
+        }
+        finally
+        {
+            drawing = false;
+        }
+    }
+
+    private void DrawAssistant(SessionState state, AssistantDto assistant, FamilyDto shown)
+    {
+        var say = services.Say;
+        var token = string.IsNullOrEmpty(assistant.Mention) ? "@ai" : assistant.Mention;
+        var idle = pending is null;
+
+        var language = shown.Language is { } tag
+            ? 1 + HouseRules.FamilyLanguages.Select(known => known.Tag).ToList()
+                .FindIndex(known => string.Equals(known, tag, StringComparison.OrdinalIgnoreCase))
+            : 0;
+        LanguageChoice.SelectedIndex = Math.Max(0, language);
+        LanguageChoice.IsEnabled = idle;
+        LanguageFootnote.Text = say.Format(
+            "The language %@ answers in when it is asked in the family chat. It is not this app's language — that follows the device. With none chosen, it answers in the language of whoever asked.",
+            token);
+        HistorySwitch.IsOn = shown.AiHistory;
+        HistorySwitch.IsEnabled = idle;
+        HistoryFootnote.Text = say.Format(
+            "With this on, mentioning %@ in the family chat sends the last month of that chat to the assistant, so it can answer questions about what was said earlier. With it off, only the message that mentions it is sent.",
+            token);
+
+        // Offered only where this server's assistant can look at pictures at all.
+        VisionSwitch.Visibility = assistant.Vision ? Visibility.Visible : Visibility.Collapsed;
+        VisionFootnote.Visibility = VisionSwitch.Visibility;
+        VisionSwitch.IsOn = shown.AiVision;
+        VisionSwitch.IsEnabled = idle;
+        VisionFootnote.Text = say.Format(
+            "With this on, a photo is sent to the model your server is set up to use when a member attaches it to a question in their own chat with the assistant, attaches it to an %@ message in the family chat, or replies to a photo with %@ — never a photo the assistant was not pointed at, never from an earlier message unless Recent photos is on, and never a video, file or place. With it off, no photo is ever sent.",
+            token, token);
+
+        // The two that ride on vision: inert-but-explained until what they draw from is there.
+        var picturesOn = assistant.Vision && shown.AiVision;
+        RecentPhotosSwitch.IsOn = shown.AiHistoryPhotos;
+        RecentPhotosSwitch.IsEnabled = idle && picturesOn;
+        RecentPhotosFootnote.Text = WithNote(
+            say.Format(
+                "With this on, whenever anyone mentions %@ in the family chat, the most recent photos in that chat — up to %lld, from anyone, that nobody pointed the assistant at — also go to the model your server is set up to use, after any photo on the message itself or on the one it replies to. Nearly every mention then sends pictures, which costs more. It is off unless you turn it on.",
+                token, HouseRules.MaxPicturesPerQuestion),
+            HouseRules.PicturesNote(assistant.Vision, shown,
+                say.Get("While Sees recent history is off this does nothing: the chat's history isn't sent, so no photo from it is either."), say));
+        FacesSwitch.IsOn = shown.AiFaces;
+        FacesSwitch.IsEnabled = idle && picturesOn;
+        FacesFootnote.Text = WithNote(
+            say.Format(
+                "With this on, whenever anyone mentions %@ in the family chat, the profile pictures of the members named in that chat's recent history — up to %lld — also go to the model your server is set up to use, so it can tell who is who. They are the pictures members chose for themselves, not photos anyone attached; never a member who has left, and never anyone outside this family. Most mentions then send pictures, which costs more. It is off unless you turn it on; with it off, no face is ever sent.",
+                token, HouseRules.MaxPicturesPerQuestion),
+            HouseRules.PicturesNote(assistant.Vision, shown,
+                say.Get("While Sees recent history is off this does nothing: no names are sent, so no faces are either."), say));
+
+        GreetingSwitch.IsOn = shown.AiGreeting;
+        GreetingSwitch.IsEnabled = idle && state.GreetingsEnabled;
+        GreetingFootnote.Text = WithNote(
+            say.Get("With this on, the assistant posts one short good-morning message into the family chat each day, mentioning the star signs of the birthdays your family has set. It never sends anyone's name or birth date, only the signs; it makes no claims about the date; and it never sounds a notification — it is simply there when you next open the chat."),
+            state.GreetingsEnabled ? null : say.Get("Not available here: this server doesn't post daily greetings."));
+    }
+
+    private static string WithNote(string sentence, string? note) => note is null ? sentence : $"{sentence} {note}";
+
+    private void Switched(Func<FamilyPatch> patch)
+    {
+        if (!drawing)
+        {
+            _ = ChangeAssistantAsync(patch());
+        }
+    }
+
+    private async Task ChangePolicyAsync(string policy)
+    {
+        if (policyAsked is not null || policy == (connection.Session.State.Family?.JoinPolicy ?? "open"))
+        {
+            return;
+        }
+        policyAsked = policy;
+        PolicyError.Visibility = Visibility.Collapsed;
+        Draw();
+        var error = await SendFamilyAsync(new FamilyPatch { JoinPolicy = policy });
+        policyAsked = null;
+        if (error is not null)
+        {
+            ShowProblem(PolicyError, services.Say.Get("Couldn't change the policy. Try again."));
+        }
+        Draw();
+    }
+
+    /// <summary>
+    /// One assistant change at a time, each sending the one key that changed, drawn over the family
+    /// until it answers — and turning vision off draws its two dependent switches off with it, as the
+    /// server does in the same write.
+    /// </summary>
+    private async Task ChangeAssistantAsync(FamilyPatch patch)
+    {
+        if (pending is not null)
+        {
+            Draw();
+            return;
+        }
+        pending = patch;
+        AssistantError.Visibility = Visibility.Collapsed;
+        Draw();
+        var error = await SendFamilyAsync(patch);
+        pending = null;
+        if (error is not null)
+        {
+            ShowProblem(AssistantError, HouseRules.AssistantFailure(error, services.Say));
+        }
+        Draw();
+    }
+
+    /// <summary>The write, and the family read back after it lands — so what is drawn next is the server's.</summary>
+    private async Task<ApiError?> SendFamilyAsync(FamilyPatch patch)
+    {
+        if (connection.Session.State.Family is not { } held)
+        {
+            return ApiError.Transport("no family");
+        }
+        try
+        {
+            var (_, error) = await family.ChangeAsync(held, patch);
+            if (error is null)
+            {
+                await connection.Session.RefreshFamilyAsync();
+            }
+            return error;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"changing the family: {e.GetType().Name}");
+            return ApiError.Transport(e.GetType().Name);
+        }
     }
 
     // ---- the owner's lists ---------------------------------------------------------------------
