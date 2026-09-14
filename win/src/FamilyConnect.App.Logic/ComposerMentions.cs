@@ -3,6 +3,9 @@ using FamilyConnect.Core.Protocol;
 
 namespace FamilyConnect.App.Logic;
 
+/// <summary>One stretch of a text: plain words, or a name — and whether that name opens a chat.</summary>
+public sealed record NameRun(string Text, long? UserId, bool Opens);
+
 /// <summary>
 /// Mentioning a member from the composer (docs/protocol.md, "Mentioning a member") — the web client's
 /// composer rules: who the strip offers, what a send carries, and whom a name in a bubble opens.
@@ -66,4 +69,24 @@ public static class ComposerMentions
     /// </summary>
     public static bool OpensChat(long userId, IReadOnlyList<MemberDto> members, long me, Func<long, bool> blocked) =>
         userId != me && !blocked(userId) && Live(members).Any(member => member.Id == userId);
+
+    /// <summary>
+    /// A text cut into its plain stretches and the names it says, each name marked with whether it is a door
+    /// (<see cref="OpensChat"/>) — the same answer for a bubble and for a note somebody has opened. A text that
+    /// names nobody is one plain stretch.
+    /// </summary>
+    public static IReadOnlyList<NameRun> Runs(
+        string text, MentionDto[]? named, IReadOnlyList<MemberDto> members, long me, Func<long, bool> blocked)
+    {
+        if (named is not { Length: > 0 })
+        {
+            return [new NameRun(text, null, false)];
+        }
+        var runs = new List<NameRun>();
+        foreach (var (part, userId) in Mentions.Runs(text, [.. named.Select(mention => new Named(mention.UserId, mention.Name))]))
+        {
+            runs.Add(new NameRun(part, userId, userId is { } id && OpensChat(id, members, me, blocked)));
+        }
+        return runs;
+    }
 }

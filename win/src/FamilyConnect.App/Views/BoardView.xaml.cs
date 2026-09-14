@@ -55,6 +55,7 @@ public sealed partial class BoardView : UserControl
     private readonly Connection connection;
     private readonly BoardModel board;
     private readonly Action shown;
+    private readonly Action<long> openChat;
     private readonly Action<NoteDto> onNote;
     private readonly Action<long, bool> onBlock;
     private readonly Action onRoster;
@@ -72,11 +73,12 @@ public sealed partial class BoardView : UserControl
     private bool preparingPhoto;
     private bool redrawWhenPutDown;
 
-    internal BoardView(AppServices services, Connection connection, Action close, Action shown)
+    internal BoardView(AppServices services, Connection connection, Action close, Action shown, Action<long> openChat)
     {
         this.services = services;
         this.connection = connection;
         this.shown = shown;
+        this.openChat = openChat;
         board = new BoardModel(connection.Board, connection.Chats, connection.Api);
         pinning = new PhotoPinning(connection.Api, connection.Board, Task.Delay);
         face = new StickerFace(services, connection);
@@ -536,7 +538,7 @@ public sealed partial class BoardView : UserControl
         {
             var compact = BoardWall.IsCompact(BoardModel.WallSize(Scroller.ActualWidth, Scroller.ActualHeight).Width);
             await NoteSheet.ShowAsync(
-                XamlRoot, services, connection, board, face, compact, note, kind,
+                XamlRoot, services, connection, board, face, compact, MessageAsync, note, kind,
                 mine: note is null || note.AuthorId == connection.Chats.Reader);
         }
         catch (Exception e)
@@ -547,6 +549,32 @@ public sealed partial class BoardView : UserControl
         {
             sheetOpen = false;
             Draw();
+        }
+    }
+
+    /// <summary>A name in an opened note: get-or-create the direct chat, put it in the list, and go to it.</summary>
+    private async Task MessageAsync(long userId)
+    {
+        try
+        {
+            var answer = await connection.Api.DirectChat(userId);
+            if (answer is not { Ok: true, Value: { } opened })
+            {
+                ShowStatus(FamilyText.GenericFailure(answer.Error ?? ApiError.Transport("no answer"), services.Say));
+                return;
+            }
+            // Into the list first, so the conversation opens with its title: a chat made just now is in no list yet.
+            var list = await connection.Api.Chats();
+            if (list is { Ok: true, Value.Chats: { } rows })
+            {
+                connection.Chats.Replace(rows);
+            }
+            openChat(opened.Chat.Id);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"opening a named member's chat: {e.GetType().Name}");
+            ShowStatus(services.Say.Get("Something went wrong. Try again."));
         }
     }
 
