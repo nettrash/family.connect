@@ -1,0 +1,24 @@
+{
+  "de": {},
+  "en": {
+    "%lld attachments, %@": {
+      "one": "%lld attachment, %@",
+      "other": "%lld attachments, %@"
+    },
+    "%lld pictures from the assistant": {
+      "one": "%lld picture from the assistant",
+      "other": "%lld pictures from the assistant"
+    },
+    "%lld questions to the assistant": {
+      "one": "%lld question to the assistant",
+      "other": "%lld questions to the assistant"
+    }
+  },
+  "es": {},
+  "fr": {},
+  "ja": {},
+  "ru": {},
+  "sr": {},
+  "sr-Latn": {},
+  "zh-Hans": {}
+}

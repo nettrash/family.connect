@@ -157,4 +157,17 @@ public sealed class JsonCatalog : IStringCatalog
 
     public string Format(string key, params object[] arguments) =>
         AppleFormat.Apply(Get(key), arguments);
+
+    /// <summary>
+    /// This language's form for the count; else its one sentence for the key, which is what a
+    /// language that says it the same way whatever the count holds; else the ENGLISH form — a key
+    /// nobody has translated reads as English, and English that agrees with its number.
+    /// </summary>
+    public string Plural(string key, long count, params object[] arguments) =>
+        AppleFormat.Apply(
+            PluralTables.Form(Language, key, count)
+            ?? (table.TryGetValue(key, out var said) ? said : null)
+            ?? PluralTables.Form(Languages.English, key, count)
+            ?? key,
+            arguments);
 }

@@ -1,0 +1,100 @@
+<UserControl
+    x:Class="FamilyConnect.App.Views.SettingsView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Structure and x:Name only: every word is set from code, through the catalogue. -->
+    <Grid Padding="24,0,24,16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Grid Margin="0,0,0,12" MaxWidth="640" HorizontalAlignment="Stretch">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="Heading" Style="{StaticResource TitleTextBlockStyle}" />
+            <Button x:Name="DoneButton" Grid.Column="1" VerticalAlignment="Center" Style="{StaticResource AccentButtonStyle}" />
+        </Grid>
+        <ScrollViewer Grid.Row="1" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel MaxWidth="640" Spacing="24" Padding="0,0,16,16">
+                <StackPanel Orientation="Horizontal" Spacing="12">
+                    <PersonPicture x:Name="Picture" Width="56" Height="56" />
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock x:Name="NameText" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        <TextBlock x:Name="UsernameText" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                    <Border x:Name="OwnerCapsule" VerticalAlignment="Center" CornerRadius="8" Padding="8,2,8,2" Background="{ThemeResource AccentFillColorDefaultBrush}">
+                        <TextBlock x:Name="OwnerText" FontSize="12" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                    </Border>
+                </StackPanel>
+
+                <StackPanel Spacing="8">
+                    <TextBlock x:Name="ProfileHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="PhotoLabel" VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="PhotoButton" />
+                            <HyperlinkButton x:Name="RemovePhotoButton" />
+                        </StackPanel>
+                    </Grid>
+                    <TextBlock x:Name="PhotoError" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="BirthdayLabel" VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                            <TextBlock x:Name="BirthdayValue" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <HyperlinkButton x:Name="BirthdayButton" />
+                        </StackPanel>
+                    </Grid>
+                    <HyperlinkButton x:Name="PasswordButton" Padding="0,4,0,4" />
+                </StackPanel>
+
+                <StackPanel x:Name="FamilySection" Spacing="8">
+                    <TextBlock x:Name="FamilyHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="FamilyNameLabel" />
+                        <TextBlock x:Name="FamilyNameValue" Grid.Column="1" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </Grid>
+                    <HyperlinkButton x:Name="LeaveButton" Padding="0,4,0,4" Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                    <TextBlock x:Name="LeaveError" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                </StackPanel>
+
+                <StackPanel Spacing="8">
+                    <TextBlock x:Name="StatisticsHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <HyperlinkButton x:Name="StatisticsButton" Padding="0,4,0,4" />
+                </StackPanel>
+
+                <StackPanel Spacing="8">
+                    <TextBlock x:Name="NotificationsHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <ToggleSwitch x:Name="NotifySwitch" />
+                    <TextBlock x:Name="NotifyFootnote" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+
+                <StackPanel Spacing="4">
+                    <TextBlock x:Name="PrivacyHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <HyperlinkButton x:Name="PrivacyLink" Padding="0,4,0,4" />
+                    <HyperlinkButton x:Name="SupportLink" Padding="0,4,0,4" />
+                </StackPanel>
+
+                <StackPanel Spacing="4">
+                    <HyperlinkButton x:Name="LogOutButton" Padding="0,4,0,4" />
+                    <HyperlinkButton x:Name="DeleteButton" Padding="0,4,0,4" Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                </StackPanel>
+
+                <TextBlock x:Name="VersionText" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

@@ -56,6 +56,7 @@ public sealed partial class ChatsView : UserControl
     private readonly Action<Resync.Report> onResync;
     private readonly Action<Link> onLink;
     private readonly Action<OutboxRow, ApiError> onRefused;
+    private readonly Action openSettings;
 
     private readonly Dictionary<string, BitmapImage> pictures = [];
 
@@ -73,9 +74,10 @@ public sealed partial class ChatsView : UserControl
     private string listDrawn = string.Empty;
     private string conversationDrawn = string.Empty;
 
-    internal ChatsView(AppServices services, Connection connection)
+    internal ChatsView(AppServices services, Connection connection, Action openSettings)
     {
         this.services = services;
+        this.openSettings = openSettings;
         this.connection = connection;
         InitializeComponent();
         var say = services.Say;
@@ -84,7 +86,7 @@ public sealed partial class ChatsView : UserControl
 
         ChatsHeading.Text = say.Get("Chats");
         EmptyListText.Text = say.Get("No chats yet");
-        LogOutButton.Content = say.Get("Log Out");
+        SettingsButton.Content = say.Get("Settings");
         SendButton.Content = say.Get("Send");
         ComposerBox.PlaceholderText = say.Get("Message");
         ToolTipService.SetToolTip(AttachButton, say.Get("Attach a photo, video or file"));
@@ -105,7 +107,8 @@ public sealed partial class ChatsView : UserControl
             }
         };
         MessageScroller.ViewChanged += OnScrolled;
-        LogOutButton.Click += async (_, _) => await connection.Session.SignOutAsync();
+        // Logging out lives in Settings, where it asks first.
+        SettingsButton.Click += (_, _) => this.openSettings();
 
         onArrived = message =>
         {

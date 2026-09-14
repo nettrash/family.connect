@@ -28,7 +28,7 @@ public class CatalogueTests
         }
         var source = new DirectoryInfo(Path.Combine(here!.FullName, "src"));
         var pattern = new System.Text.RegularExpressions.Regex(
-            "\\b(?:Get|Format)\\(\\s*\"((?:[^\"\\\\]|\\\\.)+)\"");
+            "\\b(?:Get|Format|Plural)\\(\\s*\"((?:[^\"\\\\]|\\\\.)+)\"");
         var keys = new SortedSet<string>(StringComparer.Ordinal);
         foreach (var file in source.GetFiles("*.cs", SearchOption.AllDirectories))
         {
@@ -43,7 +43,12 @@ public class CatalogueTests
     /// <summary>The five sentences nobody has translated yet, named rather than pretended.</summary>
     private static readonly string[] EnglishForNow =
         ["%@ — %@", "%@ — %@ mentioned you", "Chat", "New note", "Voice message",
-         "%@ GB", "%@ KB", "%@ MB", "%lld byte", "%lld bytes", "Zero KB"];
+         "%@ GB", "%@ KB", "%@ MB", "%lld byte", "%lld bytes", "Zero KB",
+         "Delete the family?", "Leave and Delete", "The server is busy. Try again in a moment.",
+         "Tell me when a message arrives", "What hasn't been sent yet is lost.",
+         "While this window is not in front, a notification says who wrote — never what they wrote.",
+         "Windows is not showing notifications for Family Connect. Allow them in Windows Settings, under Notifications.",
+         "Family Connect for Windows %@", "Locations", "Notifications"];
 
     [Fact]
     public void ThisPortActuallyDrawsSomething()
@@ -75,7 +80,7 @@ public class CatalogueTests
                 // Asked of the TABLE and not of the answer: "Video" in German and "Photo" in
                 // French are real translations identical to the English, and comparing values
                 // would call them missing.
-                if (catalogue.Holds(sentence))
+                if (catalogue.Holds(sentence) || PluralTables.Forms(language, sentence) is not null)
                 {
                     continue;
                 }
@@ -195,5 +200,46 @@ public class CatalogueTests
                 catalogue.Count <= sentences.Count,
                 $"{language} holds {catalogue.Count} of {sentences.Count} sentences");
         }
+    }
+
+    /// <summary>Three forms in Russian and Serbian, zero as one in French, one form in Japanese.</summary>
+    [Fact]
+    public void ACountTakesItsLanguagesPluralCategory()
+    {
+        Assert.Equal(["one", "few", "many", "many", "one", "few"],
+            new long[] { 1, 3, 5, 11, 21, 22 }.Select(count => PluralRules.Category("ru", count)));
+        Assert.Equal("one", PluralRules.Category("fr", 0));
+        Assert.Equal("other", PluralRules.Category("en", 0));
+        Assert.Equal("other", PluralRules.Category("ja", 1));
+        Assert.Equal("few", PluralRules.Category("sr-Latn-RS", 2));
+    }
+
+    [Fact]
+    public void AKeyWithNoFormsIsSaidByItsOneSentence()
+    {
+        var russian = JsonCatalog.Parse("""{"%lld unheard-of things": "невиданных вещей: %lld"}""", "ru");
+
+        Assert.Equal("невиданных вещей: 5", russian.Plural("%lld unheard-of things", 5, 5));
+        Assert.Equal("7 unheard-of things", EnglishCatalog.Instance.Plural("%lld unheard-of things", 7, 7));
+    }
+
+    /// <summary>A key nobody translated reads as English — and English that agrees with its number.</summary>
+    [Fact]
+    public void AnUntranslatedPluralIsEnglishThatAgreesWithItsNumber()
+    {
+        var bare = JsonCatalog.Parse("{}", "ru");
+
+        Assert.Equal("1 question to the assistant", bare.Plural("%lld questions to the assistant", 1, 1));
+        Assert.Equal("5 questions to the assistant", bare.Plural("%lld questions to the assistant", 5, 5));
+    }
+
+    [Fact]
+    public void AFormTheLanguageLacksFallsBackToOther()
+    {
+        var two = new Dictionary<string, string> { ["one"] = "один", ["other"] = "много" };
+
+        Assert.Equal("один", PluralTables.Pick(two, "ru", 21));
+        Assert.Equal("много", PluralTables.Pick(two, "ru", 5));
+        Assert.Null(PluralTables.Pick(new Dictionary<string, string> { ["one"] = "один" }, "ru", 5));
     }
 }

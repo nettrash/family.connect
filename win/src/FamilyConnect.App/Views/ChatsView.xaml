@@ -20,7 +20,7 @@
             </StackPanel>
             <ListView x:Name="ChatList" Grid.Row="1" SelectionMode="Single" />
             <TextBlock x:Name="EmptyListText" Grid.Row="1" Margin="4,12,0,0" Opacity="0.7" Visibility="Collapsed" />
-            <Button x:Name="LogOutButton" Grid.Row="2" Margin="4,8,0,0" />
+            <Button x:Name="SettingsButton" Grid.Row="2" Margin="4,8,0,0" />
         </Grid>
         <Grid Grid.Column="1" Padding="12,0,12,12">
             <Grid.RowDefinitions>

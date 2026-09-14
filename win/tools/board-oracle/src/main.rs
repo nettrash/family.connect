@@ -387,6 +387,35 @@ fn chat() {
     }
     out.push_str("  ],\n");
 
+    // --- plural categories ---------------------------------------------------------------------------
+    {
+        let counts: &[i64] = &[0, 1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 15, 19, 20, 21, 22, 24, 25, 100, 101,
+            102, 104, 105, 111, 112, 114, 121, 122, 125, 1000, 1001, 1011, -1, -2, -5, -11, -21, i64::MIN];
+        let mut rows = Vec::new();
+        for tag in ["en", "de", "es", "fr", "ja", "ru", "sr", "sr-Latn", "zh-Hans"] {
+            let lang = fc_text::i18n::Lang::for_tag(tag).expect("a catalogue language");
+            for count in counts {
+                rows.push(serde_json::json!({"lang": tag, "count": count, "category": lang.plural_category(*count)}));
+            }
+        }
+        out.push_str(&format!("  \"plural_categories\": [\n{}\n  ],\n",
+            rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+    }
+
+    // --- a profile picture's square --------------------------------------------------------------------
+    {
+        let sizes: &[(u32, u32)] = &[(4000, 3000), (300, 401), (512, 512), (513, 100), (0, 10), (10, 0),
+            (1, 1), (3024, 4032), (1000, 1001), (7, 5), (2, 1000), (1025, 1024)];
+        let rows: Vec<serde_json::Value> = sizes.iter().map(|(w, h)| serde_json::json!({
+            "width": w, "height": h,
+            "square": fc_text::avatar::square(*w, *h).map(|s| serde_json::json!({"x": s.x, "y": s.y, "side": s.side, "edge": s.edge}))
+        })).collect();
+        out.push_str(&format!("  \"avatar_square\": [\n{}\n  ],\n",
+            rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        out.push_str(&format!("  \"avatar_budget\": {},\n", serde_json::json!({
+            "edge": fc_text::avatar::EDGE, "qualities": fc_text::avatar::QUALITIES, "max_bytes": fc_text::avatar::MAX_BYTES})));
+    }
+
     // --- how a picked file is prepared ---------------------------------------------------------------
     {
         let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();

@@ -172,8 +172,76 @@ internal static class MediaPreparing
     private static async Task<(byte[] Bytes, int Width, int Height)> JpegAsync(BitmapDecoder decoder, uint edge, double quality)
     {
         var (width, height) = MediaPrep.FitWithin(decoder.OrientedPixelWidth, decoder.OrientedPixelHeight, edge);
-        // Whether the scaler runs before the EXIF turn or after it, the answer's own size says which:
-        // asked in stored sides first, and asked again in upright sides if that came out turned.
+        using var bitmap = await UprightAsync(decoder, width, height);
+        var pixels = OnWhite(bitmap);
+        var bytes = await EncodeAsync(pixels, (uint)bitmap.PixelWidth, (uint)bitmap.PixelHeight, quality);
+        return (bytes, bitmap.PixelWidth, bitmap.PixelHeight);
+    }
+
+    /// <summary>
+    /// A profile picture, as every client uploads one (<see cref="AvatarPrep"/>): the largest CENTRED
+    /// square, at most 512 across, as the first JPEG quality that fits the byte budget — and the last
+    /// one tried when none does, because a larger upload the server may still take beats no picture.
+    /// Null when the file cannot be read as a picture.
+    /// </summary>
+    public static async Task<byte[]?> AvatarAsync(StorageFile file)
+    {
+        try
+        {
+            using var stream = await file.OpenReadAsync();
+            var decoder = await BitmapDecoder.CreateAsync(stream);
+            var shortest = Math.Min(decoder.OrientedPixelWidth, decoder.OrientedPixelHeight);
+            if (shortest == 0)
+            {
+                return null;
+            }
+            // Scaled so the square's side lands on the edge — and never up.
+            var scale = Math.Min(1.0, (double)AvatarPrep.Edge / shortest);
+            var width = Math.Max(1u, (uint)Math.Round(decoder.OrientedPixelWidth * scale));
+            var height = Math.Max(1u, (uint)Math.Round(decoder.OrientedPixelHeight * scale));
+            using var bitmap = await UprightAsync(decoder, width, height);
+            if (AvatarPrep.Square((uint)bitmap.PixelWidth, (uint)bitmap.PixelHeight) is not { } square)
+            {
+                return null;
+            }
+            var pixels = OnWhite(bitmap);
+            // Rounding can leave the short side a pixel over the edge: the centre of it is kept.
+            var side = square.Edge;
+            var left = square.X + (square.Side - side) / 2;
+            var top = square.Y + (square.Side - side) / 2;
+            var cropped = new byte[4 * side * side];
+            for (var row = 0u; row < side; row++)
+            {
+                System.Buffer.BlockCopy(
+                    pixels, (int)(4 * (((top + row) * (uint)bitmap.PixelWidth) + left)),
+                    cropped, (int)(4 * row * side), (int)(4 * side));
+            }
+            byte[]? last = null;
+            foreach (var quality in AvatarPrep.Qualities)
+            {
+                var jpeg = await EncodeAsync(cropped, side, side, quality);
+                if (jpeg.Length <= AvatarPrep.MaxBytes)
+                {
+                    return jpeg;
+                }
+                last = jpeg;
+            }
+            return last;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"preparing a profile picture: {e.GetType().Name}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The picture at <paramref name="width"/> by <paramref name="height"/>, turned upright. Whether
+    /// the scaler runs before the EXIF turn or after it, the answer's own size says which: asked in
+    /// stored sides first, and asked again in upright sides if that came out turned.
+    /// </summary>
+    private static async Task<SoftwareBitmap> UprightAsync(BitmapDecoder decoder, uint width, uint height)
+    {
         var turned = decoder.OrientedPixelWidth != decoder.PixelWidth;
         var bitmap = await DecodeAsync(decoder, turned ? height : width, turned ? width : height);
         if (bitmap.PixelWidth != width || bitmap.PixelHeight != height)
@@ -181,36 +249,44 @@ internal static class MediaPreparing
             bitmap.Dispose();
             bitmap = await DecodeAsync(decoder, width, height);
         }
-        using (bitmap)
+        return bitmap;
+    }
+
+    /// <summary>
+    /// The pixels, drawn on white: a JPEG has no alpha, and a transparent pixel would otherwise come
+    /// out black. Premultiplied, so "over white" is adding what the alpha left uncovered.
+    /// </summary>
+    private static byte[] OnWhite(SoftwareBitmap bitmap)
+    {
+        var pixels = new byte[4 * bitmap.PixelWidth * bitmap.PixelHeight];
+        bitmap.CopyToBuffer(pixels.AsBuffer());
+        for (var at = 0; at < pixels.Length; at += 4)
         {
-            var pixels = new byte[4 * bitmap.PixelWidth * bitmap.PixelHeight];
-            bitmap.CopyToBuffer(pixels.AsBuffer());
-            for (var at = 0; at < pixels.Length; at += 4)
+            var uncovered = 255 - pixels[at + 3];
+            if (uncovered == 0)
             {
-                // Premultiplied, so "over white" is adding what the alpha left uncovered.
-                var uncovered = 255 - pixels[at + 3];
-                if (uncovered == 0)
-                {
-                    continue;
-                }
-                pixels[at] = (byte)Math.Min(255, pixels[at] + uncovered);
-                pixels[at + 1] = (byte)Math.Min(255, pixels[at + 1] + uncovered);
-                pixels[at + 2] = (byte)Math.Min(255, pixels[at + 2] + uncovered);
-                pixels[at + 3] = 255;
+                continue;
             }
-            using var output = new InMemoryRandomAccessStream();
-            var options = new BitmapPropertySet
-            {
-                ["ImageQuality"] = new BitmapTypedValue((float)quality, Windows.Foundation.PropertyType.Single),
-            };
-            // A new encoder, fed pixels only: nothing of the original's metadata comes along.
-            var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, output, options);
-            encoder.SetPixelData(
-                BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore,
-                (uint)bitmap.PixelWidth, (uint)bitmap.PixelHeight, 96, 96, pixels);
-            await encoder.FlushAsync();
-            return (await ReadAllAsync(output), bitmap.PixelWidth, bitmap.PixelHeight);
+            pixels[at] = (byte)Math.Min(255, pixels[at] + uncovered);
+            pixels[at + 1] = (byte)Math.Min(255, pixels[at + 1] + uncovered);
+            pixels[at + 2] = (byte)Math.Min(255, pixels[at + 2] + uncovered);
+            pixels[at + 3] = 255;
         }
+        return pixels;
+    }
+
+    /// <summary>A new encoder, fed pixels only: nothing of the original's metadata comes along.</summary>
+    private static async Task<byte[]> EncodeAsync(byte[] pixels, uint width, uint height, double quality)
+    {
+        using var output = new InMemoryRandomAccessStream();
+        var options = new BitmapPropertySet
+        {
+            ["ImageQuality"] = new BitmapTypedValue((float)quality, Windows.Foundation.PropertyType.Single),
+        };
+        var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, output, options);
+        encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore, width, height, 96, 96, pixels);
+        await encoder.FlushAsync();
+        return await ReadAllAsync(output);
     }
 
     private static async Task<SoftwareBitmap> DecodeAsync(BitmapDecoder decoder, uint width, uint height) =>

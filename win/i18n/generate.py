@@ -31,7 +31,7 @@ import sys
 
 LANGS = ["de", "es", "fr", "ja", "ru", "sr", "sr-Latn", "zh-Hans"]
 
-KEY = re.compile(r'\b(?:Get|Format)\(\s*"((?:[^"\\]|\\.)+)"')
+KEY = re.compile(r'\b(?:Get|Format|Plural)\(\s*"((?:[^"\\]|\\.)+)"')
 
 
 def used_keys(repo: pathlib.Path) -> set[str]:
@@ -55,7 +55,48 @@ def translated(entry: dict, lang: str) -> str | None:
     unit = entry.get("localizations", {}).get(lang, {}).get("stringUnit", {})
     value = unit.get("value")
     # A string Xcode has written back but nobody has touched is not a translation.
-    return value if value and unit.get("state") == "translated" else None
+    # An outer sentence around a plural substitution ("%1$@. %#@arg2@") is not a sentence on its
+    # own: its forms are in plurals.json.
+    return value if value and unit.get("state") == "translated" and "%#@" not in value else None
+
+
+def apple_plural(loc) -> dict:
+    """A localization's forms by CLDR category: a plural, or a plural INSIDE a sentence
+    (`substitutions`), flattened the way web/i18n/generate.py flattens it — one whole sentence
+    per category, and `%arg` becomes the positional placeholder the argument actually is."""
+    if not loc:
+        return {}
+    if "substitutions" in loc:
+        outer = loc.get("stringUnit", {}).get("value", "")
+        subs = loc["substitutions"]
+        if not outer or len(subs) != 1:
+            return {}
+        name, sub = next(iter(subs.items()))
+        place = f"%{sub['argNum']}${sub.get('formatSpecifier', 'lld')}"
+        return {category: outer.replace(f"%#@{name}@", body["stringUnit"]["value"].replace("%arg", place))
+                for category, body in sub.get("variations", {}).get("plural", {}).items()
+                if body.get("stringUnit", {}).get("value")}
+    if "variations" in loc:
+        return {category: body["stringUnit"]["value"]
+                for category, body in loc["variations"].get("plural", {}).items()
+                if body.get("stringUnit", {}).get("value")}
+    return {}
+
+
+def plural_forms(keys, catalogue, mine, lang) -> dict:
+    """Every used key this language says in forms. win.json's own forms win: they are where
+    Windows says a string BETTER than the apps do — English "1 question" for a key whose English
+    is the plural."""
+    found = {}
+    for key in sorted(keys):
+        own_value = (mine.get(key) or {}).get(lang)
+        if isinstance(own_value, dict):
+            forms = {category: text for category, text in own_value.items() if text}
+        else:
+            forms = apple_plural((catalogue.get(key) or {}).get("localizations", {}).get(lang))
+        if forms:
+            found[key] = dict(sorted(forms.items()))
+    return found
 
 
 def main() -> int:
@@ -68,15 +109,19 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     english_only: dict[str, list[str]] = {}
     stale = False
+    plurals = {lang: plural_forms(keys, catalogue, mine, lang) for lang in ["en", *LANGS]}
     for lang in LANGS:
         table = {}
         missing = []
         for key in sorted(keys):
             entry = catalogue.get(key)
             said = translated(entry, lang) if entry else None
-            if said is None and key in mine:
-                said = mine[key].get(lang)
+            if said is None and key in mine and isinstance(mine[key].get(lang), str):
+                said = mine[key][lang]
             if said is None:
+                if key in plurals[lang]:
+                    # Said only in forms, one per count: Plural reads them, and Get never needs to.
+                    continue
                 missing.append(key)
                 continue
             table[key] = said
@@ -89,6 +134,13 @@ def main() -> int:
                 path.write_text(body)
         print(f"  {lang}: {len(table)} of {len(keys)}"
               + (f", English for now: {len(missing)}" if missing else ""))
+    body = json.dumps(plurals, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    path = out / "plurals.json"
+    if not path.exists() or path.read_text() != body:
+        stale = True
+        if not checking:
+            path.write_text(body)
+    print("  plurals: " + ", ".join(f"{lang} {len(plurals[lang])}" for lang in plurals))
     unknown = sorted(set().union(*english_only.values()) - set(mine))
     if unknown:
         print("\nKEYS NOBODY HAS TRANSLATED AND win.json DOES NOT NAME:")
