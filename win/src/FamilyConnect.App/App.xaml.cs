@@ -13,6 +13,7 @@ public partial class App : Application
     public App()
     {
         InitializeComponent();
+        Startup.Step("app XAML loaded");
         // The apps' own accent (ios AccentColor): a deep blue on a light ground, a bright one on a dark ground.
         // WinUI's accent brushes read the Dark shades in the light theme and the Light shades in the dark one. Set
         // here, before any window, because a Color resource has no XAML element xamlcheck can resolve.
@@ -23,6 +24,9 @@ public partial class App : Application
         Resources["SystemAccentColorLight1"] = ColorHelper.FromArgb(0xFF, 0x3C, 0x6F, 0xE8);
         Resources["SystemAccentColorLight2"] = ColorHelper.FromArgb(0xFF, 0x4D, 0x7D, 0xFC);
         Resources["SystemAccentColorLight3"] = ColorHelper.FromArgb(0xFF, 0x7F, 0xA3, 0xFD);
+        Startup.Step("accent set");
+        // A resource key XAML could not find is written down rather than only failing somewhere inside WinUI.
+        DebugSettings.XamlResourceReferenceFailed += (_, e) => Diagnostics.Write($"xaml resource: {e.Message}");
         UnhandledException += (_, e) => Diagnostics.Write($"unhandled (XAML): {e.Exception}");
         AppDomain.CurrentDomain.UnhandledException +=
             (_, e) => Diagnostics.Write($"unhandled (domain): {e.ExceptionObject}");
@@ -30,8 +34,10 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        Startup.Step("launched");
         services = new AppServices();
         var shown = window = new MainWindow(services);
+        Startup.Step("window built");
         // A second launch was redirected here (Program.Main): bring the one window forward. Raised
         // on a background thread, so the window is reached through its own queue.
         AppInstance.GetCurrent().Activated += (_, _) =>
@@ -40,5 +46,6 @@ public partial class App : Application
         ToastActivation.Attach(arguments =>
             shown.DispatcherQueue.TryEnqueue(() => shown.OpenFromToast(arguments)));
         shown.Activate();
+        Startup.Step("window shown");
     }
 }
