@@ -58,6 +58,8 @@ public class CatalogueTests
          "Jump to the newest message",
          "Call with %@",
          "You've blocked them.",
+         "Zoom in",
+         "Zoom out",
          "Finding your location…",
          "Position",
          "Recording %@",

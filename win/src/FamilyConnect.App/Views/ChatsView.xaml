@@ -144,9 +144,14 @@
                         <StackPanel x:Name="SuggestionStrip" Orientation="Horizontal" Spacing="6" />
                     </ScrollViewer>
                     <!-- One door for everything a message can carry: its menu is built from what this chat allows. -->
-                    <Button x:Name="AttachButton" Grid.Row="2" VerticalAlignment="Bottom" Background="Transparent" BorderThickness="0" Padding="8">
-                        <SymbolIcon Symbol="Add" />
-                    </Button>
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" VerticalAlignment="Bottom">
+                        <Button x:Name="AttachButton" Background="Transparent" BorderThickness="0" Padding="8">
+                            <SymbolIcon Symbol="Add" />
+                        </Button>
+                        <!-- The assistant's two doors, drawn only where they lead somewhere (AssistantButtons). -->
+                        <Button x:Name="AskAssistantButton" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed" />
+                        <Button x:Name="AskPictureButton" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed" />
+                    </StackPanel>
                     <TextBox x:Name="ComposerBox" Grid.Row="2" Grid.Column="1" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" VerticalAlignment="Center" />
                     <Button x:Name="SendButton" Grid.Row="2" Grid.Column="2" VerticalAlignment="Bottom" Style="{StaticResource AccentButtonStyle}" />
                 </Grid>
@@ -208,5 +213,64 @@
                 </Border>
             </Grid>
         </Border>
+
+        <!--
+            A message's photos and videos at full size, over the whole view (web views/viewer.rs, MacAttachmentViewer): what it
+            is and where in the album, Save and Close; the picture zooming inside a scroller, or the video in its own player;
+            the arrows to either side; the zoom under it.
+        -->
+        <Grid x:Name="ViewerOverlay" Grid.ColumnSpan="4" Visibility="Collapsed" Background="#E6000000">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid Padding="20,10,12,10" ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock x:Name="ViewerTitle" Foreground="White" Style="{StaticResource BodyStrongTextBlockStyle}" TextTrimming="CharacterEllipsis" />
+                    <TextBlock x:Name="ViewerPosition" Foreground="#B3FFFFFF" Style="{StaticResource CaptionTextBlockStyle}" />
+                </StackPanel>
+                <TextBlock x:Name="ViewerProblem" Grid.Column="1" VerticalAlignment="Center" MaxWidth="320" TextWrapping="Wrap" Foreground="#FFFFA8A8" Visibility="Collapsed" />
+                <Button x:Name="ViewerSave" Grid.Column="2" VerticalAlignment="Center" />
+                <Button x:Name="ViewerClose" Grid.Column="3" VerticalAlignment="Center" Background="Transparent" BorderThickness="0" Padding="10" Foreground="White">
+                    <FontIcon Glyph="&#xE711;" FontSize="14" />
+                </Button>
+            </Grid>
+            <ScrollViewer
+                x:Name="ViewerScroller"
+                Grid.Row="1"
+                ZoomMode="Enabled"
+                MinZoomFactor="1"
+                MaxZoomFactor="6"
+                HorizontalScrollMode="Auto"
+                VerticalScrollMode="Auto"
+                HorizontalScrollBarVisibility="Auto"
+                VerticalScrollBarVisibility="Auto">
+                <Image x:Name="ViewerImage" Stretch="Uniform" />
+            </ScrollViewer>
+            <MediaPlayerElement x:Name="ViewerVideo" Grid.Row="1" Margin="24" AreTransportControlsEnabled="True" AutoPlay="True" Visibility="Collapsed" />
+            <ProgressRing x:Name="ViewerLoading" Grid.Row="1" Width="36" Height="36" HorizontalAlignment="Center" VerticalAlignment="Center" IsActive="False" />
+            <Button x:Name="ViewerPrevious" Grid.Row="1" Margin="12" Padding="12" HorizontalAlignment="Left" VerticalAlignment="Center" Background="#66000000" BorderThickness="0" Foreground="White">
+                <FontIcon Glyph="&#xE76B;" />
+            </Button>
+            <Button x:Name="ViewerNext" Grid.Row="1" Margin="12" Padding="12" HorizontalAlignment="Right" VerticalAlignment="Center" Background="#66000000" BorderThickness="0" Foreground="White">
+                <FontIcon Glyph="&#xE76C;" />
+            </Button>
+            <StackPanel x:Name="ViewerZoomBar" Grid.Row="2" Margin="0,8,0,14" HorizontalAlignment="Center" Orientation="Horizontal" Spacing="8">
+                <Button x:Name="ViewerZoomOut" Padding="10">
+                    <FontIcon Glyph="&#xE71F;" FontSize="14" />
+                </Button>
+                <TextBlock x:Name="ViewerZoomText" MinWidth="48" VerticalAlignment="Center" TextAlignment="Center" Foreground="White" />
+                <Button x:Name="ViewerZoomIn" Padding="10">
+                    <FontIcon Glyph="&#xE8A3;" FontSize="14" />
+                </Button>
+            </StackPanel>
+        </Grid>
     </Grid>
 </UserControl>

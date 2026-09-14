@@ -24,8 +24,22 @@ public sealed record BodyPiece(string Text, MarkdownStyle Style, string? Link, B
 /// </summary>
 public static class MessageBody
 {
+    /// <summary>
+    /// The first https link a body DRAWS, which is what the preview card under it describes (ios
+    /// <c>MessageLinks.firstWebLinkAsDrawn</c>): over the flat render — so a link typed only in a table cell still gets a card —
+    /// the author's links merged over the detector's. Every markdown link counts in that merge, openable or not, as on Apple:
+    /// a detected https link inside the label of an <c>ftp:</c> link is covered by it and previews nothing.
+    /// </summary>
+    public static string? FirstWebLink(string body)
+    {
+        var rendered = Markdown.Render(body);
+        return Links.FirstWebLink(Links.Merge(Declared(rendered, openableOnly: false), Links.Detect(rendered.Plain)))?.Target;
+    }
+
     /// <summary>A text block's own markdown links that can be opened, as spans — a label split into runs still one link.</summary>
-    public static IReadOnlyList<LinkSpan> Declared(MarkdownText text)
+    public static IReadOnlyList<LinkSpan> Declared(MarkdownText text) => Declared(text, openableOnly: true);
+
+    private static IReadOnlyList<LinkSpan> Declared(MarkdownText text, bool openableOnly)
     {
         var plain = Encoding.UTF8.GetBytes(text.Plain);
         var declared = new List<LinkSpan>();
@@ -39,7 +53,7 @@ public static class MessageBody
                 continue;
             }
             var target = Links.NormalizeDestination(link.Destination);
-            if (!Links.IsOpenable(target))
+            if (openableOnly && !Links.IsOpenable(target))
             {
                 continue;
             }

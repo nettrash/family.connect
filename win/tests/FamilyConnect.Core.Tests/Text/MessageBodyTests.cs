@@ -106,6 +106,21 @@ public class MessageBodyTests
         Assert.All(LaidOut("[@Anna](https://x.com)", new Named(9, "Anna")), piece => Assert.Null(piece.Mark));
     }
 
+    /// <summary>The preview card's link: the first https one drawn — declared, detected, or typed in a table cell — and none from another scheme.</summary>
+    [Fact]
+    public void ThePreviewDescribesTheFirstHttpsLinkAsDrawn()
+    {
+        Assert.Equal("https://b.example/x", MessageBody.FirstWebLink("mail me@example.com or http://a.example then https://b.example/x and https://c.example"));
+        Assert.Equal("https://shop.example", MessageBody.FirstWebLink("[the shop](shop.example) and https://other.example"));
+        Assert.Equal("https://cell.example", MessageBody.FirstWebLink("| a |\n| --- |\n| https://cell.example |"));
+        Assert.Null(MessageBody.FirstWebLink("ring 555-123-4567, mail me@example.com, see http://plain.example"));
+        // On Apple every markdown link covers what is detected in its label — even one a click here would not open.
+        Assert.Null(MessageBody.FirstWebLink("[see https://example.com](ftp://files.example.com)"));
+        Assert.Equal("https://example.com", Links.FirstWebLink(Links.Merge(
+            MessageBody.Declared(Markdown.Render("[see https://example.com](ftp://files.example.com)")),
+            Links.Detect(Markdown.Render("[see https://example.com](ftp://files.example.com)").Plain)))?.Target);
+    }
+
     /// <summary>A label split into runs is still one link.</summary>
     [Fact]
     public void ALabelSplitIntoRunsIsOneLink()

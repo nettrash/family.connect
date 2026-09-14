@@ -22,7 +22,7 @@ internal sealed class Connection : IAsyncDisposable
         Tokens = new LockerTokenStore(server);
         Api = new ApiClient(Http, server, Tokens);
         Cache = Database.Open(cachePath);
-        Session = new AppSession(Api, Tokens, Cache);
+        Session = new AppSession(Api, Tokens, Cache, new AwaitingJoinFile(server));
         // The reader is whoever `GET /me` last said: read when asked, never captured, because a
         // sign-in as somebody else must not be drawn as the previous person's "You".
         Chats = new ChatStore(Cache, () => Session.State.Me?.Id ?? 0);
@@ -40,6 +40,7 @@ internal sealed class Connection : IAsyncDisposable
         // while no conversation is open is not lost.
         PeerReads = new PeerReads();
         Answers = new AssistantAnswers();
+        Previews = new LinkPreviews(() => LinkPreviewSetting.Enabled);
         Router.PeerRead += (chatId, _, lastRead) => PeerReads.Apply(chatId, lastRead);
         Router.AiDelta += (chatId, messageId, text) => Answers.Delta(chatId, messageId, text, Chats.Message(messageId));
         Router.AiStopped += Answers.Stopped;
@@ -56,6 +57,9 @@ internal sealed class Connection : IAsyncDisposable
 
     /// <summary>The assistant's answers while they are written: the streamed text, and the ones that stopped.</summary>
     public AssistantAnswers Answers { get; }
+
+    /// <summary>The cards under links: the one place this app asks a host the family does not own, and only while switched on.</summary>
+    public LinkPreviews Previews { get; }
 
     public Uri Server { get; }
 
@@ -119,6 +123,7 @@ internal sealed class Connection : IAsyncDisposable
     {
         await Live.DisposeAsync().ConfigureAwait(false);
         Cache.Dispose();
+        Previews.Dispose();
         Http.Dispose();
     }
 }

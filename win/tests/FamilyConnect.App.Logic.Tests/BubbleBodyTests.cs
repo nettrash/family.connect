@@ -66,6 +66,17 @@ public sealed class BubbleBodyTests
         Assert.Null(BubbleBody.Openable(null));
     }
 
+    /// <summary>The card's link is the first https one the body draws — and a body of nothing but emoji has none.</summary>
+    [Fact]
+    public void ThePreviewLinkIsTheFirstHttpsLinkDrawn()
+    {
+        Assert.Equal("https://b.example/x", BubbleBody.PreviewLink("mail me@example.com, http://a.example, https://b.example/x", emojiOnly: false));
+        Assert.Equal("https://b.example/x", BubbleBody.PreviewLink("mail me@example.com, http://a.example, https://b.example/x", emojiOnly: false));
+        Assert.Null(BubbleBody.PreviewLink("https://b.example/x", emojiOnly: true));
+        Assert.Null(BubbleBody.PreviewLink("ring 555-123-4567", emojiOnly: false));
+        Assert.Null(BubbleBody.PreviewLink("", emojiOnly: false));
+    }
+
     [Fact]
     public void ALinkWaitsTheMacsBeatForADoubleClick() => Assert.Equal(TimeSpan.FromMilliseconds(350), BubbleBody.LinkDelay);
 }

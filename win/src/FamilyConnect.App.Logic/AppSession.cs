@@ -63,7 +63,8 @@ public sealed record SessionState(
     string? SupportContact = null,
     bool FamilyRegistrationEnabled = true,
     int FamilylessAccountTtlDays = 0,
-    bool GreetingsEnabled = false)
+    bool GreetingsEnabled = false,
+    bool JoinDeclined = false)
 {
     /// <summary>Whether the socket may connect at all: signed in, and in a family.</summary>
     public bool CanChat => Gate is Gate.Member or Gate.Owner;
@@ -94,8 +95,10 @@ public sealed record SessionState(
 /// sign-in screen in a lift.
 /// </para>
 /// </remarks>
-public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache)
+public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache, IAwaitingJoin? awaitingJoin = null)
 {
+    private readonly IAwaitingJoin awaiting = awaitingJoin ?? new MemoryAwaitingJoin();
+
     // Signed out until `GET /me` says otherwise: a token in the locker is not a session, and a
     // window drawn from a stored token alone would show a chat list to somebody whose account
     // was deleted three weeks ago.
@@ -175,6 +178,11 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
             { PendingJoinRequest: not null } => Gate.Pending,
             _ => Gate.NoFamily,
         };
+        // Declined is what a remembered wait becomes when `GET /me` shows no request and no family — said on the family door
+        // until the next join or family replaces it (ios AppSession.joinDeclined).
+        var waited = was is Gate.Pending || awaiting.UserId == answered.User.Id;
+        var declined = gate is Gate.NoFamily && (waited || (was is Gate.NoFamily && state.JoinDeclined));
+        awaiting.UserId = gate is Gate.Pending ? answered.User.Id : null;
         Publish(new SessionState(
             gate,
             Me: answered.User,
@@ -186,7 +194,8 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
             SupportContact: answered.SupportContact,
             FamilyRegistrationEnabled: answered.FamilyRegistrationEnabled,
             FamilylessAccountTtlDays: answered.FamilylessAccountTtlDays,
-            GreetingsEnabled: answered.GreetingsEnabled));
+            GreetingsEnabled: answered.GreetingsEnabled,
+            JoinDeclined: declined));
 
         // Two departures nothing else announces. `GET /me` is where a client finds out, because
         // a removal it slept through raises no frame it will ever see.
@@ -196,7 +205,7 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
             cache.WipeAll();
             Ended?.Invoke(SessionEnd.RemovedFromFamily);
         }
-        else if (was is Gate.Pending && gate is Gate.NoFamily)
+        else if (waited && gate is Gate.NoFamily)
         {
             Ended?.Invoke(SessionEnd.JoinRequestRejected);
         }

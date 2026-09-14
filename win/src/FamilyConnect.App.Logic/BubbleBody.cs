@@ -55,6 +55,33 @@ public static class BubbleBody
         return laid;
     }
 
+    private static readonly Dictionary<string, string?> PreviewLinks = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The link a bubble's preview card describes: the first https link its body draws (<see cref="MessageBody.FirstWebLink"/>),
+    /// and none for a body of nothing but emoji, which draws no markup to find one in. Remembered per body, as the Mac does —
+    /// every redraw asks again.
+    /// </summary>
+    public static string? PreviewLink(string body, bool emojiOnly)
+    {
+        if (emojiOnly || body.Length == 0)
+        {
+            return null;
+        }
+        lock (PreviewLinks)
+        {
+            if (PreviewLinks.TryGetValue(body, out var known))
+            {
+                return known;
+            }
+            if (PreviewLinks.Count >= 512)
+            {
+                PreviewLinks.Clear();
+            }
+            return PreviewLinks[body] = MessageBody.FirstWebLink(body);
+        }
+    }
+
     /// <summary>A link target as the system opens it, or null when it is not an absolute http(s), mailto or tel URI.</summary>
     public static Uri? Openable(string? target) =>
         target is not null && Links.IsOpenable(target) && Uri.TryCreate(target, UriKind.Absolute, out var uri) ? uri : null;

@@ -52,6 +52,12 @@ public class ChatOracleTests
         {
             Assert.Equal(row.GetProperty("with").GetString(), AssistantText.WithAssistantMention(row.GetProperty("draft").GetString()!));
         }
+        Assert.True(Section("draw_token_drafts").GetArrayLength() > 20);
+        foreach (var row in Section("draw_token_drafts").EnumerateArray())
+        {
+            var draft = row.GetProperty("draft").GetString()!;
+            Assert.True(row.GetProperty("with").GetString() == AssistantText.WithDrawToken(draft), $"draw token for {JsonSerializer.Serialize(draft)}");
+        }
     }
 
     /// <summary>The assistant's own chat: what its composer says of the photos staged — the original's sentence, case for case.</summary>

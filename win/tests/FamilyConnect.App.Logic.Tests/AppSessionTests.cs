@@ -224,6 +224,8 @@ public class AppSessionTests : IDisposable
 
         Assert.Equal([SessionEnd.RemovedFromFamily], endings);
         Assert.Equal(Gate.NoFamily, session.State.Gate);
+        // Removed is not refused: nobody asked to join anything.
+        Assert.False(session.State.JoinDeclined);
         // Their family's chats are not theirs to keep — but they are still signed in.
         Assert.Empty(chats.Chats());
         Assert.Equal("t0ken", tokens.Token);
@@ -244,6 +246,67 @@ public class AppSessionTests : IDisposable
 
         Assert.Equal([SessionEnd.JoinRequestRejected], endings);
         Assert.Equal(Gate.NoFamily, session.State.Gate);
+    }
+
+    private AppSession WithMemory(Server server, IAwaitingJoin memory, string? token = null)
+    {
+        var tokens = new MemoryTokenStore(token);
+        var api = new ApiClient(new HttpClient(server), ServerUrl.Normalise("chat.example.com")!, tokens);
+        return new AppSession(api, tokens, cache, memory);
+    }
+
+    /// <summary>
+    /// A refusal is never said: the request just vanishes from <c>/me</c>. The door says so — on the next read too — until a
+    /// join or a family replaces it (ios AppSession.joinDeclined, web gate).
+    /// </summary>
+    [Fact]
+    public async Task ADeclinedJoinIsSaidOnTheDoorUntilSomethingReplacesIt()
+    {
+        var memory = new MemoryAwaitingJoin();
+        var server = new Server()
+            .On("/auth/login", Token)
+            .Then("/me", (HttpStatusCode.OK, Me(Waiting)), (HttpStatusCode.OK, Me()), (HttpStatusCode.OK, Me()),
+                (HttpStatusCode.OK, Me(Waiting)), (HttpStatusCode.OK, Me()), (HttpStatusCode.OK, Me(AMember)));
+        var session = WithMemory(server, memory);
+
+        await session.SignInAsync("anna", "hunter2");
+        Assert.Equal((Gate.Pending, false, 7L), (session.State.Gate, session.State.JoinDeclined, memory.UserId));
+
+        await session.RefreshAsync();
+        Assert.Equal((Gate.NoFamily, true, (long?)null), (session.State.Gate, session.State.JoinDeclined, memory.UserId));
+
+        await session.RefreshAsync();
+        Assert.True(session.State.JoinDeclined, "still at the door, still said");
+
+        await session.RefreshAsync();
+        Assert.Equal((Gate.Pending, false), (session.State.Gate, session.State.JoinDeclined));
+
+        await session.RefreshAsync();
+        Assert.True(session.State.JoinDeclined);
+        await session.RefreshAsync();
+        Assert.Equal((Gate.Member, false), (session.State.Gate, session.State.JoinDeclined));
+    }
+
+    /// <summary>A relaunch remembers the wait; an account that never waited — or a different one — is never told it was declined.</summary>
+    [Fact]
+    public async Task OnlyTheAccountThatWaitedIsToldAfterARelaunch()
+    {
+        var waited = new MemoryAwaitingJoin { UserId = 7 };
+        var relaunched = WithMemory(new Server().On("/me", Me()), waited, token: "t0ken");
+        var endings = new List<SessionEnd>();
+        relaunched.Ended += end => endings.Add(end);
+        await relaunched.RefreshAsync();
+        Assert.True(relaunched.State.JoinDeclined);
+        Assert.Equal([SessionEnd.JoinRequestRejected], endings);
+        Assert.Null(waited.UserId);
+
+        var someoneElse = WithMemory(new Server().On("/me", Me()), new MemoryAwaitingJoin { UserId = 8 }, token: "t0ken");
+        await someoneElse.RefreshAsync();
+        Assert.False(someoneElse.State.JoinDeclined);
+
+        var neverAsked = WithMemory(new Server().On("/me", Me()), new MemoryAwaitingJoin(), token: "t0ken");
+        await neverAsked.RefreshAsync();
+        Assert.Equal((Gate.NoFamily, false), (neverAsked.State.Gate, neverAsked.State.JoinDeclined));
     }
 
     /// <summary>

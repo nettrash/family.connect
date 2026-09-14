@@ -94,6 +94,29 @@ public static class AssistantText
         return LastCharacter(draft) == " " ? $"{draft}{Token} " : $"{draft} {Token} ";
     }
 
+    /// <summary>
+    /// The draft the assistant chat's "Ask for a picture" button leaves behind (<c>fc_text::assistant::with_draw_token</c>):
+    /// <c>/draw </c> IN FRONT of the words already typed — the token is a request only as the body's first thing — or the
+    /// draft untouched when it already asks, so pressing twice never makes <c>/draw /draw</c>. The words are trimmed with
+    /// Foundation's <c>whitespacesAndNewlines</c>, which takes U+200B as well as White_Space.
+    /// </summary>
+    public static string WithDrawToken(string draft)
+    {
+        if (AsksForPicture(draft))
+        {
+            return draft;
+        }
+        var rest = draft.Trim(ComposerTrim);
+        return rest.Length == 0 ? $"{DrawToken} " : $"{DrawToken} {rest}";
+    }
+
+    /// <summary>Every White_Space scalar — each one UTF-16 unit — and U+200B ZERO WIDTH SPACE.</summary>
+    private static readonly char[] ComposerTrim =
+    [
+        .. Enumerable.Range(0, 0x10000).Select(unit => (char)unit).Where(unit => !char.IsSurrogate(unit) && char.IsWhiteSpace(unit)),
+        '\u200B',
+    ];
+
     private static bool IsBoundary(char unit) => !(unit is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '_');
 
     private static bool MentionAt(string body, int index)
