@@ -53,6 +53,8 @@ public class CatalogueTests
          "Caption",
          "+%lld",
          "View the photo",
+         "Seen",
+         "The assistant is answering",
          "Event",
          "Only the person who wrote a note can change it.",
          "Pick when it ends, or turn the end off.",

@@ -57,6 +57,7 @@ public sealed partial class ChatsView : UserControl
     private readonly Action<Resync.Report> onResync;
     private readonly Action<Link> onLink;
     private readonly Action<OutboxRow, ApiError> onRefused;
+    private readonly Action<long> onMarks;
     private readonly Action openSettings;
     private readonly Action openFamily;
     private readonly Action openBoard;
@@ -150,6 +151,10 @@ public sealed partial class ChatsView : UserControl
         onResync = _ => QueueRedraw();
         onLink = link => DispatcherQueue.TryEnqueue(() => ShowLink(link));
         onRefused = (_, _) => QueueRedraw();
+        // A peer's read marker and an answer mid-stream live outside the cache; they redraw all the same.
+        onMarks = _ => QueueRedraw();
+        connection.PeerReads.Changed += onMarks;
+        connection.Answers.Changed += onMarks;
         connection.Router.Arrived += onArrived;
         connection.Router.Edited += onEdited;
         connection.Router.ChatChanged += onChat;
@@ -186,6 +191,8 @@ public sealed partial class ChatsView : UserControl
         connection.Live.LinkChanged -= onLink;
         connection.Sending.Refused -= onRefused;
         connection.Media.Refused -= onRefused;
+        connection.PeerReads.Changed -= onMarks;
+        connection.Answers.Changed -= onMarks;
         gone = true;
     }
 
@@ -389,7 +396,8 @@ public sealed partial class ChatsView : UserControl
             connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0))));
         drawn += Row + string.Join(Row, pending.Select(row => string.Join(Field, row.ClientMsgId, row.Failed)));
         // A poll draws voters' names and "N of M voted": a block or a roster change redraws it.
-        drawn = $"{chat.ChatId}{Field}{string.Join(',', connection.Chats.Blocked())}{Field}{connection.Chats.Members().Count}{Row}{drawn}";
+        drawn = $"{chat.ChatId}{Field}{string.Join(',', connection.Chats.Blocked())}{Field}{connection.Chats.Members().Count}" +
+            $"{Field}{connection.PeerReads.UpTo(chat.ChatId)}{Field}{connection.Answers.Version}{Row}{drawn}";
         if (drawn == conversationDrawn)
         {
             return;
@@ -434,6 +442,15 @@ public sealed partial class ChatsView : UserControl
         var say = services.Say;
         var resources = Application.Current.Resources;
         var message = bubble.Message;
+        var kind = connection.Chats.Chat(chat.ChatId)?.Chat.Kind;
+        var assistantChat = kind == "ai";
+        var familyChat = kind == "family";
+        var assistantId = connection.Session.State.Assistant?.UserId;
+        // The body as drawn: an answer still being written shows what has streamed so far.
+        var body = connection.Answers.BodyOf(message);
+        var awaited = BubbleRules.Awaited(message, body, Reader, assistantChat, assistantId);
+        var failed = connection.Answers.Failed(message);
+        var shown = bubble with { Message = message with { Body = body } };
         var stack = new StackPanel { Spacing = 4 };
         if (showSender && !bubble.Mine)
         {
@@ -454,26 +471,51 @@ public sealed partial class ChatsView : UserControl
         }
         var words = new TextBlock
         {
-            Text = BubbleText.Words(bubble, list, say),
+            // An answer not written yet is a cursor, not a blank bubble — or says it stopped.
+            Text = awaited ? (failed ? say.Get("Couldn't answer that. Ask again.") : "▍") : BubbleText.Words(shown, list, say),
             TextWrapping = TextWrapping.Wrap,
-            IsTextSelectionEnabled = bubble.Reads,
-            FontStyle = bubble.Reads ? Windows.UI.Text.FontStyle.Normal : Windows.UI.Text.FontStyle.Italic,
+            IsTextSelectionEnabled = bubble.Reads && !awaited,
+            FontStyle = bubble.Reads && !(awaited && failed) ? Windows.UI.Text.FontStyle.Normal : Windows.UI.Text.FontStyle.Italic,
         };
-        if (bubble.Reads && message.Call is null && message.Body.Length > 0 && message.Mentions is { Length: > 0 } named)
+        if (awaited && !failed)
         {
-            NamedRuns(words, message.Body, named, bubble.Mine);
+            AutomationProperties.SetName(words, say.Get("The assistant is answering"));
         }
+        if (!awaited && bubble.Reads && message.Call is null && body.Length > 0 && message.Mentions is { Length: > 0 } named)
+        {
+            NamedRuns(words, body, named, bubble.Mine);
+        }
+        var clock = BubbleText.When(message, services.Culture, say);
         var when = new TextBlock
         {
-            Text = BubbleText.When(message, services.Culture, say),
+            Text = clock,
             FontSize = 11,
             Opacity = 0.7,
             HorizontalAlignment = HorizontalAlignment.Right,
         };
+        if (BubbleRules.ShowsTick(message, Reader, familyChat))
+        {
+            // One tick sent, two seen — a direct chat's fact, from the other person's live marker.
+            var seen = BubbleRules.Seen(message, Reader, familyChat, connection.PeerReads.UpTo(chat.ChatId));
+            when.Text = $"{clock} {(seen ? "✓✓" : "✓")}";
+            AutomationProperties.SetName(when, $"{clock} {(seen ? say.Get("Seen") : say.Get("Sent"))}");
+        }
         // A caption-less photo is its picture: the words "Photo" under it would only repeat it.
-        if (!bubble.Reads || message.Body.Length > 0 || message.Call is not null || message.Media.Count == 0)
+        if (!bubble.Reads || body.Length > 0 || message.Call is not null || message.Media.Count == 0)
         {
             stack.Children.Add(words);
+        }
+        if (bubble.Reads && !awaited && failed)
+        {
+            // It stopped part-way: what arrived stays, and the row says so.
+            stack.Children.Add(new TextBlock
+            {
+                Text = say.Get("Couldn't answer that. Ask again."),
+                FontSize = 12,
+                FontStyle = Windows.UI.Text.FontStyle.Italic,
+                TextWrapping = TextWrapping.Wrap,
+                Opacity = 0.8,
+            });
         }
         if (bubble.Reads && message.Poll is not null)
         {
@@ -527,9 +569,16 @@ public sealed partial class ChatsView : UserControl
         }
         if (bubble.Reads)
         {
-            border.ContextFlyout = MenuFor(chat, bubble);
+            border.ContextFlyout = MenuFor(chat, bubble, assistantChat, assistantId);
             // The Tapback-heart idiom, the same emoji on every client.
             border.DoubleTapped += (_, _) => _ = ActAsync(() => chat.ReactAsync(message.Id, Reactions.DoubleTap));
+        }
+        else if (BubbleRules.IsOtherMember(message, Reader, assistantChat, assistantId))
+        {
+            // The hidden row's menu is Safety and nothing more: Copy would put the hidden words on the clipboard.
+            var menu = new MenuFlyout();
+            AddSafety(menu, message, assistantChat, assistantId);
+            border.ContextFlyout = menu;
         }
         return border;
     }
@@ -625,7 +674,7 @@ public sealed partial class ChatsView : UserControl
         flyout.ShowAt(anchor);
     }
 
-    private MenuFlyout MenuFor(ConversationModel chat, Bubble bubble)
+    private MenuFlyout MenuFor(ConversationModel chat, Bubble bubble, bool assistantChat, long? assistantId)
     {
         var say = services.Say;
         var message = bubble.Message;
@@ -667,7 +716,93 @@ public sealed partial class ChatsView : UserControl
             edit.Click += (_, _) => StartEdit(message);
             menu.Items.Add(edit);
         }
+        AddSafety(menu, message, assistantChat, assistantId);
         return menu;
+    }
+
+    /// <summary>
+    /// Report… and Block — or Unblock — about another member's message, grouped as the family's own member rows
+    /// group them. Never on the reader's own, and never on the assistant's.
+    /// </summary>
+    private void AddSafety(MenuFlyout menu, MessageDto message, bool assistantChat, long? assistantId)
+    {
+        if (!BubbleRules.IsOtherMember(message, Reader, assistantChat, assistantId))
+        {
+            return;
+        }
+        var say = services.Say;
+        var safety = new MenuFlyoutSubItem { Text = say.Get("Safety") };
+        if (BubbleRules.MayReport(message, Reader, assistantChat, assistantId))
+        {
+            var report = new MenuFlyoutItem { Text = say.Get("Report…") };
+            report.Click += (_, _) => _ = ReportMessageAsync(message);
+            safety.Items.Add(report);
+        }
+        var sender = message.SenderId;
+        var blocked = connection.Chats.IsBlocked(sender);
+        var block = new MenuFlyoutItem { Text = blocked ? say.Get("Unblock") : say.Get("Block") };
+        block.Click += (_, _) => _ = BlockSenderAsync(sender, !blocked);
+        safety.Items.Add(block);
+        if (menu.Items.Count > 0)
+        {
+            menu.Items.Add(new MenuFlyoutSeparator());
+        }
+        menu.Items.Add(safety);
+    }
+
+    /// <summary>One message reported: the four reasons, and the disclosure that the owner will read it.</summary>
+    private async Task ReportMessageAsync(MessageDto message)
+    {
+        var say = services.Say;
+        var name = connection.Chats.Member(message.SenderId) switch
+        {
+            { Deleted: true } => say.Get("Deleted account"),
+            { DisplayName: { Length: > 0 } display } => display,
+            _ => say.Get("Someone"),
+        };
+        try
+        {
+            var reason = await Dialogs.ReportAsync(
+                XamlRoot, say, name, aboutMessage: true, connection.Session.State.SupportContact);
+            if (reason is null)
+            {
+                return;
+            }
+            var answer = await connection.Api.Report(message.SenderId, reason, message.Id);
+            if (answer.Ok)
+            {
+                ShowProblem(say.Get("Report sent."));
+                return;
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reporting a message: {e.GetType().Name}");
+        }
+        ShowProblem(say.Get("Couldn't send the report. Try again."));
+    }
+
+    /// <summary>Block or unblock a message's sender — applied here once the server has it, as the family console does.</summary>
+    private async Task BlockSenderAsync(long userId, bool blocked)
+    {
+        ApiError? error;
+        try
+        {
+            error = await new FamilyModel(connection.Api, connection.Chats).BlockAsync(userId, blocked);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"blocking from a message: {e.GetType().Name}");
+            error = ApiError.Transport(e.GetType().Name);
+        }
+        if (error is not null)
+        {
+            ShowProblem(services.Say.Get("Couldn't change that right now. Try again."));
+        }
+        conversationDrawn = string.Empty;
+        listDrawn = string.Empty;
+        DrawList();
+        DrawConversation(keepFromBottom: atNewest ? null : DistanceFromBottom);
     }
 
     /// <summary>
