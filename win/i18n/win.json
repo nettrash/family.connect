@@ -12,11 +12,39 @@
     "%@ MB": {},
     "%@ — %@": {},
     "%@ — %@ mentioned you": {},
+    "%lld attachments, %@": {
+      "en": {
+        "one": "%lld attachment, %@",
+        "other": "%lld attachments, %@"
+      }
+    },
     "%lld byte": {},
     "%lld bytes": {},
+    "%lld pictures from the assistant": {
+      "en": {
+        "one": "%lld picture from the assistant",
+        "other": "%lld pictures from the assistant"
+      }
+    },
+    "%lld questions to the assistant": {
+      "en": {
+        "one": "%lld question to the assistant",
+        "other": "%lld questions to the assistant"
+      }
+    },
     "Chat": {},
+    "Delete the family?": {},
+    "Family Connect for Windows %@": {},
+    "Leave and Delete": {},
+    "Locations": {},
     "New note": {},
+    "Notifications": {},
+    "Tell me when a message arrives": {},
+    "The server is busy. Try again in a moment.": {},
     "Voice message": {},
+    "What hasn't been sent yet is lost.": {},
+    "While this window is not in front, a notification says who wrote — never what they wrote.": {},
+    "Windows is not showing notifications for Family Connect. Allow them in Windows Settings, under Notifications.": {},
     "Zero KB": {}
   }
 }

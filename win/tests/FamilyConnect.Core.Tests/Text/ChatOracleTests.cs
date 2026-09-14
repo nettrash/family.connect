@@ -414,4 +414,42 @@ public class ChatOracleTests
             Assert.Equal(row.GetProperty("fit")[1].GetUInt32(), fit.Height);
         }
     }
+
+    [Fact]
+    public void PluralCategoriesAreTheOriginals()
+    {
+        var vectors = Section("plural_categories");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        foreach (var row in vectors.EnumerateArray())
+        {
+            Assert.Equal(
+                row.GetProperty("category").GetString(),
+                PluralRules.Category(row.GetProperty("lang").GetString()!, row.GetProperty("count").GetInt64()));
+        }
+    }
+
+    [Fact]
+    public void AProfilePictureIsTheOriginalsSquare()
+    {
+        var vectors = Section("avatar_square");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        foreach (var row in vectors.EnumerateArray())
+        {
+            var square = AvatarPrep.Square(row.GetProperty("width").GetUInt32(), row.GetProperty("height").GetUInt32());
+            var said = row.GetProperty("square");
+            if (said.ValueKind == JsonValueKind.Null)
+            {
+                Assert.Null(square);
+                continue;
+            }
+            Assert.Equal(
+                new AvatarSquare(said.GetProperty("x").GetUInt32(), said.GetProperty("y").GetUInt32(),
+                    said.GetProperty("side").GetUInt32(), said.GetProperty("edge").GetUInt32()),
+                square);
+        }
+        var budget = Section("avatar_budget");
+        Assert.Equal(budget.GetProperty("edge").GetUInt32(), AvatarPrep.Edge);
+        Assert.Equal(budget.GetProperty("max_bytes").GetInt32(), AvatarPrep.MaxBytes);
+        Assert.Equal(budget.GetProperty("qualities").EnumerateArray().Select(q => q.GetDouble()), AvatarPrep.Qualities);
+    }
 }

@@ -21,6 +21,13 @@ public interface IStringCatalog
 
     /// <summary>The sentence with its placeholders filled, in Apple's grammar.</summary>
     string Format(string key, params object[] arguments);
+
+    /// <summary>
+    /// A sentence about <paramref name="count"/> things, in the form this language uses for that
+    /// count. <paramref name="arguments"/> are the KEY's own, in its order; the count only chooses
+    /// the form, so a translation is free to say them the other way round.
+    /// </summary>
+    string Plural(string key, long count, params object[] arguments) => Format(key, arguments);
 }
 
 /// <summary>
@@ -36,6 +43,9 @@ public sealed class EnglishCatalog : IStringCatalog
 
     public string Format(string key, params object[] arguments) =>
         AppleFormat.Apply(key, arguments);
+
+    public string Plural(string key, long count, params object[] arguments) =>
+        AppleFormat.Apply(PluralTables.Form(Languages.English, key, count) ?? key, arguments);
 }
 
 /// <summary>

@@ -155,9 +155,28 @@ public sealed partial class MainWindow : Window
         {
             Gate.NoFamily => new DoorView(services, current),
             Gate.Pending => new PendingView(services, current),
-            Gate.Member or Gate.Owner => chats ??= new ChatsView(services, current),
+            Gate.Member or Gate.Owner => chats ??= new ChatsView(services, current, ShowSettings),
             _ => new SignInView(services, current, changeServer: () => ShowServer(current.Server)),
         };
+    }
+
+    /// <summary>
+    /// Settings, over the chats: they go on listening underneath, and Done puts them back — unless
+    /// the gate moved meanwhile (a family left, an account deleted), which has already replaced both.
+    /// </summary>
+    private void ShowSettings()
+    {
+        if (connection is not { } current || chats is null)
+        {
+            return;
+        }
+        Screen.Content = new SettingsView(services, current, close: () =>
+        {
+            if (connection == current && chats is { } open && shown is Gate.Member or Gate.Owner)
+            {
+                Screen.Content = open;
+            }
+        });
     }
 
     private void ShowServer(Uri? prefill)

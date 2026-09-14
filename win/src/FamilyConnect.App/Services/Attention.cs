@@ -43,7 +43,7 @@ internal sealed class Attention : IDisposable
         rules.FamilyName = state.Family?.Name;
         rules.AssistantUserId = state.Assistant?.UserId;
         rules.InFront = services.Foreground;
-        rules.Wanted = Toasts.Available;
+        rules.Wanted = Toasts.Available && NotifySetting.Wanted;
     }
 
     private void OnArrived(MessageDto message)
