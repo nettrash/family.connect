@@ -39,11 +39,43 @@ public static class AssistantText
         return false;
     }
 
+    /// <summary>
+    /// Every <c>@ai</c> in <paramref name="body"/> — all of them, for a bubble to draw — as UTF-8 byte ranges grown to the grapheme
+    /// clusters they touch, in order (<c>fc_text::assistant::ranges</c>).
+    /// </summary>
+    public static IReadOnlyList<(int Start, int End)> Ranges(string body)
+    {
+        var found = new List<(int Start, int End)>();
+        int[]? clusters = null;
+        var bytes = 0;
+        for (var index = 0; index < body.Length; index++)
+        {
+            if (MentionAt(body, index))
+            {
+                clusters ??= global::FamilyConnect.Core.Mentions.ClusterBoundaries(body);
+                found.Add(global::FamilyConnect.Core.Mentions.Widen(clusters, bytes, bytes + Token.Length));
+            }
+            bytes += char.IsHighSurrogate(body[index]) ? 0 : char.IsLowSurrogate(body[index]) ? 4 : body[index] < 0x80 ? 1 : body[index] < 0x800 ? 2 : 3;
+        }
+        return found;
+    }
+
     /// <summary>The picture this body asks for, or null because it asks for none.</summary>
-    public static string? DrawPrompt(string body) => Scan(body);
+    public static string? DrawPrompt(string body) => Scan(body)?.Prompt;
 
     /// <summary>Does this body ask for a picture? Exactly when <see cref="DrawPrompt"/> answers one.</summary>
     public static bool AsksForPicture(string body) => Scan(body) is not null;
+
+    /// <summary>The <c>/draw</c> token as a UTF-8 byte range, exactly when <see cref="DrawPrompt"/> answers — both off one scan.</summary>
+    public static (int Start, int End)? DrawTokenRange(string body)
+    {
+        if (Scan(body) is not { } scan)
+        {
+            return null;
+        }
+        var start = System.Text.Encoding.UTF8.GetByteCount(body.AsSpan(0, scan.Index));
+        return (start, start + DrawToken.Length);
+    }
 
     /// <summary>
     /// The draft "ask the assistant" leaves behind: <c>@ai </c> appended — after a space when the last character is not one
@@ -75,7 +107,7 @@ public static class AssistantText
             && (end == body.Length || IsBoundary(body[end]));
     }
 
-    private static string? Scan(string body)
+    private static (int Index, string Prompt)? Scan(string body)
     {
         var index = SkippingWhiteSpace(body, 0);
         // ONE leading mention, and only a leading one: `look @ai /draw a cat` is an ordinary message.
@@ -95,7 +127,7 @@ public static class AssistantText
             return null;
         }
         var prompt = body[end..].Trim();
-        return prompt.Length > 0 ? prompt : null;
+        return prompt.Length > 0 ? (index, prompt) : null;
     }
 
     private static bool IsDrawToken(string body, int index)

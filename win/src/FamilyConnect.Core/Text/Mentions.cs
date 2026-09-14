@@ -273,7 +273,7 @@ public static class Mentions
     private static bool Overlaps((int Start, int End) a, (int Start, int End) b) => a.Start < b.End && b.Start < a.End;
 
     /// <summary>The UTF-8 byte offset of every grapheme-cluster boundary in the text, its end included.</summary>
-    private static int[] ClusterBoundaries(string text)
+    internal static int[] ClusterBoundaries(string text)
     {
         var boundaries = new List<int>();
         var elements = StringInfo.GetTextElementEnumerator(text);
@@ -291,7 +291,7 @@ public static class Mentions
     }
 
     /// <summary>A byte range grown outward to the nearest cluster boundaries.</summary>
-    private static (int Start, int End) Widen(int[] clusters, int start, int end)
+    internal static (int Start, int End) Widen(int[] clusters, int start, int end)
     {
         var from = clusters.LastOrDefault(boundary => boundary <= start);
         var to = clusters.FirstOrDefault(boundary => boundary >= end, clusters[^1]);

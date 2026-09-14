@@ -18,6 +18,16 @@ fn q(text: &str) -> String {
 fn main() {
     // No argument: the board vectors, which is the command the docs give. `chat` prints the
     // chat-line vectors instead — the same idea for the words a chat row is drawn with.
+    // `markdown <corpus.json>` prints what fc_text::markdown and fc_text::links make of every body in the corpus;
+    // `unicode` prints the Rust standard library's own character properties, which those two modules decide by.
+    if std::env::args().nth(1).as_deref() == Some("markdown") {
+        markdown_vectors(std::env::args().nth(2).expect("the corpus path"));
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("unicode") {
+        unicode_tables();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("chat") {
         chat();
         return;
@@ -1054,4 +1064,176 @@ fn chat() {
     ));
     out.push_str("}\n");
     print!("{}", out.replace(",\n  ]", "\n  ]"));
+}
+
+// --- markdown and links: the body a bubble draws (fc_text::markdown, fc_text::links) -----------------------
+
+fn md_link(link: &Option<fc_text::markdown::Link>) -> serde_json::Value {
+    match link {
+        Some(link) => serde_json::json!({"destination": link.destination, "title": link.title}),
+        None => serde_json::Value::Null,
+    }
+}
+
+fn md_text(text: &fc_text::markdown::Text) -> serde_json::Value {
+    use fc_text::markdown::Font;
+    serde_json::Value::Array(
+        text.spans
+            .iter()
+            .map(|span| {
+                let style = &span.style;
+                let font = match style.font {
+                    Font::Body => "body".to_string(),
+                    Font::Heading(level) => format!("h{level}"),
+                    Font::Monospaced => "mono".to_string(),
+                };
+                serde_json::json!({"text": span.text, "emphasis": style.emphasis, "strong": style.strong,
+                    "code": style.code, "strikethrough": style.strikethrough, "line_break": style.line_break,
+                    "html": style.html, "link": md_link(&style.link), "image": md_link(&style.image), "font": font})
+            })
+            .collect(),
+    )
+}
+
+fn md_blocks(body: &str) -> serde_json::Value {
+    use fc_text::markdown::{Block, ColumnAlignment};
+    serde_json::Value::Array(
+        fc_text::markdown::blocks(body)
+            .iter()
+            .map(|block| match block {
+                Block::Text(text) => serde_json::json!({"text": md_text(text)}),
+                Block::Table(table) => serde_json::json!({"table": {
+                    "alignments": table.alignments.iter().map(|alignment| match alignment {
+                        ColumnAlignment::Leading => "leading",
+                        ColumnAlignment::Center => "center",
+                        ColumnAlignment::Trailing => "trailing",
+                    }).collect::<Vec<_>>(),
+                    "header": table.header.iter().map(md_text).collect::<Vec<_>>(),
+                    "rows": table.rows.iter().map(|row| row.iter().map(md_text).collect::<Vec<_>>()).collect::<Vec<_>>(),
+                }}),
+            })
+            .collect(),
+    )
+}
+
+fn link_spans(spans: &[fc_text::links::LinkSpan]) -> serde_json::Value {
+    serde_json::Value::Array(
+        spans
+            .iter()
+            .map(|span| serde_json::json!({"start": span.range.start, "end": span.range.end, "text": span.text, "target": span.target}))
+            .collect(),
+    )
+}
+
+/// The web body's declared links (web/src/views/body.rs `pieces`, step 2): every markdown destination that can be
+/// opened once normalised, a label split into runs still one link.
+fn declared_links(text: &fc_text::markdown::Text) -> Vec<fc_text::links::LinkSpan> {
+    let plain = text.plain();
+    let mut declared: Vec<fc_text::links::LinkSpan> = Vec::new();
+    let mut at = 0;
+    for span in &text.spans {
+        let range = at..at + span.text.len();
+        at += span.text.len();
+        let Some(link) = &span.style.link else { continue };
+        let target = fc_text::links::normalize_destination(&link.destination);
+        if !fc_text::links::is_openable(&target) {
+            continue;
+        }
+        match declared.last_mut() {
+            Some(previous) if previous.range.end == range.start && previous.target == target => {
+                previous.range.end = range.end;
+                previous.text = plain[previous.range.clone()].to_string();
+            }
+            _ => declared.push(fc_text::links::LinkSpan {
+                range: range.clone(),
+                text: plain[range].to_string(),
+                target,
+            }),
+        }
+    }
+    declared
+}
+
+fn markdown_vectors(corpus: String) {
+    let bodies: Vec<String> =
+        serde_json::from_str(&std::fs::read_to_string(corpus).expect("the corpus")).expect("a list of bodies");
+    let cases: Vec<serde_json::Value> = bodies
+        .iter()
+        .map(|body| {
+            let rendered = fc_text::markdown::render(body);
+            let plain = rendered.plain();
+            let detected = fc_text::links::detect(&plain);
+            let merged = fc_text::links::merge(declared_links(&rendered), detected.clone());
+            let normalized: Vec<serde_json::Value> = rendered
+                .spans
+                .iter()
+                .filter_map(|span| span.style.link.as_ref())
+                .map(|link| {
+                    let target = fc_text::links::normalize_destination(&link.destination);
+                    serde_json::json!({"destination": link.destination, "normalized": target,
+                        "openable": fc_text::links::is_openable(&target)})
+                })
+                .collect();
+            serde_json::json!({
+                "body": body,
+                "blocks": md_blocks(body),
+                "render": md_text(&rendered),
+                "detect_body": link_spans(&fc_text::links::detect(body)),
+                "detect": link_spans(&detected),
+                "merged": link_spans(&merged),
+                "first_web": fc_text::links::first_web_link(&merged).map(|span| span.target.clone()),
+                "assistant_ranges": fc_text::assistant::ranges(&plain).iter().map(|range| [range.start, range.end]).collect::<Vec<_>>(),
+                "draw_range": fc_text::assistant::draw_token_range(&plain).map(|range| [range.start, range.end]),
+                "draw_asked": fc_text::assistant::draw_token_range(body).is_some(),
+                "normalized": normalized,
+            })
+        })
+        .collect();
+    println!("{}", serde_json::to_string(&serde_json::json!({"cases": cases})).unwrap());
+}
+
+/// The standard library's character properties over every scalar, as ranges — what fc_text decides by, so the
+/// port decides by exactly the same Unicode version rather than by .NET's.
+fn unicode_tables() {
+    use unicode_segmentation::UnicodeSegmentation;
+    fn ranges(predicate: impl Fn(char) -> bool) -> Vec<(u32, u32)> {
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        for value in 0u32..=0x10FFFF {
+            let Some(c) = char::from_u32(value) else { continue };
+            if !predicate(c) {
+                continue;
+            }
+            match out.last_mut() {
+                Some(last) if last.1 + 1 == value => last.1 = value,
+                _ => out.push((value, value)),
+            }
+        }
+        out
+    }
+    let lower: Vec<serde_json::Value> = (0u32..=0x10FFFF)
+        .filter_map(char::from_u32)
+        .filter(|&c| c.to_lowercase().collect::<String>() != c.to_string())
+        .map(|c| serde_json::json!([c as u32, c.to_lowercase().collect::<String>()]))
+        .collect();
+    let upper: Vec<serde_json::Value> = (0u32..=0x10FFFF)
+        .filter_map(char::from_u32)
+        .filter(|&c| c.to_uppercase().collect::<String>() != c.to_string())
+        .map(|c| serde_json::json!([c as u32, c.to_uppercase().collect::<String>()]))
+        .collect();
+    let tables = serde_json::json!({
+        "alphabetic": ranges(char::is_alphabetic),
+        "numeric": ranges(char::is_numeric),
+        "lowercase": ranges(char::is_lowercase),
+        "uppercase": ranges(char::is_uppercase),
+        "whitespace": ranges(char::is_whitespace),
+        "control": ranges(char::is_control),
+        "to_lowercase": lower,
+        "to_uppercase": upper,
+        // unicode-segmentation's clusters, as far as fc_text::markdown asks about them: whether a scalar
+        // after an ASCII character joins its cluster (Extend, ZWJ, SpacingMark), and whether one before joins it
+        // (Prepend). Those two decide whether a markup character is a cluster of its own.
+        "grapheme_extends": ranges(|c| format!("a{c}").graphemes(true).count() == 1),
+        "grapheme_prepends": ranges(|c| format!("{c}a").graphemes(true).count() == 1),
+    });
+    println!("{}", serde_json::to_string(&tables).unwrap());
 }
