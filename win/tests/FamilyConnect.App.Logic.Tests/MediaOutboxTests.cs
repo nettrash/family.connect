@@ -91,6 +91,39 @@ public class MediaOutboxTests : IDisposable
         Assert.All(handler.Asked, path => Assert.Contains("width=1600", path));
     }
 
+    /// <summary>A place is its three numbers: they go in the query, and nothing goes in the body.</summary>
+    [Fact]
+    public async Task APlaceIsUploadedAsItsNumbersWithNoBody()
+    {
+        var row = Queue("here");
+        var staging = new Staging();
+        staging.Files["here"] = new StagedMedia("location", string.Empty, ReadOnlyMemory<byte>.Empty,
+            Latitude: 55.7558, Longitude: 37.6173, AccuracyM: 12.4);
+        var (media, handler) = Build(new Server().On("/attachments", Uploaded(61)), staging);
+
+        Assert.Equal(1, await media.PushAsync());
+
+        Assert.Equal([61L], outbox.Find(row.ClientMsgId)!.AttachmentIds!);
+        var asked = Assert.Single(handler.Asked);
+        Assert.Equal("/api/v1/attachments?kind=location&latitude=55.7558000&longitude=37.6173000&accuracy_m=12", asked);
+        Assert.Empty(handler.Bodies);
+    }
+
+    /// <summary>A place whose numbers did not survive is as lost as a photo whose bytes did not: the row fails.</summary>
+    [Fact]
+    public async Task APlaceWithoutItsNumbersFailsTheRow()
+    {
+        var row = Queue("here");
+        var staging = new Staging();
+        staging.Files["here"] = new StagedMedia("location", string.Empty, ReadOnlyMemory<byte>.Empty, Latitude: 55.7558);
+        var (media, handler) = Build(new Server(), staging);
+
+        Assert.Equal(0, await media.PushAsync());
+
+        Assert.True(outbox.Find(row.ClientMsgId)!.Failed);
+        Assert.Empty(handler.Asked);
+    }
+
     /// <summary>
     /// A crash halfway through a four-photo message must cost the remaining three, not all four:
     /// an id that landed is kept and reused within the server's grace.

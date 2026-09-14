@@ -1,0 +1,218 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Call</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  video { position: absolute; }
+  #remote { inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #local {
+    right: 8px; bottom: 8px; width: 28%; max-width: 150px; aspect-ratio: 3 / 4; object-fit: cover;
+    border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.35); display: none;
+  }
+  #local.on { display: block; }
+</style>
+</head>
+<body>
+<video id="remote" autoplay playsinline></video>
+<video id="local" autoplay playsinline muted></video>
+<script>
+"use strict";
+// The media half of a call, run by the Windows app inside its own browser engine (docs/protocol.md, "Voice calls").
+// Every decision — who, when, and what goes on the wire — is the app's (App.Logic CallEngine). This page does only what a
+// peer connection, a microphone, a camera and a speaker are needed for, and answers each request by its id.
+const host = window.chrome.webview;
+const remoteView = document.getElementById("remote");
+const localView = document.getElementById("local");
+let pc = null;
+let local = null;
+let remote = null;
+let ring = null;
+
+function post(message) { host.postMessage(message); }
+
+async function ask(audio, video) {
+  try {
+    return await navigator.mediaDevices.getUserMedia({ audio, video });
+  } catch (refused) {
+    return null;
+  }
+}
+
+// Everything given back: every track stopped — which is what turns the microphone and camera lights off — and the
+// connection closed, with its handlers taken off first so nothing it says afterwards is heard.
+function teardown() {
+  if (local) {
+    for (const track of local.getTracks()) track.stop();
+    local = null;
+  }
+  if (pc) {
+    pc.onicecandidate = null;
+    pc.ontrack = null;
+    pc.onconnectionstatechange = null;
+    pc.close();
+    pc = null;
+  }
+  remote = null;
+  remoteView.srcObject = null;
+  localView.srcObject = null;
+  localView.classList.remove("on");
+}
+
+// The tones, made here as the web client makes them: a pair of beeps every three seconds for a call coming in, and the
+// European 425 Hz ringback — a second on, four off — while the caller waits.
+function beep(context, hertz, volume, at, length) {
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.type = "sine";
+  oscillator.frequency.value = hertz;
+  const now = context.currentTime + at;
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(volume, now + 0.02);
+  gain.gain.linearRampToValueAtTime(0, now + length);
+  oscillator.connect(gain);
+  gain.connect(context.destination);
+  oscillator.start(now);
+  oscillator.stop(now + length + 0.05);
+}
+
+function stopRing() {
+  if (ring) {
+    clearInterval(ring.timer);
+    ring.context.close();
+    ring = null;
+  }
+}
+
+function startRing(tone) {
+  stopRing();
+  const context = new AudioContext();
+  const [hertz, volume, pattern, every] = tone === "Incoming"
+    ? [660, 0.08, [[0, 0.4], [0.6, 0.4]], 3000]
+    : [425, 0.05, [[0, 1.0]], 5000];
+  const beat = () => { for (const [at, length] of pattern) beep(context, hertz, volume, at, length); };
+  context.resume();
+  beat();
+  ring = { context, timer: setInterval(beat, every) };
+}
+
+const ops = {
+  // The microphone, and the camera on a video call — asked again for the microphone alone when the camera is refused or
+  // missing: a camera is never a reason to miss a call (docs/protocol.md, "Video").
+  async open({ video }) {
+    teardown();
+    let camera = video;
+    let stream = await ask(true, video);
+    if (!stream && video) {
+      stream = await ask(true, false);
+      camera = false;
+    }
+    if (!stream) return "none";
+    local = stream;
+    localView.srcObject = stream;
+    localView.classList.toggle("on", camera);
+    return camera ? "both" : "microphone";
+  },
+
+  async connect({ servers, receiveVideoOnly }) {
+    const held = new RTCPeerConnection({ iceServers: servers || [] });
+    pc = held;
+    remote = new MediaStream();
+    remoteView.srcObject = remote;
+    if (local) {
+      for (const track of local.getTracks()) held.addTrack(track, local);
+    }
+    // A video call with no camera of our own still negotiates the picture the far side sends.
+    if (receiveVideoOnly) held.addTransceiver("video", { direction: "recvonly" });
+    held.onicecandidate = event => {
+      // The last candidate is a null one: gathering is done, and there is nothing to relay.
+      if (pc !== held || !event.candidate) return;
+      post({
+        event: "candidate",
+        candidate: {
+          candidate: event.candidate.candidate,
+          sdpMid: event.candidate.sdpMid,
+          sdpMLineIndex: event.candidate.sdpMLineIndex,
+        },
+      });
+    };
+    held.ontrack = event => {
+      if (pc !== held) return;
+      remote.addTrack(event.track);
+      remoteView.play().catch(() => {});
+      post({ event: "media" });
+    };
+    held.onconnectionstatechange = () => {
+      if (pc !== held) return;
+      if (held.connectionState === "connected") post({ event: "connected" });
+      else if (held.connectionState === "failed") post({ event: "failed" });
+    };
+    return true;
+  },
+
+  async offer() {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    return offer.sdp;
+  },
+
+  async remote({ type, sdp }) {
+    await pc.setRemoteDescription({ type, sdp });
+    return true;
+  },
+
+  async answer() {
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    return answer.sdp;
+  },
+
+  async candidate({ candidate, sdpMid, sdpMLineIndex }) {
+    const init = { candidate };
+    if (sdpMid !== undefined && sdpMid !== null) init.sdpMid = sdpMid;
+    if (sdpMLineIndex !== undefined && sdpMLineIndex !== null) init.sdpMLineIndex = sdpMLineIndex;
+    await pc.addIceCandidate(init);
+    return true;
+  },
+
+  async mute({ muted }) {
+    if (local) for (const track of local.getAudioTracks()) track.enabled = !muted;
+    return true;
+  },
+
+  // The camera, off and on: a track disabled, nothing renegotiated — the far side simply sees the picture stop.
+  async camera({ on }) {
+    const tracks = local ? local.getVideoTracks() : [];
+    for (const track of tracks) track.enabled = on;
+    localView.classList.toggle("on", on && tracks.length > 0);
+    return true;
+  },
+
+  async ring({ tone }) { startRing(tone); return true; },
+
+  async quiet() { stopRing(); return true; },
+
+  async close() { stopRing(); teardown(); return true; },
+};
+
+host.addEventListener("message", async event => {
+  const { id, op, args } = event.data || {};
+  const run = ops[op];
+  if (!run) {
+    post({ id, ok: false, value: null });
+    return;
+  }
+  try {
+    const value = await run(args || {});
+    post({ id, ok: true, value: value === undefined ? null : value });
+  } catch (failed) {
+    post({ id, ok: false, value: null });
+  }
+});
+
+post({ event: "ready" });
+</script>
+</body>
+</html>

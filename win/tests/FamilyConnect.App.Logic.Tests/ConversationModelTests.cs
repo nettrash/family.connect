@@ -150,6 +150,21 @@ public class ConversationModelTests : IDisposable
         Assert.Empty(rig.Handler.Asked);
     }
 
+    /// <summary>A page of history is not news: a reply on it is already in its root's recomputed count (docs/protocol.md, "Threads").</summary>
+    [Fact]
+    public async Task APageOfHistoryRaisesNoRootsCount()
+    {
+        chats.Apply(Message(300) with { ReplyCount = 1 }, SeqRoute.Evidence);
+        var rig = Build(new Server().On("/chats/42/messages",
+            """{"messages": [{"id": 299, "chat_id": 42, "sender_id": 9, "client_msg_id": null, "body": "yes", "created_at": "2026-09-12T10:00:00Z", "thread_root_id": 300}]}"""));
+        await rig.Chat.OpenAsync();
+
+        Assert.Null(await rig.Chat.OlderAsync());
+
+        Assert.NotNull(chats.Message(299));
+        Assert.Equal(1, chats.Message(300)!.ReplyCount);
+    }
+
     [Fact]
     public async Task PagingPastWhatIsHeldAsksForOlderThanTheOldest()
     {

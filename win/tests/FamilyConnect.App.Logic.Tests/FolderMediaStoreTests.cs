@@ -42,6 +42,40 @@ public sealed class FolderMediaStoreTests : IDisposable
         Assert.Null(read.DurationMs);
         Assert.Null(read.Name);
         Assert.Null(read.Preview);
+        Assert.Null(read.Latitude);
+        Assert.Null(read.AccuracyM);
+    }
+
+    /// <summary>A place has no bytes, and reads back with its numbers exactly — a centimetre off is a different place.</summary>
+    [Fact]
+    public void APlaceReadsBackWithItsNumbersAndNoBytes()
+    {
+        var store = new FolderMediaStore(folder);
+
+        var read = store.Read(store.Stage(new StagedMedia("location", string.Empty, ReadOnlyMemory<byte>.Empty,
+            Latitude: 55.00390625, Longitude: -0.1, AccuracyM: 12.5)));
+
+        Assert.NotNull(read);
+        Assert.Equal("location", read.Kind);
+        Assert.Equal(55.00390625, read.Latitude);
+        Assert.Equal(-0.1, read.Longitude);
+        Assert.Equal(12.5, read.AccuracyM);
+        Assert.True(read.Bytes.IsEmpty);
+        Assert.Null(read.Preview);
+    }
+
+    /// <summary>An accuracy that is not a number is not written — JSON has no NaN — and the place still stages.</summary>
+    [Fact]
+    public void APlaceWhoseAccuracyIsNotANumberStagesWithoutOne()
+    {
+        var store = new FolderMediaStore(folder);
+
+        var read = store.Read(store.Stage(new StagedMedia("location", string.Empty, ReadOnlyMemory<byte>.Empty,
+            Latitude: 1, Longitude: 2, AccuracyM: double.NaN)));
+
+        Assert.NotNull(read);
+        Assert.Equal(2, read.Longitude);
+        Assert.Null(read.AccuracyM);
     }
 
     /// <summary>

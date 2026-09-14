@@ -5,94 +5,208 @@
     <!-- Structure and x:Name only: every word is set from code, through the catalogue. -->
     <Grid>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="320" />
+            <ColumnDefinition Width="300" />
+            <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
-        <Grid Padding="12,0,0,12">
+
+        <!-- The list: a heading, the link's state under it, and the rows. -->
+        <Grid Padding="4,12,4,8">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-            <StackPanel Orientation="Horizontal" Spacing="8" Margin="4,0,0,8">
-                <TextBlock x:Name="ChatsHeading" FontSize="20" FontWeight="SemiBold" />
-                <TextBlock x:Name="LinkText" VerticalAlignment="Bottom" Opacity="0.7" />
+            <StackPanel Margin="16,0,12,8">
+                <TextBlock x:Name="ChatsHeading" Style="{StaticResource SubtitleTextBlockStyle}" />
+                <TextBlock x:Name="LinkText" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             </StackPanel>
             <ListView x:Name="ChatList" Grid.Row="1" SelectionMode="Single" />
-            <TextBlock x:Name="EmptyListText" Grid.Row="1" Margin="4,12,0,0" Opacity="0.7" Visibility="Collapsed" />
-            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" Margin="4,8,0,0">
-                <Button x:Name="BoardButton">
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                        <TextBlock x:Name="BoardText" />
-                        <InfoBadge x:Name="BoardBadge" Visibility="Collapsed" />
-                    </StackPanel>
-                </Button>
-                <Button x:Name="FamilyButton" />
-                <Button x:Name="SettingsButton" />
-            </StackPanel>
+            <TextBlock x:Name="EmptyListText" Grid.Row="1" Margin="16,12,12,0" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed" />
         </Grid>
-        <Grid Grid.Column="1" Padding="12,0,12,12">
+
+        <Border Grid.Column="1" Width="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+        <!-- One conversation: who it is with, the messages, and the composer as a card at the foot. -->
+        <Grid Grid.Column="2">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-            <Grid Margin="0,0,0,8" ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <StackPanel>
-                    <TextBlock x:Name="ConversationTitle" FontSize="20" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                    <TextBlock x:Name="TypingText" FontSize="12" Opacity="0.7" />
-                </StackPanel>
-                <Button x:Name="OpenPollsButton" Grid.Column="1" VerticalAlignment="Center" Visibility="Collapsed">
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                        <TextBlock x:Name="OpenPollsText" />
-                        <InfoBadge x:Name="OpenPollsBadge" Visibility="Collapsed" />
+            <Border x:Name="ConversationHeader" Padding="20,10,16,10" BorderThickness="0,0,0,1" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" Visibility="Collapsed">
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <ContentControl x:Name="ConversationFace" VerticalAlignment="Center" IsTabStop="False" />
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock x:Name="ConversationTitle" Style="{StaticResource BodyStrongTextBlockStyle}" FontSize="16" TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="TypingText" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     </StackPanel>
-                </Button>
-            </Grid>
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                        <!-- A voice call and a video call: in a direct chat, on a server that carries them. -->
+                        <Button x:Name="CallButton" Background="Transparent" BorderThickness="0" Padding="10" Visibility="Collapsed">
+                            <FontIcon Glyph="&#xE717;" FontSize="16" />
+                        </Button>
+                        <Button x:Name="VideoCallButton" Background="Transparent" BorderThickness="0" Padding="10" Visibility="Collapsed">
+                            <FontIcon Glyph="&#xE714;" FontSize="16" />
+                        </Button>
+                        <Button x:Name="OpenPollsButton" VerticalAlignment="Center" Visibility="Collapsed">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBlock x:Name="OpenPollsText" />
+                                <InfoBadge x:Name="OpenPollsBadge" Visibility="Collapsed" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
             <ScrollViewer x:Name="MessageScroller" Grid.Row="1" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
-                <StackPanel x:Name="MessageStack" Padding="0,0,12,0" Spacing="2" />
+                <StackPanel x:Name="MessageStack" Padding="20,12,20,12" />
             </ScrollViewer>
-            <Grid x:Name="BannerPanel" Grid.Row="2" ColumnSpacing="8" Margin="0,8,0,0" Visibility="Collapsed">
+            <!-- Down to the newest, over the messages while the reader is scrolled up them. -->
+            <Button
+                x:Name="JumpButton"
+                Grid.Row="1"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Bottom"
+                Margin="0,0,28,16"
+                Width="40"
+                Height="40"
+                Padding="0"
+                CornerRadius="20"
+                Style="{StaticResource AccentButtonStyle}"
+                Visibility="Collapsed">
+                <FontIcon Glyph="&#xE70D;" FontSize="14" />
+            </Button>
+            <Grid x:Name="BannerPanel" Grid.Row="2" ColumnSpacing="8" Margin="24,4,24,0" Visibility="Collapsed">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="BannerText" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Opacity="0.8" />
+                <TextBlock x:Name="BannerText" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <HyperlinkButton x:Name="BannerCancel" Grid.Column="1" />
             </Grid>
-            <Grid x:Name="ComposerPanel" Grid.Row="3" ColumnSpacing="8" RowSpacing="6" Margin="0,8,0,0" Visibility="Collapsed" AllowDrop="True">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
+            <!-- What will reach the assistant's model, said before the pixels leave. -->
+            <!-- Each line carries its own top margin, so nothing shown takes no room. -->
+            <StackPanel Grid.Row="3" Margin="24,0,24,0">
+                <TextBlock x:Name="PictureNoticeText" Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed" />
+                <!-- A voice note being recorded: how long so far, Cancel, and Stop — which five minutes presses by itself. -->
+                <Grid x:Name="RecordingBar" Margin="0,6,0,0" ColumnSpacing="10" Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Ellipse Width="10" Height="10" VerticalAlignment="Center" Fill="{ThemeResource SystemFillColorCriticalBrush}" />
+                    <TextBlock x:Name="RecordingText" Grid.Column="1" VerticalAlignment="Center" />
+                    <Button x:Name="RecordingCancel" Grid.Column="2" />
+                    <Button x:Name="RecordingStop" Grid.Column="3" Style="{StaticResource AccentButtonStyle}" />
+                </Grid>
+                <!-- Looking for where this device is: said while it looks, so the pause is not a dead menu item. -->
+                <StackPanel x:Name="LocationBar" Margin="0,6,0,0" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
+                    <ProgressRing x:Name="LocationRing" Width="16" Height="16" IsActive="False" />
+                    <TextBlock x:Name="LocationText" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+            </StackPanel>
+            <Border
+                x:Name="ComposerPanel"
+                Grid.Row="4"
+                Margin="16,8,16,12"
+                Padding="6"
+                CornerRadius="8"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                AllowDrop="True"
+                Visibility="Collapsed">
+                <Grid ColumnSpacing="6" RowSpacing="6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <ScrollViewer x:Name="StagingScroller" Grid.ColumnSpan="3" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                        <StackPanel x:Name="StagingStrip" Orientation="Horizontal" Spacing="6" />
+                    </ScrollViewer>
+                    <ScrollViewer x:Name="SuggestionScroller" Grid.Row="1" Grid.ColumnSpan="3" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                        <StackPanel x:Name="SuggestionStrip" Orientation="Horizontal" Spacing="6" />
+                    </ScrollViewer>
+                    <!-- One door for everything a message can carry: its menu is built from what this chat allows. -->
+                    <Button x:Name="AttachButton" Grid.Row="2" VerticalAlignment="Bottom" Background="Transparent" BorderThickness="0" Padding="8">
+                        <SymbolIcon Symbol="Add" />
+                    </Button>
+                    <TextBox x:Name="ComposerBox" Grid.Row="2" Grid.Column="1" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" VerticalAlignment="Center" />
+                    <Button x:Name="SendButton" Grid.Row="2" Grid.Column="2" VerticalAlignment="Bottom" Style="{StaticResource AccentButtonStyle}" />
+                </Grid>
+            </Border>
+            <TextBlock x:Name="ComposerError" Grid.Row="5" Margin="24,0,24,8" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Visibility="Collapsed" />
+        </Grid>
+
+        <!-- A chain of replies, beside the conversation: the root at the top, the replies below, a composer that answers the root. -->
+        <Border
+            x:Name="ThreadPanel"
+            Grid.Column="3"
+            Width="400"
+            BorderThickness="1,0,0,0"
+            BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+            Background="{ThemeResource LayerFillColorDefaultBrush}"
+            Visibility="Collapsed">
+            <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
-                <ScrollViewer x:Name="StagingScroller" Grid.ColumnSpan="3" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" Visibility="Collapsed">
-                    <StackPanel x:Name="StagingStrip" Orientation="Horizontal" Spacing="6" />
+                <Border Padding="20,10,8,10" BorderThickness="0,0,0,1" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock x:Name="ThreadTitle" Style="{StaticResource BodyStrongTextBlockStyle}" FontSize="16" />
+                            <TextBlock x:Name="ThreadReplies" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                        <Button x:Name="ThreadClose" Grid.Column="1" VerticalAlignment="Center" Background="Transparent" BorderThickness="0" Padding="10">
+                            <FontIcon Glyph="&#xE711;" FontSize="12" />
+                        </Button>
+                    </Grid>
+                </Border>
+                <ScrollViewer x:Name="ThreadScroller" Grid.Row="1" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="ThreadStack" Padding="16,12,16,12" />
                 </ScrollViewer>
-                <ScrollViewer x:Name="SuggestionScroller" Grid.Row="1" Grid.ColumnSpan="3" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" Visibility="Collapsed">
-                    <StackPanel x:Name="SuggestionStrip" Orientation="Horizontal" Spacing="6" />
-                </ScrollViewer>
-                <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Bottom">
-                    <Button x:Name="AttachButton">
-                        <SymbolIcon Symbol="Attach" />
-                    </Button>
-                    <Button x:Name="PollButton" Visibility="Collapsed" />
-                </StackPanel>
-                <TextBox x:Name="ComposerBox" Grid.Row="2" Grid.Column="1" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" />
-                <Button x:Name="SendButton" Grid.Row="2" Grid.Column="2" VerticalAlignment="Bottom" />
+                <TextBlock x:Name="ThreadNotice" Grid.Row="2" Margin="20,4,20,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed" />
+                <Border
+                    Grid.Row="3"
+                    Margin="12,8,12,12"
+                    Padding="6"
+                    CornerRadius="8"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1">
+                    <Grid ColumnSpacing="6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="ThreadComposer" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="120" VerticalAlignment="Center" />
+                        <Button x:Name="ThreadSend" Grid.Column="1" VerticalAlignment="Bottom" Style="{StaticResource AccentButtonStyle}" />
+                    </Grid>
+                </Border>
             </Grid>
-            <TextBlock x:Name="ComposerError" Grid.Row="4" Margin="0,4,0,0" TextWrapping="Wrap" Visibility="Collapsed" />
-        </Grid>
+        </Border>
     </Grid>
 </UserControl>

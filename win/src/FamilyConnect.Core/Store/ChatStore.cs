@@ -19,10 +19,16 @@ public enum SeqRoute
     /// <summary>A frame off the socket.</summary>
     LiveFrame,
 
-    /// <summary>A page of <c>…/reactions?after_seq=</c> or <c>…/polls?after_seq=</c>.</summary>
+    /// <summary>
+    /// A page of a catch-up — <c>…/messages?after_id=</c>, <c>…/reactions?after_seq=</c> or <c>…/polls?after_seq=</c> —
+    /// or the answer to this device's own send: a new reply on it raises its root's count.
+    /// </summary>
     CatchUpPage,
 
-    /// <summary>Anything else: a fetched message, or the answer to our own write.</summary>
+    /// <summary>
+    /// Anything else: a page of history, an edit, a thread read, a fetched message, or the answer to our own reaction or
+    /// vote. It moves no cursor and counts nothing.
+    /// </summary>
     Evidence,
 }
 
@@ -250,6 +256,23 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         using var transaction = database.Connection.BeginTransaction();
         var changed = messages.Count(
             message => Apply(message, transaction, isPreview: false, route));
+        transaction.Commit();
+        return changed;
+    }
+
+    /// <summary>
+    /// Server copies read for somewhere other than the window — a thread read — folded into the rows this device already
+    /// HOLDS (their recomputed reply count, any edit) and nothing else. A row the cache does not hold stays out of it:
+    /// the cache holds pages, and a root older than them or a reply newer would move where the next page starts, so it
+    /// would skip everything between (docs/protocol.md, "Threads").
+    /// </summary>
+    /// <returns>How many held rows changed.</returns>
+    public int Refresh(IReadOnlyList<MessageDto> messages)
+    {
+        using var serialised = database.Hold();
+        using var transaction = database.Connection.BeginTransaction();
+        var changed = messages.Count(message =>
+            Message(message.Id) is not null && Apply(message, transaction, isPreview: false, SeqRoute.Evidence));
         transaction.Commit();
         return changed;
     }
@@ -824,6 +847,21 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         command.Parameters.AddWithValue("$call",
             message.Call is null ? DBNull.Value : Wire.Encode(message.Call));
         command.ExecuteNonQuery();
+        // A NEW REPLY RAISES ITS ROOT'S COUNT, once, on whichever route first brings it: a live frame, the after_id
+        // catch-up, or the answer to this device's own send. Never a page of history, an edit or a thread read — they
+        // arrive as Evidence — and never a preview: those deliver replies the root's recomputed copy already includes,
+        // and counting them would show two where there is one (docs/protocol.md, "Threads"). A root this device does
+        // not hold has nothing to raise; the next copy of it brings the true count.
+        if (isNew && !isPreview && route != SeqRoute.Evidence && message.ThreadRootId is { } root)
+        {
+            using var raise = database.Connection.CreateCommand();
+            raise.Transaction = transaction;
+            raise.CommandText =
+                "UPDATE messages SET reply_count = COALESCE(reply_count, 0) + 1 WHERE message_id = $root AND chat_id = $chat";
+            raise.Parameters.AddWithValue("$root", root);
+            raise.Parameters.AddWithValue("$chat", message.ChatId);
+            raise.ExecuteNonQuery();
+        }
         Touch(message, transaction, counts: isNew && route == SeqRoute.LiveFrame);
         return true;
     }

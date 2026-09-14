@@ -245,7 +245,7 @@ public sealed class Resync(
                 {
                     break;
                 }
-                chats.Apply(edited);
+                chats.Apply(edited, SeqRoute.Evidence);
                 report = report with { Edits = report.Edits + edited.Length };
                 // A message in this feed carries the seq that put it here — an absent one is a
                 // server breaking its own contract, and reads as 0, which cannot move the cursor

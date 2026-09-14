@@ -41,6 +41,7 @@
     "+%lld": {},
     "A photo is still being pinned. Add the next one when it is on the board.": {},
     "Add Event": {},
+    "Call with %@": {},
     "Caption": {},
     "Chat": {},
     "Couldn't move the note.": {},
@@ -48,6 +49,8 @@
     "Delete the family?": {},
     "Event": {},
     "Family Connect for Windows %@": {},
+    "Finding your location…": {},
+    "Jump to the newest message": {},
     "Keep": {},
     "Leave and Delete": {},
     "Locations": {},
@@ -59,6 +62,8 @@
     "Pick when it ends, or turn the end off.": {},
     "Pick when it starts.": {},
     "Pinning…": {},
+    "Position": {},
+    "Recording %@": {},
     "Report sent.": {},
     "Safety for %@": {},
     "Say something about it (optional)": {},
@@ -78,6 +83,7 @@
     "While this window is not in front, a notification says who wrote — never what they wrote.": {},
     "Windows is not showing notifications for Family Connect. Allow them in Windows Settings, under Notifications.": {},
     "You're not in a family, so there is no board.": {},
+    "You've blocked them.": {},
     "Zero KB": {},
     "a photo": {}
   }

@@ -13,7 +13,11 @@ public sealed record StagedMedia(
     int? DurationMs = null,
     string? Name = null,
     /// <summary>The photo's small copy or the video's poster, as JPEG — made on this device, never by the server.</summary>
-    ReadOnlyMemory<byte>? Preview = null);
+    ReadOnlyMemory<byte>? Preview = null,
+    /// <summary>A place's numbers — <c>kind=location</c> only, which has no bytes and is these instead.</summary>
+    double? Latitude = null,
+    double? Longitude = null,
+    double? AccuracyM = null);
 
 /// <summary>
 /// Where a send's bytes wait while it is being sent. The seam exists because WHERE that is, is a
@@ -98,7 +102,8 @@ public sealed class MediaOutbox(OutboxStore outbox, ApiClient api, IMediaStore m
                     return landed;
                 }
                 var staged = media.Read(handle);
-                if (staged is null)
+                // A place without its numbers is as lost as a photo without its bytes.
+                if (staged is null or { Kind: "location", Latitude: null } or { Kind: "location", Longitude: null })
                 {
                     // The bytes are gone — a reclaimed temporary, or a reinstall. Nothing else is
                     // coming, and saying so beats a bubble that spins for ever.
@@ -108,10 +113,13 @@ public sealed class MediaOutbox(OutboxStore outbox, ApiClient api, IMediaStore m
                         new ApiError(ErrorCodes.MediaMissing, "the file is no longer here"));
                     break;
                 }
-                var answer = await api.Upload(
-                    staged.Kind, staged.Mime, staged.Bytes,
-                    staged.Width, staged.Height, staged.DurationMs, staged.Name, ct)
-                    .ConfigureAwait(false);
+                var answer = staged is { Kind: "location", Latitude: { } latitude, Longitude: { } longitude }
+                    // A place has no bytes: its three numbers are the whole upload.
+                    ? await api.UploadLocation(latitude, longitude, staged.AccuracyM, staged.Name, ct).ConfigureAwait(false)
+                    : await api.Upload(
+                        staged.Kind, staged.Mime, staged.Bytes,
+                        staged.Width, staged.Height, staged.DurationMs, staged.Name, ct)
+                        .ConfigureAwait(false);
                 if (answer.Ok && answer.Value is not null)
                 {
                     // Remembered AT ONCE: the id is reusable within the grace, and a crash here

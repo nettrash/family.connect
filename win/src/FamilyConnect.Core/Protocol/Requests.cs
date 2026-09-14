@@ -114,6 +114,17 @@ public sealed record MessageReactionsDto(
     [property: JsonPropertyName("reaction_seq")] long ReactionSeq,
     ReactionDto[] Reactions);
 
+/// <summary>
+/// One STUN or TURN server for a call's peer connection, with the time-limited credentials the operator minted for this
+/// caller when there are any (docs/protocol.md, "Where the servers come from").
+/// </summary>
+public sealed record IceServerDto(string[]? Urls = null, string? Username = null, string? Credential = null);
+
+/// <summary><c>GET /calls/ice</c>: fetched at the start of every call, and never cached across calls.</summary>
+public sealed record IceServersResponse(
+    [property: JsonPropertyName("ice_servers")] IceServerDto[]? IceServers,
+    [property: JsonPropertyName("ttl_secs")] long? TtlSecs = null);
+
 /// <summary>A page of the poll catch-up, oldest sequence first.</summary>
 public sealed record PollsResponse(MessagePollDto[]? Polls);
 

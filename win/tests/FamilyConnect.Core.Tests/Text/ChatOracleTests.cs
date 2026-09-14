@@ -25,6 +25,208 @@ public class ChatOracleTests
             ? null
             : row.GetProperty(name).GetInt64();
 
+    private static string? OptionalString(JsonElement row, string name) =>
+        row.GetProperty(name).ValueKind == JsonValueKind.Null ? null : row.GetProperty(name).GetString();
+
+    private static PictureCandidate[] Candidates(JsonElement list) =>
+    [
+        .. list.EnumerateArray().Select(candidate => new PictureCandidate(
+            candidate.GetProperty("kind").GetString()!,
+            candidate.GetProperty("mime").GetString()!,
+            Optional(candidate, "bytes"))),
+    ];
+
+    /// <summary>@ai and /draw: whether a body reaches the assistant and whether it asks for a picture — the server's grammar, body for body.</summary>
+    [Fact]
+    public void WhatABodyAsksTheAssistantForIsTheServersGrammar()
+    {
+        Assert.NotEmpty(Section("assistant_bodies").EnumerateArray());
+        foreach (var row in Section("assistant_bodies").EnumerateArray())
+        {
+            var body = row.GetProperty("body").GetString()!;
+            Assert.Equal(row.GetProperty("mentions").GetBoolean(), AssistantText.Mentions(body));
+            Assert.Equal(OptionalString(row, "prompt"), AssistantText.DrawPrompt(body));
+            Assert.Equal(row.GetProperty("asks").GetBoolean(), AssistantText.AsksForPicture(body));
+        }
+        foreach (var row in Section("assistant_mention_drafts").EnumerateArray())
+        {
+            Assert.Equal(row.GetProperty("with").GetString(), AssistantText.WithAssistantMention(row.GetProperty("draft").GetString()!));
+        }
+    }
+
+    /// <summary>The assistant's own chat: what its composer says of the photos staged — the original's sentence, case for case.</summary>
+    [Fact]
+    public void ThePrivateChatsPictureNoticeIsTheOriginals()
+    {
+        var say = EnglishCatalog.Instance;
+        Assert.NotEmpty(Section("pictures_private").EnumerateArray());
+        foreach (var row in Section("pictures_private").EnumerateArray())
+        {
+            Assert.Equal(
+                OptionalString(row, "said"),
+                AssistantPictures.PrivateNotice(Candidates(row.GetProperty("staged")), row.GetProperty("can_see").GetBoolean(), say));
+        }
+    }
+
+    /// <summary>The family chat: whether an @ai draft's notice shows, what it counts, and what it says — every lock and switch.</summary>
+    [Fact]
+    public void TheFamilyChatsPictureNoticeIsTheOriginals()
+    {
+        var say = EnglishCatalog.Instance;
+        var rows = Section("pictures_mention").EnumerateArray().ToList();
+        Assert.True(rows.Count > 100);
+        foreach (var row in rows)
+        {
+            bool[] flags = [.. row.GetProperty("switches").EnumerateArray().Select(flag => flag.GetBoolean())];
+            var notice = MentionPictureNotice.Of(
+                row.GetProperty("draft").GetString()!,
+                Candidates(row.GetProperty("staged")),
+                Candidates(row.GetProperty("quoted")),
+                new PictureSwitches(flags[0], flags[1], flags[2], flags[3], flags[4]));
+            Assert.Equal(OptionalString(row, "said"), notice?.Sentence(say));
+            var counts = row.GetProperty("counts");
+            if (counts.ValueKind == JsonValueKind.Null)
+            {
+                Assert.Null(notice);
+                continue;
+            }
+            int[] expected = [.. counts.EnumerateArray().Select(count => count.GetInt32())];
+            int[] actual = [notice!.ShownOnMention, notice.ShownOnQuote, notice.Extra, notice.Unreadable];
+            Assert.Equal(expected, actual);
+            Assert.Equal(Optional(row, "recent"), notice.RecentUpTo);
+        }
+    }
+
+    [Fact]
+    public void WhatReachesTheModelIsDecidedAsTheOriginalDecidesIt()
+    {
+        foreach (var row in Section("pictures_shown").EnumerateArray())
+        {
+            Assert.Equal(
+                row.GetProperty("shown").GetBoolean(),
+                AssistantPictures.IsShownToModel(row.GetProperty("kind").GetString()!, row.GetProperty("mime").GetString()!, Optional(row, "bytes")));
+        }
+        foreach (var row in Section("pictures_attachment").EnumerateArray())
+        {
+            var candidate = PictureCandidate.OfAttachment(
+                row.GetProperty("kind").GetString()!, row.GetProperty("mime").GetString()!, Optional(row, "size"), row.GetProperty("preview").GetBoolean());
+            var expected = row.GetProperty("as");
+            Assert.Equal(
+                new PictureCandidate(expected.GetProperty("kind").GetString()!, expected.GetProperty("mime").GetString()!, Optional(expected, "bytes")),
+                candidate);
+        }
+        foreach (var row in Section("pictures_offer").EnumerateArray())
+        {
+            Assert.Equal(
+                row.GetProperty("offers").GetBoolean(),
+                AssistantPictures.OffersPictureAttach(row.GetProperty("chat").GetBoolean(), row.GetProperty("see").GetBoolean(), row.GetProperty("allows").GetBoolean()));
+        }
+    }
+
+    /// <summary>Words win, except copied files and their names — the original's decision, paste for paste.</summary>
+    [Fact]
+    public void APasteAttachesTypesOrDoesNothingAsTheOriginalDecides()
+    {
+        Assert.NotEmpty(Section("paste_decision").EnumerateArray());
+        foreach (var row in Section("paste_decision").EnumerateArray())
+        {
+            string[] names = [.. row.GetProperty("names").EnumerateArray().Select(name => name.GetString()!)];
+            Assert.Equal(row.GetProperty("said").GetString(), PasteRules.Decision(names, row.GetProperty("text").GetString()!).ToString());
+        }
+    }
+
+    [Fact]
+    public void APastedItemIsTakenAndNamedAsTheOriginalTakesIt()
+    {
+        foreach (var row in Section("paste_type").EnumerateArray())
+        {
+            string[] offered = [.. row.GetProperty("offered").EnumerateArray().Select(offer => offer.GetString()!)];
+            var chosen = row.GetProperty("chosen");
+            Assert.Equal(chosen.ValueKind == JsonValueKind.Null ? null : chosen.GetString(), PasteRules.ChosenType(offered));
+        }
+        Assert.NotEmpty(Section("pasted_name").EnumerateArray());
+        foreach (var row in Section("pasted_name").EnumerateArray())
+        {
+            Assert.Equal(row.GetProperty("name").GetString(), PasteRules.PastedName(row.GetProperty("mime").GetString()!));
+        }
+    }
+
+    /// <summary>A recording's time, "3:42" — the original's label, including for a time that is not a number.</summary>
+    [Fact]
+    public void ARecordingsTimeIsLabelledAsTheOriginal()
+    {
+        Assert.NotEmpty(Section("time_label").EnumerateArray());
+        foreach (var row in Section("time_label").EnumerateArray())
+        {
+            var seconds = row.GetProperty("seconds");
+            var value = seconds.ValueKind == JsonValueKind.Number
+                ? seconds.GetDouble()
+                : seconds.GetString() switch { "inf" => double.PositiveInfinity, "-inf" => double.NegativeInfinity, _ => double.NaN };
+            Assert.Equal(row.GetProperty("label").GetString(), MediaText.TimeLabel(value));
+        }
+    }
+
+    private static double? OptionalDouble(JsonElement row, string name) =>
+        row.GetProperty(name).ValueKind == JsonValueKind.Null ? null : row.GetProperty(name).GetDouble();
+
+    /// <summary>Whether a message is nothing but emoji, how many, and how large it draws — the original's answer, text for text.</summary>
+    [Fact]
+    public void AnEmojiOnlyMessageIsCountedAndSizedAsTheOriginal()
+    {
+        Assert.NotEmpty(Section("emoji_only").EnumerateArray());
+        foreach (var row in Section("emoji_only").EnumerateArray())
+        {
+            var text = row.GetProperty("text").GetString()!;
+            var count = row.GetProperty("count");
+            Assert.Equal(count.ValueKind == JsonValueKind.Null ? null : count.GetInt32(), Emoji.EmojiOnlyCount(text));
+            Assert.Equal(OptionalDouble(row, "size"), Emoji.DisplayFontSize(text));
+            Assert.Equal(OptionalDouble(row, "at13"), Emoji.DisplayFontSizeForBody(text, 13));
+        }
+    }
+
+    /// <summary>The "More reactions…" catalogue is the original's: the same sections, the same order, the same bytes.</summary>
+    [Fact]
+    public void TheEmojiCatalogueIsTheOriginals()
+    {
+        var sections = Section("emoji_catalog").EnumerateArray().ToList();
+        Assert.Equal(sections.Select(section => section.GetProperty("name").GetString()), EmojiCatalog.Categories.Select(category => category.Name));
+        for (var at = 0; at < sections.Count; at++)
+        {
+            Assert.Equal(
+                sections[at].GetProperty("emoji").EnumerateArray().Select(emoji => emoji.GetString()!),
+                EmojiCatalog.Categories[at].Emoji);
+        }
+        Assert.Equal(771, EmojiCatalog.Categories.Sum(category => category.Emoji.Count));
+    }
+
+    /// <summary>A profile circle's initials: two words' first graphemes, uppercased — the original's, title for title.</summary>
+    [Fact]
+    public void AnAvatarsInitialsAreTheOriginals()
+    {
+        Assert.NotEmpty(Section("avatar_initials").EnumerateArray());
+        foreach (var row in Section("avatar_initials").EnumerateArray())
+        {
+            Assert.Equal(row.GetProperty("said").GetString(), AvatarText.Initials(row.GetProperty("title").GetString()!));
+        }
+    }
+
+    /// <summary>
+    /// EVERY scalar Rust uppercases, uppercased the same — the full mapping, not .NET's one-for-one. Collected rather
+    /// than asserted one at a time, so a disagreement shows all of itself at once.
+    /// </summary>
+    [Fact]
+    public void EveryLetterUppercasesAsRustUppercasesIt()
+    {
+        var rows = Section("avatar_upper").EnumerateArray().ToList();
+        Assert.True(rows.Count > 1000, $"only {rows.Count} scalars");
+        var wrong = rows
+            .Select(row => (Scalar: row.GetProperty("c").GetInt32(), Upper: row.GetProperty("upper").GetString()!))
+            .Where(row => AvatarText.Uppercase(char.ConvertFromUtf32(row.Scalar)) != row.Upper)
+            .Select(row => $"U+{row.Scalar:X4}")
+            .ToList();
+        Assert.True(wrong.Count == 0, $"{wrong.Count} differ: {string.Join(' ', wrong.Take(60))}");
+    }
+
     /// <summary>A poll option is trimmed as the server trims it: Rust's White_Space, no more and no less.</summary>
     [Fact]
     public void APollOptionIsTrimmedTheWayRustTrims()
@@ -493,9 +695,39 @@ public class ChatOracleTests
                 square);
         }
         var budget = Section("avatar_budget");
-        Assert.Equal(budget.GetProperty("edge").GetUInt32(), AvatarPrep.Edge);
-        Assert.Equal(budget.GetProperty("max_bytes").GetInt32(), AvatarPrep.MaxBytes);
+        Assert.Equal(AvatarPrep.Edge, budget.GetProperty("edge").GetUInt32());
+        Assert.Equal(AvatarPrep.MaxBytes, budget.GetProperty("max_bytes").GetInt32());
         Assert.Equal(budget.GetProperty("qualities").EnumerateArray().Select(q => q.GetDouble()), AvatarPrep.Qualities);
+    }
+
+    /// <summary>
+    /// A shared place's upload query, as the web client's Rust writes it: seven places with ties to even, and the accuracy
+    /// rounded half away from zero, floored at nought, and left out when it is not a number.
+    /// </summary>
+    [Fact]
+    public void APlaceIsUploadedWithTheOriginalsQuery()
+    {
+        var rows = Section("location_query");
+        Assert.NotEmpty(rows.EnumerateArray());
+        foreach (var row in rows.EnumerateArray())
+        {
+            var accuracy = row.GetProperty("accuracy_m");
+            double? accuracyM = accuracy.ValueKind switch
+            {
+                JsonValueKind.Null => null,
+                JsonValueKind.Number => accuracy.GetDouble(),
+                _ => accuracy.GetString() switch
+                {
+                    "NaN" => double.NaN,
+                    "inf" => double.PositiveInfinity,
+                    var other => throw new InvalidDataException(other),
+                },
+            };
+            Assert.Equal(
+                row.GetProperty("query").GetString(),
+                FamilyConnect.Core.Protocol.UploadQueries.Location(
+                    row.GetProperty("latitude").GetDouble(), row.GetProperty("longitude").GetDouble(), accuracyM));
+        }
     }
 
     /// <summary>The member limit's three states, the clamp and the seed, as the original computes them.</summary>
@@ -535,7 +767,7 @@ public class ChatOracleTests
         Assert.Equal(
             Section("house_languages").EnumerateArray().Select(row => (row.GetProperty("tag").GetString()!, row.GetProperty("name").GetString()!)),
             HouseRules.FamilyLanguages);
-        Assert.Equal(Section("house_pictures_per_question").GetInt32(), HouseRules.MaxPicturesPerQuestion);
+        Assert.Equal(HouseRules.MaxPicturesPerQuestion, Section("house_pictures_per_question").GetInt32());
     }
 
     /// <summary>The server's byte grammar and the grapheme widening, as the original finds them.</summary>

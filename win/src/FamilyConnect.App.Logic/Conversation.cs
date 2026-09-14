@@ -129,7 +129,8 @@ public sealed class ConversationModel
             return page.Error ?? ApiError.Transport("no answer");
         }
         var messages = page.Value.Messages ?? [];
-        chats.Apply(messages);
+        // History, not catch-up: a reply on it is already in its root's recomputed count.
+        chats.Apply(messages, SeqRoute.Evidence);
         // A short page IS the beginning of the chat: there is nothing older to ask for.
         MayHaveOlder = messages.Length >= Page;
         return null;
@@ -164,7 +165,7 @@ public sealed class ConversationModel
             return page.Error ?? ApiError.Transport("no answer");
         }
         var messages = page.Value.Messages ?? [];
-        chats.Apply(messages);
+        chats.Apply(messages, SeqRoute.Evidence);
         MayHaveOlder = messages.Length >= Page;
         return null;
     }

@@ -36,6 +36,70 @@ public class ChatStoreTests : IDisposable
         Assert.Empty(store.Polls(44));
     }
 
+    /// <summary>
+    /// A new reply raises its held root's count ONCE — on a live frame, the after_id catch-up or the answer to this
+    /// device's own send — and a page of history, an edit or a preview never does: the root's recomputed copy already
+    /// includes those (docs/protocol.md, "Threads").
+    /// </summary>
+    [Fact]
+    public void ANewReplyRaisesItsRootsCountOnceAndOnlyOnARouteThatCounts()
+    {
+        var store = Store();
+        store.Replace([Row()]);
+        store.Apply(Message(10) with { ReplyCount = 1 }, SeqRoute.Evidence);
+
+        store.Apply(Message(11, threadRoot: 10), SeqRoute.LiveFrame);
+        Assert.Equal(2, store.Message(10)!.ReplyCount);
+        store.Apply(Message(11, threadRoot: 10), SeqRoute.LiveFrame);
+        Assert.Equal(2, store.Message(10)!.ReplyCount);
+
+        store.Apply([Message(12, threadRoot: 10)]);
+        Assert.Equal(3, store.Message(10)!.ReplyCount);
+
+        store.Apply([Message(13, threadRoot: 10)], SeqRoute.Evidence);
+        store.Replace([Row(last: Message(14, threadRoot: 10))]);
+        Assert.Equal(3, store.Message(10)!.ReplyCount);
+    }
+
+    /// <summary>A root nobody had answered starts at one; a root this device does not hold, or in another chat, is not raised.</summary>
+    [Fact]
+    public void AReplyCountsOnlyAgainstAHeldRootInItsOwnChat()
+    {
+        var store = Store();
+        store.Replace([Row(), Row(new ChatDto(43, "direct", "Bob"))]);
+        store.Apply(Message(10), SeqRoute.Evidence);
+        store.Apply(Message(20, chat: 43), SeqRoute.Evidence);
+
+        store.Apply(Message(11, threadRoot: 10), SeqRoute.LiveFrame);
+        store.Apply(Message(12, threadRoot: 20), SeqRoute.LiveFrame);
+        store.Apply(Message(13, threadRoot: 99), SeqRoute.LiveFrame);
+
+        Assert.Equal(1, store.Message(10)!.ReplyCount);
+        Assert.Null(store.Message(20)!.ReplyCount);
+        Assert.Null(store.Message(99));
+    }
+
+    /// <summary>A thread read refreshes what the cache HOLDS — the true count, an edit — and leaves the rest out of it.</summary>
+    [Fact]
+    public void ARefreshTouchesOnlyHeldRows()
+    {
+        var store = Store();
+        store.Replace([Row()]);
+        store.Apply([Message(10) with { ReplyCount = 1 }, Message(50)], SeqRoute.Evidence);
+
+        var changed = store.Refresh([
+            Message(10, body: "Dinner at 8?", editSeq: 2) with { ReplyCount = 3 },
+            Message(11, threadRoot: 10),
+            Message(300, threadRoot: 10),
+        ]);
+
+        Assert.Equal(1, changed);
+        Assert.Equal((3, "Dinner at 8?"), (store.Message(10)!.ReplyCount, store.Message(10)!.Body));
+        Assert.Null(store.Message(11));
+        Assert.Null(store.Message(300));
+        Assert.Equal([50L, 10L], store.Messages(42).Select(message => message.Id));
+    }
+
     private static ChatRowDto Row(
         ChatDto? chat = null,
         MessageDto? last = null,

@@ -8,7 +8,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
-        <Grid Padding="24,0,24,8" ColumnSpacing="12">
+        <Grid Padding="24,16,24,12" ColumnSpacing="12">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
@@ -24,7 +24,8 @@
                 <Button x:Name="AddListButton" />
                 <Button x:Name="PinPhotoButton" />
             </StackPanel>
-            <Button x:Name="DoneButton" Grid.Column="2" VerticalAlignment="Center" Style="{StaticResource AccentButtonStyle}" />
+            <!-- The rail is the way back to the chats now. -->
+            <Button x:Name="DoneButton" Grid.Column="2" VerticalAlignment="Center" Style="{StaticResource AccentButtonStyle}" Visibility="Collapsed" />
         </Grid>
         <ScrollViewer x:Name="Scroller" Grid.Row="1" AllowDrop="True" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
             <Canvas x:Name="Wall" />
