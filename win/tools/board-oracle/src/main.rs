@@ -441,6 +441,55 @@ fn chat() {
         out.push_str(&format!("  \"house_pictures_per_question\": {},\n", fc_text::assistant_pictures::MAX_PER_QUESTION));
     }
 
+    // --- member mentions ------------------------------------------------------------------------------
+    {
+        use fc_text::mentions;
+        let ch = |c: u32| char::from_u32(c).unwrap().to_string();
+        let family = [0x1F468u32, 0x200D, 0x1F469, 0x200D, 0x1F467].iter().map(|c| ch(*c)).collect::<String>();
+        let range_cases: Vec<(String, String)> = vec![
+            ("@Anna hi".into(), "Anna".into()), ("hi @Anna".into(), "Anna".into()), ("@Annabel".into(), "Anna".into()),
+            ("mail@Anna".into(), "Anna".into()), ("@Anna_x".into(), "Anna".into()), ("@Anna.".into(), "Anna".into()),
+            ("@Anna @Anna".into(), "Anna".into()), ("@@Anna".into(), "Anna".into()), ("@Anna Lee is here".into(), "Anna Lee".into()),
+            ("@Анна привет".into(), "Анна".into()), (format!("@Anna{} x", ch(0x301)), "Anna".into()),
+            (format!("{}@Anna", ch(0x600)), "Anna".into()), (format!("@{} hi", family), family.clone()),
+            ("@Anna".into(), String::new()), (String::new(), "Anna".into()), ("@anna".into(), "Anna".into()),
+            ("@Anna1".into(), "Anna".into()), ("é@Anna".into(), "Anna".into()), ("@Anna,@Anna".into(), "Anna".into()),
+        ];
+        let range_rows: Vec<serde_json::Value> = range_cases.iter().map(|(body, name)| serde_json::json!({
+            "body": body, "name": name,
+            "ranges": mentions::ranges(body, name).iter().map(|range| [range.start, range.end]).collect::<Vec<_>>()
+        })).collect();
+        let roster_names: Vec<(i64, String)> = vec![(1, "Anna".into()), (2, "Anna Lee".into()), (3, "Bob".into()),
+            (4, "Anna".into()), (5, "Анна".into()), (6, "Bo".into())];
+        let roster: Vec<mentions::Member> = roster_names.iter()
+            .map(|(id, name)| mentions::Member { user_id: *id, name: name.as_str() }).collect();
+        let bodies = ["@Anna Lee and @Bob", "@Anna", "@Bob @Anna", "no names", "@Anna Lee", "@Bob@Anna",
+            "@Анна и @Bo", "@Bo @Bob", "@Anna @Anna Lee", "@Anna Lee @Anna Lee"];
+        let resolve_rows: Vec<serde_json::Value> = bodies.iter().map(|body| serde_json::json!({
+            "body": body, "ids": mentions::resolve(body, &roster).iter().map(|member| member.user_id).collect::<Vec<_>>()
+        })).collect();
+        let roster_rows: Vec<serde_json::Value> = roster_names.iter()
+            .map(|(id, name)| serde_json::json!({"id": id, "name": name})).collect();
+        let token_cases: Vec<(&str, Vec<(i64, &str)>)> = vec![
+            ("@Anna Lee met @Anna and @Bob", vec![(1, "Anna"), (2, "Anna Lee"), (3, "Bob")]),
+            ("@Bo @Bob @Bo", vec![(6, "Bo"), (3, "Bob")]),
+            ("nothing here", vec![(1, "Anna")]),
+        ];
+        let token_rows: Vec<serde_json::Value> = token_cases.iter().map(|(text, named)| {
+            let members: Vec<mentions::Member> = named.iter().map(|(id, name)| mentions::Member { user_id: *id, name }).collect();
+            serde_json::json!({
+                "text": text,
+                "mentions": named.iter().map(|(id, name)| serde_json::json!({"id": id, "name": name})).collect::<Vec<_>>(),
+                "tokens": mentions::tokens(text, &members).iter().map(|token| [token.range.start as i64, token.range.end as i64, token.member.user_id]).collect::<Vec<_>>()
+            })
+        }).collect();
+        for (name, rows) in [("mention_ranges", range_rows), ("mention_resolve", resolve_rows),
+                             ("mention_roster", roster_rows), ("mention_tokens", token_rows)] {
+            out.push_str(&format!("  \"{}\": [\n{}\n  ],\n", name,
+                rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        }
+    }
+
     // --- how a picked file is prepared ---------------------------------------------------------------
     {
         let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();

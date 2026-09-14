@@ -418,4 +418,24 @@ public class ApiClientTests
         Assert.Equal("https://chat.example.com/api/v1/chats/direct", request.RequestUri?.ToString());
         Assert.Equal("{\"user_id\":9}", Assert.Single(handler.Bodies));
     }
+
+    /// <summary>An event's end taken off is a NULL on the wire; a field left out leaves it alone.</summary>
+    [Fact]
+    public async Task TakingAnEventsEndOffSendsANullAndLeavingItAloneSendsNothing()
+    {
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.OK, """{"note": {"id": 12, "author_id": 7, "board_seq": 9}}""")
+            .Then(HttpStatusCode.OK, """{"note": {"id": 12, "author_id": 7, "board_seq": 10}}"""));
+        Assert.True((await client.PatchNote(12, new NotePatch(Place: "") { ClearsEnd = true })).Ok);
+        Assert.True((await client.PatchNote(12, new NotePatch(Place: "Park"))).Ok);
+
+        using var cleared = System.Text.Json.JsonDocument.Parse(handler.Bodies[0]!);
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, cleared.RootElement.GetProperty("ends_at").ValueKind);
+        Assert.Equal(string.Empty, cleared.RootElement.GetProperty("place").GetString());
+        Assert.False(cleared.RootElement.TryGetProperty("clears_end", out _));
+        Assert.False(cleared.RootElement.TryGetProperty("text", out _));
+        using var alone = System.Text.Json.JsonDocument.Parse(handler.Bodies[1]!);
+        Assert.False(alone.RootElement.TryGetProperty("ends_at", out _));
+        Assert.Equal(HttpMethod.Patch, handler.Sent[1].Method);
+    }
 }

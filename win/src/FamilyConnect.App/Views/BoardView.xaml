@@ -12,9 +12,15 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <TextBlock x:Name="Heading" Style="{StaticResource TitleTextBlockStyle}" />
-            <Button x:Name="DoneButton" Grid.Column="1" VerticalAlignment="Center" Style="{StaticResource AccentButtonStyle}" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                <Button x:Name="AddNoteButton" />
+                <Button x:Name="AddEventButton" />
+                <Button x:Name="AddListButton" />
+            </StackPanel>
+            <Button x:Name="DoneButton" Grid.Column="2" VerticalAlignment="Center" Style="{StaticResource AccentButtonStyle}" />
         </Grid>
         <ScrollViewer x:Name="Scroller" Grid.Row="1" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
             <Canvas x:Name="Wall" />

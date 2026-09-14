@@ -60,6 +60,7 @@ public sealed partial class BoardView : UserControl
     private readonly Dictionary<string, BitmapImage> pictures = [];
     private readonly HashSet<long> revealed = [];
     private int redrawQueued;
+    private bool sheetOpen;
 
     internal BoardView(AppServices services, Connection connection, Action close, Action shown)
     {
@@ -74,7 +75,13 @@ public sealed partial class BoardView : UserControl
         DoneButton.Content = say.Get("Done");
         EmptyTitle.Text = say.Get("The board is empty");
         EmptyText.Text = say.Get("Add a note — everyone in the family sees it.");
+        AddNoteButton.Content = say.Get("Add Note");
+        AddEventButton.Content = say.Get("Add Event");
+        AddListButton.Content = say.Get("Add List");
         DoneButton.Click += (_, _) => close();
+        AddNoteButton.Click += (_, _) => _ = SheetAsync(null, NoteKind.Text);
+        AddEventButton.Click += (_, _) => _ = SheetAsync(null, NoteKind.Event);
+        AddListButton.Click += (_, _) => _ = SheetAsync(null, NoteKind.Tasks);
         Scroller.SizeChanged += (_, _) => Draw();
         ActualThemeChanged += (_, _) => Draw();
 
@@ -153,6 +160,36 @@ public sealed partial class BoardView : UserControl
         {
             board.Shown();
             shown();
+        }
+    }
+
+    /// <summary>One sheet at a time: an existing note, or a blank of <paramref name="kind"/>. The wall is drawn again when it closes.</summary>
+    private async Task SheetAsync(long? noteId, NoteKind kind)
+    {
+        if (sheetOpen)
+        {
+            return;
+        }
+        var note = noteId is { } id ? connection.Board.Note(id) : null;
+        if (noteId is not null && note is null)
+        {
+            return;
+        }
+        sheetOpen = true;
+        try
+        {
+            await NoteSheet.ShowAsync(
+                XamlRoot, services, connection, board, note, kind,
+                mine: note is null || note.AuthorId == connection.Chats.Reader);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"a note sheet: {e.GetType().Name}");
+        }
+        finally
+        {
+            sheetOpen = false;
+            Draw();
         }
     }
 
@@ -254,6 +291,11 @@ public sealed partial class BoardView : UserControl
                 revealed.Add(note.Id);
                 Draw();
             };
+        }
+        else
+        {
+            // Opened: to edit, for its author; to read, tick and answer, for everybody else.
+            root.Tapped += (_, _) => _ = SheetAsync(note.Id, sticker.Kind);
         }
         return root;
     }
