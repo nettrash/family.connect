@@ -42,9 +42,10 @@ public class MediaOutboxTests : IDisposable
             }
         }
 
-        public Staging With(string handle, string kind = "photo", string mime = "image/jpeg")
+        public Staging With(string handle, string kind = "photo", string mime = "image/jpeg", byte[]? preview = null)
         {
-            Files[handle] = new StagedMedia(kind, mime, new byte[] { 1, 2, 3 }, 1600, 1200);
+            Files[handle] = new StagedMedia(kind, mime, new byte[] { 1, 2, 3 }, 1600, 1200,
+                Preview: preview is null ? (ReadOnlyMemory<byte>?)null : preview);
             return this;
         }
     }
@@ -310,5 +311,98 @@ public class MediaOutboxTests : IDisposable
         public event Action<ServerFrame>? Frame;
 
         public void Unused() => Frame?.Invoke(new ServerFrame.Pong());
+    }
+
+    private static readonly byte[] Poster = [0xFF, 0xD8, 0xFF, 0xE0];
+
+    private int PreviewsAsked(Server server, long id) =>
+        server.Asked.Count(path => path == $"/api/v1/attachments/{id}/preview");
+
+    /// <summary>A preview follows its upload, to the id that upload became.</summary>
+    [Fact]
+    public async Task APreviewFollowsItsUpload()
+    {
+        Queue("clip.mp4");
+        var (media, server) = Build(
+            new Server().On("/attachments", Uploaded(34)).On("/attachments/34/preview", null, HttpStatusCode.NoContent),
+            new Staging().With("clip.mp4", "video", "video/mp4", Poster));
+
+        Assert.Equal(1, await media.PushAsync());
+
+        Assert.Equal("/api/v1/attachments/34/preview", server.Asked[^1]);
+        Assert.Equal(0, media.OwedPreviews);
+    }
+
+    [Fact]
+    public async Task MediaWithoutAPreviewSendsNone()
+    {
+        Queue("notes.pdf");
+        var (media, server) = Build(new Server().On("/attachments", Uploaded(34)), new Staging().With("notes.pdf", "file", "application/pdf"));
+
+        await media.PushAsync();
+
+        Assert.Equal(0, PreviewsAsked(server, 34));
+    }
+
+    /// <summary>
+    /// NOT BEST EFFORT ONCE: a poster that failed is sent again on later flushes — from the bytes held
+    /// here, since the staged file goes with its send — and a bounded number of times, no more.
+    /// </summary>
+    [Fact]
+    public async Task AFailedPreviewIsSentAgainABoundedNumberOfTimes()
+    {
+        Queue("clip.mp4");
+        var staging = new Staging().With("clip.mp4", "video", "video/mp4", Poster);
+        var failing = (HttpStatusCode.ServiceUnavailable, (string?)"""{"error": {"code": "internal", "message": "later"}}""");
+        var (media, server) = Build(
+            new Server().On("/attachments", Uploaded(34)).Then("/attachments/34/preview", failing, failing, failing, failing),
+            staging);
+
+        await media.PushAsync();
+        staging.Files.Clear();
+        Assert.Equal(1, media.OwedPreviews);
+
+        for (var flush = 0; flush < 5; flush++)
+        {
+            await media.PushAsync();
+        }
+
+        Assert.Equal(MediaOutbox.PreviewAttempts, PreviewsAsked(server, 34));
+        Assert.Equal(0, media.OwedPreviews);
+    }
+
+    [Fact]
+    public async Task APreviewThatLandsLaterIsNoLongerOwed()
+    {
+        Queue("clip.mp4");
+        var (media, server) = Build(
+            new Server().On("/attachments", Uploaded(34)).Then("/attachments/34/preview",
+                (HttpStatusCode.ServiceUnavailable, """{"error": {"code": "internal", "message": "later"}}"""),
+                (HttpStatusCode.NoContent, null)),
+            new Staging().With("clip.mp4", "video", "video/mp4", Poster));
+
+        await media.PushAsync();
+        await media.PushAsync();
+        await media.PushAsync();
+
+        Assert.Equal(2, PreviewsAsked(server, 34));
+        Assert.Equal(0, media.OwedPreviews);
+    }
+
+    /// <summary>A REFUSED preview is not tried again: the same bytes would be refused the same way.</summary>
+    [Fact]
+    public async Task ARefusedPreviewIsNotSentAgain()
+    {
+        Queue("clip.mp4");
+        var (media, server) = Build(
+            new Server().On("/attachments", Uploaded(34)).On("/attachments/34/preview",
+                """{"error": {"code": "invalid_attachment", "message": "not a jpeg"}}""", HttpStatusCode.BadRequest),
+            new Staging().With("clip.mp4", "video", "video/mp4", Poster));
+
+        await media.PushAsync();
+        await media.PushAsync();
+
+        Assert.Equal(1, PreviewsAsked(server, 34));
+        Assert.Equal(0, media.OwedPreviews);
     }
 }

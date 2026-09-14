@@ -324,4 +324,94 @@ public class ChatOracleTests
             Assert.Equal(row.GetProperty("maps").GetString(), MediaText.MapsUrl(latitude, longitude, name));
         }
     }
+
+    private static string? Nullable(JsonElement row, string name) =>
+        row.GetProperty(name).ValueKind == JsonValueKind.Null ? null : row.GetProperty(name).GetString();
+
+    [Fact]
+    public void AFilesTypeIsReadAsTheOriginalReadsIt()
+    {
+        var vectors = Section("prep_types");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        foreach (var row in vectors.EnumerateArray())
+        {
+            var mime = row.GetProperty("mime").GetString()!;
+            var name = row.GetProperty("name").GetString()!;
+            Assert.Equal(row.GetProperty("essence").GetString(), MediaPrep.Essence(mime));
+            Assert.Equal(row.GetProperty("extension").GetString(), MediaPrep.Extension(name));
+            Assert.Equal(row.GetProperty("mime_for").GetString(), MediaPrep.MimeFor(name));
+            Assert.Equal(row.GetProperty("declared").GetString(), MediaPrep.DeclaredType(mime, name));
+            Assert.Equal(Nullable(row, "audio"), MediaPrep.AudioMime(MediaPrep.Essence(mime), name));
+        }
+    }
+
+    private static Dictionary<string, byte[]> Heads() =>
+        Section("prep_heads").EnumerateArray().ToDictionary(
+            row => row.GetProperty("label").GetString()!,
+            row => Convert.FromHexString(row.GetProperty("hex").GetString()!));
+
+    /// <summary>
+    /// Which kind a picked file goes as — a video or a recording only when the server will take its
+    /// BYTES as one — for sixteen picks against nine heads.
+    /// </summary>
+    [Fact]
+    public void APickedFileTakesTheRouteTheOriginalGivesIt()
+    {
+        var heads = Heads();
+        var vectors = Section("prep_route");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        foreach (var row in vectors.EnumerateArray())
+        {
+            var routed = MediaPrep.Route(
+                row.GetProperty("mime").GetString()!, row.GetProperty("name").GetString()!,
+                heads[row.GetProperty("head").GetString()!]);
+            var said = routed.Route switch
+            {
+                MediaRoute.Photo => "photo",
+                MediaRoute.Video => "video",
+                MediaRoute.Audio => $"audio:{routed.AudioMime}",
+                _ => "file",
+            };
+            Assert.Equal(row.GetProperty("route").GetString(), said);
+        }
+    }
+
+    [Fact]
+    public void TheMagicNumbersAreTheServersOwn()
+    {
+        var heads = Heads();
+        foreach (var row in Section("prep_magic").EnumerateArray())
+        {
+            Assert.Equal(
+                row.GetProperty("matches").GetBoolean(),
+                MediaPrep.MatchesMagic(row.GetProperty("mime").GetString()!, heads[row.GetProperty("head").GetString()!]));
+        }
+    }
+
+    /// <summary>
+    /// A name for somebody else's disk: separators and control or format characters replaced, trimmed,
+    /// and a long one cut in its STEM so the extension survives.
+    /// </summary>
+    [Fact]
+    public void ANameIsCleanedAsTheOriginalCleansIt()
+    {
+        var vectors = Section("prep_names");
+        Assert.NotEmpty(vectors.EnumerateArray());
+        foreach (var row in vectors.EnumerateArray())
+        {
+            Assert.Equal(Nullable(row, "clean"), MediaPrep.SanitizedName(row.GetProperty("raw").GetString()!));
+        }
+    }
+
+    [Fact]
+    public void APictureIsFittedAsTheOriginalFitsIt()
+    {
+        foreach (var row in Section("prep_fit").EnumerateArray())
+        {
+            var fit = MediaPrep.FitWithin(
+                row.GetProperty("width").GetUInt32(), row.GetProperty("height").GetUInt32(), row.GetProperty("edge").GetUInt32());
+            Assert.Equal(row.GetProperty("fit")[0].GetUInt32(), fit.Width);
+            Assert.Equal(row.GetProperty("fit")[1].GetUInt32(), fit.Height);
+        }
+    }
 }

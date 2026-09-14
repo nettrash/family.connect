@@ -492,6 +492,20 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
             HttpMethod.Post, "/attachments?" + string.Join("&", query), content: content, ct: ct);
     }
 
+    /// <summary>
+    /// The downscaled photo or the video's poster, as JPEG. Uploader only, idempotent, and not closed by
+    /// the message that claims the attachment: a preview that failed may be sent again later
+    /// (docs/protocol.md, "A preview may be uploaded again, later").
+    /// </summary>
+    public async Task<ApiResult<Nothing>> UploadPreview(
+        long attachmentId, ReadOnlyMemory<byte> jpeg, CancellationToken ct = default)
+    {
+        using var content = new ReadOnlyMemoryContent(jpeg);
+        content.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
+        return await Send<Nothing>(
+            HttpMethod.Put, $"/attachments/{attachmentId}/preview", content: content, ct: ct);
+    }
+
     /// <summary>One attachment's bytes, or its preview.</summary>
     public async Task<ApiResult<byte[]>> Download(
         long attachmentId, bool preview = false, CancellationToken ct = default)

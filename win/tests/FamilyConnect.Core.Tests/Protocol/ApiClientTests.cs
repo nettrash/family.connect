@@ -302,6 +302,23 @@ public class ApiClientTests
         Assert.Equal("image/jpeg", request.Content?.Headers.ContentType?.MediaType);
     }
 
+    /// <summary>
+    /// A preview is PUT as raw JPEG to its attachment, and the server's 204 is success — the empty
+    /// answer that a reader expecting JSON would call unreadable.
+    /// </summary>
+    [Fact]
+    public async Task APreviewIsPutAsRawJpegAndA204IsSuccess()
+    {
+        var (client, handler) = Client(new Fake().Then(HttpStatusCode.NoContent));
+        var answer = await client.UploadPreview(34, "jpeg"u8.ToArray());
+        Assert.True(answer.Ok);
+        var request = Assert.Single(handler.Sent);
+        Assert.Equal(HttpMethod.Put, request.Method);
+        Assert.Equal("https://chat.example.com/api/v1/attachments/34/preview", request.RequestUri?.ToString());
+        Assert.Equal("image/jpeg", request.Content?.Headers.ContentType?.MediaType);
+        Assert.Equal("jpeg", Assert.Single(handler.Bodies));
+    }
+
     [Fact]
     public async Task AnAttachmentComesBackAsBytes()
     {
