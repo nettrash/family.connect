@@ -36,7 +36,26 @@ internal sealed class Connection : IAsyncDisposable
         Attachments = new AttachmentCache(Api, new FileBlobStore(AppFolders.BlobsPath));
         Avatars = new AvatarCache(Api, new FileBlobStore(AppFolders.BlobsPath));
         Live = new LiveConnection(Session, Socket, new Resync(Api, Chats, Board, Sending), Sending, Router);
+        // What the live frames leave on screen and nowhere else, listened for from the start so a frame that lands
+        // while no conversation is open is not lost.
+        PeerReads = new PeerReads();
+        Answers = new AssistantAnswers();
+        Router.PeerRead += (chatId, _, lastRead) => PeerReads.Apply(chatId, lastRead);
+        Router.AiDelta += (chatId, messageId, text) => Answers.Delta(chatId, messageId, text, Chats.Message(messageId));
+        Router.AiStopped += Answers.Stopped;
+        Router.Edited += Answers.Finished;
+        Session.Ended += _ =>
+        {
+            PeerReads.Clear();
+            Answers.Clear();
+        };
     }
+
+    /// <summary>The other person's read marker in each direct chat, from the live frames.</summary>
+    public PeerReads PeerReads { get; }
+
+    /// <summary>The assistant's answers while they are written: the streamed text, and the ones that stopped.</summary>
+    public AssistantAnswers Answers { get; }
 
     public Uri Server { get; }
 

@@ -72,6 +72,7 @@
   "Connected to %@": "已连接到 %@",
   "Connecting…": "连接中…",
   "Copy": "拷贝",
+  "Couldn't answer that. Ask again.": "没能回答。请再问一次。",
   "Couldn't change that right now. Try again.": "暂时无法更改，请重试。",
   "Couldn't change the member limit. Try again.": "无法更改成员上限，请重试。",
   "Couldn't change the policy. Try again.": "无法更改加入方式。请重试。",

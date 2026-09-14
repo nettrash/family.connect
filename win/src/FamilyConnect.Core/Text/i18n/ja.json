@@ -72,6 +72,7 @@
   "Connected to %@": "%@ に接続しました",
   "Connecting…": "接続中…",
   "Copy": "コピー",
+  "Couldn't answer that. Ask again.": "答えられませんでした。もう一度聞いてみてください。",
   "Couldn't change that right now. Try again.": "今は変更できませんでした。もう一度お試しください。",
   "Couldn't change the member limit. Try again.": "メンバー数の上限を変更できませんでした。もう一度お試しください。",
   "Couldn't change the policy. Try again.": "ポリシーを変更できませんでした。もう一度お試しください。",
