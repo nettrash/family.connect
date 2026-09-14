@@ -49,7 +49,7 @@ public class CatalogueTests
          "While this window is not in front, a notification says who wrote — never what they wrote.",
          "Windows is not showing notifications for Family Connect. Allow them in Windows Settings, under Notifications.",
          "Family Connect for Windows %@", "Locations", "Notifications",
-         "Report sent.", "Message %@", "Safety for %@", "More for %@"];
+         "Report sent.", "Message %@", "Safety for %@", "More for %@", "a photo"];
 
     [Fact]
     public void ThisPortActuallyDrawsSomething()

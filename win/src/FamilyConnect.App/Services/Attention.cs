@@ -63,6 +63,8 @@ internal sealed class Attention : IDisposable
         {
             Toasts.Show(toast);
         }
+        // The board's badge may have moved with it.
+        changed();
     }
 
     private void OnChat(long chatId) => changed();
