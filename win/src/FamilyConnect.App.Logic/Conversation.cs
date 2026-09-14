@@ -285,6 +285,20 @@ public sealed class ConversationModel
         return null;
     }
 
+    // ---- polls ------------------------------------------------------------------------------------
+
+    /// <summary>A tap on one of a poll's options: the one held retracts, any other casts (<see cref="PollVoting"/>).</summary>
+    public async Task<ApiError?> VoteAsync(long messageId, long optionId, CancellationToken ct = default) =>
+        chats.Message(messageId) is { } held
+            ? (await PollVoting.TapAsync(api, chats, ChatId, held, optionId, ct).ConfigureAwait(false)).Error
+            : null;
+
+    /// <summary>Close one of the reader's own polls.</summary>
+    public async Task<ApiError?> ClosePollAsync(long messageId, CancellationToken ct = default) =>
+        chats.Message(messageId) is { } held
+            ? (await PollVoting.CloseAsync(api, chats, ChatId, held, ct).ConfigureAwait(false)).Error
+            : null;
+
     /// <summary>
     /// Whether a bubble's words may be edited: the reader's own, with words to edit. A call record's
     /// body is a placeholder nobody wrote, and a poll's question is the poll.

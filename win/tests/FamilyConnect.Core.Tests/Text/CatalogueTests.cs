@@ -51,6 +51,7 @@ public class CatalogueTests
          "Family Connect for Windows %@", "Locations", "Notifications",
          "Report sent.", "Message %@", "Safety for %@", "More for %@", "a photo",
          "Caption",
+         "+%lld",
          "Event",
          "Only the person who wrote a note can change it.",
          "Pick when it ends, or turn the end off.",

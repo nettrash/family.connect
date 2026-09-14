@@ -72,6 +72,7 @@ public class CacheConcurrencyTests : IDisposable
         ["chats.Message"] = () => chats.Message(1),
         ["chats.Messages"] = () => chats.Messages(42),
         ["chats.Thread"] = () => chats.Thread(1),
+        ["chats.Polls"] = () => chats.Polls(42),
         ["chats.Newest"] = () => chats.Newest(42),
         ["chats.Replace(members)"] = () => chats.Replace([new MemberDto(7, "anna", "Anna", Role: "owner")]),
         ["chats.Members"] = () => chats.Members(),
@@ -117,7 +118,7 @@ public class CacheConcurrencyTests : IDisposable
     [
         "chats.Replace(rows)", "chats.Chats", "chats.Chat", "chats.IsListed", "chats.Unread",
         "chats.MarkRead", "chats.Advance", "chats.Apply(message)", "chats.Apply(page)",
-        "chats.ApplyReactions", "chats.ApplyPoll", "chats.Message", "chats.Messages", "chats.Thread",
+        "chats.ApplyReactions", "chats.ApplyPoll", "chats.Message", "chats.Messages", "chats.Thread", "chats.Polls",
         "chats.Newest", "chats.Replace(members)", "chats.Members", "chats.Member", "chats.Joined",
         "chats.Left", "chats.Deleted", "chats.SetOwner", "chats.ReplaceBlocked", "chats.SetBlocked",
         "chats.Blocked", "chats.IsBlocked",

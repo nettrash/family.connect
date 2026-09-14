@@ -743,6 +743,76 @@ fn chat() {
         }
     }
 
+    // --- a poll's options, checked the server's way -------------------------------------------------
+    // Not fc_text: the rule lives in server/src/handlers_chat.rs (`validate_poll_options`) and the web
+    // composer's `validate`, and what both lean on is Rust's own std — `str::trim`, `chars().count()`
+    // and `str::to_lowercase`. Those three are what these vectors pin.
+    {
+        let ch = |c: u32| char::from_u32(c).unwrap().to_string();
+        fn sanitized(options: &[String]) -> Option<Vec<String>> {
+            let trimmed: Vec<String> = options
+                .iter()
+                .map(|option| option.trim().to_string())
+                .filter(|option| !option.is_empty())
+                .collect();
+            if trimmed.len() < 2 || trimmed.len() > 10 {
+                return None;
+            }
+            if trimmed.iter().any(|option| option.chars().count() > 100) {
+                return None;
+            }
+            let mut seen = std::collections::HashSet::new();
+            if !trimmed.iter().all(|option| seen.insert(option.to_lowercase())) {
+                return None;
+            }
+            Some(trimmed)
+        }
+        let trims: Vec<String> = vec![
+            " a ".into(), "\t\n a\r".into(), format!("{}a{}", ch(0xA0), ch(0x3000)), format!("{}a{}", ch(0x2028), ch(0x2029)),
+            format!("{}a", ch(0x85)), format!("{}a{}", ch(0x180E), ch(0x180E)), format!("{}a{}", ch(0x200B), ch(0x200B)),
+            format!("{}a", ch(0xFEFF)), format!("{}a{}", ch(0x1680), ch(0x202F)), format!("{}a{}", ch(0x205F), ch(0x2000)),
+            format!("{}a{}", ch(0x1C), ch(0x1F)), String::new(), "   ".into(),
+        ];
+        let trim_rows: Vec<serde_json::Value> = trims.iter()
+            .map(|text| serde_json::json!({"text": text, "trimmed": text.trim()})).collect();
+        let sigma = ch(0x3A3);
+        let lowers: Vec<String> = vec![
+            "ΟΔΟΣ".into(), "ΣΑΣ".into(), sigma.clone(), format!("Α{}.", sigma), format!("Α'{}", sigma),
+            format!("Α{}'Α", sigma), format!("Α{}{}", sigma, ch(0x301)), format!("{}{}", ch(0x301), sigma),
+            format!("{}{}", ch(0x24B6), sigma), format!("{}{}", ch(0x2160), sigma), format!("{}{}", ch(0xAA), sigma),
+            format!("A{}{}B", sigma, ch(0x200D)), format!("{}stanbul", ch(0x130)), ch(0x1E9E), ch(0x1C4), ch(0x1C5),
+            format!("Α{} Α", sigma), format!("Α{}{}", sigma, ch(0xAD)), format!("1{}", sigma), format!("Α{}1", sigma),
+            format!("{}{}Α", sigma, ch(0x301)), format!("{}{}", ch(0x2B0), sigma), format!("{}{}", ch(0x1F130), sigma),
+            format!("{}{}", ch(0x5D0), sigma), "ПРИВЕТ".into(), format!("{}{}", ch(0x10A0), ch(0x1C90)),
+            // One of each thing Case_Ignorable skips, and each kind of cased letter, BEFORE the sigma —
+            // where skipping it or not changes the answer.
+            format!("Α.{}", sigma), format!("Α{}{}", ch(0x301), sigma), format!("{}{}", ch(0x1C5), sigma),
+            format!("Α{}{}", ch(0xAD), sigma), format!("Α{}{}", ch(0x2B0), sigma), format!("Α{}{}", ch(0x20DD), sigma),
+            format!("Α^{}", sigma), format!("Α:{}", sigma), format!("Α{}{}", ch(0x2019), sigma), format!("α{}", sigma),
+            // What is NEAREST the sigma decides, not what comes first in the string.
+            format!("1Α{}", sigma), format!("Α1{}", sigma),
+        ];
+        let lower_rows: Vec<serde_json::Value> = lowers.iter()
+            .map(|text| serde_json::json!({"text": text, "lower": text.to_lowercase()})).collect();
+        let family = [0x1F468u32, 0x200D, 0x1F469, 0x200D, 0x1F467].iter().map(|c| ch(*c)).collect::<String>();
+        let s = |list: &[&str]| list.iter().map(|option| option.to_string()).collect::<Vec<String>>();
+        let option_cases: Vec<Vec<String>> = vec![
+            s(&["  Pizza ", "Pasta"]), s(&["a", "  "]), s(&["Pizza", "PIZZA"]), s(&["Ärger", "ärger"]),
+            s(&["ΟΔΟΣ", "οδοσ"]), s(&["ΟΔΟΣ", "οδος"]), vec![ch(0x130), "i".into()], vec![ch(0x130), format!("i{}", ch(0x307))],
+            vec!["я".repeat(100), "b".into()], vec!["я".repeat(101), "b".into()], vec![family.repeat(20), "b".into()],
+            vec![family.repeat(21), "b".into()], (0..11).map(|n| n.to_string()).collect(), (0..10).map(|n| n.to_string()).collect(),
+            s(&["a", "b", "", "  "]), vec![], vec![format!("{}x{}", ch(0xA0), ch(0xA0)), "x".into()],
+            vec![ch(0x1C5), ch(0x1C6)], s(&["ß", "SS"]), s(&["ß", "ẞ"]), vec![format!("{}a", ch(0x200B)), "a".into()],
+            (0..12).map(|n| if n < 2 { String::from("  ") } else { n.to_string() }).collect(),
+        ];
+        let option_rows: Vec<serde_json::Value> = option_cases.iter()
+            .map(|options| serde_json::json!({"options": options, "sent": sanitized(options)})).collect();
+        for (name, rows) in [("poll_trim", trim_rows), ("poll_lower", lower_rows), ("poll_options", option_rows)] {
+            out.push_str(&format!("  \"{}\": [\n{}\n  ],\n", name,
+                rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        }
+    }
+
     out.push_str(&format!(
         "  \"bodies\": {{\"new_message\": {}, \"new_note\": {}}}\n",
         q(notify::new_message()),

@@ -137,6 +137,35 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
             HttpMethod.Delete, $"/chats/{chatId}/messages/{messageId}/reaction", ct: ct);
 
     /// <summary>
+    /// Hold one option of a poll. A state-set, not a toggle: re-PUTting the option already held is a
+    /// no-op on the server, so what a tap means is the caller's to decide (docs/protocol.md, "Polls").
+    /// </summary>
+    public Task<ApiResult<MessagePollDto>> Vote(
+        long chatId, long messageId, long optionId, CancellationToken ct = default) =>
+        Send<MessagePollDto>(
+            HttpMethod.Put, $"/chats/{chatId}/messages/{messageId}/vote", new { optionId }, ct: ct);
+
+    /// <summary>Retract the caller's vote. Idempotent: retracting nothing answers the poll unchanged.</summary>
+    public Task<ApiResult<MessagePollDto>> Unvote(
+        long chatId, long messageId, CancellationToken ct = default) =>
+        Send<MessagePollDto>(
+            HttpMethod.Delete, $"/chats/{chatId}/messages/{messageId}/vote", ct: ct);
+
+    /// <summary>Close a poll: the author's, and one-way. Closing a closed poll is a no-op.</summary>
+    public Task<ApiResult<MessagePollDto>> ClosePoll(
+        long chatId, long messageId, CancellationToken ct = default) =>
+        Send<MessagePollDto>(
+            HttpMethod.Post, $"/chats/{chatId}/messages/{messageId}/poll/close", ct: ct);
+
+    /// <summary>
+    /// A chat's OPEN polls as they stand, each as the whole message that carries it, oldest first.
+    /// A plain read and not a cursor: it moves nothing, and the feed of changes stays
+    /// <see cref="PollsAfter"/> (docs/protocol.md, "Finding the open ones").
+    /// </summary>
+    public Task<ApiResult<MessagesResponse>> OpenPolls(long chatId, CancellationToken ct = default) =>
+        Send<MessagesResponse>(HttpMethod.Get, $"/chats/{chatId}/polls/open", ct: ct);
+
+    /// <summary>
     /// Replace the body of the caller's own message. The send rules apply (trimmed, non-empty, at
     /// most 4000 characters), and re-sending the body it already has changes nothing.
     /// </summary>

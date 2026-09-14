@@ -39,10 +39,22 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-            <StackPanel Margin="0,0,0,8">
-                <TextBlock x:Name="ConversationTitle" FontSize="20" FontWeight="SemiBold" />
-                <TextBlock x:Name="TypingText" FontSize="12" Opacity="0.7" />
-            </StackPanel>
+            <Grid Margin="0,0,0,8" ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock x:Name="ConversationTitle" FontSize="20" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                    <TextBlock x:Name="TypingText" FontSize="12" Opacity="0.7" />
+                </StackPanel>
+                <Button x:Name="OpenPollsButton" Grid.Column="1" VerticalAlignment="Center" Visibility="Collapsed">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBlock x:Name="OpenPollsText" />
+                        <InfoBadge x:Name="OpenPollsBadge" Visibility="Collapsed" />
+                    </StackPanel>
+                </Button>
+            </Grid>
             <ScrollViewer x:Name="MessageScroller" Grid.Row="1" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel x:Name="MessageStack" Padding="0,0,12,0" Spacing="2" />
             </ScrollViewer>
@@ -71,9 +83,12 @@
                 <ScrollViewer x:Name="SuggestionScroller" Grid.Row="1" Grid.ColumnSpan="3" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" Visibility="Collapsed">
                     <StackPanel x:Name="SuggestionStrip" Orientation="Horizontal" Spacing="6" />
                 </ScrollViewer>
-                <Button x:Name="AttachButton" Grid.Row="2" VerticalAlignment="Bottom">
-                    <SymbolIcon Symbol="Attach" />
-                </Button>
+                <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Bottom">
+                    <Button x:Name="AttachButton">
+                        <SymbolIcon Symbol="Attach" />
+                    </Button>
+                    <Button x:Name="PollButton" Visibility="Collapsed" />
+                </StackPanel>
                 <TextBox x:Name="ComposerBox" Grid.Row="2" Grid.Column="1" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" />
                 <Button x:Name="SendButton" Grid.Row="2" Grid.Column="2" VerticalAlignment="Bottom" />
             </Grid>
