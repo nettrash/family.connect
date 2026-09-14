@@ -57,6 +57,7 @@ public sealed partial class ChatsView : UserControl
     private readonly Action<Link> onLink;
     private readonly Action<OutboxRow, ApiError> onRefused;
     private readonly Action openSettings;
+    private readonly Action openFamily;
 
     private readonly Dictionary<string, BitmapImage> pictures = [];
 
@@ -74,10 +75,11 @@ public sealed partial class ChatsView : UserControl
     private string listDrawn = string.Empty;
     private string conversationDrawn = string.Empty;
 
-    internal ChatsView(AppServices services, Connection connection, Action openSettings)
+    internal ChatsView(AppServices services, Connection connection, Action openSettings, Action openFamily)
     {
         this.services = services;
         this.openSettings = openSettings;
+        this.openFamily = openFamily;
         this.connection = connection;
         InitializeComponent();
         var say = services.Say;
@@ -86,6 +88,7 @@ public sealed partial class ChatsView : UserControl
 
         ChatsHeading.Text = say.Get("Chats");
         EmptyListText.Text = say.Get("No chats yet");
+        FamilyButton.Content = say.Get("Family");
         SettingsButton.Content = say.Get("Settings");
         SendButton.Content = say.Get("Send");
         ComposerBox.PlaceholderText = say.Get("Message");
@@ -109,6 +112,7 @@ public sealed partial class ChatsView : UserControl
         MessageScroller.ViewChanged += OnScrolled;
         // Logging out lives in Settings, where it asks first.
         SettingsButton.Click += (_, _) => this.openSettings();
+        FamilyButton.Click += (_, _) => this.openFamily();
 
         onArrived = message =>
         {

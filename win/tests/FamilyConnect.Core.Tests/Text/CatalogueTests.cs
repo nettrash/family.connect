@@ -48,7 +48,8 @@ public class CatalogueTests
          "Tell me when a message arrives", "What hasn't been sent yet is lost.",
          "While this window is not in front, a notification says who wrote — never what they wrote.",
          "Windows is not showing notifications for Family Connect. Allow them in Windows Settings, under Notifications.",
-         "Family Connect for Windows %@", "Locations", "Notifications"];
+         "Family Connect for Windows %@", "Locations", "Notifications",
+         "Report sent.", "Message %@", "Safety for %@", "More for %@"];
 
     [Fact]
     public void ThisPortActuallyDrawsSomething()

@@ -1,9 +1,18 @@
 {
-  "de": {},
+  "de": {
+    "%lld members": {
+      "one": "%lld Mitglied",
+      "other": "%lld Mitglieder"
+    }
+  },
   "en": {
     "%lld attachments, %@": {
       "one": "%lld attachment, %@",
       "other": "%lld attachments, %@"
+    },
+    "%lld members": {
+      "one": "%lld member",
+      "other": "%lld members"
     },
     "%lld pictures from the assistant": {
       "one": "%lld picture from the assistant",
@@ -14,11 +23,48 @@
       "other": "%lld questions to the assistant"
     }
   },
-  "es": {},
-  "fr": {},
-  "ja": {},
-  "ru": {},
-  "sr": {},
-  "sr-Latn": {},
-  "zh-Hans": {}
+  "es": {
+    "%lld members": {
+      "one": "%lld miembro",
+      "other": "%lld miembros"
+    }
+  },
+  "fr": {
+    "%lld members": {
+      "one": "%lld membre",
+      "other": "%lld membres"
+    }
+  },
+  "ja": {
+    "%lld members": {
+      "other": "%lld人のメンバー"
+    }
+  },
+  "ru": {
+    "%lld members": {
+      "few": "%lld участника",
+      "many": "%lld участников",
+      "one": "%lld участник",
+      "other": "%lld участника"
+    }
+  },
+  "sr": {
+    "%lld members": {
+      "few": "%lld члана",
+      "one": "%lld члан",
+      "other": "%lld чланова"
+    }
+  },
+  "sr-Latn": {
+    "%lld members": {
+      "few": "%lld člana",
+      "one": "%lld član",
+      "other": "%lld članova"
+    }
+  },
+  "zh-Hans": {
+    "%lld members": {
+      "other": "%lld 位成员"
+    }
+  }
 }

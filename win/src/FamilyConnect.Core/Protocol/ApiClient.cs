@@ -384,6 +384,13 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
     public Task<ApiResult<LeftAnswer>> LeaveFamily(CancellationToken ct = default) =>
         Send(HttpMethod.Post, "/families/leave", noContent: new LeftAnswer(), ct: ct);
 
+    /// <summary>
+    /// The one-to-one chat with a member: get-or-create, and idempotent — "Message" pressed twice is
+    /// one chat (docs/protocol.md, <c>POST /chats/direct</c>).
+    /// </summary>
+    public Task<ApiResult<ChatResponse>> DirectChat(long userId, CancellationToken ct = default) =>
+        Send<ChatResponse>(HttpMethod.Post, "/chats/direct", new { user_id = userId }, ct: ct);
+
     public Task<ApiResult<Nothing>> RemoveMember(long userId, CancellationToken ct = default) =>
         Send<Nothing>(HttpMethod.Delete, $"/families/members/{userId}", ct: ct);
 

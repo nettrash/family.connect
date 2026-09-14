@@ -155,7 +155,7 @@ public sealed partial class MainWindow : Window
         {
             Gate.NoFamily => new DoorView(services, current),
             Gate.Pending => new PendingView(services, current),
-            Gate.Member or Gate.Owner => chats ??= new ChatsView(services, current, ShowSettings),
+            Gate.Member or Gate.Owner => chats ??= new ChatsView(services, current, ShowSettings, ShowFamily),
             _ => new SignInView(services, current, changeServer: () => ShowServer(current.Server)),
         };
     }
@@ -176,6 +176,30 @@ public sealed partial class MainWindow : Window
             {
                 Screen.Content = open;
             }
+        });
+    }
+
+    /// <summary>
+    /// The family, over the chats as Settings is. "Message" on a member puts the chats back and opens
+    /// that conversation in them.
+    /// </summary>
+    private void ShowFamily()
+    {
+        if (connection is not { } current || chats is null)
+        {
+            return;
+        }
+        void Back()
+        {
+            if (connection == current && chats is { } open && shown is Gate.Member or Gate.Owner)
+            {
+                Screen.Content = open;
+            }
+        }
+        Screen.Content = new FamilyView(services, current, close: Back, openChat: chatId =>
+        {
+            Back();
+            chats?.OpenChat(chatId);
         });
     }
 

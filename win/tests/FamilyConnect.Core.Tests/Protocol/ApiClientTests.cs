@@ -403,4 +403,19 @@ public class ApiClientTests
         Assert.Equal("wss://chat.example.com/api/v1/ws", client.SocketUrl.ToString());
         Assert.Equal("https://chat.example.com/", client.BaseUrl.ToString());
     }
+
+    [Fact]
+    public async Task ADirectChatIsAskedForByTheMembersId()
+    {
+        var (client, handler) = Client(new Fake().Then(
+            HttpStatusCode.OK, """{"chat": {"id": 42, "kind": "direct", "title": "Bob", "peer_user_id": 9}}"""));
+        var answer = await client.DirectChat(9);
+        Assert.True(answer.Ok);
+        Assert.Equal(42, answer.Value!.Chat.Id);
+        Assert.Equal(9, answer.Value.Chat.PeerUserId);
+        var request = Assert.Single(handler.Sent);
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal("https://chat.example.com/api/v1/chats/direct", request.RequestUri?.ToString());
+        Assert.Equal("{\"user_id\":9}", Assert.Single(handler.Bodies));
+    }
 }

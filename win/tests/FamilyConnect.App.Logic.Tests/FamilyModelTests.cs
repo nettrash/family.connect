@@ -416,4 +416,32 @@ public class FamilyModelTests : IDisposable
 
         Assert.False(FamilyModel.RowsAreIncomplete(stats!));
     }
+
+    [Fact]
+    public async Task ReadingTheFamilyAgainReplacesTheRosterAndTheBlockList()
+    {
+        var (family, _) = Build(new Server().On("/families/mine", """
+            {"family": {"id": 3, "name": "The Smiths"},
+             "members": [{"id": 7, "username": "anna", "display_name": "Anna", "role": "owner"},
+                         {"id": 11, "username": "bob", "display_name": "Bob", "role": "member", "birthday": {"month": 3, "day": 12}}],
+             "blocked_user_ids": [11]}
+            """));
+
+        Assert.Null(await family.ReadAsync());
+
+        Assert.Equal(new BirthdayDto(3, 12), chats.Member(11)!.Birthday);
+        Assert.True(chats.IsBlocked(11));
+    }
+
+    [Fact]
+    public async Task AFailedReadLeavesTheRosterAsItWas()
+    {
+        var (family, _) = Build(new Server().On(
+            "/families/mine", """{"error": {"code": "internal", "message": "later"}}""", HttpStatusCode.InternalServerError));
+
+        Assert.Equal(ErrorCodes.Internal, (await family.ReadAsync())!.Code);
+
+        Assert.Equal(["Anna", "Bob"], chats.Members().Select(member => member.DisplayName));
+        Assert.Null(chats.Member(11)!.Birthday);
+    }
 }
