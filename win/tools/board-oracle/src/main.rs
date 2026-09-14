@@ -387,6 +387,79 @@ fn chat() {
     }
     out.push_str("  ],\n");
 
+    // --- how a picked file is prepared ---------------------------------------------------------------
+    {
+        let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let ch = |c: u32| char::from_u32(c).unwrap().to_string();
+        let types: Vec<(&str, &str)> = vec![
+            ("", "photo.JPG"), ("application/octet-stream", "clip.mov"), ("image/HEIC; foo=bar", "x.bin"),
+            ("", ".hidden"), ("", "noext"), ("", "archive.tar.gz"), ("Video/MP4", "a.mp4"), ("", "a."),
+            ("", "song.Mp3"), ("  text/Plain ; charset=utf-8", "notes"), ("", "Report.PDF"), ("", "deck.KEY"), ("text/plain", "voice.oga"),
+        ];
+        let type_rows: Vec<serde_json::Value> = types.iter().map(|(mime, name)| serde_json::json!({
+            "mime": mime, "name": name, "essence": media::essence(mime), "extension": media::extension(name),
+            "mime_for": media::mime_for(name), "declared": media::declared_type(mime, name),
+            "audio": media::audio_mime(&media::essence(mime), name)})).collect();
+        let mp4: Vec<u8> = [0u8, 0, 0, 0x18].iter().copied().chain(*b"ftypmp42").chain([0u8; 4]).collect();
+        let jpeg = vec![0xFFu8, 0xD8, 0xFF, 0xE0, 0, 16, b'J', b'F', b'I', b'F', 0, 1];
+        let png = vec![0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+        let id3 = b"ID3\x04\x00\x00\x00\x00\x00\x00\x00\x00".to_vec();
+        let sync = vec![0xFFu8, 0xFB, 0x90, 0x64, 0, 0, 0, 0, 0, 0, 0, 0];
+        let wav: Vec<u8> = b"RIFF".iter().copied().chain([0x24u8, 0, 0, 0]).chain(*b"WAVE").collect();
+        let ogg: Vec<u8> = b"OggS".iter().copied().chain([0u8; 8]).collect();
+        let junk = vec![0x12u8, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 1, 2, 3, 4];
+        let short = vec![0xFFu8];
+        let heads: Vec<(&str, &Vec<u8>)> = vec![("mp4", &mp4), ("jpeg", &jpeg), ("png", &png), ("id3", &id3),
+            ("sync", &sync), ("wav", &wav), ("ogg", &ogg), ("junk", &junk), ("short", &short)];
+        let picks: Vec<(&str, &str)> = vec![
+            ("video/mp4", "a.mp4"), ("video/quicktime", "a.mov"), ("", "a.mkv"), ("audio/aac", "a.aac"),
+            ("audio/x-m4a", "a.m4a"), ("", "voice.ogg"), ("image/gif", "a.gif"), ("image/png", "a.png"),
+            ("", "IMG.HEIC"), ("application/ogg", "x"), ("", "x.wav"), ("audio/mpeg", "x.mp3"),
+            ("", "scan.tiff"), ("image/webp", "a.webp"), ("", "doc.pdf"), ("audio/flac", "a.flac"), ("video/ogg", "voice.ogg"), ("application/x-foo", "a.m4a"), ("text/plain", "take.oga"),
+        ];
+        let mut route_rows = Vec::new();
+        for (mime, name) in &picks {
+            for (label, head) in &heads {
+                let said = match media::route(mime, name, head) {
+                    media::Route::Photo => "photo".to_string(),
+                    media::Route::Video => "video".to_string(),
+                    media::Route::Audio(audio) => format!("audio:{audio}"),
+                    media::Route::File => "file".to_string(),
+                };
+                route_rows.push(serde_json::json!({"mime": mime, "name": name, "head": label, "route": said}));
+            }
+        }
+        let mimes = ["image/jpeg", "image/png", "image/heic", "image/heif", "video/mp4", "video/quicktime",
+            "audio/mp4", "audio/m4a", "audio/mpeg", "audio/wav", "audio/ogg", "image/gif", "application/pdf"];
+        let mut magic_rows = Vec::new();
+        for mime in mimes {
+            for (label, head) in &heads {
+                magic_rows.push(serde_json::json!({"mime": mime, "head": label, "matches": media::matches_magic(mime, head)}));
+            }
+        }
+        let head_rows: Vec<serde_json::Value> = heads.iter().map(|(label, head)| serde_json::json!({"label": label, "hex": hex(head)})).collect();
+        let family = [0x1F468u32, 0x200D, 0x1F469, 0x200D, 0x1F467].iter().map(|c| ch(*c)).collect::<String>();
+        let names: Vec<String> = vec![
+            "report.pdf".into(), "  spaced  ".into(), "a/b:c.txt".into(),
+            format!("invoice{}fdp.exe", ch(0x202E)), format!("tab{}here.txt", ch(9)), String::new(), "   ".into(),
+            format!("caf{}.txt", ch(0x301).replace("", "")).replacen("caf", "cafe", 1),
+            format!("{}.pdf", "a".repeat(300)), "x".repeat(260), format!("{}.docx", ch(0x431).repeat(250)),
+            ".hiddenfile".into(), format!("{}.png", family.repeat(60)), format!("a.{}", "b".repeat(260)),
+            format!("zero{}width.txt", ch(0x200B)), format!("soft{}hyphen.txt", ch(0xAD)),
+            format!("{}.tar.gz", "q".repeat(254)), format!("{}.{}", "s".repeat(10), "e".repeat(254)),
+        ];
+        let name_rows: Vec<serde_json::Value> = names.iter().map(|raw| serde_json::json!({"raw": raw, "clean": media::sanitized_name(raw)})).collect();
+        let fits: Vec<(u32, u32, u32)> = vec![(4032, 3024, 2048), (3024, 4032, 600), (100, 50, 2048), (0, 0, 600),
+            (2048, 1, 600), (3, 2, 2), (2049, 2049, 2048), (1000, 333, 600), (0, 5000, 600), (1, 3, 2), (8, 5, 4)];
+        let fit_rows: Vec<serde_json::Value> = fits.iter().map(|(w, h, e)| { let f = media::fit_within(*w, *h, *e);
+            serde_json::json!({"width": w, "height": h, "edge": e, "fit": [f.0, f.1]}) }).collect();
+        for (name, rows) in [("prep_types", type_rows), ("prep_heads", head_rows), ("prep_route", route_rows),
+                             ("prep_magic", magic_rows), ("prep_names", name_rows), ("prep_fit", fit_rows)] {
+            out.push_str(&format!("  \"{}\": [\n{}\n  ],\n", name,
+                rows.iter().map(|r| format!("    {}", r)).collect::<Vec<_>>().join(",\n")));
+        }
+    }
+
     // --- how an attachment is measured and labelled ----------------------------------------------
     {
         let mut rows = Vec::new();

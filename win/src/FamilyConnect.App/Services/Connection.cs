@@ -29,7 +29,9 @@ internal sealed class Connection : IAsyncDisposable
         Board = new BoardStore(Cache);
         Outbox = new OutboxStore(Cache);
         Socket = new ChatSocket(() => new ClientWebSocketAdapter(), () => Api.SocketUrl, Tokens);
-        Sending = new SendPipeline(Socket, Outbox, Chats, Api);
+        Staging = new FolderMediaStore(AppFolders.StagingPath);
+        Media = new MediaOutbox(Outbox, Api, Staging);
+        Sending = new SendPipeline(Socket, Outbox, Chats, Api, uploads: PushMediaAsync);
         Router = new FrameRouter(Chats, Board);
         Attachments = new AttachmentCache(Api, new FileBlobStore(AppFolders.BlobsPath));
         Live = new LiveConnection(Session, Socket, new Resync(Api, Chats, Board, Sending), Sending, Router);
@@ -55,6 +57,12 @@ internal sealed class Connection : IAsyncDisposable
 
     public SendPipeline Sending { get; }
 
+    /// <summary>A send's files on disk, from Send until the message lands or is given up.</summary>
+    public FolderMediaStore Staging { get; }
+
+    /// <summary>The uploads queued messages owe, pushed at the start of every flush.</summary>
+    public MediaOutbox Media { get; }
+
     public AppSession Session { get; }
 
     public FrameRouter Router { get; }
@@ -66,6 +74,23 @@ internal sealed class Connection : IAsyncDisposable
 
     /// <summary>Whether a token is stored for this server — which is not the same as a session.</summary>
     public bool HasToken => Tokens.Token is not null;
+
+    /// <summary>
+    /// The uploads first, and then the sweep: files no queued row names any more — a send that
+    /// landed, or one that was given up — are not kept.
+    /// </summary>
+    private async Task PushMediaAsync(CancellationToken ct)
+    {
+        await Media.PushAsync(ct).ConfigureAwait(false);
+        try
+        {
+            Media.Sweep();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Diagnostics.Write($"sweeping staged files: {e.GetType().Name}");
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {

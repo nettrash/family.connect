@@ -14,6 +14,9 @@ internal static class AppFolders
     /// <summary>Downloaded attachment bytes, one file each.</summary>
     public static string BlobsPath => Path.Combine(Root, "blobs");
 
+    /// <summary>A send's files while the send is under way, one folder each (<see cref="App.Logic.FolderMediaStore"/>).</summary>
+    public static string StagingPath => Path.Combine(Root, "outgoing");
+
     /// <summary>The SQLite cache: history, the board, and the outbox this device still owes.</summary>
     public static string CachePath
     {

@@ -45,13 +45,24 @@
                 <TextBlock x:Name="BannerText" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Opacity="0.8" />
                 <HyperlinkButton x:Name="BannerCancel" Grid.Column="1" />
             </Grid>
-            <Grid x:Name="ComposerPanel" Grid.Row="3" ColumnSpacing="8" Margin="0,8,0,0" Visibility="Collapsed">
+            <Grid x:Name="ComposerPanel" Grid.Row="3" ColumnSpacing="8" RowSpacing="6" Margin="0,8,0,0" Visibility="Collapsed" AllowDrop="True">
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBox x:Name="ComposerBox" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" />
-                <Button x:Name="SendButton" Grid.Column="1" VerticalAlignment="Bottom" />
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <ScrollViewer x:Name="StagingScroller" Grid.ColumnSpan="3" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                    <StackPanel x:Name="StagingStrip" Orientation="Horizontal" Spacing="6" />
+                </ScrollViewer>
+                <Button x:Name="AttachButton" Grid.Row="1" VerticalAlignment="Bottom">
+                    <SymbolIcon Symbol="Attach" />
+                </Button>
+                <TextBox x:Name="ComposerBox" Grid.Row="1" Grid.Column="1" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" />
+                <Button x:Name="SendButton" Grid.Row="1" Grid.Column="2" VerticalAlignment="Bottom" />
             </Grid>
             <TextBlock x:Name="ComposerError" Grid.Row="4" Margin="0,4,0,0" TextWrapping="Wrap" Visibility="Collapsed" />
         </Grid>

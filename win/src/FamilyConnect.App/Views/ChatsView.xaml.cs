@@ -7,10 +7,13 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Input;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.Storage;
+using Windows.Storage.Pickers;
 using Windows.Storage.Streams;
 using Windows.ApplicationModel.DataTransfer;
 
@@ -55,6 +58,11 @@ public sealed partial class ChatsView : UserControl
     private readonly Action<OutboxRow, ApiError> onRefused;
 
     private readonly Dictionary<string, BitmapImage> pictures = [];
+
+    /// <summary>What each chat has staged for its next message, kept while the reader looks elsewhere.</summary>
+    private readonly Dictionary<long, ComposerStaging> strips = [];
+    private bool sendingMedia;
+    private bool gone;
     private ConversationModel? open;
     private MessageDto? replyingTo;
     private MessageDto? editing;
@@ -79,9 +87,14 @@ public sealed partial class ChatsView : UserControl
         LogOutButton.Content = say.Get("Log Out");
         SendButton.Content = say.Get("Send");
         ComposerBox.PlaceholderText = say.Get("Message");
+        ToolTipService.SetToolTip(AttachButton, say.Get("Attach a photo, video or file"));
+        AutomationProperties.SetName(AttachButton, say.Get("Attach a photo, video or file"));
 
         ChatList.SelectionChanged += OnChatPicked;
         SendButton.Click += (_, _) => Send();
+        AttachButton.Click += (_, _) => _ = PickAsync();
+        ComposerPanel.DragOver += OnDragOver;
+        ComposerPanel.Drop += OnDrop;
         BannerCancel.Click += (_, _) => EndComposerMode(clear: editing is not null);
         ComposerBox.PreviewKeyDown += OnComposerKey;
         ComposerBox.TextChanged += (_, _) =>
@@ -120,6 +133,7 @@ public sealed partial class ChatsView : UserControl
         connection.Live.Resynced += onResync;
         connection.Live.LinkChanged += onLink;
         connection.Sending.Refused += onRefused;
+        connection.Media.Refused += onRefused;
 
         // A typing line expires on its own; something has to look again when it does.
         typingTimer = DispatcherQueue.CreateTimer();
@@ -145,6 +159,8 @@ public sealed partial class ChatsView : UserControl
         connection.Live.Resynced -= onResync;
         connection.Live.LinkChanged -= onLink;
         connection.Sending.Refused -= onRefused;
+        connection.Media.Refused -= onRefused;
+        gone = true;
     }
 
     /// <summary>A clicked notification: open that chat, whatever was open before.</summary>
@@ -298,6 +314,7 @@ public sealed partial class ChatsView : UserControl
         Toasts.Clear(NotificationRules.ChatTag(chatId));
         conversationDrawn = string.Empty;
         EndComposerMode(clear: true);
+        DrawStaging();
         ComposerError.Visibility = Visibility.Collapsed;
         ConversationTitle.Text = connection.Chats.Chat(chatId) is { } row ? list.Title(row.Chat) : string.Empty;
         ComposerPanel.Visibility = Visibility.Visible;
@@ -608,12 +625,26 @@ public sealed partial class ChatsView : UserControl
         var say = services.Say;
         var resources = Application.Current.Resources;
         var stack = new StackPanel { Spacing = 4 };
-        stack.Children.Add(new TextBlock
+        if (row.Body.Length > 0)
         {
-            Text = row.Body,
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
-        });
+            stack.Children.Add(new TextBlock
+            {
+                Text = row.Body,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
+            });
+        }
+        // What it carries, counted: the files are this device's own until they land, and a number
+        // needs no translating.
+        var carried = row.StagedFiles?.Length ?? row.PendingFiles?.Length ?? row.AttachmentIds?.Length ?? 0;
+        if (carried > 0)
+        {
+            stack.Children.Add(new TextBlock
+            {
+                Text = $"📎 {carried.ToString(services.Culture)}",
+                Foreground = (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
+            });
+        }
         if (row.Failed)
         {
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
@@ -1095,24 +1126,306 @@ public sealed partial class ChatsView : UserControl
 
     private void Send()
     {
-        if (open is not { } chat || string.IsNullOrWhiteSpace(ComposerBox.Text))
+        if (open is not { } chat || sendingMedia)
         {
             return;
         }
+        var strip = Staging(chat.ChatId);
+        var hasWords = !string.IsNullOrWhiteSpace(ComposerBox.Text);
         if (editing is { } target)
         {
+            if (!hasWords)
+            {
+                return;
+            }
             var words = ComposerBox.Text;
             EndComposerMode(clear: true);
             _ = ActAsync(() => chat.EditAsync(target.Id, words));
             return;
         }
+        if (!hasWords && strip.Items.Count == 0)
+        {
+            return;
+        }
+        if (strip.Preparing)
+        {
+            ShowProblem(services.Say.Get("Wait until the current attachment is done."));
+            return;
+        }
+        var body = ComposerBox.Text.TrimEnd();
+        var replyTo = replyingTo?.Id;
+        if (strip.Items.Count > 0)
+        {
+            _ = SendWithMediaAsync(chat, strip, body, replyTo);
+            return;
+        }
         // Written down first; the outbox owns it from here, and a send interrupted by anything at
         // all is a message that can be finished rather than one that never happened.
-        chat.Send(ComposerBox.Text.TrimEnd(), replyToMessageId: replyingTo?.Id);
+        chat.Send(body, replyToMessageId: replyTo);
         EndComposerMode(clear: true);
+        Queued();
+    }
+
+    /// <summary>
+    /// A send with files: they go to the staging folder FIRST — off the window's thread, since ten
+    /// files of up to 100 MB each are a write and not a click — and the row that names them is
+    /// queued after. Until it is, the handles are pinned, so a flush sweeping on another thread
+    /// cannot take them in between.
+    /// </summary>
+    private async Task SendWithMediaAsync(ConversationModel chat, ComposerStaging strip, string body, long? replyTo)
+    {
+        var items = strip.TakeAll();
+        var words = ComposerBox.Text;
+        var store = connection.Staging;
+        var handles = new List<string>();
+        // One at a time: a second send while these are written would be queued in front of them.
+        sendingMedia = true;
+        SendButton.IsEnabled = false;
+        EndComposerMode(clear: true);
+        DrawStaging();
+        try
+        {
+            await Task.Run(() =>
+            {
+                foreach (var item in items)
+                {
+                    handles.Add(store.Stage(item));
+                }
+            });
+            chat.Send(body, replyToMessageId: replyTo, pendingFiles: handles);
+            Queued();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"staging a send: {e.GetType().Name}");
+            strip.Restore(items);
+            if (open == chat)
+            {
+                if (ComposerBox.Text.Length == 0)
+                {
+                    ComposerBox.Text = words;
+                }
+                DrawStaging();
+                ShowProblem(services.Say.Get("Something went wrong. Try again."));
+            }
+        }
+        finally
+        {
+            store.Release(handles);
+            sendingMedia = false;
+            SendButton.IsEnabled = true;
+        }
+    }
+
+    private void Queued()
+    {
         atNewest = true;
         conversationDrawn = string.Empty;
         DrawConversation(keepFromBottom: null);
         _ = connection.Live.FlushAsync(SendRules.FlushTrigger.Queued);
+    }
+
+    // ---- attaching -----------------------------------------------------------------------------
+
+    private ComposerStaging Staging(long chatId)
+    {
+        if (!strips.TryGetValue(chatId, out var strip))
+        {
+            strip = new ComposerStaging();
+            strips[chatId] = strip;
+        }
+        return strip;
+    }
+
+    private async Task PickAsync()
+    {
+        if (open is not { } chat)
+        {
+            return;
+        }
+        var strip = Staging(chat.ChatId);
+        if (strip.BusyReason(editing is not null, services.Say) is { } busy)
+        {
+            ShowProblem(busy);
+            return;
+        }
+        if (!strip.CanStage)
+        {
+            ShowProblem(ComposerStaging.CapSentence(services.Say));
+            return;
+        }
+        IReadOnlyList<StorageFile> files;
+        try
+        {
+            var picker = new FileOpenPicker
+            {
+                SuggestedStartLocation = PickerLocationId.PicturesLibrary,
+                ViewMode = PickerViewMode.Thumbnail,
+            };
+            picker.FileTypeFilter.Add("*");
+            // A desktop app must name the window that owns the picker, or it throws.
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, services.WindowHandle);
+            files = await picker.PickMultipleFilesAsync();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"picking files: {e.GetType().Name}");
+            ShowProblem(services.Say.Get("Something went wrong. Try again."));
+            return;
+        }
+        await IngestAsync(chat, strip, files);
+    }
+
+    private void OnDragOver(object sender, DragEventArgs e)
+    {
+        if (open is not null && e.DataView.Contains(StandardDataFormats.StorageItems))
+        {
+            e.AcceptedOperation = DataPackageOperation.Copy;
+        }
+    }
+
+    private async void OnDrop(object sender, DragEventArgs e)
+    {
+        if (open is not { } chat || !e.DataView.Contains(StandardDataFormats.StorageItems))
+        {
+            return;
+        }
+        List<StorageFile> files;
+        var deferral = e.GetDeferral();
+        try
+        {
+            // A dropped FOLDER is not a file, and is left where it is.
+            files = (await e.DataView.GetStorageItemsAsync()).OfType<StorageFile>().ToList();
+        }
+        catch (Exception exception)
+        {
+            Diagnostics.Write($"reading a drop: {exception.GetType().Name}");
+            return;
+        }
+        finally
+        {
+            deferral.Complete();
+        }
+        await IngestAsync(chat, Staging(chat.ChatId), files);
+    }
+
+    /// <summary>THE way files come in, whichever door they used: prepared one at a time, in order.</summary>
+    private async Task IngestAsync(ConversationModel chat, ComposerStaging strip, IReadOnlyList<StorageFile> files)
+    {
+        if (files.Count == 0)
+        {
+            return;
+        }
+        if (strip.BusyReason(editing is not null, services.Say) is { } busy)
+        {
+            ShowProblem(busy);
+            return;
+        }
+        ShowProblem(services.Say.Get("Preparing…"));
+        string? said;
+        try
+        {
+            said = await strip.IngestAsync(files, MediaPreparing.PrepareAsync, () => !gone, services.Say);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"preparing files: {e.GetType().Name}");
+            said = services.Say.Get("Something went wrong. Try again.");
+        }
+        if (gone)
+        {
+            return;
+        }
+        ComposerError.Visibility = Visibility.Collapsed;
+        if (open == chat)
+        {
+            if (said is not null)
+            {
+                ShowProblem(said);
+            }
+            DrawStaging();
+        }
+    }
+
+    /// <summary>What the open chat has staged, each with its own ✕.</summary>
+    private void DrawStaging()
+    {
+        StagingStrip.Children.Clear();
+        if (open is not { } chat || Staging(chat.ChatId) is not { Items.Count: > 0 } strip)
+        {
+            StagingScroller.Visibility = Visibility.Collapsed;
+            return;
+        }
+        var say = services.Say;
+        for (var index = 0; index < strip.Items.Count; index++)
+        {
+            var item = strip.Items[index];
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            row.Children.Add(Thumb(item));
+            row.Children.Add(new TextBlock
+            {
+                Text = ComposerStaging.Label(item, say, services.Culture),
+                VerticalAlignment = VerticalAlignment.Center,
+                MaxWidth = 220,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            });
+            var remove = new Button { Content = "✕", Padding = new Thickness(6, 2, 6, 2), VerticalAlignment = VerticalAlignment.Center };
+            ToolTipService.SetToolTip(remove, say.Get("Remove attachment"));
+            AutomationProperties.SetName(remove, say.Get("Remove attachment"));
+            var at = index;
+            remove.Click += (_, _) =>
+            {
+                strip.Remove(at);
+                DrawStaging();
+            };
+            row.Children.Add(remove);
+            StagingStrip.Children.Add(new Border
+            {
+                Child = row,
+                Padding = new Thickness(6, 4, 4, 4),
+                CornerRadius = new CornerRadius(8),
+                Background = (Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"],
+            });
+        }
+        StagingScroller.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>A staged item's picture — its preview — or its kind's glyph.</summary>
+    private static FrameworkElement Thumb(StagedMedia item)
+    {
+        if (item.Preview is { IsEmpty: false } preview)
+        {
+            var image = new Image { Width = 36, Height = 36, Stretch = Stretch.UniformToFill };
+            _ = ShowThumbAsync(image, preview);
+            return image;
+        }
+        return new TextBlock
+        {
+            Text = item.Kind switch { "audio" => "🎤", "video" => "🎬", "photo" => "🖼", _ => "📄" },
+            FontSize = 20,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+    }
+
+    private static async Task ShowThumbAsync(Image image, ReadOnlyMemory<byte> jpeg)
+    {
+        try
+        {
+            using var stream = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(stream))
+            {
+                writer.WriteBytes(jpeg.ToArray());
+                await writer.StoreAsync();
+                writer.DetachStream();
+            }
+            stream.Seek(0);
+            var bitmap = new BitmapImage { DecodePixelHeight = 72 };
+            await bitmap.SetSourceAsync(stream);
+            image.Source = bitmap;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a staged thumbnail: {e.GetType().Name}");
+        }
     }
 }
