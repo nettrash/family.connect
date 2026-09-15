@@ -14,7 +14,13 @@ public partial class App : Application
     {
         InitializeComponent();
         Startup.Step("app XAML loaded");
-        UnhandledException += (_, e) => Diagnostics.Write($"unhandled (XAML): {e.Exception}");
+        UnhandledException += (_, e) =>
+        {
+            Diagnostics.Write($"unhandled (XAML): {e.Exception.GetType().FullName} 0x{e.Exception.HResult:X8} {e.Exception.StackTrace}");
+            // A handler that threw — a click, a drop, a continuation — is written down and the window goes on: every write
+            // this app makes is in the cache or the outbox first, so a failed gesture loses the gesture, not the family's words.
+            e.Handled = true;
+        };
         AppDomain.CurrentDomain.UnhandledException +=
             (_, e) => Diagnostics.Write($"unhandled (domain): {e.ExceptionObject}");
     }

@@ -65,7 +65,7 @@ public sealed partial class MainWindow : Window
 
         if (services.SavedServer is { } server)
         {
-            _ = UseServerAsync(server);
+            _ = Logged(UseServerAsync(server), "opening the saved server");
         }
         else
         {
@@ -326,8 +326,32 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private static void Badge(NavigationViewItem item, int count) =>
-        item.InfoBadge = count > 0 ? new InfoBadge { Value = count } : null;
+    /// <summary>
+    /// A rail item's count. <b>THE BADGE IS MADE ONCE AND ONLY ITS NUMBER CHANGES</b>: a new InfoBadge on every refresh — every
+    /// message, every resync, every activation — swapped the NavigationView's native parts under it many times a minute, and
+    /// a failure in there is a fail-fast no managed handler ever sees.
+    /// </summary>
+    private static void Badge(NavigationViewItem item, int count)
+    {
+        if (item.InfoBadge is not { } badge)
+        {
+            if (count <= 0)
+            {
+                return;
+            }
+            badge = new InfoBadge();
+            item.InfoBadge = badge;
+        }
+        var visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (badge.Visibility != visibility)
+        {
+            badge.Visibility = visibility;
+        }
+        if (count > 0 && badge.Value != count)
+        {
+            badge.Value = count;
+        }
+    }
 
     /// <summary>Back to the chats, which went on listening while another place was in front.</summary>
     private void ShowChats()
@@ -411,6 +435,19 @@ public sealed partial class MainWindow : Window
     }
 
     private static string CallTag(string callId) => $"call-{callId}";
+
+    /// <summary>A step nobody awaits, whose failure is written down rather than lost with its task.</summary>
+    private static async Task Logged(Task work, string what)
+    {
+        try
+        {
+            await work;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"{what}: {e.GetType().Name} 0x{e.HResult:X8}");
+        }
+    }
 
     private void Flush(SendRules.FlushTrigger trigger)
     {

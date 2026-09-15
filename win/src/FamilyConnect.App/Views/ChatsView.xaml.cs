@@ -125,6 +125,9 @@ public sealed partial class ChatsView : UserControl
     private bool atNewest = true;
     private bool pagingBack;
     private string listDrawn = string.Empty;
+
+    /// <summary>What each row of the list was last drawn from, by position — so an unchanged row keeps its element.</summary>
+    private readonly List<string> rowsDrawn = [];
     private string conversationDrawn = string.Empty;
 
     /// <summary>Where the open chat opens — its first unread message — decided once per open, and what the divider counts.</summary>
@@ -249,9 +252,28 @@ public sealed partial class ChatsView : UserControl
                 _ = typed.TypingAsync();
             }
         };
-        audio.PlaybackSession.PositionChanged += (_, _) => DispatcherQueue.TryEnqueue(ShowPlayback);
-        audio.PlaybackSession.PlaybackStateChanged += (_, _) => DispatcherQueue.TryEnqueue(ShowPlayback);
-        audio.MediaEnded += (_, _) => DispatcherQueue.TryEnqueue(AudioEnded);
+        // The player's events arrive on its own thread and may still be queued when the view is let go.
+        audio.PlaybackSession.PositionChanged += (_, _) => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!gone)
+            {
+                ShowPlayback();
+            }
+        });
+        audio.PlaybackSession.PlaybackStateChanged += (_, _) => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!gone)
+            {
+                ShowPlayback();
+            }
+        });
+        audio.MediaEnded += (_, _) => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!gone)
+            {
+                AudioEnded();
+            }
+        });
         ToolTipService.SetToolTip(JumpButton, say.Get("Jump to the newest message"));
         AutomationProperties.SetName(JumpButton, say.Get("Jump to the newest message"));
 
@@ -321,12 +343,16 @@ public sealed partial class ChatsView : UserControl
         LinkPreviewSetting.Changed -= onPreviews;
         // A microphone nothing can reach is a microphone left on.
         CancelRecording();
+        recordingTimer?.Stop();
+        pendingLink?.Stop();
+        pendingLink = null;
         StopAudio();
         locationHunt?.Cancel();
         CloseViewer();
         thread = null;
-        audio.Dispose();
+        // Gone BEFORE the player goes: a playback event already queued finds a view with nothing left to draw into.
         gone = true;
+        audio.Dispose();
     }
 
     /// <summary>A clicked notification: open that chat, whatever was open before.</summary>
@@ -372,6 +398,11 @@ public sealed partial class ChatsView : UserControl
 
     private void Redraw()
     {
+        // A redraw queued just before the window let this view go lands on a connection it no longer holds.
+        if (gone)
+        {
+            return;
+        }
         DrawList();
         DrawConversation(keepFromBottom: null);
         DrawThread();
@@ -416,27 +447,60 @@ public sealed partial class ChatsView : UserControl
         var versions = connection.Chats.Members().ToDictionary(member => member.Id, member => member.AvatarVersion);
         // Unchanged is not redrawn: rebuilding the rows would drop the keyboard focus and the scroll
         // position of a list nothing happened to.
-        var drawn = string.Join(Row, rows.Select((row, at) => string.Join(Field,
+        var signatures = rows.Select((row, at) => string.Join(Field,
             row.Chat.Id, row.Title, row.Preview, row.Unread, row.Mentioned, row.Hidden, times[at],
-            versions.GetValueOrDefault(row.Chat.PeerUserId ?? 0))));
+            versions.GetValueOrDefault(row.Chat.PeerUserId ?? 0))).ToList();
+        var drawn = string.Join(Row, signatures);
         EmptyListText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         if (drawn == listDrawn)
         {
+            return;
+        }
+        if (drawingList)
+        {
+            // Asked again from inside its own update: once more, afterwards, never nested in the middle of one.
+            QueueRedraw();
             return;
         }
         listDrawn = drawn;
         drawingList = true;
         try
         {
-            ChatList.Items.Clear();
+            // IN PLACE. A row whose words have not changed keeps its element, and one that has is replaced where it stands.
+            // Emptying the list and filling it again moved the keyboard focus and the selection on every change — which the
+            // ListView answers by raising SelectionChanged in the middle of the update — and a row is never MOVED, because
+            // an element leaving one item container for another is what WinUI refuses natively.
             for (var at = 0; at < rows.Count; at++)
             {
-                var element = RowElement(rows[at], times[at], versions);
-                ChatList.Items.Add(element);
-                if (open?.ChatId == rows[at].Chat.Id)
+                if (at < ChatList.Items.Count && at < rowsDrawn.Count && rowsDrawn[at] == signatures[at])
                 {
-                    ChatList.SelectedItem = element;
+                    continue;
                 }
+                var element = RowElement(rows[at], times[at], versions);
+                if (at < ChatList.Items.Count)
+                {
+                    ChatList.Items[at] = element;
+                    rowsDrawn[at] = signatures[at];
+                }
+                else
+                {
+                    ChatList.Items.Add(element);
+                    rowsDrawn.Add(signatures[at]);
+                }
+            }
+            while (ChatList.Items.Count > rows.Count)
+            {
+                ChatList.Items.RemoveAt(ChatList.Items.Count - 1);
+            }
+            if (rowsDrawn.Count > rows.Count)
+            {
+                rowsDrawn.RemoveRange(rows.Count, rowsDrawn.Count - rows.Count);
+            }
+            // The selection once, after the items are settled.
+            var selected = ChatList.Items.OfType<FrameworkElement>().FirstOrDefault(item => item.Tag is long id && id == open?.ChatId);
+            if (!ReferenceEquals(ChatList.SelectedItem, selected))
+            {
+                ChatList.SelectedItem = selected;
             }
         }
         finally
@@ -542,7 +606,15 @@ public sealed partial class ChatsView : UserControl
         {
             return;
         }
-        _ = OpenAsync(chatId);
+        // NOT FROM INSIDE THE LIST'S OWN SELECTION CHANGE: opening redraws the list, and changing a ListView's items while it
+        // is still raising SelectionChanged is a native failure no handler sees. A beat later it is an ordinary update.
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!gone && open?.ChatId != chatId)
+            {
+                _ = OpenAsync(chatId);
+            }
+        });
     }
 
     // ---- the conversation ----------------------------------------------------------------------
@@ -636,8 +708,9 @@ public sealed partial class ChatsView : UserControl
             $"{Field}{connection.PeerReads.UpTo(chat.ChatId)}{Field}{connection.Answers.Version}{Field}{anchor}" +
             // A call record's "Call back" follows whether a call is on, and what the server carries.
             $"{Field}{callBusy}{Field}{connection.Session.State.CallsEnabled}{Field}{connection.Session.State.VideoCallsEnabled}" +
-            // A card under a link appears once its fetch lands, and not at all while the reader has cards switched off.
-            $"{Field}{connection.Previews.Generation}{Field}{LinkPreviewSetting.Enabled}" +
+            // A card under a link appears once its fetch lands, and not at all while the reader has cards switched off —
+            // THIS chat's cards: one landing for a message somewhere else is no reason to rebuild this one.
+            $"{Field}{PreviewMarks(bubbles)}" +
             $"{Field}{DateOnly.FromDateTime(DateTime.Now)}{Row}{drawn}";
         if (drawn == conversationDrawn)
         {
@@ -1918,7 +1991,7 @@ public sealed partial class ChatsView : UserControl
             bubble.Message.ReplyCount, bubble.Reads, connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0))));
         drawn = $"{chain.RootId}{Field}{chain.Loaded}{Field}{chain.Failure?.Code}{Field}{string.Join(',', connection.Chats.Blocked())}" +
             $"{Field}{connection.Chats.Members().Count}{Field}{connection.Answers.Version}{Field}{DateOnly.FromDateTime(DateTime.Now)}" +
-            $"{Field}{connection.Previews.Generation}{Field}{LinkPreviewSetting.Enabled}" +
+            $"{Field}{PreviewMarks(bubbles)}" +
             $"{Row}{drawn}{Row}{string.Join(Row, pending.Select(row => string.Join(Field, row.ClientMsgId, row.Failed)))}";
         if (drawn == threadDrawn)
         {
@@ -3122,6 +3195,28 @@ public sealed partial class ChatsView : UserControl
         return card;
     }
 
+    /// <summary>Card pictures that turned out not to decode: a redraw draws those cards without one.</summary>
+    private int previewPicturesRefused;
+
+    /// <summary>
+    /// What the cards under these bubbles' links are doing — the part of the previews a drawing depends on. Asks exactly what
+    /// <see cref="BubbleElement"/> asks, for the same links, and nothing about any other chat's.
+    /// </summary>
+    private string PreviewMarks(IEnumerable<Bubble> bubbles)
+    {
+        if (!LinkPreviewSetting.Enabled)
+        {
+            return "off";
+        }
+        var marks = bubbles.Select(bubble =>
+            bubble.Message.Call is null
+            && BubbleBody.PreviewLink(connection.Answers.BodyOf(bubble.Message), emojiOnly: false) is { } link
+            && connection.Previews.State(link) is { } state
+                ? (int)state.Status
+                : -1);
+        return $"{string.Join(',', marks)}{Field}{previewPicturesRefused}";
+    }
+
     /// <summary>
     /// A card's picture, decoded once and at most 1200 pixels on its longest edge — a 6000 by 4000 photo under the byte cap
     /// would otherwise cost ~96 MB decoded. Null when the bytes are no picture.
@@ -3134,7 +3229,9 @@ public sealed partial class ChatsView : UserControl
         }
         if (previewPictures.Count >= 64)
         {
-            previewPictures.Clear();
+            // The oldest goes, never all of them: emptying the table re-decoded every card on screen at the next redraw, and a
+            // card whose picture failed asked for that redraw again.
+            previewPictures.Remove(previewPictures.Keys.First());
         }
         var picture = new BitmapImage();
         previewPictures[key] = picture;
@@ -3173,6 +3270,7 @@ public sealed partial class ChatsView : UserControl
             // Not a picture after all: the card keeps its words, and the next redraw draws it without one.
             Diagnostics.Write($"decoding a link preview picture: {e.GetType().Name}");
             previewPictures[key] = null;
+            previewPicturesRefused++;
             QueueRedraw();
         }
     }

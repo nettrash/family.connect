@@ -39,7 +39,18 @@ public sealed partial class DoorView : UserControl
         NameBox.KeyDown += (_, e) => OnEnter(e, () => _ = CreateAsync());
         JoinButton.Click += (_, _) => _ = JoinAsync();
         CreateButton.Click += (_, _) => _ = CreateAsync();
-        LogOutButton.Click += async (_, _) => await connection.Session.SignOutAsync();
+        LogOutButton.Click += async (_, _) =>
+        {
+            // An async click handler that throws ends the process: written down instead.
+            try
+            {
+                await connection.Session.SignOutAsync();
+            }
+            catch (Exception e)
+            {
+                Diagnostics.Write($"signing out: {e.GetType().Name}");
+            }
+        };
         Loaded += (_, _) => CodeBox.Focus(FocusState.Programmatic);
         Arrange();
     }

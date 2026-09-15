@@ -100,8 +100,16 @@ public sealed partial class BoardView : UserControl
         AddNoteButton.Click += (_, _) => _ = SheetAsync(null, NoteKind.Text);
         AddEventButton.Click += (_, _) => _ = SheetAsync(null, NoteKind.Event);
         AddListButton.Click += (_, _) => _ = SheetAsync(null, NoteKind.Tasks);
-        Scroller.SizeChanged += (_, _) => Draw();
-        ActualThemeChanged += (_, _) => Draw();
+        // QUEUED, NOT DRAWN IN THE HANDLER: SizeChanged is raised from inside a layout pass, and rebuilding the whole wall
+        // there — resizing it, and replacing every sticker — asks for the layout cycle WinUI ends the process over.
+        Scroller.SizeChanged += (_, e) =>
+        {
+            if (e.PreviousSize != e.NewSize)
+            {
+                QueueRedraw();
+            }
+        };
+        ActualThemeChanged += (_, _) => QueueRedraw();
 
         onNote = _ => QueueRedraw();
         onBlock = (_, _) => QueueRedraw();

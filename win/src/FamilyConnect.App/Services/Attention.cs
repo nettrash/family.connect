@@ -19,6 +19,9 @@ internal sealed class Attention : IDisposable
     private readonly NotificationRules rules;
     private readonly Action changed;
 
+    /// <summary>The rules are primed on the socket's thread and read for the title on the window's: one at a time.</summary>
+    private readonly object ruling = new();
+
     /// <param name="changed">The count may have moved. Raised on any thread; the caller marshals.</param>
     public Attention(AppServices services, Connection connection, Action changed)
     {
@@ -33,7 +36,16 @@ internal sealed class Attention : IDisposable
     }
 
     /// <summary>The window's title: the count, then the name.</summary>
-    public string Title => rules.WindowTitle("Family Connect");
+    public string Title
+    {
+        get
+        {
+            lock (ruling)
+            {
+                return rules.WindowTitle("Family Connect");
+            }
+        }
+    }
 
     public int Unread => connection.Chats.Unread();
 
@@ -48,8 +60,13 @@ internal sealed class Attention : IDisposable
 
     private void OnArrived(MessageDto message)
     {
-        Prime();
-        if (rules.ForMessage(message) is { } toast)
+        Toast? toast;
+        lock (ruling)
+        {
+            Prime();
+            toast = rules.ForMessage(message);
+        }
+        if (toast is not null)
         {
             Toasts.Show(toast);
         }
@@ -58,8 +75,13 @@ internal sealed class Attention : IDisposable
 
     private void OnNote(NoteDto note)
     {
-        Prime();
-        if (rules.ForNote(note, ToastArguments.IsNews(note, connection.Board.Marks)) is { } toast)
+        Toast? toast;
+        lock (ruling)
+        {
+            Prime();
+            toast = rules.ForNote(note, ToastArguments.IsNews(note, connection.Board.Marks));
+        }
+        if (toast is not null)
         {
             Toasts.Show(toast);
         }

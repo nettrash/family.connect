@@ -23,7 +23,18 @@ public sealed partial class PendingView : UserControl
         // The family's own name is data, not a sentence.
         FamilyText.Text = connection.Session.State.PendingFamilyName ?? string.Empty;
         LogOutButton.Content = say.Get("Log out");
-        LogOutButton.Click += async (_, _) => await connection.Session.SignOutAsync();
+        LogOutButton.Click += async (_, _) =>
+        {
+            // An async click handler that throws ends the process: written down instead.
+            try
+            {
+                await connection.Session.SignOutAsync();
+            }
+            catch (Exception e)
+            {
+                Diagnostics.Write($"signing out: {e.GetType().Name}");
+            }
+        };
 
         timer = DispatcherQueue.CreateTimer();
         timer.Interval = AskEvery;
