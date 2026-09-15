@@ -1,6 +1,7 @@
 // The entry point. FamilyConnect.App.csproj defines DISABLE_XAML_GENERATED_MAIN and names this class
 // as its StartupObject: since Windows App SDK 2.3.1 that switch renames the generated Main rather
 // than deleting it, so StartupObject is what makes this one run (md.win paid for that).
+using FamilyConnect.App.Services;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.Windows.AppLifecycle;
@@ -38,7 +39,10 @@ internal static class Program
         var main = AppInstance.FindOrRegisterForKey(InstanceKey);
         if (!main.IsCurrent)
         {
-            Redirection.RedirectAndWait(main, AppInstance.GetCurrent().GetActivatedEventArgs());
+            var activation = AppInstance.GetCurrent().GetActivatedEventArgs();
+            // A share is copied in BEFORE the hand-off: what was shared belongs to this process, which exits next.
+            ShareInbox.Receive(activation);
+            Redirection.RedirectAndWait(main, activation);
             return 0;
         }
         // Notifications, in the order the Windows App SDK requires: the handler BEFORE Register, and
@@ -47,6 +51,8 @@ internal static class Program
         // which may be before any window exists — so ToastActivation holds it until one does.
         AppNotificationManager.Default.NotificationInvoked += ToastActivation.Heard;
         AppNotificationManager.Default.Register();
+        // Launched BY a share, with no window running: the files are copied in here, and the window stages them once it can.
+        ShareInbox.Receive(AppInstance.GetCurrent().GetActivatedEventArgs());
         Startup.Step("starting WinUI");
         Application.Start(callbackParams =>
         {

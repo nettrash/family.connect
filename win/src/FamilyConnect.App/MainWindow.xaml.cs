@@ -21,6 +21,10 @@ public sealed partial class MainWindow : Window
     /// <summary>The notification area icon a closed window leaves behind, and whether a close is the app quitting.</summary>
     private readonly TrayIcon? tray;
     private bool quitting;
+
+    /// <summary>A share waiting for the chats to exist, and whether the reader is choosing where one goes right now.</summary>
+    private bool sharePending;
+    private bool choosingShare;
     private Connection? connection;
 
     /// <summary>Calls: the media page and the card are the window's, kept across servers; the engine and its frames are the connection's.</summary>
@@ -217,6 +221,11 @@ public sealed partial class MainWindow : Window
             Gate.Member or Gate.Owner => chats ??= NewChats(current),
             _ => new SignInView(services, current, changeServer: () => ShowServer(current.Server)),
         };
+        if (member && sharePending)
+        {
+            // Something was shared in before there were chats to put it in: now there are.
+            DispatcherQueue.TryEnqueue(ReceiveShared);
+        }
     }
 
     /// <summary>
@@ -466,6 +475,98 @@ public sealed partial class MainWindow : Window
             AppWindow.Show();
         }
         Activate();
+    }
+
+    /// <summary>
+    /// Files shared into the app (<see cref="ShareInbox"/>): to the front, asked which chat, and staged there. Before there are
+    /// chats to choose from — signed out, or still asking the server who is signed in — it waits for them.
+    /// </summary>
+    internal void ReceiveShared()
+    {
+        if (ShareInbox.Peek() is null)
+        {
+            return;
+        }
+        if (connection is null || chats is null || shown is not (Gate.Member or Gate.Owner))
+        {
+            sharePending = true;
+            return;
+        }
+        sharePending = false;
+        _ = Logged(ReceiveSharedAsync(), "receiving a share");
+    }
+
+    /// <summary>
+    /// "Send to": every chat a file may land in, in the list's own order — the family first, and never the assistant's chat,
+    /// which takes no attachments (ios ShareTargetPicker). Choosing one opens it with the files staged; nothing is sent.
+    /// </summary>
+    private async Task ReceiveSharedAsync()
+    {
+        if (choosingShare || connection is not { } current || chats is not { } view || ShareInbox.Peek() is not { } share)
+        {
+            return;
+        }
+        choosingShare = true;
+        try
+        {
+            BringForward();
+            ShowChats();
+            var say = services.Say;
+            var rows = new ChatListModel(current.Chats, () => current.Session.State.Me?.Id ?? 0, say)
+                .Rows(DateTimeOffset.Now)
+                .Where(row => !row.IsAssistant)
+                .ToList();
+            if (rows.Count == 0)
+            {
+                ShareInbox.Discard(share.Folder);
+                return;
+            }
+            long? chosen = null;
+            ContentDialog? dialog = null;
+            var list = new ListView { SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = true, MaxHeight = 420, MinWidth = 340 };
+            foreach (var row in rows)
+            {
+                var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Padding = new Thickness(0, 6, 0, 6), Tag = row.Chat.Id };
+                line.Children.Add(new PersonPicture { Width = 32, Height = 32, DisplayName = row.Title });
+                line.Children.Add(new TextBlock { Text = row.Title, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 260 });
+                list.Items.Add(line);
+            }
+            list.ItemClick += (_, e) =>
+            {
+                if (e.ClickedItem is FrameworkElement { Tag: long id })
+                {
+                    chosen = id;
+                    dialog?.Hide();
+                }
+            };
+            dialog = Dialogs.Create(Content.XamlRoot, say.Get("Send to"), list);
+            dialog.CloseButtonText = say.Get("Cancel");
+            dialog.DefaultButton = ContentDialogButton.Close;
+            await dialog.ShowAsync();
+            if (chosen is not { } chatId || chats != view)
+            {
+                // Sent nowhere: the copies go, as the Mac's Cancel drops its parked files.
+                ShareInbox.Discard(share.Folder);
+                return;
+            }
+            var files = new List<Windows.Storage.StorageFile>();
+            foreach (var path in share.Files)
+            {
+                files.Add(await Windows.Storage.StorageFile.GetFileFromPathAsync(path));
+            }
+            // Staging reads each file into memory as it goes (ComposerStaging), so the copies are not needed afterwards.
+            await view.StageSharedAsync(chatId, files);
+            ShareInbox.Discard(share.Folder);
+        }
+        finally
+        {
+            choosingShare = false;
+        }
+        // Another share may have arrived while this one was being placed.
+        if (!Directory.Exists(share.Folder) && ShareInbox.Peek() is not null)
+        {
+            DispatcherQueue.TryEnqueue(ReceiveShared);
+        }
     }
 
     /// <summary>The icon's Quit: the one close that really closes.</summary>

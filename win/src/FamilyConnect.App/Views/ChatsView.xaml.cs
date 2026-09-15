@@ -367,6 +367,23 @@ public sealed partial class ChatsView : UserControl
         _ = OpenAsync(chatId);
     }
 
+    /// <summary>
+    /// Files shared into the app from elsewhere in Windows: that chat opens, and they land staged in its composer exactly as
+    /// picked or dropped files do — the reader still presses Send.
+    /// </summary>
+    internal async Task StageSharedAsync(long chatId, IReadOnlyList<StorageFile> files)
+    {
+        if (gone)
+        {
+            return;
+        }
+        OpenChat(chatId);
+        if (open is { } chat && chat.ChatId == chatId)
+        {
+            await IngestAsync(chat, Staging(chatId), files);
+        }
+    }
+
     /// <summary>The window came to the front: what is on screen may now count as read.</summary>
     internal void ReaderReturned() => _ = ReportReadAsync();
 
