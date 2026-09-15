@@ -208,6 +208,22 @@
                         <ToggleSwitch x:Name="NotifySwitch" Grid.Column="2" MinWidth="0" VerticalAlignment="Center" />
                     </Grid>
                 </Border>
+                <!-- What a closed window does: the notifications above only reach somebody while the app is still running. -->
+                <Border Style="{StaticResource Card}" Margin="0,4,0,0">
+                    <Grid Style="{StaticResource Row}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Style="{StaticResource RowIcon}" Glyph="&#xE770;" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                            <TextBlock x:Name="KeepRunningTitle" TextWrapping="Wrap" />
+                            <TextBlock x:Name="KeepRunningFootnote" Style="{StaticResource Footnote}" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="KeepRunningSwitch" Grid.Column="2" MinWidth="0" VerticalAlignment="Center" />
+                    </Grid>
+                </Border>
 
                 <TextBlock x:Name="PrivacyHeading" Style="{StaticResource Section}" />
                 <StackPanel Spacing="4">

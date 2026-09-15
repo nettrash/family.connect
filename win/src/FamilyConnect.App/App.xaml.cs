@@ -66,7 +66,7 @@ public partial class App : Application
         // A second launch was redirected here (Program.Main): bring the one window forward. Raised
         // on a background thread, so the window is reached through its own queue.
         AppInstance.GetCurrent().Activated += (_, _) =>
-            shown.DispatcherQueue.TryEnqueue(() => shown.Activate());
+            shown.DispatcherQueue.TryEnqueue(() => shown.BringForward());
         // A clicked notification opens its chat — including the click that launched the app.
         ToastActivation.Attach(arguments =>
             shown.DispatcherQueue.TryEnqueue(() => shown.OpenFromToast(arguments)));
