@@ -4,13 +4,16 @@ The fourth client of the protocol in `docs/protocol.md`, alongside `ios/` (iOS +
 `android/` and `web/`. Issue #64; the assessment that scoped it is
 `docs/windows-client-2026-09-11.md`.
 
-**Status: the portable core, the app's logic, and the first window.** The core and the logic are
-the part of the client that has nothing to do with Windows — the wire, the local cache, the send
-queue, the board's arithmetic, the reconnect resync, the live frame router and the session gate —
-and they are tested wherever `dotnet` runs. `FamilyConnect.App` is the WinUI 3 window over them: the
-server, sign-in, the family door and the chats with one open conversation. It is type-checked on
-the Mac by `tools/xamlcheck` and built into an MSIX by CI on Windows, and it has NOT yet been run on
-a Windows machine — what it looks like and how it behaves live is the next step, and needs one.
+**Status: the whole client, run on Windows.** The core and the logic are the part of the client that
+has nothing to do with Windows — the wire, the local cache, the send queue, the board's arithmetic,
+the reconnect resync, the live frame router and the session gate — and they are tested wherever
+`dotnet` runs (419 + 366 tests). `FamilyConnect.App` is the WinUI 3 window over them, and it carries
+what the Mac and the web carry: the chats with threads, polls, reactions, edits, mentions, the
+assistant, link previews and every attachment kind; the board; the family and its owner's console;
+settings; one-to-one voice and video calls; notifications; the notification area; and files shared in
+from other apps. It is run and checked on an ARM64 Windows 11 machine, type-checked on the Mac by
+`tools/xamlcheck`, and built into an MSIX by CI. What it still does not do is listed, with the reason,
+under "What is NOT here".
 
 ```
 win/
@@ -36,8 +39,12 @@ win/
                 Avatars — what a picture must be before it is sent, and a cache keyed by VERSION
   src/FamilyConnect.App/               the WinUI 3 window: structure + code-behind, no decisions
                 Services/ Connection (one server, wired), LockerTokenStore (the credential
-                          locker), AppServices, ServerSetting, AppFolders
-                Views/    ServerView, SignInView, DoorView, PendingView, OfflineView, ChatsView
+                          locker), AppServices, AppFolders, the settings files, Toasts and
+                          Attention, TrayIcon, ShareInbox, WindowPlacement, WebViewCallMedia,
+                          VoiceRecorder, MediaPreparing, LocationFinder
+                Views/    ServerView, SignInView, DoorView, PendingView, OfflineView, ChatsView,
+                          BoardView + NoteSheet, FamilyView, SettingsView, CallCardView, and the
+                          sheets and cards they open (polls, emoji, dialogs)
   i18n/                                generate.py + win.json (the port's own strings)
   tests/FamilyConnect.Core.Tests/      xUnit, runs anywhere `dotnet` runs
   tests/FamilyConnect.App.Logic.Tests/ the same, for the app's own behaviour
@@ -114,6 +121,13 @@ family's numbers; the rows are what this caller may see of them. Nothing here su
 nothing and is in the browser's position: **local toasts from the socket, and nothing on a lock
 screen**. Giving Windows real push means adding a platform to `docs/protocol.md` AND a WNS sender
 to the server; until that is decided, `NotificationRules` is the whole of it.
+
+**SO CLOSING THE WINDOW DOES NOT QUIT.** With no push, a client that stopped listening when its
+window closed would miss the very call it exists to ring for. The window hides instead — as a Mac app
+stays in the Dock — and an icon in the notification area opens it again or quits (`TrayIcon`, on a
+hidden window of its own rather than WinUI's, re-added when Explorer restarts). "Keep running when the
+window is closed" in Settings turns that off, and without an icon to come back from a close is always
+a quit.
 
 **A profile picture is cached by (user, VERSION).** No frame carries a picture — only the number —
 so a cache keyed on the user alone shows a face the family replaced weeks ago. It is the board
@@ -197,9 +211,22 @@ File sizes, "Zero KB" and "%lld byte(s)" are English for now: the Apple apps use
 formatter, so the shared catalogue has no such sentences, and this port's catalogue has no plural
 forms (two keys stand in for English's one and other).
 
-What is NOT here yet in the window: SENDING attachments, the board, the family console and settings,
-threads, polls, mentions in the composer, and calls. Their logic is in App.Logic already (all
-but calls).
+**Sharing INTO the app** is a share target in the manifest. What was shared is copied into the app's
+inbox by the process Windows launched for it, BEFORE that process hands its activation to the running
+window and exits — the share belongs to it — and only a copy whose marker was written last is taken
+(`ShareInbox`). The window asks "Send to" (the family first, never the assistant's chat) and stages the
+files in that chat's composer; nothing is sent until the reader presses Send.
+
+What is NOT here, and why:
+
+- **Push.** A closed app hears nothing (see "No push" above); the notification area is the answer
+  until a `windows` platform and a WNS sender exist.
+- **A map in a location message.** The Apple apps draw one with MapKit. Windows has no map of its
+  own, and drawing one means sending the coordinate a family member shared to a third party (Azure
+  Maps, or OpenStreetMap's tile servers). The web client makes the same choice this port does: the
+  pin, the name, and a link that hands the place to a map the reader opens. Nothing leaves the box.
+- **A chat or a call in a window of its own.** The Mac can; here a call is the card in the corner.
+- **Upload progress as a number.** No client has it; a sending bubble says "Sending…".
 
 **One cache, one connection, one operation at a time.** The socket applies frames on its own
 thread, the resync applies pages on the thread pool, and the window reads on the UI thread — all
@@ -285,12 +312,28 @@ or open `FamilyConnect.slnx` in Visual Studio. The bare `bin\…\FamilyConnect.e
 start on its own: a packaged app's Deployment Manager needs its identity and fails before `Main`
 (build with `-p:WindowsPackageType=None` for a real unpackaged binary).
 
+**What running it on Windows taught, and where it is kept:**
+
+- **A crash in the window is usually native and silent.** WinUI turns a failure inside its own
+  controls into a fail-fast (0xc000027b) that no managed handler sees, so the diagnostics log only
+  knows how far a launch got. The chat list was emptied and refilled on every change, and a chat was
+  opened from inside the list's own SelectionChanged; both now happen in place and a beat later
+  (`ChatsView.DrawList`, `OnChatPicked`). The rail's badges are made once, and the board never
+  rebuilds inside SizeChanged.
+- **`AppWindow` counts physical pixels.** `Resize(1100, 760)` was half a window at 200%;
+  `WindowPlacement` sizes in effective pixels and restores the place the window was closed in.
+- **An async click handler that throws ends the process** unless the XAML handler marks it handled,
+  which `App` does once it has written the exception down.
+
 Things chosen for the window that nettrash has not decided yet, and where they live:
 
 - **Windows 11 (22000) as the minimum** — `TargetPlatformMinVersion` and the manifest, md.win's floor.
 - **MSIX, unsigned** — the `win-app` CI job; the Store signs what it publishes.
 - **A placeholder package identity** — `Package.appxmanifest`; Partner Center supplies the real one.
-- **No calls** in the window.
+- **Calls through WebView2** — the browser engine's own WebRTC in a page of the app's
+  (`Assets/Call/call.html`), driven by `CallEngine`; the engine starts on the first call and is kept.
+- **Closing to the notification area**, on by default.
+- **No map in a location message** (see "What is NOT here").
 
 ## The oracle
 
@@ -317,6 +360,7 @@ project layout above, `Microsoft.Data.Sqlite` with numbered migrations when the 
 one Windows face per note "hand" — Segoe UI, Georgia, Cascadia Mono, Segoe Print — all in-box, so
 nothing is bundled and nothing is synthesised.
 
-Still nettrash's to answer (see the issue): calls in 1.0 (SIPSorcery, WebView2-hosted, or not
-yet), push in 1.0 (WNS, or socket-only toasts as the web client does), the minimum Windows build,
-and whether it ships through the Store or as a signed installer.
+Still nettrash's to answer (see the issue): push (WNS, or the socket and the notification area as
+now), a map in location messages (a third party would see the coordinate), the minimum Windows
+build, and whether it ships through the Store or as a signed installer. Calls were answered by
+building them on WebView2.
