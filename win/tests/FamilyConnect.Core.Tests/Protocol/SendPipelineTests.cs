@@ -144,6 +144,9 @@ public class SendPipelineTests : IDisposable
         Assert.Equal(row.ClientMsgId, Assert.Single(harness.Posted).ClientMsgId);
         Assert.Empty(harness.Outbox.All());
         Assert.NotNull(harness.Chats.Message(1339));
+        // Held, and not where the next catch-up starts: an answer over REST says nothing about the messages before it,
+        // and a send answered while the socket was reconnecting would otherwise skip everything it missed.
+        Assert.Null(harness.Chats.CatchUpCursor(42));
     }
 
     [Fact]

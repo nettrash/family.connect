@@ -214,6 +214,9 @@ public sealed class LiveConnection : IAsyncDisposable
 
     private void OnConnected()
     {
+        // Raised before the socket reads a single frame on this connection: the cursors taken here are the ones the pass
+        // must start from, before a live message can move them past what was missed.
+        resync.Snapshot();
         Publish(Link.Up);
         Refresh();
     }

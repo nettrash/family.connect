@@ -113,13 +113,16 @@ public sealed class ConversationModel
     }
 
     /// <summary>
-    /// Open it: the newest page. Nothing is fetched when the cache already holds some of this
-    /// chat — the resync's own catch-up brings it up to date, and a read here would race it.
+    /// Open it: the newest page. Nothing is fetched when the cache already holds this chat in
+    /// sequence — the resync's own catch-up brings it up to date, and a read here would race it.
+    /// The list's preview is not holding the chat, nor is the answer to a send: each is one row
+    /// with nothing known under it, the catch-up does not page a chat that has only those, and so
+    /// it is read from the newest page down.
     /// </summary>
     public async Task<ApiError?> OpenAsync(CancellationToken ct = default)
     {
         window = Page;
-        if (chats.Messages(ChatId, limit: 1).Count > 0)
+        if (chats.CatchUpCursor(ChatId) is not null)
         {
             return null;
         }
@@ -330,7 +333,7 @@ public sealed class ConversationModel
         {
             return answer.Error ?? ApiError.Transport("no answer");
         }
-        chats.Apply(answer.Value.Message, SeqRoute.Evidence);
+        chats.Apply(answer.Value.Message, SeqRoute.Evidence, inSequence: false);
         return null;
     }
 }

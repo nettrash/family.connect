@@ -122,6 +122,9 @@ public class FrameRouterTests : IDisposable
         router.Hear(new ServerFrame.MessageEdited(Message(1340, body: "at 8", editSeq: 92) with { ThreadRootId = 1338 }));
         Assert.Equal(2, chats.Message(1338)!.ReplyCount);
         Assert.Equal("at 8", chats.Message(1340)!.Body);
+        // Held, and not where the next catch-up starts: this device never received 1340 itself, and an edit says nothing
+        // about the messages before it.
+        Assert.Equal(1339, chats.CatchUpCursor(42));
     }
 
     /// <summary>

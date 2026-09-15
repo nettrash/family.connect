@@ -183,8 +183,23 @@ public static class Migrations
     ];
 
     /// <summary>
+    /// Step 2: WHICH ROWS ARRIVED IN SEQUENCE. `GET /chats` delivers each chat's newest message trimmed, and step 1 stored
+    /// it beside the messages pages deliver — so the catch-up cursor, `max(id)`, became the server's newest id, `after_id`
+    /// came back empty, and everything between what the device held and that preview was never asked for
+    /// (docs/protocol.md, "Best-effort delivery", step 3). `sequenced` is 1 only for a row a page or a live frame
+    /// delivered, and the cursor reads nothing else. The messages older builds cached may already have such holes, and
+    /// nothing can find them from here, so they are read again: the cache is derived data, and the outbox — the one table
+    /// holding what the server has never seen — is untouched.
+    /// </summary>
+    private static readonly string[] Two =
+    [
+        "ALTER TABLE messages ADD COLUMN sequenced INTEGER NOT NULL DEFAULT 0",
+        "DELETE FROM messages",
+    ];
+
+    /// <summary>
     /// Every step, in order. The index is the version it upgrades FROM, so
     /// <c>All.Count</c> is the schema this build expects.
     /// </summary>
-    public static readonly IReadOnlyList<string[]> All = [One];
+    public static readonly IReadOnlyList<string[]> All = [One, Two];
 }
