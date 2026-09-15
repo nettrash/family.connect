@@ -235,22 +235,15 @@ public static class Mentions
         }
     }
 
-    /// <summary>Every scalar's full lowercase mapping with no context — the one multi-scalar mapping, U+0130, spelled out.</summary>
+    /// <summary>Every scalar's full lowercase mapping with no context — Rust's own table, never this platform's casing.</summary>
     private static string Lowercased(string text)
     {
-        var lower = new StringBuilder(text.Length);
+        var lower = new List<byte>(text.Length);
         foreach (var rune in text.EnumerateRunes())
         {
-            if (rune.Value == 0x130)
-            {
-                lower.Append('i').Append((char)0x307);
-            }
-            else
-            {
-                lower.Append(Rune.ToLowerInvariant(rune).ToString());
-            }
+            RustChar.AppendLowercase(lower, rune.Value);
         }
-        return lower.ToString();
+        return Encoding.UTF8.GetString([.. lower]);
     }
 
     private static bool HasPrefix(string text, string prefix)

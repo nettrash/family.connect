@@ -165,6 +165,10 @@ public sealed partial class ChatsView : UserControl
         AskPictureButton.Click += (_, _) => PutInComposer(AssistantText.WithDrawToken(ComposerBox.Text));
 
         ViewerSave.Content = say.Get("Save…");
+        ToolTipService.SetToolTip(ViewerSave, say.Get("Save a copy"));
+        ViewerShare.Content = say.Get("Share…");
+        ToolTipService.SetToolTip(ViewerShare, say.Get("Share"));
+        ViewerShare.Click += (_, _) => _ = ShareViewedAsync();
         foreach (var (button, name) in new (Button, string)[]
         {
             (ViewerClose, say.Get("Close")),
@@ -933,6 +937,8 @@ public sealed partial class ChatsView : UserControl
             words.FontSize = 12;
             words.Foreground = secondary;
             ToolTipService.SetToolTip(balloon, say.Get("Click to show"));
+            // A screen reader hears what the stand-in is and what a click does — never the words it hides (ios MacMessageRow).
+            AutomationProperties.SetName(balloon, say.Get("Hidden message from a blocked member. Click to show it."));
         }
         else if (!bare)
         {
@@ -992,7 +998,7 @@ public sealed partial class ChatsView : UserControl
                 // One tick sent, two seen — a direct chat's fact, from the other person's live marker.
                 var seen = BubbleRules.Seen(message, Reader, familyChat, connection.PeerReads.UpTo(chat.ChatId));
                 when.Text = $"{clock} {(seen ? "✓✓" : "✓")}";
-                AutomationProperties.SetName(when, $"{clock} {(seen ? say.Get("Seen") : say.Get("Sent"))}");
+                AutomationProperties.SetName(when, $"{clock} {(seen ? say.Get("Read") : say.Get("Sent"))}");
             }
             column.Children.Add(when);
         }
@@ -1731,6 +1737,32 @@ public sealed partial class ChatsView : UserControl
         (ViewerVideo.Source as Windows.Media.Core.MediaSource)?.Dispose();
         ViewerVideo.Source = null;
         ViewerVideo.PosterSource = null;
+    }
+
+    /// <summary>Share — Windows' own share window, as the Mac's viewer offers its sharing menu — with the original's bytes.</summary>
+    private async Task ShareViewedAsync()
+    {
+        if (viewing is not { } album)
+        {
+            return;
+        }
+        var item = album.Current;
+        var (bytes, _) = await connection.Attachments.BytesAsync(item);
+        if (bytes is null)
+        {
+            ViewerFailed();
+            return;
+        }
+        try
+        {
+            await ShareSheet.ShareFileAsync(services.WindowHandle, AttachmentFiles.FileName(item), bytes);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"sharing an attachment: {e.GetType().Name}");
+            ViewerProblem.Text = services.Say.Get("Something went wrong. Try again.");
+            ViewerProblem.Visibility = Visibility.Visible;
+        }
     }
 
     /// <summary>Save hands over the page that is up when it is clicked — the original's bytes.</summary>

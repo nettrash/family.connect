@@ -124,11 +124,11 @@ public static class Polls
                         && !CaseIgnorableThenCased(runes.Skip(index + 1));
                     lower.Append(final ? (char)0x3C2 : (char)0x3C3);
                     break;
-                case 0x130:
-                    lower.Append('i').Append((char)0x307);
-                    break;
                 default:
-                    lower.Append(Rune.ToLowerInvariant(rune).ToString());
+                    // Rust's own full mapping — U+0130 included — and never this platform's casing tables.
+                    var mapped = new List<byte>(4);
+                    RustChar.AppendLowercase(mapped, rune.Value);
+                    lower.Append(Encoding.UTF8.GetString([.. mapped]));
                     break;
             }
         }
@@ -147,24 +147,9 @@ public static class Polls
         return false;
     }
 
-    /// <summary>
-    /// Case_Ignorable: marks, format characters, modifier letters and symbols, and the apostrophes and
-    /// full stops Word_Break calls MidLetter, MidNumLet or Single_Quote.
-    /// </summary>
-    private static bool CaseIgnorable(Rune rune) =>
-        Rune.GetUnicodeCategory(rune) is UnicodeCategory.NonSpacingMark or UnicodeCategory.EnclosingMark
-            or UnicodeCategory.Format or UnicodeCategory.ModifierLetter or UnicodeCategory.ModifierSymbol
-        || rune.Value is 0x27 or 0x2E or 0x3A or 0xB7 or 0x387 or 0x55F or 0x5F4 or 0x2018 or 0x2019
-            or 0x2024 or 0x2027 or 0xFE13 or 0xFE52 or 0xFE55 or 0xFF07 or 0xFF0E or 0xFF1A;
+    /// <summary>Case_Ignorable, as Rust's <c>str::to_lowercase</c> reads it — from the table the standard library printed.</summary>
+    private static bool CaseIgnorable(Rune rune) => RustChar.InRanges(UnicodeProperties.CaseIgnorable, rune.Value);
 
-    /// <summary>
-    /// Cased: the three cased letter categories and Other_Lowercase / Other_Uppercase. Only the members
-    /// of those two that are NOT already case-ignorable can decide anything — the ordinal indicators,
-    /// Roman numerals and circled or squared letters — so only they are listed.
-    /// </summary>
-    private static bool Cased(Rune rune) =>
-        Rune.GetUnicodeCategory(rune) is UnicodeCategory.UppercaseLetter or UnicodeCategory.LowercaseLetter
-            or UnicodeCategory.TitlecaseLetter
-        || rune.Value is 0xAA or 0xBA or (>= 0x2160 and <= 0x217F) or (>= 0x24B6 and <= 0x24E9)
-            or (>= 0x1F130 and <= 0x1F149) or (>= 0x1F150 and <= 0x1F169) or (>= 0x1F170 and <= 0x1F189);
+    /// <summary>Cased, as the same context reads it (only asked of what it did not skip).</summary>
+    private static bool Cased(Rune rune) => RustChar.InRanges(UnicodeProperties.CasedNotIgnorable, rune.Value);
 }
