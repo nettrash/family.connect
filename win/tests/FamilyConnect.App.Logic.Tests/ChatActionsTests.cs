@@ -154,6 +154,24 @@ public class ChatActionsTests : IDisposable
         Assert.Single(server.Asked);
     }
 
+    /// <summary>
+    /// The answer to an edit is one message with nothing known under it: held and drawn, and not where the next catch-up
+    /// starts (docs/protocol.md, "Best-effort delivery", step 3).
+    /// </summary>
+    [Fact]
+    public async Task AnEditsAnswerIsNotWhereTheCatchUpStarts()
+    {
+        chats.Apply(new MessageDto(1, Chat, Me, "c-1", "Dinner at 7?", Sent), inSequence: false);
+        var chat = Open(new Server().On(
+            "/chats/42/messages/1",
+            """{"message": {"id": 1, "chat_id": 42, "sender_id": 7, "client_msg_id": "c-1", "body": "Dinner at 8?", "created_at": "2026-09-13T10:00:00Z", "edited_at": "2026-09-13T10:05:00Z", "edit_seq": 9}}"""));
+
+        Assert.Null(await chat.EditAsync(1, "Dinner at 8?"));
+
+        Assert.Equal("Dinner at 8?", chats.Message(1)!.Body);
+        Assert.Null(chats.CatchUpCursor(Chat));
+    }
+
     [Fact]
     public void OnlyTheReadersOwnWordsMayBeEdited()
     {

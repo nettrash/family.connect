@@ -291,7 +291,10 @@ public sealed class SendPipeline
 
     private bool Delivered(MessageDto message)
     {
-        chats.Apply(message);
+        // Out of sequence: the answer to this device's own send says nothing about the messages before it — a send
+        // answered while the socket was reconnecting would otherwise become where the catch-up starts. Its frame, or the
+        // next catch-up, delivers it again in sequence.
+        chats.Apply(message, inSequence: false);
         if (message.ClientMsgId is { } id)
         {
             outbox.Delivered(id);

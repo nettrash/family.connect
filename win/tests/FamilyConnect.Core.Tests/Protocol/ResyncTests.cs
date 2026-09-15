@@ -119,12 +119,13 @@ public class ResyncTests : IDisposable
         Assert.True(report.Signed);
         Assert.True(report.HasFamily);
         Assert.Equal(1, report.Chats);
+        // A chat holding nothing has no hole to fill, and so no message catch-up: it is read from its newest page when
+        // it is opened.
         Assert.Equal(
             [
                 "/api/v1/me",
                 "/api/v1/families/mine",
                 "/api/v1/chats",
-                "/api/v1/chats/42/messages?after_id=0&limit=50",
                 "/api/v1/families/mine/board",
             ],
             handler.Asked);
@@ -170,29 +171,32 @@ public class ResyncTests : IDisposable
                 pages++;
                 if (pages == 1)
                 {
-                    // A full page of fifty, ids 1..50 — and, as it is answered, a LIVE message
+                    // A full page of fifty, ids 2..51 — and, as it is answered, a LIVE message
                     // with id 900 lands from the socket that started this resync. The store's
-                    // max(id) is 900 from here on; the loop's cursor must still be 50.
-                    store!.Apply(Wire.Decode<MessageDto>(Message(900))!);
-                    var fifty = string.Join(",", Enumerable.Range(1, 50).Select(id => Message(id)));
+                    // max(id) is 900 from here on; the loop's cursor must still be 51.
+                    store!.Apply(Wire.Decode<MessageDto>(Message(900))!, SeqRoute.LiveFrame);
+                    var fifty = string.Join(",", Enumerable.Range(2, 50).Select(id => Message(id)));
                     return (HttpStatusCode.OK, $$"""{"messages": [{{fifty}}]}""");
                 }
-                // The second page must be asked for from 50 — the largest id page one RETURNED —
+                // The second page must be asked for from 51 — the largest id page one RETURNED —
                 // and not from 900, which is what the store now says.
-                return path.Contains("after_id=50", StringComparison.Ordinal)
-                    ? (HttpStatusCode.OK, $$"""{"messages": [{{Message(51)}}]}""")
+                return path.Contains("after_id=51", StringComparison.Ordinal)
+                    ? (HttpStatusCode.OK, $$"""{"messages": [{{Message(52)}}]}""")
                     : (HttpStatusCode.OK, """{"messages": []}""");
             });
         var (resync, handler, chats, _) = Build(server);
         store = chats;
         chats.Replace([new ChatRowDto(new ChatDto(42, "family", "The Smiths"))]);
+        // The one message this device already held, so that there is a cursor to follow.
+        chats.Apply(Wire.Decode<MessageDto>(Message(1))!);
 
         var report = await resync.RunAsync();
         Assert.True(report.Complete);
         Assert.Equal(51, report.Messages);
-        Assert.Contains("/api/v1/chats/42/messages?after_id=50&limit=50", handler.Asked);
-        // Nothing was skipped: 51 is held, which is the message the cursor would have jumped over.
-        Assert.NotNull(chats.Message(51));
+        Assert.Contains("/api/v1/chats/42/messages?after_id=1&limit=50", handler.Asked);
+        Assert.Contains("/api/v1/chats/42/messages?after_id=51&limit=50", handler.Asked);
+        // Nothing was skipped: 52 is held, which is the message the cursor would have jumped over.
+        Assert.NotNull(chats.Message(52));
         Assert.NotNull(chats.Message(900));
     }
 
@@ -204,13 +208,133 @@ public class ResyncTests : IDisposable
             .Always("/families/mine/board", """{"notes": [], "max_board_seq": 0}""")
             .Always("/families/mine", Family)
             .Always("/chats", """{"chats": [{"chat": {"id": 42, "kind": "family", "title": "The Smiths"}}]}""")
-            .Always("/chats/42/messages", $$"""{"messages": [{{Message(1)}}, {{Message(2)}}]}""");
-        var (resync, handler, _, _) = Build(server);
+            .Always("/chats/42/messages", $$"""{"messages": [{{Message(2)}}, {{Message(3)}}]}""");
+        var (resync, handler, chats, _) = Build(server);
+        chats.Replace([new ChatRowDto(new ChatDto(42, "family", "The Smiths"))]);
+        chats.Apply(Wire.Decode<MessageDto>(Message(1))!);
 
         var report = await resync.RunAsync();
         Assert.Equal(2, report.Messages);
         // Two of fifty is short, so one request only.
         Assert.Single(handler.Asked, path => path.Contains("messages", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// THE LIST'S PREVIEW IS NOT WHERE THE CATCH-UP STARTS. Step 2 stores each chat's newest message, trimmed, beside the
+    /// ones pages delivered; counted in `max(id)` it made `after_id` the server's newest id, the page came back empty, and
+    /// the Windows client lost a day of a family chat for good (docs/protocol.md, "Best-effort delivery", step 3).
+    /// </summary>
+    [Fact]
+    public async Task TheListsPreviewIsNotWhereTheCatchUpStarts()
+    {
+        var ten = string.Join(",", Enumerable.Range(11, 10).Select(id => Message(id)));
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine/board", """{"notes": [], "max_board_seq": 0}""")
+            .Always("/families/mine", Family)
+            .Always("/chats", $$"""
+                {"chats": [{"chat": {"id": 42, "kind": "family", "title": "The Smiths"},
+                            "last_message": {{Message(20)}}}]}
+                """)
+            .On(path => !path.Contains("/chats/42/messages", StringComparison.Ordinal)
+                ? null
+                : path.Contains("after_id=10&", StringComparison.Ordinal)
+                    ? (HttpStatusCode.OK, $$"""{"messages": [{{ten}}]}""")
+                    : (HttpStatusCode.OK, """{"messages": []}"""));
+        var (resync, handler, chats, _) = Build(server);
+        chats.Replace([new ChatRowDto(new ChatDto(42, "family", "The Smiths"))]);
+        chats.Apply(Enumerable.Range(1, 10).Select(id => Wire.Decode<MessageDto>(Message(id))!).ToList());
+
+        var report = await resync.RunAsync();
+        Assert.True(report.Complete);
+        Assert.Contains("/api/v1/chats/42/messages?after_id=10&limit=50", handler.Asked);
+        Assert.Equal(10, report.Messages);
+        Assert.All(Enumerable.Range(11, 10), id => Assert.NotNull(chats.Message(id)));
+
+        // Once a page has delivered it, the preview IS held in sequence, and the next pass starts from it.
+        handler.Asked.Clear();
+        Assert.True((await resync.RunAsync()).Complete);
+        Assert.Contains("/api/v1/chats/42/messages?after_id=20&limit=50", handler.Asked);
+    }
+
+    /// <summary>
+    /// A chat that holds nothing but its preview has no hole to fill, so it has no message catch-up: opening it reads the
+    /// newest page down, and a request here would page a family's whole history from `after_id=0` on a new device.
+    /// </summary>
+    [Fact]
+    public async Task AChatHoldingOnlyItsPreviewIsLeftToHistoryPaging()
+    {
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine/board", """{"notes": [], "max_board_seq": 0}""")
+            .Always("/families/mine", Family)
+            .Always("/chats", $$"""
+                {"chats": [{"chat": {"id": 42, "kind": "family", "title": "The Smiths"},
+                            "last_message": {{Message(20)}}}]}
+                """);
+        var (resync, handler, chats, _) = Build(server);
+
+        Assert.True((await resync.RunAsync()).Complete);
+        Assert.DoesNotContain(handler.Asked, path => path.Contains("/messages", StringComparison.Ordinal));
+        // The row still draws itself from it.
+        Assert.Equal(20, chats.Newest(42)!.Id);
+        Assert.Null(chats.CatchUpCursor(42));
+    }
+
+    /// <summary>
+    /// THE CURSORS ARE TAKEN WHEN THE CONNECTION OPENS. The pass reaches the messages several round trips later, and a live
+    /// message landing in between must not become where it starts: everything missed while the socket was down is below
+    /// it. A second opening before the pass keeps the EARLIER cursors, and a pass that could not finish hands its own on.
+    /// </summary>
+    [Fact]
+    public async Task TheCursorsAreTheOnesTakenWhenTheConnectionOpened()
+    {
+        var failing = true;
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine/board", """{"notes": [], "max_board_seq": 0}""")
+            .Always("/families/mine", Family)
+            .Always("/chats", """
+                {"chats": [{"chat": {"id": 42, "kind": "family", "title": "The Smiths"}},
+                           {"chat": {"id": 43, "kind": "direct", "title": "Bob"}}]}
+                """)
+            .Always("/chats/43/messages", """{"messages": []}""")
+            .On(path => !path.Contains("/chats/42/messages", StringComparison.Ordinal)
+                ? null
+                : failing
+                    ? (HttpStatusCode.InternalServerError, null)
+                    : (HttpStatusCode.OK, """{"messages": []}"""));
+        var (resync, handler, chats, _) = Build(server);
+        chats.Replace([
+            new ChatRowDto(new ChatDto(42, "family", "The Smiths")),
+            new ChatRowDto(new ChatDto(43, "direct", "Bob")),
+        ]);
+        chats.Apply(Enumerable.Range(1, 10).Select(id => Wire.Decode<MessageDto>(Message(id))!).ToList());
+
+        // A connection opens at 10; frames on it move the store to 15 — and give chat 43, which held nothing, its first
+        // message — and it opens AGAIN before the pass runs. The earlier of the two is kept, per chat...
+        resync.Snapshot();
+        chats.Apply(Enumerable.Range(11, 5).Select(id => Wire.Decode<MessageDto>(Message(id))!).ToList(), SeqRoute.LiveFrame);
+        chats.Apply(Wire.Decode<MessageDto>(Message(50, chat: 43))!, SeqRoute.LiveFrame);
+        resync.Snapshot();
+        // ...and a live message lands before the pass reaches the messages.
+        chats.Apply(Wire.Decode<MessageDto>(Message(900))!, SeqRoute.LiveFrame);
+
+        Assert.False((await resync.RunAsync()).Complete);
+        Assert.Contains("/api/v1/chats/42/messages?after_id=10&limit=50", handler.Asked);
+
+        // The pass that could not finish handed its cursors on: the next one does not start from 900 either.
+        handler.Asked.Clear();
+        failing = false;
+        Assert.True((await resync.RunAsync()).Complete);
+        Assert.Contains("/api/v1/chats/42/messages?after_id=10&limit=50", handler.Asked);
+        // And the chat only the second opening had a cursor for is caught up from it, not forgotten by the merge.
+        Assert.Contains("/api/v1/chats/43/messages?after_id=50&limit=50", handler.Asked);
+
+        // A pass that finished hands nothing on: the one after it takes its own, from what is held now.
+        handler.Asked.Clear();
+        Assert.True((await resync.RunAsync()).Complete);
+        Assert.Contains("/api/v1/chats/42/messages?after_id=900&limit=50", handler.Asked);
     }
 
     /// <summary>
@@ -298,6 +422,136 @@ public class ResyncTests : IDisposable
     }
 
     /// <summary>
+    /// A connection that opens WHILE a pass is failing and the pass's own starting cursors are MERGED, per chat, the earlier
+    /// kept — neither replaces the other. Chat 42's pass started from 10 although frame 900 was already held above a gap:
+    /// the reconnection's 900 alone would skip that gap. Chat 43 held nothing when the pass began; a frame gave it 50
+    /// before the socket dropped, and the reconnection took that: the pass's cursors alone would skip the chat, and
+    /// everything sent to it while the socket was down would sit for good below the frames that came after.
+    /// </summary>
+    [Fact]
+    public async Task AConnectionThatOpensDuringAFailedPassIsNotForgotten()
+    {
+        var failing = true;
+        Resync? running = null;
+        ChatStore? store = null;
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine/board", """{"notes": [], "max_board_seq": 0}""")
+            .Always("/families/mine", Family)
+            .Always("/chats", """
+                {"chats": [{"chat": {"id": 42, "kind": "family", "title": "The Smiths"}},
+                           {"chat": {"id": 43, "kind": "direct", "title": "Bob"}}]}
+                """)
+            .Always("/chats/43/messages", """{"messages": []}""")
+            .On(path =>
+            {
+                if (!path.Contains("/chats/42/messages", StringComparison.Ordinal))
+                {
+                    return null;
+                }
+                if (!failing)
+                {
+                    return (HttpStatusCode.OK, """{"messages": []}""");
+                }
+                // Mid-pass: a frame for chat 43, the socket drops and opens again — and then this read fails.
+                store!.Apply(Wire.Decode<MessageDto>(Message(50, chat: 43))!, SeqRoute.LiveFrame);
+                running!.Snapshot();
+                return (HttpStatusCode.InternalServerError, null);
+            });
+        var (resync, handler, chats, _) = Build(server);
+        running = resync;
+        store = chats;
+        chats.Replace([
+            new ChatRowDto(new ChatDto(42, "family", "The Smiths")),
+            new ChatRowDto(new ChatDto(43, "direct", "Bob")),
+        ]);
+        chats.Apply(Wire.Decode<MessageDto>(Message(10))!);
+        // A connection opens at 10, and a live message lands on it before the pass.
+        resync.Snapshot();
+        chats.Apply(Wire.Decode<MessageDto>(Message(900))!, SeqRoute.LiveFrame);
+
+        Assert.False((await resync.RunAsync()).Complete);
+        // A frame on the new connection, before the next pass.
+        chats.Apply(Wire.Decode<MessageDto>(Message(60, chat: 43))!, SeqRoute.LiveFrame);
+
+        handler.Asked.Clear();
+        failing = false;
+        Assert.True((await resync.RunAsync()).Complete);
+        Assert.Contains("/api/v1/chats/42/messages?after_id=10&limit=50", handler.Asked);
+        Assert.Contains("/api/v1/chats/43/messages?after_id=50&limit=50", handler.Asked);
+    }
+
+    /// <summary>
+    /// Cursors a connection handed over are held to what the cache still holds: a cache wiped since — a sign-out, another
+    /// account, another server — is never paged from a stranger's cursor, past what its own messages reach.
+    /// </summary>
+    [Fact]
+    public async Task HandedOverCursorsAreHeldToWhatTheCacheStillHolds()
+    {
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine/board", """{"notes": [], "max_board_seq": 0}""")
+            .Always("/families/mine", Family)
+            .Always("/chats", """
+                {"chats": [{"chat": {"id": 42, "kind": "family", "title": "The Smiths"}},
+                           {"chat": {"id": 43, "kind": "direct", "title": "Bob"}}]}
+                """)
+            .Always("/chats/42/messages", """{"messages": []}""")
+            .Always("/chats/43/messages", """{"messages": []}""");
+        var (resync, handler, chats, _) = Build(server);
+        ChatRowDto[] rows =
+        [
+            new ChatRowDto(new ChatDto(42, "family", "The Smiths")),
+            new ChatRowDto(new ChatDto(43, "direct", "Bob")),
+        ];
+        chats.Replace(rows);
+        chats.Apply([Wire.Decode<MessageDto>(Message(1200))!, Wire.Decode<MessageDto>(Message(70, chat: 43))!]);
+        resync.Snapshot();
+
+        // The cache is wiped; the next copy of chat 42 reaches only 1000, and of chat 43 it holds nothing.
+        database.WipeAll();
+        chats.Replace(rows);
+        chats.Apply(Wire.Decode<MessageDto>(Message(1000))!);
+
+        Assert.True((await resync.RunAsync()).Complete);
+        Assert.Contains("/api/v1/chats/42/messages?after_id=1000&limit=50", handler.Asked);
+        Assert.DoesNotContain(handler.Asked, path => path.Contains("/chats/43/messages", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A copy from the edits feed is held and drawn, and it is not where the next catch-up starts: an edited message may be
+    /// one this device never held, and it says nothing about the messages before it (docs/protocol.md, "Best-effort
+    /// delivery", step 3).
+    /// </summary>
+    [Fact]
+    public async Task AnEditedCopyIsNotWhereTheNextCatchUpStarts()
+    {
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine/board", """{"notes": [], "max_board_seq": 0}""")
+            .Always("/families/mine", Family)
+            .Always("/chats", """
+                {"chats": [{"chat": {"id": 42, "kind": "family", "title": "The Smiths"},
+                            "max_edit_seq": 5}]}
+                """)
+            // A server whose pages have not caught up with its edits feed: whatever the reason, the copy the feed carries
+            // must not move the cursor past what the pages have not delivered.
+            .Always("/chats/42/messages", """{"messages": []}""")
+            .Always("/chats/42/edits", """
+                {"messages": [{"id": 30, "chat_id": 42, "sender_id": 9, "body": "Bins on Tuesday",
+                               "created_at": "2026-09-12T10:00:00Z",
+                               "edited_at": "2026-09-12T11:00:00Z", "edit_seq": 5}]}
+                """);
+        var (resync, _, chats, _) = Build(server);
+        chats.Replace([new ChatRowDto(new ChatDto(42, "family", "The Smiths"))]);
+        chats.Apply(Wire.Decode<MessageDto>(Message(10))!);
+
+        Assert.True((await resync.RunAsync()).Complete);
+        Assert.Equal("Bins on Tuesday", chats.Message(30)!.Body);
+        Assert.Equal(10, chats.CatchUpCursor(42));
+    }
+
+    /// <summary>
     /// The messages catch-up delivers only what is newer than everything held, so a reply on it raises its root; the edits
     /// catch-up delivers copies the root's recomputed count already includes, and raises nothing (docs/protocol.md,
     /// "Threads").
@@ -351,7 +605,9 @@ public class ResyncTests : IDisposable
             .Always("/chats/42/reactions", """{"message_reactions": []}""")
             .Always("/chats/42/edits", """{"messages": []}""")
             .Always("/chats/42/polls", """{"polls": []}""");
-        var (resync, handler, _, _) = Build(server);
+        var (resync, handler, chats, _) = Build(server);
+        chats.Replace([new ChatRowDto(new ChatDto(42, "family", "The Smiths"))]);
+        chats.Apply(Wire.Decode<MessageDto>(Message(1))!);
 
         Assert.True((await resync.RunAsync()).Complete);
         Assert.Equal(
@@ -359,7 +615,7 @@ public class ResyncTests : IDisposable
                 "/api/v1/me",
                 "/api/v1/families/mine",
                 "/api/v1/chats",
-                "/api/v1/chats/42/messages?after_id=0&limit=50",
+                "/api/v1/chats/42/messages?after_id=1&limit=50",
                 "/api/v1/chats/42/reactions?after_seq=0&limit=50",
                 "/api/v1/chats/42/edits?after_seq=0&limit=50",
                 "/api/v1/chats/42/polls?after_seq=0&limit=50",

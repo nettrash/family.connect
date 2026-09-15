@@ -238,24 +238,29 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// recount is a badge that silently falls to one the moment anything arrives. Apple and the
     /// web both increment; so does this.
     /// </remarks>
+    /// <param name="inSequence">
+    /// False for a copy that says nothing about the messages before it — the REST answer to a send or an edit, a copy from
+    /// the edits feed or frame. It is held and drawn, and it is not where the next catch-up starts
+    /// (<see cref="CatchUpCursor"/>) until a page or a frame delivers it again.
+    /// </param>
     /// <returns>Whether anything changed — false for an answer this device had already applied.</returns>
-    public bool Apply(MessageDto message, SeqRoute route = SeqRoute.CatchUpPage)
+    public bool Apply(MessageDto message, SeqRoute route = SeqRoute.CatchUpPage, bool inSequence = true)
     {
         using var serialised = database.Hold();
         using var transaction = database.Connection.BeginTransaction();
-        var changed = Apply(message, transaction, isPreview: false, route);
+        var changed = Apply(message, transaction, isPreview: false, route, inSequence);
         transaction.Commit();
         return changed;
     }
 
     /// <summary>A page of history, applied in order.</summary>
     public int Apply(
-        IReadOnlyList<MessageDto> messages, SeqRoute route = SeqRoute.CatchUpPage)
+        IReadOnlyList<MessageDto> messages, SeqRoute route = SeqRoute.CatchUpPage, bool inSequence = true)
     {
         using var serialised = database.Hold();
         using var transaction = database.Connection.BeginTransaction();
         var changed = messages.Count(
-            message => Apply(message, transaction, isPreview: false, route));
+            message => Apply(message, transaction, isPreview: false, route, inSequence));
         transaction.Commit();
         return changed;
     }
@@ -272,7 +277,8 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         using var serialised = database.Hold();
         using var transaction = database.Connection.BeginTransaction();
         var changed = messages.Count(message =>
-            Message(message.Id) is not null && Apply(message, transaction, isPreview: false, SeqRoute.Evidence));
+            // Out of sequence, for the same reason: a preview it refreshes is still not where the catch-up starts.
+            Message(message.Id) is not null && Apply(message, transaction, isPreview: false, SeqRoute.Evidence, inSequence: false));
         transaction.Commit();
         return changed;
     }
@@ -415,6 +421,40 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
 
     /// <summary>The newest message of a chat — the row's preview.</summary>
     public MessageDto? Newest(long chatId) => Messages(chatId, limit: 1).FirstOrDefault();
+
+    /// <summary>
+    /// One chat's message catch-up cursor: the newest message delivered IN SEQUENCE, by a page or a live frame — never a
+    /// `GET /chats` preview, which would make `after_id` the server's newest id and skip everything before it for good,
+    /// nor any other copy that says nothing about the messages before it (docs/protocol.md, "Best-effort delivery",
+    /// step 3). Null when the chat holds nothing in sequence: there is no hole to fill, and opening it reads the newest
+    /// page.
+    /// </summary>
+    public long? CatchUpCursor(long chatId)
+    {
+        using var serialised = database.Hold();
+        using var command = database.Connection.CreateCommand();
+        // Down the chat's own index, stopping at the first row in sequence — which is almost always the newest — rather
+        // than a MAX over every row the chat holds, on every open.
+        command.CommandText =
+            "SELECT message_id FROM messages WHERE chat_id = $chat AND sequenced = 1 ORDER BY message_id DESC LIMIT 1";
+        command.Parameters.AddWithValue("$chat", chatId);
+        return command.ExecuteScalar() is long cursor ? cursor : null;
+    }
+
+    /// <summary>Every chat's <see cref="CatchUpCursor"/> at once — what a connection takes as it opens.</summary>
+    public IReadOnlyDictionary<long, long> CatchUpCursors()
+    {
+        using var serialised = database.Hold();
+        var cursors = new Dictionary<long, long>();
+        using var command = database.Connection.CreateCommand();
+        command.CommandText = "SELECT chat_id, MAX(message_id) FROM messages WHERE sequenced = 1 GROUP BY chat_id";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            cursors[reader.GetInt64(0)] = reader.GetInt64(1);
+        }
+        return cursors;
+    }
 
     // ---- who -------------------------------------------------------------
 
@@ -775,7 +815,8 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         MessageDto message,
         SqliteTransaction transaction,
         bool isPreview,
-        SeqRoute route = SeqRoute.CatchUpPage)
+        SeqRoute route = SeqRoute.CatchUpPage,
+        bool inSequence = true)
     {
         var held = Message(message.Id);
         var isNew = held is null;
@@ -803,12 +844,15 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
             INSERT INTO messages (message_id, chat_id, sender_id, client_msg_id, body, created_at,
                                   edited_at, edit_seq, reply_to_id, thread_root_id, reply_count,
                                   reaction_seq, reactions_json, attachments_json, mentions_json,
-                                  poll_json, call_json)
+                                  poll_json, call_json, sequenced)
             VALUES ($id, $chat, $sender, $client, $body, $created,
                     $edited, $editSeq, $reply, $root, $replies,
-                    $reactionSeq, $reactions, $attachments, $mentions, $poll, $call)
+                    $reactionSeq, $reactions, $attachments, $mentions, $poll, $call, $sequenced)
             ON CONFLICT(message_id) DO UPDATE SET
                 body = excluded.body, edited_at = excluded.edited_at, edit_seq = excluded.edit_seq,
+                -- In sequence once a page or a frame has delivered it, and a later preview, answer or thread read cannot take
+                -- that back.
+                sequenced = MAX(messages.sequenced, excluded.sequenced),
                 reply_count = excluded.reply_count,
                 -- These three are only overwritten by an answer that HAS them: a preview and a
                 -- page carry different amounts of one message, and absent is not empty.
@@ -846,6 +890,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
             message.Poll is null ? DBNull.Value : Wire.Encode(message.Poll));
         command.Parameters.AddWithValue("$call",
             message.Call is null ? DBNull.Value : Wire.Encode(message.Call));
+        command.Parameters.AddWithValue("$sequenced", inSequence && !isPreview ? 1 : 0);
         command.ExecuteNonQuery();
         // A NEW REPLY RAISES ITS ROOT'S COUNT, once, on whichever route first brings it: a live frame, the after_id
         // catch-up, or the answer to this device's own send. Never a page of history, an edit or a thread read — they

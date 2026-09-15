@@ -210,6 +210,44 @@ public class LiveConnectionTests : IDisposable
     }
 
     /// <summary>
+    /// THE CURSORS ARE TAKEN WHEN THE CONNECTION OPENS, before a frame on it can be applied (docs/protocol.md, "Best-effort
+    /// delivery", step 3). The pass starts later — here, only once the gate lets the socket run — and a live message that
+    /// landed in between is not where it starts: what was missed while the socket was down is below it.
+    /// </summary>
+    [Fact]
+    public async Task ThePassStartsFromWhatWasHeldWhenTheConnectionOpened()
+    {
+        var page = string.Join(",", Enumerable.Range(11, 20).Select(id =>
+            $$"""{"id": {{id}}, "chat_id": 42, "sender_id": 9, "body": "hi", "created_at": "2026-09-12T10:00:00Z"}"""));
+        var server = new Server()
+            .On("/auth/login", Token)
+            .Then("/me",
+                (HttpStatusCode.OK,
+                 """{"user": {"id": 7, "username": "anna", "display_name": "Anna"}, "blocked_user_ids": []}"""),
+                (HttpStatusCode.OK, Me))
+            .On("/families/mine", Family)
+            .On("/chats", """{"chats": [{"chat": {"id": 42, "kind": "family", "title": "The Smiths"}}]}""")
+            .On("/chats/42/messages", $$"""{"messages": [{{page}}]}""");
+        var rig = Build(server);
+        await rig.Session.SignInAsync("anna", "hunter2");
+        Assert.Equal(Gate.NoFamily, rig.Session.State.Gate);
+        rig.Chats.Replace([new ChatRowDto(new ChatDto(42, "family", "The Smiths"))]);
+        rig.Chats.Apply([.. Enumerable.Range(1, 10).Select(id => new MessageDto(id, 42, 9, null, "hi", "2026-09-12T10:00:00Z"))]);
+
+        // The connection opens with 10 held, and a live message lands on it...
+        rig.Wire.Comes();
+        rig.Chats.Apply(new MessageDto(30, 42, 9, null, "hi", "2026-09-12T10:00:00Z"), SeqRoute.LiveFrame);
+
+        // ...before the pass that connection asked for gets to run.
+        var report = await NextPass(rig.Live, () => _ = rig.Session.RefreshAsync());
+
+        Assert.True(report.Complete);
+        Assert.Contains("/api/v1/chats/42/messages?after_id=10&limit=50", rig.Handler.Asked);
+        Assert.All(Enumerable.Range(11, 20), id => Assert.NotNull(rig.Chats.Message(id)));
+        await rig.Live.DisposeAsync();
+    }
+
+    /// <summary>
     /// A pass that THREW is a pass that failed, and no more than that: the next connection starts
     /// another. A loop that stopped reading because one answer was nonsense would be a client
     /// that never recovers.

@@ -118,6 +118,24 @@ public class ConversationModelTests : IDisposable
     }
 
     /// <summary>
+    /// THE LIST'S PREVIEW IS NOT HOLDING THE CHAT: it is one trimmed row with nothing under it. The catch-up does not
+    /// page a chat that holds nothing in sequence, so opening it is what reads its newest page — or the window is one
+    /// bubble, and the next catch-up has nowhere to start from.
+    /// </summary>
+    [Fact]
+    public async Task OpeningAChatThatHoldsOnlyItsPreviewReadsItsNewestPage()
+    {
+        chats.Replace([new ChatRowDto(new ChatDto(Chat, "family", "The Smiths"), LastMessage: Message(50))]);
+        var rig = Build(new Server().On("/chats/42/messages", PageOf(50, 1)));
+
+        Assert.Null(await rig.Chat.OpenAsync());
+
+        Assert.Contains("/api/v1/chats/42/messages?limit=50", rig.Handler.Asked);
+        Assert.Equal(50, rig.Chat.Bubbles().Count);
+        Assert.Equal(50, chats.CatchUpCursor(Chat));
+    }
+
+    /// <summary>
     /// A short page IS the beginning of the chat. Saying otherwise leaves a button that asks the
     /// server for nothing for ever.
     /// </summary>

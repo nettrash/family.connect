@@ -100,6 +100,44 @@ public class ChatStoreTests : IDisposable
         Assert.Equal([50L, 10L], store.Messages(42).Select(message => message.Id));
     }
 
+    /// <summary>
+    /// THE CATCH-UP CURSOR IS WHAT WAS DELIVERED IN SEQUENCE — a page or a frame — and nothing else (docs/protocol.md,
+    /// "Best-effort delivery", step 3). A list preview, the REST answer to a send and a thread read are each one message
+    /// with nothing known under it; counted, the next `after_id` skips everything between.
+    /// </summary>
+    [Fact]
+    public void OnlyWhatWasDeliveredInSequenceMovesTheCatchUpCursor()
+    {
+        var store = Store();
+        store.Replace([Row(), Row(new ChatDto(43, "direct", "Bob"))]);
+        Assert.Null(store.CatchUpCursor(42));
+
+        store.Apply([Message(1), Message(10)]);
+        Assert.Equal(10, store.CatchUpCursor(42));
+
+        // The list read's preview is held, and draws the row — and is not the cursor.
+        store.Replace([Row(last: Message(20)), Row(new ChatDto(43, "direct", "Bob"), last: Message(30, chat: 43))]);
+        Assert.Equal(20, store.Newest(42)!.Id);
+        Assert.Equal(10, store.CatchUpCursor(42));
+        // A chat holding nothing but its preview has no cursor at all.
+        Assert.Null(store.CatchUpCursor(43));
+
+        // The answer to a send, and a thread read that refreshes the preview itself: neither.
+        store.Apply(Message(21), inSequence: false);
+        Assert.Equal(1, store.Refresh([Message(20, body: "Dinner at 8?", editSeq: 3)]));
+        Assert.Equal("Dinner at 8?", store.Message(20)!.Body);
+        Assert.Equal(10, store.CatchUpCursor(42));
+
+        // A page that delivers them puts them in sequence, and a later preview cannot take that back.
+        store.Apply([Message(20, body: "Dinner at 8?", editSeq: 3), Message(21)]);
+        Assert.Equal(21, store.CatchUpCursor(42));
+        store.Replace([Row(last: Message(21, body: "Dinner at 9?", editSeq: 4))]);
+        Assert.Equal("Dinner at 9?", store.Message(21)!.Body);
+        Assert.Equal(21, store.CatchUpCursor(42));
+
+        Assert.Equal(KeyValuePair.Create(42L, 21L), Assert.Single(store.CatchUpCursors()));
+    }
+
     private static ChatRowDto Row(
         ChatDto? chat = null,
         MessageDto? last = null,

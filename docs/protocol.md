@@ -3929,6 +3929,22 @@ apply it under the same rule the board catch-up uses: a note is written only whe
      instead lets a live message arriving mid-loop jump the cursor to its id, and every message
      between the last page and it is skipped — permanently, because `after_id` can never look
      back and history paging only ever goes older than the OLDEST row held.
+     **`max(id)` is of what was delivered IN SEQUENCE — a page (catch-up or history) or a frame on
+     the open connection — and of nothing else.** Not a step-2 preview: a client that stores
+     `last_message` beside the messages it pages must keep it out of the max, or `after_id` becomes the
+     server's newest id, the pages come back empty, and every message between what the device held and
+     that preview is never asked for — a hole nothing later repairs, which is how the Windows client
+     lost a day of a family chat. Nor the REST answer to a send or an edit, a copy from the edits feed,
+     or a thread read: each is one message that says nothing about the ones before it, and a send
+     answered while the socket was reconnecting opens the same hole. Such a row is held and drawn, and
+     counts once its frame or a page delivers it again. A chat that holds nothing in sequence has no
+     hole to fill: a client may leave it to history paging when it is opened (the newest page down), or
+     page it from `after_id=0`, which is correct and merely expensive.
+     **And the max is taken when the connection OPENS**, before any frame on it is applied — not when
+     step 3 is reached, several round trips later. A live message landing in between would otherwise
+     become the cursor, and everything missed while the socket was down would be skipped the same way;
+     a connection that opens again while a pass is waiting keeps the EARLIER of the two, and a pass that
+     could not finish hands its starting cursors to the next one.
      Then, when the chat's `max_reaction_seq` from step 2 exceeds the locally stored reaction
      cursor: `GET /chats/{id}/reactions?after_seq=<stored cursor>` looped until a short page,
      applied per message under the `reaction_seq` guard. The stored cursor advances with every

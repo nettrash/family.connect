@@ -101,7 +101,8 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board)
                 break;
 
             case ServerFrame.MessageEdited edited:
-                chats.Apply(edited.Value, SeqRoute.Evidence);
+                // Out of sequence: the edited message may be one this device never held.
+                chats.Apply(edited.Value, SeqRoute.Evidence, inSequence: false);
                 if (edited.Value.EditSeq is { } editSeq)
                 {
                     chats.Advance(edited.Value.ChatId, editSeq: editSeq);

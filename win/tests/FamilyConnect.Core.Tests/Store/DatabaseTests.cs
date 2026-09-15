@@ -38,7 +38,7 @@ public class DatabaseTests : IDisposable
     {
         using var database = Database.Open(Path_("fresh.db"));
         Assert.Equal(Database.SchemaVersion, database.UserVersion);
-        Assert.Equal(1, Database.SchemaVersion);
+        Assert.Equal(2, Database.SchemaVersion);
         Assert.Equal(
             ["blocked", "chats", "gone", "members", "messages", "meta", "notes", "outbox"],
             database.Tables());
@@ -85,6 +85,41 @@ public class DatabaseTests : IDisposable
         {
             Assert.Equal(fresh.Columns(table), stepped.Columns(table));
         }
+    }
+
+    /// <summary>
+    /// STEP 2 READS THE MESSAGES AGAIN. A version-1 cache counted each chat's list preview in its catch-up cursor, and the
+    /// holes that left cannot be found from what is held — so its messages go, and are paged back in. The outbox is the
+    /// one table holding what the server has never seen, and it stays; so do the chats.
+    /// </summary>
+    [Fact]
+    public void AVersionOneCacheLosesItsMessagesAndKeepsItsOutbox()
+    {
+        var path = Path_("one.db");
+        using (var one = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}"))
+        {
+            one.Open();
+            foreach (var statement in Migrations.All[0].Append(
+                         "INSERT INTO chats (chat_id, kind, title) VALUES (42, 'family', 'The Smiths')").Append(
+                         "INSERT INTO messages (message_id, chat_id, sender_id, body, created_at) VALUES (20, 42, 9, 'hi', 0)").Append(
+                         "INSERT INTO outbox (client_msg_id, chat_id, body, queued_at) VALUES ('k', 42, 'Dinner at 7?', 0)").Append(
+                         "PRAGMA user_version = 1"))
+            {
+                using var command = one.CreateCommand();
+                command.CommandText = statement;
+                command.ExecuteNonQuery();
+            }
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+        using var migrated = Database.Open(path);
+        Assert.Equal(Database.SchemaVersion, migrated.UserVersion);
+        var chats = new ChatStore(migrated);
+        Assert.Empty(chats.Messages(42));
+        Assert.Null(chats.CatchUpCursor(42));
+        Assert.NotNull(chats.Chat(42));
+        Assert.Equal("Dinner at 7?", Assert.Single(new OutboxStore(migrated).All()).Body);
+        Assert.Contains(migrated.Columns("messages"), column => column.StartsWith("sequenced", StringComparison.Ordinal));
     }
 
     /// <summary>

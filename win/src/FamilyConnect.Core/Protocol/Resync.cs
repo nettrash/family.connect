@@ -36,6 +36,50 @@ public sealed class Resync(
     /// <summary>How many rows a catch-up page asks for. The server's own default.</summary>
     public const int PageSize = 50;
 
+    private readonly object snapshotGate = new();
+
+    /// <summary>The message cursors taken when a connection opened, waiting for the pass that uses them.</summary>
+    private IReadOnlyDictionary<long, long>? pending;
+
+    /// <summary>
+    /// Take every chat's message cursor NOW — as a connection OPENS, before any frame on it is applied (docs/protocol.md,
+    /// "Best-effort delivery", step 3). The pass reaches the messages several round trips later, and a live message
+    /// landing in between would otherwise become the cursor: everything missed while the socket was down would be skipped,
+    /// for good. A connection that opens while a pass is still waiting keeps the EARLIER cursor of the two.
+    /// </summary>
+    public void Snapshot()
+    {
+        var now = chats.CatchUpCursors();
+        lock (snapshotGate)
+        {
+            pending = Earliest(pending, now);
+        }
+    }
+
+    /// <summary>Per chat, the lower of two sets of cursors — the one that asks for more, never for less.</summary>
+    private static IReadOnlyDictionary<long, long>? Earliest(IReadOnlyDictionary<long, long>? a, IReadOnlyDictionary<long, long>? b)
+    {
+        if (a is null || b is null)
+        {
+            return a ?? b;
+        }
+        var merged = new Dictionary<long, long>(a);
+        foreach (var (chat, cursor) in b)
+        {
+            merged[chat] = merged.TryGetValue(chat, out var other) ? Math.Min(cursor, other) : cursor;
+        }
+        return merged;
+    }
+
+    /// <summary>
+    /// Handed-over cursors, held to what the cache holds in sequence NOW: never above it, and none for a chat it holds
+    /// nothing of. A cursor only grows, so this changes nothing — except after the cache was wiped (a sign-out, another
+    /// account, another server), where a stranger's cursor would page a chat from past what its new messages reach.
+    /// </summary>
+    private static Dictionary<long, long> HeldTo(IReadOnlyDictionary<long, long> handed, IReadOnlyDictionary<long, long> now) =>
+        handed.Where(cursor => now.ContainsKey(cursor.Key))
+            .ToDictionary(cursor => cursor.Key, cursor => Math.Min(cursor.Value, now[cursor.Key]));
+
     /// <summary>What one pass did, for a log and for a test.</summary>
     public sealed record Report(
         bool Flushed = false,
@@ -54,9 +98,39 @@ public sealed class Resync(
     }
 
     /// <summary>
-    /// One pass. Answers what it managed; a read that fails stops the READS and nothing else.
+    /// One pass. Answers what it managed; a read that fails stops the READS and nothing else — and hands the cursors it
+    /// started from to the next pass, which would otherwise begin past whatever this one did not reach.
     /// </summary>
     public async Task<Report> RunAsync(CancellationToken ct = default)
+    {
+        IReadOnlyDictionary<long, long> taken;
+        lock (snapshotGate)
+        {
+            // No connection handed its cursors over: this pass takes its own, now — before its round trips give a live
+            // frame the time to land. Cursors that were handed over are held to what the cache still holds.
+            var now = chats.CatchUpCursors();
+            taken = pending is null ? now : HeldTo(pending, now);
+            pending = null;
+        }
+        Report? report = null;
+        try
+        {
+            report = await PassAsync(taken, ct).ConfigureAwait(false);
+            return report;
+        }
+        finally
+        {
+            if (report is not { Complete: true })
+            {
+                lock (snapshotGate)
+                {
+                    pending = Earliest(taken, pending);
+                }
+            }
+        }
+    }
+
+    private async Task<Report> PassAsync(IReadOnlyDictionary<long, long> taken, CancellationToken ct)
     {
         var report = new Report();
 
@@ -118,7 +192,7 @@ public sealed class Resync(
         // 3. Per chat: the messages, then the three sequence catch-ups.
         foreach (var row in rows)
         {
-            var caught = await CatchUpAsync(row, ct).ConfigureAwait(false);
+            var caught = await CatchUpAsync(row, taken, ct).ConfigureAwait(false);
             report = report with
             {
                 Messages = report.Messages + caught.Messages,
@@ -143,15 +217,18 @@ public sealed class Resync(
     }
 
     /// <summary>One chat's four loops: the messages, then the three sequence feeds.</summary>
-    private async Task<Report> CatchUpAsync(ChatRowDto row, CancellationToken ct)
+    private async Task<Report> CatchUpAsync(ChatRowDto row, IReadOnlyDictionary<long, long> taken, CancellationToken ct)
     {
         var report = new Report();
         var chatId = row.Chat.Id;
 
-        // THE CURSOR IS READ ONCE. From here on it is advanced by what the pages return, and
-        // never re-read from the store.
-        var cursor = chats.Messages(chatId, limit: 1).FirstOrDefault()?.Id ?? 0;
-        while (true)
+        // THE CURSOR IS READ ONCE, and before the pass: taken as the connection opened, or as the pass began — from what
+        // was delivered in sequence, never from the list preview step 2 just stored. From here on it is advanced by what
+        // the pages return, and never re-read from the store. A chat that held nothing in sequence has no hole to fill:
+        // history paging reads it from the newest page when it is opened.
+        long? start = taken.TryGetValue(chatId, out var held) ? held : null;
+        var cursor = start ?? 0;
+        while (start is not null)
         {
             var page = await api.MessagesAfter(chatId, cursor, PageSize, ct).ConfigureAwait(false);
             if (!page.Ok || page.Value is null)
@@ -245,7 +322,9 @@ public sealed class Resync(
                 {
                     break;
                 }
-                chats.Apply(edited, SeqRoute.Evidence);
+                // Out of sequence: an edited message may be one this device never held, and it says nothing about the
+                // messages before it.
+                chats.Apply(edited, SeqRoute.Evidence, inSequence: false);
                 report = report with { Edits = report.Edits + edited.Length };
                 // A message in this feed carries the seq that put it here — an absent one is a
                 // server breaking its own contract, and reads as 0, which cannot move the cursor
