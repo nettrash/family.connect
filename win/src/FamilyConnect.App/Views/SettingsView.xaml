@@ -243,6 +243,22 @@
                             <ToggleSwitch x:Name="LinkPreviewSwitch" Grid.Column="2" MinWidth="0" VerticalAlignment="Center" />
                         </Grid>
                     </Border>
+                    <!-- The other one: a map on a shared location is drawn from OpenStreetMap's tiles, and says so. -->
+                    <Border Style="{StaticResource Card}">
+                        <Grid Style="{StaticResource Row}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <FontIcon Style="{StaticResource RowIcon}" Glyph="&#xE707;" />
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                                <TextBlock x:Name="MapPreviewTitle" TextWrapping="Wrap" />
+                                <TextBlock x:Name="MapPreviewFootnote" Style="{StaticResource Footnote}" />
+                            </StackPanel>
+                            <ToggleSwitch x:Name="MapPreviewSwitch" Grid.Column="2" MinWidth="0" VerticalAlignment="Center" />
+                        </Grid>
+                    </Border>
                     <HyperlinkButton x:Name="PrivacyLink" Style="{StaticResource LinkRow}">
                         <Grid ColumnSpacing="16">
                             <Grid.ColumnDefinitions>

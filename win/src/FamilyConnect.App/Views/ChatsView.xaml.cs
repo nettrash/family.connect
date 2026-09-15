@@ -301,6 +301,7 @@ public sealed partial class ChatsView : UserControl
         onPreviews = QueueRedraw;
         connection.Previews.Landed += onPreviews;
         LinkPreviewSetting.Changed += onPreviews;
+        MapPreviewSetting.Changed += onPreviews;
         connection.Router.Arrived += onArrived;
         connection.Router.Edited += onEdited;
         connection.Router.ChatChanged += onChat;
@@ -341,6 +342,7 @@ public sealed partial class ChatsView : UserControl
         connection.Answers.Changed -= onMarks;
         connection.Previews.Landed -= onPreviews;
         LinkPreviewSetting.Changed -= onPreviews;
+        MapPreviewSetting.Changed -= onPreviews;
         // A microphone nothing can reach is a microphone left on.
         CancelRecording();
         recordingTimer?.Stop();
@@ -727,7 +729,7 @@ public sealed partial class ChatsView : UserControl
             $"{Field}{callBusy}{Field}{connection.Session.State.CallsEnabled}{Field}{connection.Session.State.VideoCallsEnabled}" +
             // A card under a link appears once its fetch lands, and not at all while the reader has cards switched off —
             // THIS chat's cards: one landing for a message somewhere else is no reason to rebuild this one.
-            $"{Field}{PreviewMarks(bubbles)}" +
+            $"{Field}{PreviewMarks(bubbles)}{Field}{MapPreviewSetting.Enabled}" +
             $"{Field}{DateOnly.FromDateTime(DateTime.Now)}{Row}{drawn}";
         if (drawn == conversationDrawn)
         {
@@ -2008,7 +2010,7 @@ public sealed partial class ChatsView : UserControl
             bubble.Message.ReplyCount, bubble.Reads, connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0))));
         drawn = $"{chain.RootId}{Field}{chain.Loaded}{Field}{chain.Failure?.Code}{Field}{string.Join(',', connection.Chats.Blocked())}" +
             $"{Field}{connection.Chats.Members().Count}{Field}{connection.Answers.Version}{Field}{DateOnly.FromDateTime(DateTime.Now)}" +
-            $"{Field}{PreviewMarks(bubbles)}" +
+            $"{Field}{PreviewMarks(bubbles)}{Field}{MapPreviewSetting.Enabled}" +
             $"{Row}{drawn}{Row}{string.Join(Row, pending.Select(row => string.Join(Field, row.ClientMsgId, row.Failed)))}";
         if (drawn == threadDrawn)
         {
@@ -2673,9 +2675,18 @@ public sealed partial class ChatsView : UserControl
             numbers.Foreground = ink;
             away.Foreground = ink;
         }
+        // The map above the row, where there is a place and the reader has maps on: drawing it is asking OpenStreetMap.
+        FrameworkElement content = row;
+        if (place is { } mapped && MapPreviewSetting.Enabled)
+        {
+            var stacked = new StackPanel { Spacing = 8 };
+            stacked.Children.Add(MapElement(mapped.Latitude, mapped.Longitude));
+            stacked.Children.Add(row);
+            content = stacked;
+        }
         var button = new Button
         {
-            Content = row,
+            Content = content,
             Width = 260,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             Padding = new Thickness(8, 6, 10, 6),
@@ -2699,6 +2710,120 @@ public sealed partial class ChatsView : UserControl
             }
         };
         return button;
+    }
+
+    /// <summary>The map's size inside a location's 260-pixel card, less the card's padding and border.</summary>
+    private const double MapWidth = 240;
+    private const double MapHeight = 132;
+
+    /// <summary>Map tiles decoded once, so a redraw reuses them instead of decoding (and flashing) again.</summary>
+    private readonly Dictionary<string, BitmapImage> mapPictures = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// A shared place's map, as the Apple apps draw it in the bubble: the streets around it with the place at the middle,
+    /// rounded, not interactive — a pannable map inside a scrolling conversation fights every drag — and credited to
+    /// OpenStreetMap, as its licence requires. Tiles appear as they arrive; before then the square is a quiet grey.
+    /// </summary>
+    private FrameworkElement MapElement(double latitude, double longitude)
+    {
+        var resources = Application.Current.Resources;
+        var canvas = new Canvas
+        {
+            Width = MapWidth,
+            Height = MapHeight,
+            Background = (Brush)resources["SubtleFillColorSecondaryBrush"],
+            Clip = new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0, MapWidth, MapHeight) },
+        };
+        foreach (var tile in MapView.Tiles(latitude, longitude, MapWidth, MapHeight))
+        {
+            var image = new Image { Width = MapView.TileSize, Height = MapView.TileSize, Stretch = Stretch.Fill };
+            Canvas.SetLeft(image, tile.Left);
+            Canvas.SetTop(image, tile.Top);
+            canvas.Children.Add(image);
+            _ = ShowTileAsync(image, tile);
+        }
+        // The place: a red dot where the pin stands, ringed in white so it reads on any colour of map.
+        var ring = new Microsoft.UI.Xaml.Shapes.Ellipse
+        {
+            Width = 18,
+            Height = 18,
+            Fill = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(0xFF, 0xFF, 0xFF, 0xFF)),
+        };
+        Canvas.SetLeft(ring, (MapWidth / 2) - 9);
+        Canvas.SetTop(ring, (MapHeight / 2) - 9);
+        canvas.Children.Add(ring);
+        var dot = new Microsoft.UI.Xaml.Shapes.Ellipse
+        {
+            Width = 12,
+            Height = 12,
+            Fill = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(0xFF, 0xE5, 0x39, 0x35)),
+        };
+        Canvas.SetLeft(dot, (MapWidth / 2) - 6);
+        Canvas.SetTop(dot, (MapHeight / 2) - 6);
+        canvas.Children.Add(dot);
+
+        var map = new Grid { Width = MapWidth, Height = MapHeight };
+        map.Children.Add(canvas);
+        // OpenStreetMap's licence asks for its name on every map drawn from it. A proper name, the same in every language.
+        map.Children.Add(new Border
+        {
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Padding = new Thickness(5, 1, 5, 2),
+            CornerRadius = new CornerRadius(4, 0, 0, 0),
+            Background = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(0xC8, 0xFF, 0xFF, 0xFF)),
+            Child = new TextBlock
+            {
+                Text = "© OpenStreetMap contributors",
+                FontSize = 9,
+                Foreground = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(0xFF, 0x33, 0x33, 0x33)),
+            },
+        });
+        try
+        {
+            // Rounded like every other picture in a bubble. A Grid's corner radius rounds its background only, so the tiles
+            // are clipped by the composition layer instead.
+            var visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(map);
+            var geometry = visual.Compositor.CreateRoundedRectangleGeometry();
+            geometry.Size = new System.Numerics.Vector2((float)MapWidth, (float)MapHeight);
+            geometry.CornerRadius = new System.Numerics.Vector2(8, 8);
+            visual.Clip = visual.Compositor.CreateGeometricClip(geometry);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"rounding a map: {e.GetType().Name}");
+        }
+        // Decorative: the card's own name already says the place and its coordinates.
+        AutomationProperties.SetAccessibilityView(map, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        return map;
+    }
+
+    private async Task ShowTileAsync(Image image, MapTile tile)
+    {
+        try
+        {
+            if (!mapPictures.TryGetValue(tile.Key, out var picture))
+            {
+                if (await services.Maps.BytesAsync(tile) is not { } bytes || gone)
+                {
+                    return;
+                }
+                if (await DecodeAsync(bytes) is not { } decoded)
+                {
+                    return;
+                }
+                if (mapPictures.Count >= 96)
+                {
+                    mapPictures.Remove(mapPictures.Keys.First());
+                }
+                picture = mapPictures[tile.Key] = decoded;
+            }
+            image.Source = picture;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a map tile: {e.GetType().Name}");
+        }
     }
 
     private async Task SaveAttachmentAsync(AttachmentDto attachment)

@@ -217,14 +217,19 @@ window and exits — the share belongs to it — and only a copy whose marker wa
 (`ShareInbox`). The window asks "Send to" (the family first, never the assistant's chat) and stages the
 files in that chat's composer; nothing is sent until the reader presses Send.
 
+**A shared location draws a map**, as the Apple apps draw one with MapKit — from OpenStreetMap's
+tiles, because Windows has no map of its own to ask. That is a privacy trade and it is said as one: a
+tile is the map around the place a family member shared, so drawing it tells OpenStreetMap roughly
+where that place is. "Map Previews" in Settings (on, as on the Mac) turns it off, and then nothing is
+asked and the bubble keeps its pin, its name and its link out. The tiles follow OpenStreetMap's tile
+policy — the app names itself, every tile is kept on disk for a month, a failed tile is not asked for
+again for five minutes, and every map carries the attribution — and where each tile falls is
+`MapView`, tested (`MapTiles` fetches, `MapPreviewSetting` is the switch).
+
 What is NOT here, and why:
 
 - **Push.** A closed app hears nothing (see "No push" above); the notification area is the answer
   until a `windows` platform and a WNS sender exist.
-- **A map in a location message.** The Apple apps draw one with MapKit. Windows has no map of its
-  own, and drawing one means sending the coordinate a family member shared to a third party (Azure
-  Maps, or OpenStreetMap's tile servers). The web client makes the same choice this port does: the
-  pin, the name, and a link that hands the place to a map the reader opens. Nothing leaves the box.
 - **A chat or a call in a window of its own.** The Mac can; here a call is the card in the corner.
 - **Upload progress as a number.** No client has it; a sending bubble says "Sending…".
 
@@ -333,7 +338,7 @@ Things chosen for the window that nettrash has not decided yet, and where they l
 - **Calls through WebView2** — the browser engine's own WebRTC in a page of the app's
   (`Assets/Call/call.html`), driven by `CallEngine`; the engine starts on the first call and is kept.
 - **Closing to the notification area**, on by default.
-- **No map in a location message** (see "What is NOT here").
+- **Maps from OpenStreetMap's tiles**, behind Map Previews, on by default.
 
 ## The oracle
 
@@ -361,6 +366,6 @@ one Windows face per note "hand" — Segoe UI, Georgia, Cascadia Mono, Segoe Pri
 nothing is bundled and nothing is synthesised.
 
 Still nettrash's to answer (see the issue): push (WNS, or the socket and the notification area as
-now), a map in location messages (a third party would see the coordinate), the minimum Windows
-build, and whether it ships through the Store or as a signed installer. Calls were answered by
-building them on WebView2.
+now), the minimum Windows build, and whether it ships through the Store or as a signed installer.
+Calls were answered by building them on WebView2, and the map in a location message by drawing it
+from OpenStreetMap's tiles.
