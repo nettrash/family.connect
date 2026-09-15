@@ -36,8 +36,12 @@ public static class StoreShots {
 [StoreShots]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing, System.Windows.Forms
 
-$App = 'shell:AppsFolder\nettrash.FamilyConnect_1ckkyfgpab2vc!App'
-$Data = Join-Path $env:LOCALAPPDATA 'Packages\nettrash.FamilyConnect_1ckkyfgpab2vc\LocalCache\Local\FamilyConnect'
+# The installed package, found rather than written down: its family name follows the identity in Package.appxmanifest,
+# and a build under an older identity may still be installed beside it.
+$package = @(Get-AppxPackage -Name 'nttrsh.FamilyConnect') + @(Get-AppxPackage -Name '*.FamilyConnect') | Where-Object { $_ } | Select-Object -First 1
+if (-not $package) { throw 'Family Connect is not installed - run it once with dotnet run first' }
+$App = "shell:AppsFolder\$($package.PackageFamilyName)!App"
+$Data = Join-Path $env:LOCALAPPDATA "Packages\$($package.PackageFamilyName)\LocalCache\Local\FamilyConnect"
 $Setting = Join-Path $Data 'server.txt'
 $Kept = "$Setting.before-screenshots"
 

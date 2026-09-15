@@ -15,11 +15,13 @@ are measured with `win/store/count.ps1`, not estimated.
 
 ## Product name
 
-Family Connect
+FamilyConnect
 
-*Reserved in Partner Center → Apps and games → New product → MSIX or PWA app. The same three identity values then go
-into `win/src/FamilyConnect.App/Package.appxmanifest` (see the checklist): the placeholder `nettrash.FamilyConnect` /
-`CN=nettrash` there will not pass certification.*
+*The name reserved in Partner Center, written as one word because that is how it is reserved; the manifest's
+`<Properties><DisplayName>` carries the same string, which certification matches against the reservation. The copy
+below still says "Family Connect" in prose, as the App Store and Google Play listings do, and the Start menu and tiles keep
+"Family Connect" too. The package identity in `win/src/FamilyConnect.App/Package.appxmanifest` is Partner Center's own
+(Product identity): `nttrsh.FamilyConnect`, publisher `CN=28EC49E1-8A19-45EF-A576-FF596547E069`, shown as `nttrsh`.*
 
 ## Short description (≤ 1000; keep ≤ 270)
 
@@ -171,7 +173,8 @@ so add, in its own words:
 
 ## Submission checklist
 
-- [ ] **Reserve the name** "Family Connect" in Partner Center and copy **Package/Identity/Name**, **Publisher** and
+- [x] **Reserve the name** — reserved as "FamilyConnect".
+- [x] **Copy the identity** — `nttrsh.FamilyConnect`, `CN=28EC49E1-8A19-45EF-A576-FF596547E069`, `nttrsh`. From Partner Center → Product identity: **Package/Identity/Name**, **Publisher** and
       **PublisherDisplayName** from Product identity into `Package.appxmanifest` (`<Identity Name=… Publisher=…>` and
       `<PublisherDisplayName>`). Keep `Version` hand-written.
 - [ ] **Build the Store package pointed at the default server**, both architectures, unsigned (the Store signs it):

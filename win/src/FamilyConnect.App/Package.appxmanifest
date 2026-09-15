@@ -2,11 +2,13 @@
 <!--
   MSIX manifest for Family Connect.
 
-  THE IDENTITY IS A PLACEHOLDER. There is no Partner Center product for this app yet, and where it
-  ships (the Store or a signed installer) is still nettrash's decision on issue #64. When a product
-  is reserved, Name, Publisher and PublisherDisplayName come from Partner Center ▸ Product identity
-  exactly as written there (md.win learned the Store validates all three against the account),
-  and <DisplayName> becomes the reserved name.
+  THE IDENTITY IS PARTNER CENTER'S. The product is reserved as "FamilyConnect", and Name, Publisher and
+  PublisherDisplayName are copied from Partner Center ▸ Product identity exactly as written there
+  (md.win learned the Store validates all three against the account). <DisplayName> is the reserved
+  name; the Start menu and the tiles keep "Family Connect" (uap:VisualElements), as the other apps do.
+
+  Changing the identity makes a different app to Windows: a build under a new identity installs beside
+  the old one, with its own credential locker, cache and settings.
 
   Version is written by hand and never by a build.
 -->
@@ -18,12 +20,13 @@
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
   IgnorableNamespaces="uap rescap">
   <Identity
-    Name="nettrash.FamilyConnect"
-    Publisher="CN=nettrash"
+    Name="nttrsh.FamilyConnect"
+    Publisher="CN=28EC49E1-8A19-45EF-A576-FF596547E069"
     Version="1.0.0.0" />
   <Properties>
-    <DisplayName>Family Connect</DisplayName>
-    <PublisherDisplayName>nettrash</PublisherDisplayName>
+    <!-- The name reserved in Partner Center, exactly as reserved: certification matches this string against it. -->
+    <DisplayName>FamilyConnect</DisplayName>
+    <PublisherDisplayName>nttrsh</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
     <Description>Your family's own chat, on your family's own server.</Description>
   </Properties>
