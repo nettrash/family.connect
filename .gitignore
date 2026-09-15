@@ -60,5 +60,7 @@ web/Cargo.lock
 # follows the same rule the other two Rust trees here follow (an application, not a library).
 win/**/bin/
 win/**/obj/
+# The Microsoft Store packages win/store/build-store-packages.ps1 writes: ~80 MB each, rebuilt from source.
+win/AppPackages/
 win/tools/board-oracle/target/
 win/tools/board-oracle/Cargo.lock
