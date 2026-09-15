@@ -70,6 +70,7 @@ public sealed partial class SettingsView : UserControl
         StatisticsHeading.Text = say.Get("Statistics");
         NotificationsHeading.Text = say.Get("Notifications");
         NotifyTitle.Text = say.Get("Tell me when a message arrives");
+        KeepRunningFootnote.Text = say.Get("Family Connect stays in the notification area, so messages and calls still reach you. Quit it from its icon there.");
         PrivacyHeading.Text = say.Get("Privacy");
         ServerHeading.Text = say.Get("Server");
         ServerAddressLabel.Text = say.Get("Address");
@@ -90,6 +91,7 @@ public sealed partial class SettingsView : UserControl
             (LogOutButton, LogOutText, say.Get("Log Out")),
             (DeleteButton, DeleteText, say.Get("Delete Account…")),
             (NotifySwitch, NotifyTitle, NotifyTitle.Text),
+            (KeepRunningSwitch, KeepRunningTitle, say.Get("Keep running when the window is closed")),
             (LinkPreviewSwitch, LinkPreviewTitle, LinkPreviewTitle.Text),
         })
         {
@@ -118,6 +120,13 @@ public sealed partial class SettingsView : UserControl
             if (!drawingSwitch)
             {
                 LinkPreviewSetting.Enabled = LinkPreviewSwitch.IsOn;
+            }
+        };
+        KeepRunningSwitch.Toggled += (_, _) =>
+        {
+            if (!drawingSwitch)
+            {
+                KeepRunningSetting.Enabled = KeepRunningSwitch.IsOn;
             }
         };
         LogOutButton.Click += (_, _) => _ = LogOutAsync();
@@ -157,6 +166,7 @@ public sealed partial class SettingsView : UserControl
         NotifySwitch.IsEnabled = Toasts.Available;
         NotifySwitch.IsOn = Toasts.Available && NotifySetting.Wanted;
         LinkPreviewSwitch.IsOn = LinkPreviewSetting.Enabled;
+        KeepRunningSwitch.IsOn = KeepRunningSetting.Enabled;
         drawingSwitch = false;
         NotifyFootnote.Text = Toasts.Available
             ? say.Get("While this window is not in front, a notification says who wrote — never what they wrote.")

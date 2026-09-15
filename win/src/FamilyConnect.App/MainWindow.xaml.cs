@@ -17,6 +17,10 @@ public sealed partial class MainWindow : Window
     private readonly AppServices services;
     private readonly DispatcherQueueTimer flushTimer;
     private readonly WindowPlacement placement;
+
+    /// <summary>The notification area icon a closed window leaves behind, and whether a close is the app quitting.</summary>
+    private readonly TrayIcon? tray;
+    private bool quitting;
     private Connection? connection;
 
     /// <summary>Calls: the media page and the card are the window's, kept across servers; the engine and its frames are the connection's.</summary>
@@ -50,6 +54,18 @@ public sealed partial class MainWindow : Window
         SystemBackdrop = new MicaBackdrop();
         // Where it was left, or a first size scaled for this screen — never a pixel count, which at 200% is half a window.
         placement = WindowPlacement.Apply(AppWindow, services.WindowHandle);
+        // Closing the window hides it while the app goes on listening — as a Mac app stays in the Dock — and the icon in
+        // the notification area brings it back or quits. Without the icon a close is a quit, never a window nobody can reach.
+        try
+        {
+            tray = new TrayIcon(
+                "Family Connect", services.Say.Get("Open Family Connect"), services.Say.Get("Quit Family Connect"), BringForward, Quit);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"the notification area icon: {e.GetType().Name}");
+        }
+        AppWindow.Closing += OnClosing;
         WindowIcon.Apply(AppWindow);
         BuildRail();
         callMedia = new Services.WebViewCallMedia(CallMediaView);
@@ -154,6 +170,10 @@ public sealed partial class MainWindow : Window
         var title = chatting ? attention!.Title : "Family Connect";
         Title = title;
         TitleText.Text = title;
+        if (tray is not null)
+        {
+            tray.Tip = title;
+        }
         Toasts.Badge(chatting ? attention!.Unread : 0);
         Badge(chatsItem, chatting ? attention!.Unread : 0);
         Badge(boardItem, chatting && connection is { } live ? live.Board.Unread() : 0);
@@ -162,7 +182,7 @@ public sealed partial class MainWindow : Window
     /// <summary>A clicked notification: to the front, and to the chat it was about.</summary>
     internal void OpenFromToast(IReadOnlyDictionary<string, string> arguments)
     {
-        Activate();
+        BringForward();
         if (ToastArguments.Parse(arguments) is { ChatId: { } chatId })
         {
             ShowChats();
@@ -438,6 +458,38 @@ public sealed partial class MainWindow : Window
 
     private static string CallTag(string callId) => $"call-{callId}";
 
+    /// <summary>To the front — out of the notification area first, when that is where the window went.</summary>
+    internal void BringForward()
+    {
+        if (!AppWindow.IsVisible)
+        {
+            AppWindow.Show();
+        }
+        Activate();
+    }
+
+    /// <summary>The icon's Quit: the one close that really closes.</summary>
+    private void Quit()
+    {
+        quitting = true;
+        Close();
+    }
+
+    /// <summary>
+    /// The title bar's close, Alt+F4, the taskbar's Close window: hidden, still listening — unless the reader turned that
+    /// off, or there is no icon to come back from.
+    /// </summary>
+    private void OnClosing(Microsoft.UI.Windowing.AppWindow sender, Microsoft.UI.Windowing.AppWindowClosingEventArgs args)
+    {
+        if (quitting || tray is not { Shown: true } || !KeepRunningSetting.Enabled)
+        {
+            return;
+        }
+        args.Cancel = true;
+        placement.Save();
+        sender.Hide();
+    }
+
     /// <summary>A step nobody awaits, whose failure is written down rather than lost with its task.</summary>
     private static async Task Logged(Task work, string what)
     {
@@ -474,6 +526,7 @@ public sealed partial class MainWindow : Window
     private void OnClosed(object sender, WindowEventArgs args)
     {
         placement.Save();
+        tray?.Dispose();
         flushTimer.Stop();
         Detach();
         Toasts.Badge(0);
