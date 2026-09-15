@@ -615,7 +615,7 @@ public sealed partial class SettingsView : UserControl
         }
         catch (Exception)
         {
-            return typeof(SettingsView).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+            return typeof(SettingsView).Assembly.GetName().Version?.ToString(3) ?? "1.1.0";
         }
     }
 }
