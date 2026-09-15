@@ -19,6 +19,9 @@ internal sealed class AppServices : IAsyncDisposable
     /// <summary>For "Connect": a short wait, because a host that never answers is the common failure.</summary>
     public HttpClient Probe { get; } = new() { Timeout = TimeSpan.FromSeconds(15) };
 
+    /// <summary>The maps under shared locations: the same tiles whichever server the family is on.</summary>
+    public MapTiles Maps { get; } = new();
+
     /// <summary>Whether the window is the one the reader is looking at — a read is reported only then.</summary>
     public bool Foreground { get; set; }
 
@@ -62,5 +65,6 @@ internal sealed class AppServices : IAsyncDisposable
             await current.DisposeAsync();
         }
         Probe.Dispose();
+        Maps.Dispose();
     }
 }

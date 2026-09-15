@@ -77,6 +77,7 @@ public sealed partial class SettingsView : UserControl
         ServerAddressValue.Text = connection.Server.AbsoluteUri;
         LinkPreviewTitle.Text = say.Get("Link Previews");
         LinkPreviewFootnote.Text = say.Get("Shows a preview under links in messages. Building one asks the linked website for its title and image, so that site sees a request from this device.");
+        MapPreviewFootnote.Text = say.Get("Shows a map on a shared location. Drawing one asks OpenStreetMap for the map around that place, so OpenStreetMap sees a request from this device. With maps off, a shared location still shows its pin and opens in a map when you click it.");
         PrivacyLink.NavigateUri = new Uri(PrivacyUrl);
         SupportLink.NavigateUri = new Uri(SupportUrl);
         // Rows drawn as a glyph, words and a chevron: the words go on the row's text, and are still the control's name to a
@@ -93,6 +94,7 @@ public sealed partial class SettingsView : UserControl
             (NotifySwitch, NotifyTitle, NotifyTitle.Text),
             (KeepRunningSwitch, KeepRunningTitle, say.Get("Keep running when the window is closed")),
             (LinkPreviewSwitch, LinkPreviewTitle, LinkPreviewTitle.Text),
+            (MapPreviewSwitch, MapPreviewTitle, say.Get("Map Previews")),
         })
         {
             text.Text = words;
@@ -127,6 +129,13 @@ public sealed partial class SettingsView : UserControl
             if (!drawingSwitch)
             {
                 KeepRunningSetting.Enabled = KeepRunningSwitch.IsOn;
+            }
+        };
+        MapPreviewSwitch.Toggled += (_, _) =>
+        {
+            if (!drawingSwitch)
+            {
+                MapPreviewSetting.Enabled = MapPreviewSwitch.IsOn;
             }
         };
         LogOutButton.Click += (_, _) => _ = LogOutAsync();
@@ -167,6 +176,7 @@ public sealed partial class SettingsView : UserControl
         NotifySwitch.IsOn = Toasts.Available && NotifySetting.Wanted;
         LinkPreviewSwitch.IsOn = LinkPreviewSetting.Enabled;
         KeepRunningSwitch.IsOn = KeepRunningSetting.Enabled;
+        MapPreviewSwitch.IsOn = MapPreviewSetting.Enabled;
         drawingSwitch = false;
         NotifyFootnote.Text = Toasts.Available
             ? say.Get("While this window is not in front, a notification says who wrote — never what they wrote.")
