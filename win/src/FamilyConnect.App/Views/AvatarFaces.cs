@@ -30,7 +30,11 @@ namespace FamilyConnect.App.Views;
 /// </remarks>
 internal sealed class AvatarFaces(Connection connection)
 {
-    private readonly Dictionary<string, BitmapImage> pictures = [];
+    /// <summary>
+    /// ONE FETCH PER PICTURE, however many rows draw it at once: the load is kept, not its result, so the second row waits
+    /// for the first one's bytes instead of asking again. Touched only on the window's thread.
+    /// </summary>
+    private readonly Dictionary<string, Task<BitmapImage?>> pictures = [];
 
     public FrameworkElement Face(string title, bool family, long? userId, int version, double size)
     {
@@ -74,23 +78,32 @@ internal sealed class AvatarFaces(Connection connection)
     private async Task ShowAsync(Ellipse circle, long userId, int version)
     {
         var key = $"{userId}-{version}";
+        if (!pictures.TryGetValue(key, out var loading))
+        {
+            loading = pictures[key] = LoadAsync(userId, version);
+        }
         try
         {
-            if (!pictures.TryGetValue(key, out var bitmap))
+            if (await loading is { } bitmap)
             {
-                var (bytes, _) = await connection.Avatars.BytesAsync(userId, version);
-                if (bytes is null)
-                {
-                    return;
-                }
-                bitmap = await BitmapAsync(bytes);
-                pictures[key] = bitmap;
+                circle.Fill = new ImageBrush { ImageSource = bitmap, Stretch = Stretch.UniformToFill };
+                return;
             }
-            circle.Fill = new ImageBrush { ImageSource = bitmap, Stretch = Stretch.UniformToFill };
         }
         catch (Exception e)
         {
             Diagnostics.Write($"drawing a profile picture: {e.GetType().Name}");
         }
+        // No picture this time is not kept here — AvatarCache keeps a real "none" per version — so the next row asks again.
+        if (pictures.TryGetValue(key, out var current) && current == loading)
+        {
+            pictures.Remove(key);
+        }
+    }
+
+    private async Task<BitmapImage?> LoadAsync(long userId, int version)
+    {
+        var (bytes, _) = await connection.Avatars.BytesAsync(userId, version);
+        return bytes is null ? null : await BitmapAsync(bytes);
     }
 }
