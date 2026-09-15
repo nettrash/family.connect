@@ -84,7 +84,7 @@ public sealed partial class FamilyView : UserControl
             PolicyChoice.Items.Add(say.Get(key));
         }
         LimitHeading.Text = say.Get("Member limit");
-        LimitSwitch.Header = say.Get("Limit members");
+        LimitTitle.Text = say.Get("Limit members");
         LimitBox.Header = say.Get("Most members");
         LanguageHeading.Text = say.Get("Assistant language");
         LanguageChoice.Header = say.Get("Answers in");
@@ -93,13 +93,22 @@ public sealed partial class FamilyView : UserControl
         {
             LanguageChoice.Items.Add(name);
         }
-        HistorySwitch.Header = say.Get("Sees recent history");
+        HistoryTitle.Text = say.Get("Sees recent history");
         PicturesHeading.Text = say.Get("Pictures");
-        VisionSwitch.Header = say.Get("Can be shown photos");
-        RecentPhotosSwitch.Header = say.Get("Recent photos");
-        FacesSwitch.Header = say.Get("Member faces");
+        VisionTitle.Text = say.Get("Can be shown photos");
+        RecentPhotosTitle.Text = say.Get("Recent photos");
+        FacesTitle.Text = say.Get("Member faces");
         GreetingHeading.Text = say.Get("Daily greeting");
-        GreetingSwitch.Header = say.Get("Good morning message");
+        GreetingTitle.Text = say.Get("Good morning message");
+        // A switch drawn beside its words rather than under a header: the words are still its name to a screen reader.
+        foreach (var (toggle, title) in new (ToggleSwitch, TextBlock)[]
+        {
+            (LimitSwitch, LimitTitle), (HistorySwitch, HistoryTitle), (VisionSwitch, VisionTitle),
+            (RecentPhotosSwitch, RecentPhotosTitle), (FacesSwitch, FacesTitle), (GreetingSwitch, GreetingTitle),
+        })
+        {
+            AutomationProperties.SetName(toggle, title.Text);
+        }
 
         DoneButton.Click += (_, _) => close();
         CopyButton.Click += (_, _) =>
@@ -170,6 +179,7 @@ public sealed partial class FamilyView : UserControl
             connection.Session.Changed -= onSession;
             connection.Live.Resynced -= onResync;
         };
+        SizeChanged += (_, e) => Arrange(e.NewSize.Width);
         Draw();
         _ = LoadOwnerListsAsync();
     }
@@ -216,9 +226,45 @@ public sealed partial class FamilyView : UserControl
         MembersList.Children.Clear();
         foreach (var member in roster)
         {
+            if (MembersList.Children.Count > 0)
+            {
+                MembersList.Children.Add(Hairline());
+            }
             MembersList.Children.Add(MemberRow(member, me.Id, owner));
         }
+        Arrange(ActualWidth);
     }
+
+    /// <summary>Whether the members stand beside the family's rules; null until first arranged.</summary>
+    private bool? sideBySide;
+
+    /// <summary>
+    /// Wide enough, an owner's window is two columns — the rules, and the people beside them — rather than one long column
+    /// with the window's width left empty. Narrow, or for a member with no rules to show, it is one. Only a change of
+    /// answer moves anything.
+    /// </summary>
+    private void Arrange(double width)
+    {
+        // 520 is what a member's row needs for a name, a username and its three controls without folding the username in two.
+        var side = connection.Session.State.IsOwner && width >= 1280;
+        if (sideBySide == side)
+        {
+            return;
+        }
+        sideBySide = side;
+        Body.ColumnDefinitions[1].Width = side ? new GridLength(520) : new GridLength(0);
+        Body.ColumnSpacing = side ? 24 : 0;
+        Grid.SetColumn(SideColumn, side ? 1 : 0);
+        Grid.SetRow(SideColumn, side ? 2 : 3);
+    }
+
+    /// <summary>The line between two rows of one card.</summary>
+    private static Border Hairline() => new()
+    {
+        Height = 1,
+        Margin = new Thickness(20, 0, 20, 0),
+        Background = (Brush)Application.Current.Resources["DividerStrokeColorDefaultBrush"],
+    };
 
     // ---- members -------------------------------------------------------------------------------
 
@@ -228,27 +274,34 @@ public sealed partial class FamilyView : UserControl
         var blocked = connection.Chats.IsBlocked(member.Id);
         var tools = FamilyText.ToolsFor(member, me, owner, blocked);
 
-        var row = new Grid { ColumnSpacing = 12 };
+        var row = new Grid { ColumnSpacing = 14, Padding = new Thickness(20, 10, 16, 10) };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        var face = new PersonPicture { Width = 32, Height = 32, DisplayName = member.DisplayName, VerticalAlignment = VerticalAlignment.Top };
+        var face = new PersonPicture { Width = 40, Height = 40, DisplayName = member.DisplayName, VerticalAlignment = VerticalAlignment.Center };
         _ = ShowFaceAsync(face, member.Id, member.AvatarVersion);
         row.Children.Add(face);
 
         var words = new StackPanel();
         var name = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        name.Children.Add(new TextBlock { Text = member.DisplayName, FontWeight = FontWeights.SemiBold });
+        name.Children.Add(new TextBlock { Text = member.DisplayName, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
         if (member.Owner)
         {
             name.Children.Add(Capsule(say.Get("Owner")));
         }
         words.Children.Add(name);
-        words.Children.Add(Secondary($"@{member.Username}"));
+        // One line each, cut short rather than folded: "@dashafl" over "eur" reads as two things.
+        var username = Secondary($"@{member.Username}");
+        username.TextWrapping = TextWrapping.NoWrap;
+        username.TextTrimming = TextTrimming.CharacterEllipsis;
+        words.Children.Add(username);
         if (member.Birthday is { } birthday)
         {
-            words.Children.Add(Secondary($"🎂 {BirthdayRules.Text(birthday, say, services.Culture)}"));
+            var born = Secondary($"🎂 {BirthdayRules.Text(birthday, say, services.Culture)}");
+            born.TextWrapping = TextWrapping.NoWrap;
+            born.TextTrimming = TextTrimming.CharacterEllipsis;
+            words.Children.Add(born);
         }
         Grid.SetColumn(words, 1);
         row.Children.Add(words);
@@ -576,8 +629,7 @@ public sealed partial class FamilyView : UserControl
             token);
 
         // Offered only where this server's assistant can look at pictures at all.
-        VisionSwitch.Visibility = assistant.Vision ? Visibility.Visible : Visibility.Collapsed;
-        VisionFootnote.Visibility = VisionSwitch.Visibility;
+        VisionRow.Visibility = assistant.Vision ? Visibility.Visible : Visibility.Collapsed;
         VisionSwitch.IsOn = shown.AiVision;
         VisionSwitch.IsEnabled = idle;
         VisionFootnote.Text = say.Format(
@@ -720,12 +772,16 @@ public sealed partial class FamilyView : UserControl
         RequestsList.Children.Clear();
         foreach (var request in requests)
         {
-            var row = new Grid { ColumnSpacing = 12 };
+            if (RequestsList.Children.Count > 0)
+            {
+                RequestsList.Children.Add(Hairline());
+            }
+            var row = new Grid { ColumnSpacing = 14, Padding = new Thickness(20, 10, 16, 10) };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             // Initials only: a stranger's picture is shown to nobody.
-            row.Children.Add(new PersonPicture { Width = 32, Height = 32, DisplayName = request.User.DisplayName });
+            row.Children.Add(new PersonPicture { Width = 40, Height = 40, DisplayName = request.User.DisplayName });
             var words = new StackPanel();
             words.Children.Add(new TextBlock { Text = request.User.DisplayName, FontWeight = FontWeights.SemiBold });
             words.Children.Add(Secondary($"@{request.User.Username}"));

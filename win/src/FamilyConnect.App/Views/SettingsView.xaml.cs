@@ -5,6 +5,7 @@ using FamilyConnect.Core;
 using FamilyConnect.Core.Protocol;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -64,26 +65,37 @@ public sealed partial class SettingsView : UserControl
         PhotoLabel.Text = say.Get("Photo");
         RemovePhotoButton.Content = say.Get("Remove Photo");
         BirthdayLabel.Text = say.Get("Birthday");
-        PasswordButton.Content = say.Get("Change Password…");
         FamilyHeading.Text = say.Get("Family");
         FamilyNameLabel.Text = say.Get("Name");
-        LeaveButton.Content = say.Get("Leave Family");
         StatisticsHeading.Text = say.Get("Statistics");
-        StatisticsButton.Content = say.Get("Statistics…");
         NotificationsHeading.Text = say.Get("Notifications");
-        NotifySwitch.Header = say.Get("Tell me when a message arrives");
+        NotifyTitle.Text = say.Get("Tell me when a message arrives");
         PrivacyHeading.Text = say.Get("Privacy");
         ServerHeading.Text = say.Get("Server");
         ServerAddressLabel.Text = say.Get("Address");
         ServerAddressValue.Text = connection.Server.AbsoluteUri;
-        LinkPreviewSwitch.Header = say.Get("Link Previews");
+        LinkPreviewTitle.Text = say.Get("Link Previews");
         LinkPreviewFootnote.Text = say.Get("Shows a preview under links in messages. Building one asks the linked website for its title and image, so that site sees a request from this device.");
-        PrivacyLink.Content = say.Get("Privacy Policy");
         PrivacyLink.NavigateUri = new Uri(PrivacyUrl);
-        SupportLink.Content = say.Get("Support");
         SupportLink.NavigateUri = new Uri(SupportUrl);
-        LogOutButton.Content = say.Get("Log Out");
-        DeleteButton.Content = say.Get("Delete Account…");
+        // Rows drawn as a glyph, words and a chevron: the words go on the row's text, and are still the control's name to a
+        // screen reader, which would otherwise read a button made of shapes as nothing.
+        foreach (var (control, text, words) in new (Control, TextBlock, string)[]
+        {
+            (PasswordButton, PasswordText, say.Get("Change Password…")),
+            (LeaveButton, LeaveText, say.Get("Leave Family")),
+            (StatisticsButton, StatisticsText, say.Get("Statistics…")),
+            (PrivacyLink, PrivacyText, say.Get("Privacy Policy")),
+            (SupportLink, SupportText, say.Get("Support")),
+            (LogOutButton, LogOutText, say.Get("Log Out")),
+            (DeleteButton, DeleteText, say.Get("Delete Account…")),
+            (NotifySwitch, NotifyTitle, NotifyTitle.Text),
+            (LinkPreviewSwitch, LinkPreviewTitle, LinkPreviewTitle.Text),
+        })
+        {
+            text.Text = words;
+            AutomationProperties.SetName(control, words);
+        }
         // The product's name is the same in every language; the sentence around it is not.
         VersionText.Text = say.Format("Family Connect for Windows %@", AppVersion());
 

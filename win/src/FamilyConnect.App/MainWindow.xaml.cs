@@ -16,6 +16,7 @@ public sealed partial class MainWindow : Window
 {
     private readonly AppServices services;
     private readonly DispatcherQueueTimer flushTimer;
+    private readonly WindowPlacement placement;
     private Connection? connection;
 
     /// <summary>Calls: the media page and the card are the window's, kept across servers; the engine and its frames are the connection's.</summary>
@@ -47,7 +48,8 @@ public sealed partial class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBar);
         SystemBackdrop = new MicaBackdrop();
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(1100, 760));
+        // Where it was left, or a first size scaled for this screen — never a pixel count, which at 200% is half a window.
+        placement = WindowPlacement.Apply(AppWindow, services.WindowHandle);
         WindowIcon.Apply(AppWindow);
         BuildRail();
         callMedia = new Services.WebViewCallMedia(CallMediaView);
@@ -471,6 +473,7 @@ public sealed partial class MainWindow : Window
 
     private void OnClosed(object sender, WindowEventArgs args)
     {
+        placement.Save();
         flushTimer.Stop();
         Detach();
         Toasts.Badge(0);
