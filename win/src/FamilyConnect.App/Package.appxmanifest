@@ -22,7 +22,7 @@
   <Identity
     Name="nttrsh.FamilyConnect"
     Publisher="CN=28EC49E1-8A19-45EF-A576-FF596547E069"
-    Version="1.0.0.0" />
+    Version="1.1.0.0" />
   <Properties>
     <!-- The name reserved in Partner Center, exactly as reserved: certification matches this string against it. -->
     <DisplayName>FamilyConnect</DisplayName>
