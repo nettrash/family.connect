@@ -111,13 +111,10 @@ xcodebuild archive -project FamilyConnect.xcodeproj -scheme FamilyConnect-nettra
 cd android
 ./gradlew bundleNettrashRelease -PversionName=<tag>
 
-# Windows — the default server is an MSBuild property; publish each architecture
-# for the Microsoft Store (listing, images and checklist: win/store/listing.md):
-cd win
-dotnet publish src/FamilyConnect.App -c Release -p:Platform=x64 \
-  -p:FamilyConnectDefaultServer=https://fc.nettrash.me
-dotnet publish src/FamilyConnect.App -c Release -p:Platform=ARM64 \
-  -p:FamilyConnectDefaultServer=https://fc.nettrash.me
+# Windows — the default server is an MSBuild property; this writes one unsigned
+# .msixupload per architecture (x64, ARM64) for Partner Center, which signs them
+# (listing, images and checklist: win/store/listing.md):
+powershell -NoProfile -ExecutionPolicy Bypass -File win/store/build-store-packages.ps1
 ```
 
 ## Installing the server (Ubuntu)

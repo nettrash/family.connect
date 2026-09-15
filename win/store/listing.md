@@ -177,9 +177,12 @@ so add, in its own words:
 - [x] **Copy the identity** — `nttrsh.FamilyConnect`, `CN=28EC49E1-8A19-45EF-A576-FF596547E069`, `nttrsh`. From Partner Center → Product identity: **Package/Identity/Name**, **Publisher** and
       **PublisherDisplayName** from Product identity into `Package.appxmanifest` (`<Identity Name=… Publisher=…>` and
       `<PublisherDisplayName>`). Keep `Version` hand-written.
-- [ ] **Build the Store package pointed at the default server**, both architectures, unsigned (the Store signs it):
-      `dotnet publish src/FamilyConnect.App -c Release -p:Platform=x64 -p:FamilyConnectDefaultServer=https://fc.nettrash.me`
-      and the same with `-p:Platform=ARM64`; bundle them into one `.msixupload`.
+- [ ] **Build the Store packages**, pointed at the default server, unsigned (the Store signs them):
+      `powershell -NoProfile -ExecutionPolicy Bypass -File win/store/build-store-packages.ps1` — it writes
+      `FamilyConnect.App_<version>_x64.msixupload` and `…_arm64.msixupload` under `win/AppPackages/`. Upload **both** to
+      the one submission (Packages step); the Store gives each PC its own architecture, so there is nothing to bundle.
+      The `_Test` folders beside them are sideload copies, not for the Store. Raise `Version` in `Package.appxmanifest`
+      before every later submission — the Store refuses a version it has already seen.
 - [ ] **Run the Windows App Certification Kit** on the package before uploading.
 - [ ] **Update the privacy policy page** as above, then fill the URL.
 - [ ] **Provision the demo accounts** on fc.nettrash.me and fill the certification notes.
