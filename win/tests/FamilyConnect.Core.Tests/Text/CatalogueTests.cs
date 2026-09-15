@@ -53,7 +53,6 @@ public class CatalogueTests
          "Caption",
          "+%lld",
          "View the photo",
-         "Seen",
          "The assistant is answering",
          "Jump to the newest message",
          "Call with %@",

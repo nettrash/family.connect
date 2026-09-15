@@ -236,6 +236,10 @@ def unicode_properties():
     for key, name in [('alphabetic', 'Alphabetic'), ('numeric', 'Numeric'), ('lowercase', 'Lowercase'), ('uppercase', 'Uppercase'), ('whitespace', 'Whitespace'), ('control', 'Control')]:
         body.append(cs_ranges(name, f'<c>char::is_{key}</c>.', [tuple(pair) for pair in tables[key]]))
         body.append('\n')
+    body.append(cs_ranges('CaseIgnorable', '<c>str::to_lowercase</c>: a scalar the Final_Sigma context skips.', [tuple(pair) for pair in tables['case_ignorable']]))
+    body.append('\n')
+    body.append(cs_ranges('CasedNotIgnorable', '<c>str::to_lowercase</c>: a scalar the Final_Sigma context counts as cased.', [tuple(pair) for pair in tables['cased_not_ignorable']]))
+    body.append('\n')
     body.append(cs_ranges('GraphemeExtends', 'unicode-segmentation: a scalar that joins the cluster of an ASCII character before it (Extend, ZWJ, SpacingMark).', [tuple(pair) for pair in tables['grapheme_extends']]))
     body.append('\n')
     body.append(cs_ranges('GraphemePrepends', 'unicode-segmentation: a scalar that joins the cluster of an ASCII character after it (Prepend).', [tuple(pair) for pair in tables['grapheme_prepends']]))

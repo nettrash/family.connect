@@ -73,6 +73,9 @@ public sealed partial class SettingsView : UserControl
         NotificationsHeading.Text = say.Get("Notifications");
         NotifySwitch.Header = say.Get("Tell me when a message arrives");
         PrivacyHeading.Text = say.Get("Privacy");
+        ServerHeading.Text = say.Get("Server");
+        ServerAddressLabel.Text = say.Get("Address");
+        ServerAddressValue.Text = connection.Server.AbsoluteUri;
         LinkPreviewSwitch.Header = say.Get("Link Previews");
         LinkPreviewFootnote.Text = say.Get("Shows a preview under links in messages. Building one asks the linked website for its title and image, so that site sees a request from this device.");
         PrivacyLink.Content = say.Get("Privacy Policy");

@@ -152,6 +152,19 @@
                     </StackPanel>
                 </Border>
 
+                <!-- Which server this device talks to, as the Mac's Settings says it. -->
+                <TextBlock x:Name="ServerHeading" Style="{StaticResource Section}" />
+                <Border Style="{StaticResource Card}">
+                    <Grid Style="{StaticResource Row}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="ServerAddressLabel" VerticalAlignment="Center" />
+                        <TextBlock x:Name="ServerAddressValue" Grid.Column="1" Margin="16,0,0,0" HorizontalAlignment="Right" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" IsTextSelectionEnabled="True" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </Grid>
+                </Border>
+
                 <Border Style="{StaticResource Card}" Margin="0,28,0,0">
                     <StackPanel>
                         <Grid Style="{StaticResource Row}">

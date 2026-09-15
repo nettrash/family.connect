@@ -251,11 +251,15 @@ public class ChatOracleTests
     [Fact]
     public void APollOptionIsFoldedTheWayRustLowercases()
     {
-        Assert.NotEmpty(Section("poll_lower").EnumerateArray());
-        foreach (var row in Section("poll_lower").EnumerateArray())
-        {
-            Assert.Equal(row.GetProperty("lower").GetString(), Polls.Lowercase(row.GetProperty("text").GetString()!));
-        }
+        // Every scalar with a mapping of its own and every one Final_Sigma skips or counts, not a hand-picked few: the
+        // platform's casing tables differ by Unicode version, and only a sweep catches that on the machine that differs.
+        Assert.True(Section("poll_lower").GetArrayLength() > 10_000, "the sweep is missing");
+        var wrong = Section("poll_lower").EnumerateArray()
+            .Select(row => (Text: row.GetProperty("text").GetString()!, Lower: row.GetProperty("lower").GetString()!))
+            .Where(row => Polls.Lowercase(row.Text) != row.Lower)
+            .Select(row => string.Join(' ', row.Text.EnumerateRunes().Select(rune => $"U+{rune.Value:X4}")))
+            .ToList();
+        Assert.True(wrong.Count == 0, $"{wrong.Count} differ: {string.Join(" | ", wrong.Take(20))}");
     }
 
     /// <summary>The composer refuses exactly what the server would answer <c>invalid_poll</c>, and sends what it checked.</summary>

@@ -1046,6 +1046,22 @@ fn chat() {
             // What is NEAREST the sigma decides, not what comes first in the string.
             format!("1Α{}", sigma), format!("Α1{}", sigma),
         ];
+        // And every scalar, not only the ones picked out above: each one's own full mapping, and each one Final_Sigma could
+        // skip or count, both before a capital sigma and after it — so no casing table of the machine running the port
+        // can stand in for Rust's (CI's Linux ICU and Windows' NLS lacked the letters Unicode 16 added).
+        let mut lowers = lowers;
+        for c in (0u32..0x110000).filter_map(char::from_u32) {
+            let lone = c.to_string();
+            if lone.to_lowercase() != lone {
+                lowers.push(lone);
+            }
+            let skipped = format!("A{c}Σ").to_lowercase().ends_with('ς') && !format!("{c}Σ").to_lowercase().ends_with('ς');
+            let cased = format!("{c}Σ").to_lowercase().ends_with('ς');
+            if skipped || cased {
+                lowers.push(format!("A{c}Σ"));
+                lowers.push(format!("AΣ{c}"));
+            }
+        }
         let lower_rows: Vec<serde_json::Value> = lowers.iter()
             .map(|text| serde_json::json!({"text": text, "lower": text.to_lowercase()})).collect();
         let family = [0x1F468u32, 0x200D, 0x1F469, 0x200D, 0x1F467].iter().map(|c| ch(*c)).collect::<String>();
@@ -1239,6 +1255,11 @@ fn unicode_tables() {
         "control": ranges(char::is_control),
         "to_lowercase": lower,
         "to_uppercase": upper,
+        // str::to_lowercase's Final_Sigma context, read off the standard library itself rather than a Unicode table of this
+        // machine's: a scalar the context SKIPS makes "AxΣ" end in ς while "xΣ" does not; one it counts as cased makes "xΣ"
+        // end in ς. (Rust's own Case_Ignorable and Cased tables are private.)
+        "case_ignorable": ranges(|c| format!("A{c}Σ").to_lowercase().ends_with('ς') && !format!("{c}Σ").to_lowercase().ends_with('ς')),
+        "cased_not_ignorable": ranges(|c| format!("{c}Σ").to_lowercase().ends_with('ς')),
         // unicode-segmentation's clusters, as far as fc_text::markdown asks about them: whether a scalar
         // after an ASCII character joins its cluster (Extend, ZWJ, SpacingMark), and whether one before joins it
         // (Prepend). Those two decide whether a markup character is a cluster of its own.

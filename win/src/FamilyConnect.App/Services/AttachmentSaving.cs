@@ -52,7 +52,7 @@ internal static class AttachmentSaving
     /// A name from the server is already sanitised; this is the belt to that braces — never a path, and
     /// never a character Windows refuses in a file name.
     /// </summary>
-    private static string Safe(string name)
+    internal static string Safe(string name)
     {
         var bare = Path.GetFileName(name.Replace('\\', '/').Split('/').Last());
         var invalid = Path.GetInvalidFileNameChars();
