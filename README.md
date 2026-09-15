@@ -110,6 +110,14 @@ xcodebuild archive -project FamilyConnect.xcodeproj -scheme FamilyConnect-nettra
 # nettrashRelease). Play Store bundle:
 cd android
 ./gradlew bundleNettrashRelease -PversionName=<tag>
+
+# Windows — the default server is an MSBuild property; publish each architecture
+# for the Microsoft Store (listing, images and checklist: win/store/listing.md):
+cd win
+dotnet publish src/FamilyConnect.App -c Release -p:Platform=x64 \
+  -p:FamilyConnectDefaultServer=https://fc.nettrash.me
+dotnet publish src/FamilyConnect.App -c Release -p:Platform=ARM64 \
+  -p:FamilyConnectDefaultServer=https://fc.nettrash.me
 ```
 
 ## Installing the server (Ubuntu)

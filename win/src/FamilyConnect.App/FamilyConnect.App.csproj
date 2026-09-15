@@ -58,6 +58,15 @@
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <StartupObject>FamilyConnect.App.Program</StartupObject>
   </PropertyGroup>
+  <!--
+    Store builds ship pointed at a default server, as the iOS FamilyConnect-nettrash scheme and the Android nettrash flavour
+    do (root README, "Store builds with a predefined server"): the first run lands on sign-in, and "Change server" there
+    still reaches any self-hosted server. A build from source leaves it empty and asks for an address.
+      dotnet publish src/FamilyConnect.App -p:Platform=x64 -p:FamilyConnectDefaultServer=https://fc.nettrash.me
+  -->
+  <ItemGroup Condition="'$(FamilyConnectDefaultServer)' != ''">
+    <AssemblyMetadata Include="FamilyConnectDefaultServer" Value="$(FamilyConnectDefaultServer)" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\FamilyConnect.Core\FamilyConnect.Core.csproj" />
     <ProjectReference Include="..\FamilyConnect.App.Logic\FamilyConnect.App.Logic.csproj" />
