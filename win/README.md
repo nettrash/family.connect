@@ -46,6 +46,9 @@ win/
                           BoardView + NoteSheet, FamilyView, SettingsView, CallCardView, and the
                           sheets and cards they open (polls, emoji, dialogs)
   i18n/                                generate.py + win.json (the port's own strings)
+  store/                               the Microsoft Store submission: listing.md (every text, the certification
+                                       notes, the checklist), images/, count.ps1 (the listing against Partner
+                                       Center's limits), seed-store-screenshots.ps1 + capture-screenshots.ps1
   tests/FamilyConnect.Core.Tests/      xUnit, runs anywhere `dotnet` runs
   tests/FamilyConnect.App.Logic.Tests/ the same, for the app's own behaviour
   tools/board-oracle/                  Rust: regenerates the shared-arithmetic fixture

@@ -25,7 +25,8 @@ internal sealed class AppServices : IAsyncDisposable
     /// <summary>Whether the window is the one the reader is looking at — a read is reported only then.</summary>
     public bool Foreground { get; set; }
 
-    public Uri? SavedServer => ServerSetting.Read();
+    /// <summary>The server the reader chose — or, before they have chosen one, the one a Store build was published for.</summary>
+    public Uri? SavedServer => ServerSetting.Read() ?? DefaultServer.Address;
 
     /// <summary>The window's handle, which a desktop app's pickers must be given.</summary>
     public nint WindowHandle { get; set; }
