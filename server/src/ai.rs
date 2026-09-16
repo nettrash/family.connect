@@ -1,12 +1,21 @@
 //! The assistant: Azure OpenAI chat completions (streamed) and image
 //! generations.
 //!
-//! What leaves this server is deliberately narrow. A request carries the
-//! configured system prompt and the last N messages of ONE member's OWN
-//! assistant chat — never the family chat, never another member's thread
-//! (docs/protocol.md, "The assistant"). That is the invariant which makes a
-//! privacy-first family server able to talk to a hosted model at all, and it
-//! is enforced here, at the only place that builds a request.
+//! What leaves this server depends on WHERE the question was asked, and the
+//! difference has to be stated plainly here: an operator reads this file to
+//! decide whether to switch the section on at all.
+//!
+//! In a member's own assistant chat, a request carries the configured system
+//! prompt and the last N messages of THAT MEMBER'S OWN thread — never another
+//! member's, and never the family chat (docs/protocol.md, "The assistant").
+//!
+//! An `@ai` mention IN THE FAMILY CHAT is the other case, and it is not
+//! narrow: while the family's `ai_history` is on — and it defaults to ON —
+//! recent family conversation goes with the question, other members' words,
+//! their display names and their timestamps included, bounded by the history
+//! limits (protocol.md, "Mentioning the assistant in the family chat"). Only
+//! the family's OWNER can turn that off, and no member is asked first. Both
+//! paths are built here, at the only place that builds a request.
 //!
 //! Pictures are the same invariant drawn tighter (protocol.md, "Pictures").
 //! A photograph rides on a turn only when the member attached it to the

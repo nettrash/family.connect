@@ -3383,9 +3383,11 @@ is often in the same house, which is the exact case the silence exists for.
 
 ### Voice calls
 
-Two members can talk. A call is **one to one, voice only, and peer to peer**: the audio travels
-directly between the two devices over WebRTC (Opus over DTLS-SRTP), and the server never carries,
-hears or stores a single frame of it. What the server does is what it already does for everything
+Two members can talk. A call is **one to one, voice or video, and peer to peer**: the audio — and
+the picture, when it is a video call — travels directly between the two devices over WebRTC (Opus
+over DTLS-SRTP), and the server never carries, hears or stores a single frame of it. A video call
+is this same call with a picture track alongside the sound, negotiated in the same frames and
+refusable on its own by the operator; everything this section says holds for both. What the server does is what it already does for everything
 else — it passes small JSON frames between two people over the socket they already hold, wakes a
 phone that has no socket open, and writes one message into the direct chat afterwards so that a
 call is part of the history like anything else that happened between those two people.

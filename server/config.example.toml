@@ -344,10 +344,19 @@ ring_timeout_secs = 45
 # point: it belongs to that member alone, no other member can read it, and it
 # is never part of the family chat.
 #
-# What leaves this server is deliberately narrow. A question carries the
-# system prompt below plus the last `history_messages` turns of THAT MEMBER'S
-# OWN assistant thread — never the family chat, never anyone else's thread.
-# Nothing anybody else wrote is ever sent anywhere.
+# What leaves this server depends on WHERE the question was asked, and the
+# difference is the one to weigh before switching this on.
+#
+# Asked in a member's own assistant chat: the system prompt below plus the
+# last `history_messages` turns of THAT MEMBER'S OWN thread — never anyone
+# else's, and never the family chat.
+#
+# Asked with an `@ai` mention IN THE FAMILY CHAT: recent family conversation
+# goes with the question — other members' words, their display names and
+# their timestamps — for as long as that family's `ai_history` is on, which
+# is its default. Only the family's owner can turn it off (protocol.md,
+# "Mentioning the assistant in the family chat"), and no member is asked
+# first.
 #
 # The whole section is OFF unless `enabled` is true AND `endpoint`,
 # `deployment` and `api_key` are all set. A half-filled section behaves as

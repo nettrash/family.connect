@@ -1394,7 +1394,32 @@ data class ReportDto(
      * because the author may edit it away and retention will sweep it.
      */
     @SerialName("message_excerpt") val messageExcerpt: String? = null,
+    /**
+     * What the reported message CARRIED, trimmed exactly as a chat-list
+     * preview is: kind and name, no dimensions and no coordinates. A photo
+     * sent without a caption has an EMPTY body, and "inappropriate" is very
+     * often exactly that message — then this is the only thing on the row
+     * that says what was reported. Absent on a report that names a person,
+     * and absent once retention has swept the message with its attachments.
+     */
+    @SerialName("message_attachments")
+    val messageAttachments: List<ReportedAttachmentDto> = emptyList(),
     @SerialName("created_at") val createdAt: String? = null,
+)
+
+/**
+ * One attachment of a reported message, as the owner's inbox needs it: what
+ * it is, and what it is called. No id, no size, no preview flag — and no
+ * COORDINATES, deliberately: a moderator needs to know that a place was
+ * sent, not where the sender was standing (docs/protocol.md, "Reporting a
+ * member").
+ */
+@Serializable
+data class ReportedAttachmentDto(
+    /** "photo" | "video" | "audio" | "file" | "location". */
+    val kind: String,
+    /** A file's name, or the label on a voice note or a location. */
+    val name: String? = null,
 )
 
 @Serializable

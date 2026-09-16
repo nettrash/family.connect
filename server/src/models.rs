@@ -295,8 +295,32 @@ pub struct Report {
     /// otherwise leave the owner an empty screen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_excerpt: Option<String>,
+    /// What the reported message CARRIED, trimmed exactly as a chat-list
+    /// preview is. A photo sent without a caption has an EMPTY body, and
+    /// "inappropriate" is very often exactly that message — the excerpt is
+    /// then the empty string and this is the only thing on the row that says
+    /// what was reported. Recomputed on every read rather than frozen with
+    /// the excerpt: the bytes are not copied, so a client offers to open one
+    /// only while `message_id` survives, exactly as it offers the jump.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub message_attachments: Vec<ReportedAttachment>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+}
+
+/// One attachment of a reported message, as the owner's inbox needs it: what
+/// it is, and what it is called. No id, no size, no preview flag — and no
+/// COORDINATES, deliberately: a moderator judging a report needs to know that
+/// a place was sent, not where the sender was (docs/protocol.md, "Reporting a
+/// member").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReportedAttachment {
+    /// "photo" | "video" | "audio" | "file" | "location".
+    pub kind: String,
+    /// A file's name, or the label on a voice note or a location — and
+    /// `null` rather than absent where there is none, because a client
+    /// falls back on the kind and the key is what it reads to find out.
+    pub name: Option<String>,
 }
 
 /// `JoinRequest` object as listed for the owner.
@@ -1334,12 +1358,17 @@ mod tests {
             reason: "harassment".to_string(),
             message_id: None,
             message_excerpt: None,
+            message_attachments: Vec::new(),
             created_at: datetime!(2026-08-19 17:03:12 UTC),
         };
         let json = serde_json::to_value(&report).expect("serialize");
         assert!(
             json.get("message_id").is_none() && json.get("message_excerpt").is_none(),
             "both message keys must be absent, not null: {json}"
+        );
+        assert!(
+            json.get("message_attachments").is_none(),
+            "no message, so nothing it carried either: {json}"
         );
     }
 
@@ -1356,6 +1385,7 @@ mod tests {
             reason: "inappropriate".to_string(),
             message_id: None,
             message_excerpt: Some("dinner at 7?".to_string()),
+            message_attachments: Vec::new(),
             created_at: datetime!(2026-08-19 17:03:12 UTC),
         };
         let json = serde_json::to_value(&report).expect("serialize");
@@ -1364,6 +1394,40 @@ mod tests {
             json.get("message_excerpt").and_then(|v| v.as_str()),
             Some("dinner at 7?"),
             "the excerpt outlives the message: {json}"
+        );
+    }
+
+    /// A CAPTION-LESS PHOTO is the report where what the message carried is
+    /// the only thing on the row that says what was reported. `name` rides as
+    /// NULL rather than absent — a client reads the key to learn there is
+    /// nothing to call it — and nothing else rides at all: a moderator needs
+    /// to know a place was sent, never where the sender was standing.
+    #[test]
+    fn a_reported_photo_carries_its_kind_and_a_null_name() {
+        let report = Report {
+            id: 4,
+            reporter: a_reporter(),
+            reported: a_reported(),
+            reason: "inappropriate".to_string(),
+            message_id: Some(1338),
+            message_excerpt: Some(String::new()),
+            message_attachments: vec![ReportedAttachment {
+                kind: "photo".to_string(),
+                name: None,
+            }],
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+        };
+        let json = serde_json::to_value(&report).expect("serialize");
+        let carried = &json["message_attachments"][0];
+        assert_eq!(carried["kind"], "photo");
+        assert!(
+            carried.get("name").is_some() && carried["name"].is_null(),
+            "name is null, not absent: {json}"
+        );
+        assert_eq!(
+            carried.as_object().expect("object").len(),
+            2,
+            "kind and name only — no id, no size, no coordinates: {json}"
         );
     }
 

@@ -105,6 +105,7 @@ import me.nettrash.familyconnect.ui.components.readableColumn
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.net.dto.BirthdayDto
+import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.util.TimeFormat
 import me.nettrash.familyconnect.util.daysInBirthdayMonth
 import java.time.LocalDate
@@ -140,6 +141,9 @@ fun FamilyAdminScreen(
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
     val clipboard = LocalClipboard.current
     val context = LocalContext.current
+    // What a reported message carried, said in this reader's own language —
+    // resolved here because a string lookup is not a composable scope.
+    val previewLabels = remember(context) { MessageRepository.Companion.PreviewLabels.from(context) }
     // The copy confirmation, resolved here rather than in the button's
     // onClick — not a composable scope.
     val copiedMessage = stringResource(R.string.s_copied)
@@ -412,6 +416,19 @@ fun FamilyAdminScreen(
                                     )
                                 }
                             }
+                            // And WHAT IT CARRIED, when the words do not
+                            // say: a photo sent without a caption has an
+                            // empty excerpt, and "inappropriate" is very
+                            // often exactly that message.
+                            MessageRepository.carried(report.messageAttachments, previewLabels)
+                                ?.let { carried ->
+                                    Text(
+                                        text = carried,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(top = 2.dp),
+                                    )
+                                }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.End,
