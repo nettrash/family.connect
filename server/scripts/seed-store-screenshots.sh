@@ -47,6 +47,7 @@ echo
 
 PHOTO_DIR="$SCRIPT_DIR/screenshot-photos" python3 - << 'EOF'
 import json, os, glob, struct, zlib, uuid, urllib.request, urllib.parse
+from datetime import datetime, timedelta, timezone
 
 BASE = "http://127.0.0.1:8091/api/v1"
 
@@ -143,6 +144,21 @@ thread = [
 for tok, text in thread:
     send(family_chat, tok, text)
 
+# --- a reply chain ----------------------------------------------------
+# A thread is the 1.1 feature the store set photographs, and it needs a
+# ROOT with replies under it: the bubble draws "N replies" only when the
+# server's recomputed count says so (docs/protocol.md, "Threads").
+posted = call("GET", f"/chats/{family_chat}/messages", nora)["messages"]
+root_id = next(m["id"] for m in posted
+               if "Rob, are you still coming Sunday?" in m["body"])
+for tok, text in (
+    (rob,   "Sunday works. What time do you want us?"),
+    (nora,  "One-ish. Mae is coming at noon to help with the potatoes."),
+    (mae,   "I am bringing the good gravy boat and I will be taking it home."),
+    (rob,   "Noted. I'll do the bread and a pudding."),
+):
+    send(family_chat, tok, text, reply_to_message_id=root_id)
+
 # Album — four photos in ONE message.
 album_ids = []
 for data, mime in photos():
@@ -186,12 +202,37 @@ for text, color, x, y in notes:
     call("POST", "/families/mine/board/notes", nora,
          {"text": text, "color": color, "x": x, "y": y})
 
+# An EVENT, with who is going — the board's 1.1 headline. Dated relative to
+# the run so the card never reads as a date in the past, and placed
+# somewhere public: this ends up on a store listing.
+starts = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=3, hours=4)
+event = call("POST", "/families/mine/board/notes", nora,
+             {"text": "Sunday lunch at ours", "color": "blue", "x": 0.30, "y": 0.72,
+              "kind": "event", "size": "large",
+              "starts_at": starts.isoformat().replace("+00:00", "Z"),
+              "ends_at": (starts + timedelta(hours=3)).isoformat().replace("+00:00", "Z"),
+              "place": "Nora and Dan's"})["note"]["id"]
+for tok, answer in ((rob, "going"), (mae, "going"), (ellie, "maybe")):
+    call("PUT", f"/families/mine/board/notes/{event}/rsvp", tok, {"answer": answer})
+
+# A TASK LIST, part ticked: the wall shows what is done (protocol.md,
+# "Board"), so a card with everything or nothing ticked says less.
+tasks = call("POST", "/families/mine/board/notes", nora,
+             {"text": "Before Sunday", "color": "green", "x": 0.66, "y": 0.74,
+              "kind": "tasks", "size": "large",
+              "items": [{"text": "Order the meat"}, {"text": "Borrow chairs"},
+                        {"text": "Charge the camera"}, {"text": "Ice for drinks"}]})["note"]
+for item in tasks["items"][:2]:
+    call("PUT", f"/families/mine/board/notes/{tasks['id']}/tasks/{item['id']}",
+         dan, {"done": True})
+
 # --- a direct chat ----------------------------------------------------
 direct = call("POST", "/chats/direct", nora, {"user_id": me[ellie]})["chat"]["id"]
 send(direct, ellie, "Can I stay at Priya's on Saturday?")
 send(direct, nora, "Yes — home by lunch on Sunday please.")
 
 print(f"\n  family 'The Harpers'  chat {family_chat}  invite {code}")
+print("  1.1 material: a reply chain, an event with answers, a task list mid-tick")
 print("  photograph as: nora / password123   (owner)")
 print("  server: http://127.0.0.1:8091")
 EOF

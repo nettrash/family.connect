@@ -105,16 +105,18 @@ chat,messenger,private,self-hosted,server,calls,video,voice,photos,relatives,gra
 
 *("family" and "connect" are left out on purpose — the app name is meant to carry them. Confirm the App Store Connect name first: the icon and the app itself are called "Family", and if the store listing is named that too, "connect" is indexed nowhere and should take "group"'s place here; the five free characters are held for exactly that. "kids" is dropped deliberately — a keyword implying a child audience invites a Guideline 1.3 and age-rating question this app cannot answer.)*
 
-## Notes for App Review (paste verbatim — 3730/4000 chars)
+## Notes for App Review (paste verbatim — 3990/4000 chars)
 
 DEMO SERVER: https://fc.nettrash.me — compiled into this build, so there is nothing to configure.
 
 DEMO ACCOUNTS.
-- Owner: [DEMO_USER] / [DEMO_PASS]. Owns the reviewer family; history seeded (photos, a video, a voice note, an open poll, a shared location, board notes, one 1:1 chat).
+- Owner: [DEMO_USER] / [DEMO_PASS]. Owns the reviewer family; history seeded: photos, a video, a voice note, an open poll, a location, board notes, a thread, one 1:1 chat.
 - Second account: [DEMO_USER_2] / [DEMO_PASS_2], same family — sign in on a second device for typing indicators, read receipts and a call.
 - Invite code [INVITE_CODE]. Support: [SUPPORT_EMAIL].
 
-WHAT IT IS. A client for a small open-source (MIT, Rust) chat server. There is no vendor cloud: each installation talks to exactly one server, and a family's messages live in that server's database and on the family's own devices. On the device the app is named Family; the App Store record is Family Connect. Two modes: (1) the default server above, operated by the developer and online for the whole review period — launch and the sign-in screen appears; (2) "Change server…" on that screen points the app at a family's self-hosted server. Review needs only mode 1. These notes describe the iOS build.
+NEW IN 1.1, WHERE TO FIND IT. Threads: "N replies" under an answered message opens the chain. Mentions: type @ in the composer. Open polls: the chart icon in the family chat's toolbar. The board holds an event (date, place, who is going, add to calendar) and a task list anyone may tick. The seeded family has each.
+
+WHAT IT IS. A client for a small open-source (MIT, Rust) chat server. There is no vendor cloud: each installation talks to one server, and a family's messages live in its database and on the family's devices. On the device the app is named Family; the App Store record is Family Connect. Two modes: (1) the default server above, which we keep online for the whole review period — launch and the sign-in screen appears; (2) "Change server…" there points the app at a self-hosted one. Review needs mode 1 only. These notes describe the iOS build.
 
 CONTACT IS CONTAINED (guideline 1.2). There is no public feed, no discovery, no user directory and no user search — nothing is posted to a public surface. Registration is open (username, display name, password; no email, no phone), but an account in no family can start nothing: opening a one-to-one chat, reporting and blocking are all refused server-side unless both people are in the same family, and calls exist only inside a one-to-one chat that had to be created that way. The only ways into a family are creating your own or presenting an 8-character invite code, and a new family defaults to "Need approval", so the owner admits each member, and may rotate the code, cap membership, close joining, or remove anyone.
 
@@ -339,15 +341,17 @@ restore it immediately.
 > - The submitted archive must be rebuilt from current source. The Release-nettrash product in
 >   DerivedData is build 68 and carries the pre-calls camera and microphone strings with no
 >   local-network key; the verbatim strings quoted above are the build-103 ones.
-> - iPad: the target declares device family 1,2 but has no size-class adaptation, so an iPad
->   reviewer sees a stretched iPhone layout. Either adapt it or drop iPad from the target and the
+> - iPad: DECIDED 2026-09-16 — dropped. `TARGETED_DEVICE_FAMILY` is `"1"` in all twelve settings
+>   across the four targets, so the record claims iPhone only and there is no iPad slot to fill.
+>   What the old note said, kept because it is why the decision went this way: the target declared
+>   device family 1,2 with no size-class adaptation, so an iPad
 >   screenshot set.
 
 ## Beta App Description (TestFlight → Test Information)
 
 Family Connect is a private messenger for one family, and this beta is how we find out what breaks before it reaches the App Store.
 
-On the Home Screen it is called Family, not Family Connect (iPhone or iPad, iOS 17 or later). The build is already pointed at our server, so there is nothing to set up: open it, register a username, a display name and a password — no email, no phone number — then create a family, which makes you its owner, or join one with an invite code. If you run your own Family Connect server, "Change server" on the sign-in screen points the app at it instead, including a plain http:// address on your own network.
+On the Home Screen it is called Family, not Family Connect (iPhone, iOS 17 or later). The build is already pointed at our server, so there is nothing to set up: open it, register a username, a display name and a password — no email, no phone number — then create a family, which makes you its owner, or join one with an invite code. If you run your own Family Connect server, "Change server" on the sign-in screen points the app at it instead, including a plain http:// address on your own network.
 
 Every family has one shared chat with everybody in it, pinned to the top of the list, plus private one-to-one chats between any two members.
 
@@ -364,7 +368,7 @@ In this build:
 
 Some of this cannot be tested alone. Real-time delivery, typing indicators, read receipts, notifications, calls and blocking all need a second person in the same family, and calls need two real devices.
 
-The honest limits: no message search; no drag-and-drop into the composer, though Paste works; the iPad runs the iPhone layout full screen rather than a split view; calls are strictly one to one, so there are no group calls; and this is not end-to-end encryption — messages and files are stored on the server your family chose, which during the beta is ours.
+The honest limits: no message search; no drag-and-drop into the composer, though Paste works; calls are strictly one to one, so there are no group calls; and this is not end-to-end encryption — messages and files are stored on the server your family chose, which during the beta is ours.
 
 If you were also sent the Mac build (macOS 14 or later), it is the same app with a sidebar and its own windows, but several things are iPhone-only: taking a photo inside a chat, the photo-library picker (the Mac gets a file panel instead), setting a profile picture, linking a member to a contact, and Leave Family. More importantly, a Mac is notified, and rings, only while the app is actually running: a Mac that is quit receives nothing. That is known — no need to spend time reproducing it.
 
@@ -392,7 +396,7 @@ NOTIFICATIONS — TWO TESTERS. The prompt appears once you are in a family and t
 
 SHOULD NOT HAPPEN. No banner while you are looking at that chat; reading one clears its badge and its banners. The family chat never shows a double checkmark — read receipts are one-to-one only. Opening a chat or foregrounding the app must not by itself clear the unread count — the newest message has to be on screen, app frontmost. A birthday must never notify anybody. Nothing should ask for camera, microphone or location outside a call, a recording or a location share, and nothing should ever ask for Contacts. A voice call must never become a video call.
 
-DELIBERATE, DON'T REPORT. No message search. No drag-and-drop (Paste works). Polls are family chat only. The iPad is the iPhone layout, full screen. Permission prompts stay English in every language.
+DELIBERATE, DON'T REPORT. No message search. No drag-and-drop (Paste works). Polls are family chat only. Permission prompts stay English in every language.
 
 DELETE ACCOUNT — LAST, TWO TESTERS, ON AN ACCOUNT YOU CAN LOSE. Settings from the chat list, bottom, beside Log Out: password, then immediate and irreversible. Afterwards, with your partner: your one-to-one chat is gone for them too; your family-chat messages, board notes and reactions stay as "Deleted account".
 
@@ -412,7 +416,7 @@ Each item is tagged **[code]** (a change in this repository) or **[nettrash]** (
 - [x] **[code]** Privacy Policy and Support links ship in Settings on both platforms, pointing at `https://nettrash.me/appstore/familyconnect/privacy.html` and `.../support.html`. The pages themselves exist.
 - [x] **[code]** Report and Block ship on iOS, macOS and Android, with the owner's report inbox and the four fixed reasons (`spam`, `harassment`, `inappropriate`, `other`). Together with member removal and the containment the product is built on — one family, membership an owner controls, no public feed, no discovery surface, no user directory, no way to reach a stranger — that is the guideline 1.2 answer. State it in that order everywhere it appears; never describe it as an absence.
 - [x] **[code]** Localisation is complete in nine languages (`de`, `en`, `es`, `fr`, `ja`, `ru`, `sr`, `sr-Latn`, `zh-Hans`): 501 keys in `Localizable.xcstrings`, 491 of them translatable, nothing missing and nothing flagged for review. The five `INFOPLIST_KEY_NS*UsageDescription` permission strings are outside that count and are English-only — see the open item below.
-- [x] **[code]** iPhone 6.9" and iPad 13" screenshot sets exist in `ios/docs/screenshots/`, six images each. Uploading them is a separate, **[nettrash]**, step.
+- [x] **[code]** The iPhone 6.9" set is in `ios/docs/screenshots/iphone-6.9/`. The `ipad-13/` set beside it is NOT uploaded — iPad was dropped from the target on 2026-09-16 — and is kept only as a record of the 1.0 listing; delete it whenever you like. Uploading is a separate, **[nettrash]**, step.
 - [x] **[code]** The Promotional Text, Description, Keywords, Notes for App Review and TestFlight sections above were rewritten in the same edit that produced this checklist, against the shipped feature set. Verifying that nothing stale survived elsewhere in the file is the first open item below, not a done one.
 
 ### Before the iOS archive is uploaded
@@ -460,7 +464,7 @@ Each item is tagged **[code]** (a change in this repository) or **[nettrash]** (
 - [ ] **[nettrash]** In App Store Connect: paste the Support URL and Privacy Policy URL, enter the owner demo credentials in App Review Information, and upload the two screenshot sets.
 - [x] **[nettrash]** Export compliance is answered: **NO**, decided 2026-08-31. The basis is written up under **Export compliance** below — read it before repeating the answer anywhere else, because the reason the sibling apps' answer does not simply transfer is the one fact that makes this non-trivial.
 - [ ] **[nettrash]** Complete the age-rating questionnaire. The honest inputs are: user-generated content yes, person-to-person messaging with media yes, both bounded to a single family whose membership an owner controls, with in-app reporting, blocking, an owner report inbox and member removal. Web access is restricted: there is no in-app browser — tapped links hand off to the system browser through `openURL` — though the app does fetch metadata from linked hosts for previews. No gambling, contests, purchases or ads. No parental controls and no age verification, since birthdays carry no year. The open judgement is the assistant: if `[ai]` is enabled it writes model output into the shared family chat, and whether that moves the rating is a policy call that cannot be made until the item above resolves.
-- [ ] **[nettrash]** Decide the iPad question. `TARGETED_DEVICE_FAMILY` is "1,2" but there is no size-class adaptation anywhere — the iPad is a stretched iPhone. Either adapt the layout, or drop to "1" and drop the iPad screenshot slot. Do not claim an iPad-optimised layout either way.
+- [x] **[nettrash]** DECIDED 2026-09-16: iPad dropped. The question was: `TARGETED_DEVICE_FAMILY` is "1,2" but there is no size-class adaptation anywhere — the iPad is a stretched iPhone. Either adapt the layout, or drop to "1" and drop the iPad screenshot slot. Do not claim an iPad-optimised layout either way.
 - [ ] **[nettrash]** Decide which name leads the App Store record. The app's on-device display name is "Family"; the product and this document are called "Family Connect", and the Siri vocabulary teaches "Call Anna on Family".
 - [ ] **[nettrash]** Decide whether open registration on fc.nettrash.me is acceptable at launch. There is no invite gate, no email, no allowlist and no config switch, so any App Store customer can create an account and a family on his box. Family isolation bounds the exposure — a new account sees nobody and reaches nobody — but storage (100 MB per attachment), server load and his own position as the operator of record are real. A `[registration]` switch on the server is the obvious follow-up.
 
