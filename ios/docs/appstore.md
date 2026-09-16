@@ -1,6 +1,6 @@
 # App Store Connect — Family Connect
 
-Every text the App Store listing needs, written against the shipped 1.0 feature set and checked
+Every text the App Store listing needs, written against the shipped 1.1 feature set and checked
 line by line against the code. Fill every `[PLACEHOLDER]` before submission — they mark the demo
 accounts and support address, which live on the server and not in this repository.
 
@@ -63,7 +63,8 @@ FIXES. A photo on the board is no longer cut off at the wrong height.
 the `ios/` tree actually gained since the v1.0 tag — threads (`ThreadView`), member mentions
 (`MemberMentions`), the board's photo notes, events and task lists, the open-polls screen
 (`OpenPollsView`), background uploads (`BackgroundUploads`) — and NOT against CHANGELOG, which
-still holds only the v1.0.0 entry. The assistant's daily greeting is deliberately absent, for
+held only the v1.0.0 entry when this was written; the v1.1.0 entry added on 2026-09-16 comes from the
+same reading of the tree, so the two agree by construction rather than by copying. The assistant's daily greeting is deliberately absent, for
 the reason the Description leaves the assistant out altogether: whether it is configured on the
 live server is not known in this repository, and naming a feature the customer cannot see is
 worse than never mentioning it.*
@@ -449,7 +450,7 @@ Each item is tagged **[code]** (a change in this repository) or **[nettrash]** (
 - [x] **[code]** DONE 2026-09-16. Fixed the two in-repo files that made a false data-handling claim: `server/config.example.toml:255` and `server/src/ai.rs:3-8` both say nothing anybody else wrote is ever sent anywhere. That is true of a member's private assistant thread and false of the family chat: with `ai_history` defaulting to true, an `@ai` mention there sends other members' words to Azure OpenAI. Both comments are load-bearing — an operator reads them to decide whether to switch the section on. Both now split the two cases: a member's own assistant thread carries only that thread, while an `@ai` mention in the FAMILY CHAT carries recent family conversation — other members' words, display names and timestamps — for as long as `ai_history` is on, which is its default, with only the owner able to turn it off and no member asked first.
 - [ ] **[code]** Decide and act on the terms-of-service gap. There is no EULA or terms acceptance anywhere in the sign-up flow, and Apple names agreed terms with no tolerance for objectionable content as an explicit 1.2 requirement, alongside the reporting and blocking that already ship. Either build the acceptance step or record the decision not to, with reasoning, here.
 - [ ] **[code]** Decide whether to localise the five usage descriptions. They are English literals in `project.pbxproj:546-550`, and the nine `.lproj` directories carry only `AppIntentVocabulary.plist` — no `InfoPlist.strings` anywhere. A Russian or Japanese user gets an English camera prompt in an otherwise fully localised app. Not a rejection risk; a visible seam.
-- [ ] **[code]** Bring README.md into line, or at least stop it being load-bearing. It describes a text-only client on iOS and Android with no mention of macOS at all (`README.md:6`), documents no macOS archive procedure, and its archive snippet targets `generic/platform=iOS` only (`:69`). CHANGELOG is nine batches behind and holds one v0.1.0 entry; neither is usable as a source for listing or "what's new" copy.
+- [ ] **[code]** Bring README.md into line, or at least stop it being load-bearing. It describes a text-only client on iOS and Android with no mention of macOS at all (`README.md:6`), documents no macOS archive procedure, and its archive snippet targets `generic/platform=iOS` only (`:69`). CHANGELOG is no longer the other half of this item: it now holds v0.1.0, v1.0.0 and v1.1.0 (the last added 2026-09-16) and IS usable as a source. README is what remains.
 
 ### Only nettrash can do these
 

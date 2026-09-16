@@ -1,6 +1,6 @@
 [package]
 name = "fc-text"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 authors = ["nettrash"]
 description = "Family Connect's message-text rules, ported from the Apple app for the web client: the markdown subset, link detection, emoji-only messages, mentions and the assistant's tokens."

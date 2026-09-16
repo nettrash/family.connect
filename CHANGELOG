@@ -1,3 +1,94 @@
+2026-09-16          v1.1.0
+
+                    Two new clients, threads and mentions in the
+                    chat, a board that holds photos, events and
+                    lists, and uploads that finish by themselves.
+
+                    TWO NEW CLIENTS. A Windows client (WinUI 3 on
+                    .NET 10, packaged for the Microsoft Store) and a
+                    web client (Rust and WebAssembly). Both speak the
+                    same protocol to the same server as the Apple and
+                    Android apps — chats, attachments, the board,
+                    polls, one-to-one calls, and the same nine
+                    localisations — so a family can be on four kinds
+                    of device and one server.
+
+                    CHAT. Threads: a reply chain opens on its own, so
+                    a side conversation stops burying the family
+                    chat. Mentions: type @ and pick a member, and the
+                    person named is told whether or not they had the
+                    chat open. Unread state now agrees across a
+                    person's devices. And every poll still waiting
+                    for answers is one screen away instead of lost in
+                    the scroll.
+
+                    THE BOARD. Photo notes, events with who is going
+                    and a hand-off into the reader's own calendar,
+                    task lists the family ticks off, mentions inside
+                    a note, a chosen font for a text note, and a
+                    board that scrolls once it fills up. Photos on it
+                    are drawn as photos rather than in a balloon, and
+                    a note's text fits the note.
+
+                    ATTACHMENTS. A send stages its files on the
+                    device and uploads them in the background, so
+                    leaving the screen — or the app — no longer
+                    strands a photo or a long video half-sent.
+
+                    THE ASSISTANT. A daily greeting, at a time the
+                    family picks and off unless they turn it on. It
+                    can be shown members' profile pictures and recent
+                    photos from the family chat, each its own switch
+                    and each off by default. An assistant chat can no
+                    longer be removed. And the part that was
+                    documented wrongly, now stated where an operator
+                    reads it: an @ai mention IN THE FAMILY CHAT sends
+                    recent family conversation with the question —
+                    other members' words, their display names and
+                    their timestamps — for as long as that family's
+                    ai_history is on, which is its default. Only the
+                    owner can turn it off, and no member is asked
+                    first.
+
+                    MODERATION. The owner's report inbox now says
+                    what a reported message carried — "Photo", or a
+                    file's own name. A photo sent without a caption
+                    has an empty body by design, and "inappropriate"
+                    is very often exactly that message, so the row
+                    used to be a reason word and two names. Resolving
+                    a report twice is no longer an error either: the
+                    second answer is the same success as the first,
+                    which is what a double tap, a second device and a
+                    retry after a timeout all deserve.
+
+                    FIXED. The Windows client lost a day of a family
+                    chat. Its catch-up cursor counted the chat list's
+                    own trimmed preview as a held message, so it
+                    asked the server for everything newer than the
+                    newest message there was, got nothing, and never
+                    asked for the day in between. The protocol now
+                    says what that cursor may count — only what a
+                    page or a live frame delivered, taken when the
+                    connection opens — and the cache counts nothing
+                    else. Also: images on the board are no longer
+                    cropped at the wrong height, the web client fits
+                    a tall picture in both directions, and on the Mac
+                    the change-password dialog stays inside its
+                    window while the board can add photos and events
+                    at all.
+
+                    SERVER. Ten migrations (0036 to 0045), applied at
+                    startup as always: threads, message and note
+                    mentions, photo notes, board events, note task
+                    lists, note fonts, the assistant's greeting and
+                    face switches, an assistant chat that cannot be
+                    deleted, and a report that carries what the
+                    reported message held.
+
+                    The server and web crates are 1.1.0, the Windows
+                    package 1.1.0.0, and the Apple and Android apps
+                    1.1.
+
 2026-08-31          v1.0.0
 
                     First release, and the first accurate entry in
