@@ -12,6 +12,8 @@
 //! whom — a family owner is often a parent and the blocked person is often
 //! in the same house.
 
+use std::collections::HashMap;
+
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -24,7 +26,7 @@ use sqlx::postgres::PgRow;
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
-use crate::models::{Report, User};
+use crate::models::{Report, ReportedAttachment, User};
 use crate::state::AppState;
 
 /// The four reasons, fixed. Free text would mean an owner's inbox can hold
@@ -66,6 +68,8 @@ fn report_from_row(row: &PgRow) -> Report {
         reason: row.get("reason"),
         message_id: row.get("message_id"),
         message_excerpt: row.get("message_excerpt"),
+        // Filled by `carry`, which reads them for every report in one query.
+        message_attachments: Vec::new(),
         created_at: row.get("created_at"),
     }
 }
@@ -80,6 +84,49 @@ const SELECT_REPORT: &str = "SELECT r.id, r.reason, r.message_id, r.message_exce
    FROM member_reports r
    JOIN users rep ON rep.id = r.reporter_user_id
    JOIN users tgt ON tgt.id = r.reported_user_id";
+
+/// What the reported messages carried, onto the reports that named them —
+/// kind and name, in the sender's own order (docs/protocol.md, "Reporting a
+/// member").
+///
+/// RECOMPUTED, not frozen. The excerpt is stored because the author may edit
+/// it away and retention deletes the message; these rows go WITH that message,
+/// which is the whole reason a client offers to open an attachment only while
+/// `message_id` survives. Two reports may name the same message — two members
+/// reporting one photo — so the map is read, never drained.
+async fn carry(pool: &sqlx::PgPool, reports: &mut [Report]) -> Result<(), ApiError> {
+    let ids: Vec<i64> = reports
+        .iter()
+        .filter_map(|report| report.message_id)
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let rows = sqlx::query(
+        "SELECT message_id, kind, name FROM attachments
+          WHERE message_id = ANY($1)
+          ORDER BY message_id, position, id",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await?;
+    let mut by_message: HashMap<i64, Vec<ReportedAttachment>> = HashMap::new();
+    for row in &rows {
+        by_message
+            .entry(row.get("message_id"))
+            .or_default()
+            .push(ReportedAttachment {
+                kind: row.get("kind"),
+                name: row.get("name"),
+            });
+    }
+    for report in reports.iter_mut() {
+        if let Some(carried) = report.message_id.and_then(|id| by_message.get(&id)) {
+            report.message_attachments = carried.clone();
+        }
+    }
+    Ok(())
+}
 
 /// `POST /families/reports`
 pub async fn create_report(
@@ -188,11 +235,9 @@ pub async fn create_report(
             .bind(id)
             .fetch_one(&state.pool)
             .await?;
-        return Ok((
-            StatusCode::OK,
-            Json(json!({"report": report_from_row(&row)})),
-        )
-            .into_response());
+        let mut report = report_from_row(&row);
+        carry(&state.pool, std::slice::from_mut(&mut report)).await?;
+        return Ok((StatusCode::OK, Json(json!({"report": report}))).into_response());
     }
 
     let id: i64 = sqlx::query_scalar(
@@ -214,6 +259,8 @@ pub async fn create_report(
         .bind(id)
         .fetch_one(&state.pool)
         .await?;
+    let mut report = report_from_row(&row);
+    carry(&state.pool, std::slice::from_mut(&mut report)).await?;
 
     // The owner is pushed and NO WebSocket frame is raised, exactly as for
     // a join request: they read the list on their next visit.
@@ -233,11 +280,7 @@ pub async fn create_report(
         .await,
     );
 
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({"report": report_from_row(&row)})),
-    )
-        .into_response())
+    Ok((StatusCode::CREATED, Json(json!({"report": report}))).into_response())
 }
 
 /// `GET /families/reports` (owner) — open only, oldest first.
@@ -265,7 +308,8 @@ pub async fn list_reports(
     .bind(state.cfg.limits.max_page_size)
     .fetch_all(&state.pool)
     .await?;
-    let reports: Vec<Report> = rows.iter().map(report_from_row).collect();
+    let mut reports: Vec<Report> = rows.iter().map(report_from_row).collect();
+    carry(&state.pool, &mut reports).await?;
     Ok((StatusCode::OK, Json(json!({"reports": reports}))).into_response())
 }
 
@@ -281,9 +325,10 @@ pub async fn resolve_report(
 ) -> Result<Response, ApiError> {
     let family = crate::handlers_family::require_owner_family(&state, &auth).await?;
     let mut tx = state.pool.begin().await?;
-    // ONE answer for four conditions — unknown id, another family's report,
-    // already resolved, or one naming the owner — so the endpoint never
-    // confirms that an id exists elsewhere.
+    // ONE answer for everything OUTSIDE this owner's own inbox — an unknown
+    // id, another family's report, or one naming the owner — so the endpoint
+    // never confirms that an id exists elsewhere. Already resolved is NOT in
+    // that set: see below.
     let not_pending = || ApiError::conflict(codes::REPORT_NOT_PENDING, "report is not pending");
     let row: Option<(String, i64)> = sqlx::query_as(
         "SELECT status, reported_user_id FROM member_reports
@@ -296,8 +341,18 @@ pub async fn resolve_report(
     let Some((status, reported_user_id)) = row else {
         return Err(not_pending());
     };
-    if status != "open" || reported_user_id == auth.user_id {
+    if reported_user_id == auth.user_id {
         return Err(not_pending());
+    }
+    // ALREADY RESOLVED IS SUCCESS, for a report of their own inbox: a double
+    // tap, a second device, and a retry after a timeout that actually worked
+    // are the same request twice, and none of them is an error
+    // (docs/protocol.md, `POST /families/reports/{id}/resolve`). Nothing is
+    // written and the row lock goes; `resolved_by` and `resolved_at` keep
+    // the FIRST answer, which is the one that did the work.
+    if status != "open" {
+        tx.rollback().await?;
+        return Ok(StatusCode::NO_CONTENT.into_response());
     }
     sqlx::query(
         "UPDATE member_reports SET status = 'resolved', resolved_at = now(), resolved_by = $2

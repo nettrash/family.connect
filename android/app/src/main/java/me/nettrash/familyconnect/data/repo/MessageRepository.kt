@@ -53,6 +53,7 @@ import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AttachmentApi
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.net.dto.ReportedAttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import me.nettrash.familyconnect.data.net.dto.CallDto
 import me.nettrash.familyconnect.data.net.dto.MessageDto
@@ -1856,6 +1857,35 @@ class MessageRepository @Inject constructor(
         /** The pre-plurality spelling, kept for single-attachment callers. */
         fun previewText(body: String, attachment: AttachmentDto?, call: CallDto? = null): String =
             previewText(body, attachment?.let(::listOf).orEmpty(), call)
+
+        /**
+         * WHAT A REPORTED MESSAGE CARRIED, for the owner's inbox — the
+         * chat-list preview's own wording over the trimmed set a report
+         * brings (docs/protocol.md, "Reporting a member").
+         *
+         * Null when the report names a PERSON, or a message that carried
+         * nothing: there the excerpt is the whole row. The mapping is the
+         * web and Windows clients' one, so one family's owner reads the
+         * same row whichever app they open — a count for several photos,
+         * the kind for one, and a file's own name where it has one.
+         */
+        fun carried(
+            attachments: List<ReportedAttachmentDto>,
+            labels: PreviewLabels = PreviewLabels.ENGLISH,
+        ): String? {
+            val first = attachments.firstOrNull() ?: return null
+            return when {
+                first.kind == AttachmentDto.KIND_PHOTO && attachments.size > 1 ->
+                    labels.photos(attachments.size)
+                first.kind == AttachmentDto.KIND_PHOTO -> labels.photo
+                first.kind == AttachmentDto.KIND_VIDEO -> labels.video
+                first.kind == AttachmentDto.KIND_AUDIO -> labels.audio
+                first.kind == AttachmentDto.KIND_LOCATION -> labels.location
+                // A file, or a kind a newer server added: its name if it has
+                // one, and otherwise the one word that is true of both.
+                else -> first.name?.takeIf { it.isNotEmpty() } ?: labels.file
+            }
+        }
 
         private const val TAG = "MessageRepository"
 

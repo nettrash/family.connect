@@ -43,32 +43,58 @@ at 75 characters, and the 25 freed are better spent on terms the listing carries
 
 A private messenger for one family. Messages, photos, voice notes and calls. Start on our server, move to your own whenever you like. No ads, no analytics, no tracking.
 
-## Description (3993/4000 chars)
+## What's New in 1.1 (840/4000 chars)
+
+THREADS. A reply chain opens on a screen of its own, so a side conversation stops burying the family chat.
+
+MENTIONS. Type @ and pick a member: their name lands in the message, and they are told whether or not they had the chat open.
+
+THE BOARD, PROPERLY. Pin photos as notes. Add an event, see who is going, and put it in your calendar. Keep a task list the whole family ticks off. And scroll the board once it fills up.
+
+OPEN POLLS, IN ONE PLACE. Every poll still waiting for an answer, without hunting back through the chat for it.
+
+UPLOADS THAT FINISH THEMSELVES. A photo or a long video keeps uploading after you leave the screen, and carries on while the app is in the background.
+
+UNREAD COUNTS THAT AGREE. What you have read on one device is read on the others.
+
+FIXES. A photo on the board is no longer cut off at the wrong height.
+
+*Per-platform in App Store Connect, so the Mac has its own further down. Written against what
+the `ios/` tree actually gained since the v1.0 tag — threads (`ThreadView`), member mentions
+(`MemberMentions`), the board's photo notes, events and task lists, the open-polls screen
+(`OpenPollsView`), background uploads (`BackgroundUploads`) — and NOT against CHANGELOG, which
+still holds only the v1.0.0 entry. The assistant's daily greeting is deliberately absent, for
+the reason the Description leaves the assistant out altogether: whether it is configured on the
+live server is not known in this repository, and naming a feature the customer cannot see is
+worse than never mentioning it.*
+
+## Description (3985/4000 chars)
 
 Family Connect is a private messenger for one family and nobody else — no feed, no discovery, no directory of users. The only people who can reach you are the ones your family's owner let in.
 
-It works out of the box: install, pick a username — no email address, no phone number — then create your family, and you become its owner, or join one with an invite code. The owner decides whether that code admits people instantly, needs their approval, or admits nobody at all, and can rotate it, cap how many members the family holds, or remove someone at any time.
+It works out of the box: install, pick a username — no email address, no phone number — then create your family and become its owner, or join one with an invite code. The owner decides whether that code admits people instantly, needs approval, or admits nobody, and can rotate it, cap the membership, or remove someone.
 
-What makes Family Connect different is where your messages live. There is no vendor cloud: every installation talks to a single Family Connect server. Out of the box that is the default server we operate, so you can start right away — and on it, we are the ones holding your family's messages and files. But the server software is free and open source (MIT, written in Rust), and "Change server" on the sign-in screen points the app at any other one. Put it on your own hardware and your conversations exist in exactly two places: your server and your family's devices.
+What makes Family Connect different is where your messages live. There is no vendor cloud: every installation talks to one Family Connect server. Out of the box that is the default server we operate — and on it, we hold your family's messages and files. But the server software is free and open source (MIT, written in Rust), and "Change server" on the sign-in screen points the app at any other one. Put it on your own hardware and your conversations exist in exactly two places: your server and your family's devices.
 
 Day to day it works like any modern messenger:
 
 - One shared chat for the whole family, and a private one-to-one chat with any member of it
-- Photos, videos, voice notes and files of any kind — up to ten on a message, with a message's photos drawn as one album you swipe through and pinch to zoom
+- Photos, videos, voice notes and files of any kind — up to ten on a message, drawn as one album you swipe through and pinch to zoom; uploads carry on in the background
 - Take a photo or video without leaving the chat, or send one in from another app
-- Your location sent once, drawn on a map, only when you choose to — never continuously, never in the background
-- Polls in the family chat, a board of coloured notes anyone can move, replies, editing what you have sent, and reactions from a picker of hundreds of emoji
-- One-to-one voice and video calls that ring on the lock screen and land in the Phone app's Recents; link a member to a contact and call them from their card, with that link never leaving your device
-- Real-time delivery with typing indicators, read receipts in one-to-one chats, unread counts
+- Your location sent once, drawn on a map, only when you choose — never continuously, never in the background
+- Polls in the family chat, with every open one a tap away; a board anyone can move of notes, photos, events with who is going, and task lists
+- Replies, threads you can open on their own, @mentions of anyone in the family, editing what you have sent, and reactions from a picker of hundreds of emoji
+- One-to-one voice and video calls that ring on the lock screen and land in the Phone app's Recents; link a member to a contact and call from their card — that link never leaves your device
+- Real-time delivery with typing indicators, read receipts in one-to-one chats, and unread counts that agree on every device
 - Notifications when messages arrive while the app is closed — and none while you are already reading
-- History kept on the device, so you can read it back with no signal at all
-- Report a message or a member to your family's owner, who can remove them — and a report about the owner goes to whoever runs the server instead
+- History kept on the device, so you can read it back with no signal
+- Report a message or a member to your family's owner, who can remove them — a report about the owner goes to whoever runs the server instead
 - Block anyone: their messages fold behind a row you can tap, their chat leaves your list, their calls never ring you
 - Eight languages in nine localisations, Serbian in both alphabets
 
-What it does not have: ads, analytics, tracking, crash reporting, or the attribution SDKs that usually arrive with a free messenger. The app carries exactly one piece of third-party code — Google's open-source WebRTC library, under a BSD licence — used for nothing but carrying calls.
+What it does not have: ads, analytics, tracking, crash reporting, or the attribution SDKs a free messenger usually arrives with. The one piece of third-party code in it is Google's open-source WebRTC library, (BSD), which carries calls and nothing else.
 
-And the honest limits. This is not end-to-end encryption and we will not imply that it is: messages and attachments travel encrypted to the server your family chose — plain http only for a server on your own network — and are stored there in readable form, so whoever runs it can read them. Calls are different: picture and sound go straight between the two devices wherever the network allows; where it does not, the call connects only if your server's operator runs a relay, which forwards the stream encrypted without being able to read it. Some things necessarily reach past your server: the map under a shared location and link previews, both switchable in Settings; a public STUN server, asked for your address when you place a call; and Apple's push service, which carries the message text into a notification unless your server's operator turns that off. There is no message search yet, and how long the server keeps older messages is a setting for whoever runs it.
+And the honest limits. This is not end-to-end encryption, and we will not imply it is: messages and attachments travel encrypted to the server your family chose — plain http only for a server on your own network — and are stored there readable, so whoever runs it can read them. Calls are different: picture and sound go straight between the two devices wherever the network allows; where it does not, the call connects only if your server's operator runs a relay, which forwards it encrypted and cannot read it. Some things necessarily reach past your server: the map under a shared location and link previews, both switchable in Settings; a public STUN server, asked for your address when you place a call; and Apple's push service, which carries the message text into a notification unless your server's operator turns that off. There is no message search yet, and how long old messages are kept is the server operator's setting.
 
 If you want your family's conversations off big-tech servers — and, when you are ready, on hardware you own — this is what Family Connect is for.
 
@@ -416,11 +442,11 @@ Each item is tagged **[code]** (a change in this repository) or **[nettrash]** (
 
   It must print `https://fc.nettrash.me`. An empty line means the wrong scheme was archived.
 - [x] **[code]** `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO` is set on all three app-target configurations — Debug, Release and **Release-nettrash**, the one that ships — so uploads stop parking in "Missing Compliance". Verified in the built bundles, not the setting: `ITSAppUsesNonExemptEncryption` reads `false` in both the iOS and macOS `Info.plist`, and is correctly ABSENT from the share extension, which Apple does not read it from. The answer's basis is recorded under **Export compliance** below.
-- [ ] **[code]** Fix what the owner's report inbox shows for reported media. Two defects, one screen. First, the excerpt is frozen from `messages.body` (`handlers_report.rs:132-152`), and a photo, video or voice note sent without a caption **has an empty body** by design (`handlers_chat.rs:487`) — so the frozen excerpt is the empty string, and "inappropriate" is very often exactly that message. Second, `docs/protocol.md:123-128` promises `message_attachments` on a report, `SELECT_REPORT` (`handlers_report.rs:73`) does not select it and `report_from_row` does not emit it, so nothing fills the hole either: the owner gets a reason word and two names. Implement `message_attachments` as the protocol already specifies it — kind and name, no dimensions and no coordinates — or amend `protocol.md` first and accept the gap knowingly. This is precisely the path a reviewer probing guideline 1.2 will walk: report a photo, then look at what the moderator sees.
-- [ ] **[code]** Settle the resolve-a-report disagreement. `protocol.md:1562` promises `204` on a repeat resolve, explicitly because "a double tap and a retry after a timeout that actually worked are the same request twice and neither is an error"; `handlers_report.rs:299` returns `409 report_not_pending` and `report_flow.rs:92` locks it in. A literal double tap cannot reach it — both clients disable the button while the request is in flight and drop the row on success (`ReportInboxView.swift:98`, `MacFamilyView.swift:331`) — but an owner resolving from a second device, or retrying after a timeout that had actually worked, gets an error where the protocol promises success. Per the project rule, amend `protocol.md` first if the 409 is meant to stand.
+- [x] **[code]** DONE 2026-09-16. Fixed what the owner's report inbox shows for reported media. Two defects, one screen. First, the excerpt is frozen from `messages.body` (`handlers_report.rs:132-152`), and a photo, video or voice note sent without a caption **has an empty body** by design (`handlers_chat.rs:487`) — so the frozen excerpt is the empty string, and "inappropriate" is very often exactly that message. Second, `docs/protocol.md:123-128` promises `message_attachments` on a report, `SELECT_REPORT` (`handlers_report.rs:73`) does not select it and `report_from_row` does not emit it, so nothing fills the hole either: the owner gets a reason word and two names. Implement `message_attachments` as the protocol already specifies it — kind and name, no dimensions and no coordinates — or amend `protocol.md` first and accept the gap knowingly. This is precisely the path a reviewer probing guideline 1.2 will walk: report a photo, then look at what the moderator sees. **Implemented as the protocol already specified it**, so nothing here was amended: `ReportedAttachment` (kind and name, `name` serialised as null rather than omitted) on `models::Report`, hydrated for `create_report` and `list_reports` by one `carry()` query (`WHERE message_id = ANY($1) ORDER BY message_id, position, id`) — recomputed on every read, because retention takes those rows with the message, which is exactly why a client offers to open one only while `message_id` survives. Web and Windows were already drawing the field (`web/src/views/family.rs` `carried()`, `FamilyConsole.Carried`); iOS, macOS and Android now do too, with the chat-list preview's own wording and no new translation keys. Covered by `report_flow.rs::a_reported_photo_says_what_it_was_even_with_no_caption` (caption-less photo, a file's name, nothing leaked but kind and name, and a person report carrying no key at all), `models.rs::a_reported_photo_carries_its_kind_and_a_null_name`, `ReportCarriedTests` (7 cases, green on macOS) and `ReportCarriedTest` (Android, green).
+- [x] **[code]** DONE 2026-09-16, the server moved. Settled the resolve-a-report disagreement. `protocol.md:1562` promises `204` on a repeat resolve, explicitly because "a double tap and a retry after a timeout that actually worked are the same request twice and neither is an error"; `handlers_report.rs:299` returns `409 report_not_pending` and `report_flow.rs:92` locks it in. A literal double tap cannot reach it — both clients disable the button while the request is in flight and drop the row on success (`ReportInboxView.swift:98`, `MacFamilyView.swift:331`) — but an owner resolving from a second device, or retrying after a timeout that had actually worked, gets an error where the protocol promises success. Per the project rule, amend `protocol.md` first if the 409 is meant to stand. **The doc stood**: `resolve_report` now answers `204` for a report of the owner's own inbox that is already resolved — nothing written, the row lock released, `resolved_by` and `resolved_at` keeping the first answer — and keeps `409 report_not_pending` for everything OUTSIDE it: an unknown id, another family's report, or one naming the owner, still one answer for all three so the endpoint never confirms an id exists elsewhere. `report_flow.rs` asserts the 204 and that the row stays off the list.
 - [ ] **[code]** Resolve whether `[ai]` is enabled on fc.nettrash.me and write the answer into this file. Nothing in the repo can tell you: the whole section is commented out in `server/config.example.toml:262` and the live config is not here. Three separate answers branch on it — the App Privacy disclosure, the privacy policy text, and the age-rating judgement about unfiltered model output in a shared chat — so this file must not be filed with the question open. Whichever way it lands, the sentence that ships has to be true of the server as configured on the day of submission.
-- [ ] **[code]** Correct the stale sentences in the authoritative doc before any listing copy quotes it: `protocol.md:1315` ("one to one, voice only, and peer to peer") and its counterpart in `CallManager.swift:6` ("One call at a time, one to one, audio only, peer to peer"), both contradicted by `protocol.md:1481-1509` and the shipping code; and `protocol.md:1030-1032`, which reads as though dedup is the only reason an attachment survives deletion when in fact the member's own family-chat uploads always do.
-- [ ] **[code]** Fix the two in-repo files that now make a false data-handling claim: `server/config.example.toml:255` and `server/src/ai.rs:3-8` both say nothing anybody else wrote is ever sent anywhere. That is true of a member's private assistant thread and false of the family chat: with `ai_history` defaulting to true, an `@ai` mention there sends other members' words to Azure OpenAI. Both comments are load-bearing — an operator reads them to decide whether to switch the section on.
+- [ ] **[code]** PARTLY DONE 2026-09-16 — the calls pair is corrected, the attachment sentence is not. Correct the stale sentences in the authoritative doc before any listing copy quotes it: `protocol.md:1315` ("one to one, voice only, and peer to peer") and its counterpart in `CallManager.swift:6` ("One call at a time, one to one, audio only, peer to peer"), both contradicted by `protocol.md:1481-1509` and the shipping code; and `protocol.md:1030-1032`, which reads as though dedup is the only reason an attachment survives deletion when in fact the member's own family-chat uploads always do. **Done:** "Voice calls" now reads "one to one, voice or video, and peer to peer", says the picture travels the same way, and `CallManager.swift`'s header says "voice OR VIDEO". **Still open:** the dedup sentence.
+- [x] **[code]** DONE 2026-09-16. Fixed the two in-repo files that made a false data-handling claim: `server/config.example.toml:255` and `server/src/ai.rs:3-8` both say nothing anybody else wrote is ever sent anywhere. That is true of a member's private assistant thread and false of the family chat: with `ai_history` defaulting to true, an `@ai` mention there sends other members' words to Azure OpenAI. Both comments are load-bearing — an operator reads them to decide whether to switch the section on. Both now split the two cases: a member's own assistant thread carries only that thread, while an `@ai` mention in the FAMILY CHAT carries recent family conversation — other members' words, display names and timestamps — for as long as `ai_history` is on, which is its default, with only the owner able to turn it off and no member asked first.
 - [ ] **[code]** Decide and act on the terms-of-service gap. There is no EULA or terms acceptance anywhere in the sign-up flow, and Apple names agreed terms with no tolerance for objectionable content as an explicit 1.2 requirement, alongside the reporting and blocking that already ship. Either build the acceptance step or record the decision not to, with reasoning, here.
 - [ ] **[code]** Decide whether to localise the five usage descriptions. They are English literals in `project.pbxproj:546-550`, and the nine `.lproj` directories carry only `AppIntentVocabulary.plist` — no `InfoPlist.strings` anywhere. A Russian or Japanese user gets an English camera prompt in an otherwise fully localised app. Not a rejection risk; a visible seam.
 - [ ] **[code]** Bring README.md into line, or at least stop it being load-bearing. It describes a text-only client on iOS and Android with no mention of macOS at all (`README.md:6`), documents no macOS archive procedure, and its archive snippet targets `generic/platform=iOS` only (`:69`). CHANGELOG is nine batches behind and holds one v0.1.0 entry; neither is usable as a source for listing or "what's new" copy.
@@ -621,32 +647,55 @@ keyword-overlap consequence: dropping "private", "chat" and "server" leaves
 
 A private messenger for one family, native on the Mac: a sidebar, chats in their own windows, photos, voice notes and calls. Start on our server, move to your own.
 
-### macOS Description (3999/4000 chars)
+### macOS What's New in 1.1 (983/4000 chars)
+
+THREADS. A reply chain opens in its own place, so a side conversation stops burying the family chat.
+
+MENTIONS. Type @ and pick a member: their name lands in the message, and they are told whether or not they had the chat open.
+
+THE BOARD, AT LAST COMPLETE ON THE MAC. Pin photos and add events here too — both were iPhone-only before. See who is going to an event and put it in your calendar, keep a task list the whole family ticks off, and scroll the board once it fills up.
+
+OPEN POLLS, IN ONE PLACE. Every poll still waiting for an answer, without hunting back through the chat for it.
+
+UPLOADS THAT FINISH THEMSELVES. A photo or a long video keeps uploading after you leave the window, and carries on while the app is in the background.
+
+UNREAD COUNTS THAT AGREE. What you have read on one device is read on the others.
+
+FIXES. Changing your password no longer draws a dialog that spills out of its own window, and a photo on the board is no longer cut off at the wrong height.
+
+*The Mac's own, and it leads with what was MISSING rather than what is new everywhere: the board
+could not pin a photo or add an event on macOS at all (issue #69), and the change-password sheet
+drew outside its window (#67). Both are fixed, and both are what a Mac customer who tried 1.0
+noticed. Nothing here may claim a quit Mac is notified or rung — see the variants in the Mac
+checklist below.*
+
+### macOS Description (3986/4000 chars)
 
 Family Connect is a private messenger for one family and nobody else — no feed, no discovery, no directory of users. The only people who can reach you are the ones your family's owner let in.
 
-On the Mac it is a Mac app, not a phone screen made wide: conversations in a sidebar beside the one you are reading, any of them opened in a window of its own, and a window each for the board and for a call — so the chat you watch all day can sit in a corner of the screen.
+On the Mac it is a Mac app, not a phone screen made wide: conversations in a sidebar beside the one you are reading, any opened in a window of its own, and a window each for the board and a call.
 
-It works out of the box: install, pick a username — no email address, no phone number — then create your family, and you become its owner, or join one with an invite code. The owner decides whether that code admits people instantly, needs approval, or admits nobody, and can rotate it, cap the membership, or remove someone.
+It works out of the box: install, pick a username — no email address, no phone number — then create your family and become its owner, or join one with an invite code. The owner decides whether that code admits people instantly, needs approval, or admits nobody, and can rotate it, cap the membership, or remove someone.
 
-What makes Family Connect different is where your messages live. There is no vendor cloud: every installation talks to a single Family Connect server. Out of the box that is the default server we operate — and on it, we are the ones holding your family's messages and files. But the server software is free and open source (MIT, written in Rust), and "Change server" on the sign-in screen points the app at any other one. Put it on your own hardware and your conversations exist in exactly two places: your server and your family's devices.
+What makes Family Connect different is where your messages live. There is no vendor cloud: every installation talks to one Family Connect server. Out of the box that is the default server we operate — and on it, we hold your family's messages and files. But the server software is free and open source (MIT, written in Rust), and "Change server" on the sign-in screen points the app at any other one. Put it on your own hardware and your conversations exist in exactly two places: your server and your family's devices.
 
 Day to day it works like any modern messenger:
 
 - One shared chat for the whole family, and a private one-to-one chat with any member of it
-- Photos, videos, voice notes and files of any kind — up to ten on a message, from an open panel or shared in from another app; a message's photos become one album in its own window, paged with arrow keys
+- Photos, videos, voice notes and files — up to ten on a message, from a file panel or another app; a message's photos become one album in its own window, and uploads carry on in the background
 - One-to-one voice and video calls, in their own window
 - Your location sent once, drawn on a map, only when you choose — never continuously, never in the background
-- Polls in the family chat, a board of coloured notes anyone can move, replies, editing what you have sent, and reactions from hundreds of emoji
-- Real-time delivery, typing indicators, read receipts in one-to-one chats, unread counts
-- History kept on the Mac, so you can read it back with no network
-- Report a message or a member to your family's owner, who can remove them — a report about the owner goes to whoever runs the server instead
+- Polls in the family chat, with every open one a click away; a board anyone can move of notes, photos, events with who is going, and task lists
+- Replies, threads you can open on their own, @mentions of anyone in the family, editing what you have sent, and reactions from hundreds of emoji
+- Real-time delivery, typing indicators, read receipts in one-to-one chats, and unread counts that agree on every device
+- History kept on the Mac, so you can read it back offline
+- Report a message or a member to your family's owner, who can remove them — a report about the owner goes to whoever runs the server
 - Block anyone: their messages fold behind a row you can click, their chat leaves your list, their calls never reach you
 - Eight languages in nine localisations, Serbian in both alphabets
 
-What it does not have: ads, analytics, tracking, crash reporting, or the attribution SDKs that usually arrive with a free messenger. The one piece of third-party code in it is Google's open-source WebRTC library, under a BSD licence, which carries calls and nothing else.
+What it does not have: ads, analytics, tracking, crash reporting, or the attribution SDKs a free messenger usually arrives with. The one piece of third-party code in it is Google's open-source WebRTC library, (BSD), which carries calls and nothing else.
 
-And the honest limits. A Mac notifies you, and rings, only while the app is running. Being woken for a call is deliberately not a thing a Mac does, and a quit Mac is not notified either — so leave it open if you want to be reachable on it. There is no camera capture inside a chat. This is not end-to-end encryption and we will not imply that it is: messages and attachments travel encrypted to the server your family chose — plain http only for a server on your own network — and are stored there in readable form, so whoever runs it can read them. Calls are different: picture and sound go straight between the two devices wherever the network allows; where it does not, the call connects only if your server's operator runs a relay, which forwards the stream encrypted and cannot read it. Some things necessarily reach past your server: the map under a shared location and link previews, both switchable in Settings, and a public STUN server asked for your address when you place a call. There is no message search yet, and how long old messages are kept is a setting for whoever runs the server.
+And the honest limits. A Mac notifies you, and rings, only while the app is running: being woken for a call is deliberately not a thing a Mac does, and a quit Mac is not notified either, so leave it open if you want to be reachable on it. There is no camera capture inside a chat. This is not end-to-end encryption, and we will not imply it is: messages and attachments travel encrypted to the server your family chose — plain http only for a server on your own network — and are stored there readable, so whoever runs it can read them. Calls are different: picture and sound go straight between the two devices wherever the network allows; where it does not, the call connects only if your server's operator runs a relay, which forwards it encrypted and cannot read it. Some things necessarily reach past your server: the map under a shared location and link previews, both switchable in Settings, and a public STUN server asked for your address on a call. There is no message search yet, and how long old messages are kept is the server operator's setting.
 
 If you want your family's conversations off big-tech servers — and, when you are ready, on hardware you own — this is what Family Connect is for.
 

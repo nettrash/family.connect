@@ -339,6 +339,14 @@ struct MacFamilyView: View {
                             .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
                             .textSelection(.enabled)
                     }
+                    // And WHAT IT CARRIED, when the words do not say: a photo
+                    // sent without a caption has an empty excerpt, and
+                    // "inappropriate" is very often exactly that message.
+                    if let carried = report.carried {
+                        Label(carried, systemImage: "paperclip")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
                     HStack {
                         Spacer()
                         // Says nothing about what the owner DID: this

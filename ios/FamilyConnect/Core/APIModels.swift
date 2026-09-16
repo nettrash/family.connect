@@ -445,6 +445,13 @@ nonisolated struct ReportDTO: Codable, Equatable, Sendable, Identifiable {
     /// quotation in this protocol that is stored rather than recomputed,
     /// because the author may edit it away and retention will sweep it.
     let messageExcerpt: String?
+    /// What the reported message CARRIED, trimmed exactly as a chat-list
+    /// preview is: kind and name, no dimensions and no coordinates. A photo
+    /// sent without a caption has an EMPTY body, and "inappropriate" is very
+    /// often exactly that message — then this is all the row has to say what
+    /// was reported. Absent on a report that names a person, and gone once
+    /// retention has swept the message, exactly as `messageID` is.
+    let messageAttachments: [ReportedAttachmentDTO]?
     let createdAt: Date?
 
     enum CodingKeys: String, CodingKey {
@@ -454,8 +461,61 @@ nonisolated struct ReportDTO: Codable, Equatable, Sendable, Identifiable {
         case reason
         case messageID = "message_id"
         case messageExcerpt = "message_excerpt"
+        case messageAttachments = "message_attachments"
         case createdAt = "created_at"
     }
+
+    /// What this report's message carried, as the owner's inbox says it.
+    var carried: String? { Self.carried(messageAttachments) }
+
+    /// The same, over the trimmed set alone — the chat-list preview's own
+    /// wording, and the web and Windows clients' mapping, so one family's
+    /// owner reads the same row whichever app they open. Nil when the report
+    /// names a PERSON, or a message that carried nothing: there the excerpt
+    /// is the whole row.
+    static func carried(_ attachments: [ReportedAttachmentDTO]?) -> String? {
+        guard let first = attachments?.first, let count = attachments?.count else {
+            return nil
+        }
+        switch first.kind {
+        case ReportedAttachmentDTO.Kind.photo where count > 1:
+            return String(localized: "\(count) Photos")
+        case ReportedAttachmentDTO.Kind.photo:
+            return String(localized: "Photo")
+        case ReportedAttachmentDTO.Kind.video:
+            return String(localized: "Video")
+        case ReportedAttachmentDTO.Kind.audio:
+            return String(localized: "Audio")
+        case ReportedAttachmentDTO.Kind.location:
+            return String(localized: "Location")
+        default:
+            // A file, or a kind a newer server added: its name where it has
+            // one, and otherwise the one word that is true of both.
+            let name = first.name?.isEmpty == false ? first.name : nil
+            return name ?? String(localized: "File")
+        }
+    }
+}
+
+/// One attachment of a reported message, as the owner's inbox needs it: what
+/// it is, and what it is called. No id, no size, no preview flag — and no
+/// COORDINATES, deliberately: a moderator needs to know that a place was
+/// sent, not where the sender was standing (protocol.md, "Reporting a
+/// member").
+nonisolated struct ReportedAttachmentDTO: Codable, Equatable, Sendable {
+    /// The kinds the wire uses, spelled once.
+    enum Kind {
+        static let photo = "photo"
+        static let video = "video"
+        static let audio = "audio"
+        static let file = "file"
+        static let location = "location"
+    }
+
+    let kind: String
+    /// A file's name, or the label on a voice note or a location — `null` on
+    /// a photo, which renders itself.
+    let name: String?
 }
 
 nonisolated struct ReportsResponse: Codable, Equatable, Sendable {
