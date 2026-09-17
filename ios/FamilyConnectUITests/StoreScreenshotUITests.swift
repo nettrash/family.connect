@@ -638,10 +638,32 @@ final class StoreScreenshotUITests: XCTestCase {
 
     @MainActor
     private func back(in app: XCUIApplication) {
+        // NOTHING TO GO BACK TO ON A SPLIT VIEW. The iPad keeps the chat
+        // list as a permanent sidebar (ChatListView's "two shapes, one
+        // state"), so there is no back button — and the first
+        // navigation-bar button is then the SIDEBAR TOGGLE, which collapses
+        // the sidebar and takes the Board button off screen with it. That
+        // is the whole of why the 2026-09-17 iPad run stopped at "none of
+        // [Board] was reachable" having shot the five screens before it.
+        if isSplitView { return }
         let back = app.navigationBars.buttons.firstMatch
         if back.exists { back.tap() }
         sleep(1)
     }
+
+    /// Whether this device draws the split view — measured, not guessed,
+    /// and measured ONCE.
+    ///
+    /// From the SCREEN rather than a window, because `app.windows` is
+    /// ambiguous after a login (trap 1) and because the idiom is not
+    /// visible to a UI test at all. A screenshot's image is in POINTS: 440
+    /// wide on the 6.9" iPhone, 1024 on the 13" iPad and 834 on the 11",
+    /// so anything at or above 700 is an iPad — and an iPhone-only build
+    /// running in compatibility mode on an iPad measures as the phone it
+    /// is pretending to be, which is exactly the right answer here.
+    private lazy var isSplitView: Bool = {
+        XCUIScreen.main.screenshot().image.size.width >= 700
+    }()
 
     // MARK: - Scrolling
 
