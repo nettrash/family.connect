@@ -30,6 +30,46 @@ public static class AttachmentFiles
         : attachment.Kind == "photo" ? TileSource.Original
         : TileSource.None;
 
+    /// <summary>
+    /// Win32's device names, which are reserved in EVERY directory and with ANY extension.
+    /// </summary>
+    private static readonly HashSet<string> ReservedStems = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+
+    /// <summary>
+    /// A file name safe to write: never a path, never a character Windows refuses, and never one of
+    /// Win32's device names.
+    /// </summary>
+    /// <remarks>
+    /// The name comes from whoever sent the attachment, and the server does not vet it: for a file it
+    /// checks that the name is 1..=MAX_NAME_LEN characters after trimming and nothing else
+    /// (<c>handlers_attachment.rs</c>). So this is not a belt to the server's braces — it is the only
+    /// guard there is.
+    /// <para>
+    /// The device names are the part that is easy to miss. Win32 resolves CON, PRN, AUX, NUL, COM1-9
+    /// and LPT1-9 to a DEVICE in every directory and with any extension, so a temp path ending in
+    /// "CON.txt" is the console rather than a file: the write goes to the device (or fails) and
+    /// opening the saved file then cannot work, leaving the reader with "Something went wrong" and no
+    /// way to rename anything. A leading underscore is enough to make it an ordinary name again.
+    /// </para>
+    /// </remarks>
+    public static string SafeFileName(string name)
+    {
+        var bare = Path.GetFileName(name.Replace('\\', '/').Split('/').Last());
+        var invalid = Path.GetInvalidFileNameChars();
+        var cleaned = string.Concat(bare.Select(c => invalid.Contains(c) ? '_' : c)).Trim().TrimEnd('.');
+        if (cleaned.Length == 0)
+        {
+            return "attachment.bin";
+        }
+        var stem = Path.GetFileNameWithoutExtension(cleaned);
+        return ReservedStems.Contains(stem) ? "_" + cleaned : cleaned;
+    }
+
     /// <summary>What a download is saved as: its own name, or one made from its kind and type.</summary>
     public static string FileName(AttachmentDto attachment)
     {
