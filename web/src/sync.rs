@@ -632,6 +632,10 @@ pub async fn catch_up_messages(
                     reading,
                     Via::CatchUp {
                         counted_up_to: counted,
+                        // `newest`, not `after`: the cursor this pass
+                        // OPENED with, which is what says whether a thread
+                        // root came with the page or was already held.
+                        held_through: newest,
                     },
                 );
             }

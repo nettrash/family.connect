@@ -35,7 +35,7 @@
 //
 //  Both live on iOS 26.5, so one runtime covers both required slots.
 //
-//  ── THE FOUR TRAPS THIS FILE EXISTS TO NOT FALL INTO AGAIN (#55) ──
+//  ── THE FIVE TRAPS THIS FILE EXISTS TO NOT FALL INTO AGAIN (#55) ──
 //
 //  1. A LOGIN LEAVES TWO EXTRA WINDOWS BEHIND. One of them eats taps and
 //     one does not, and telling them apart is the whole of this issue.
@@ -93,6 +93,14 @@
 //     the list too. Every step below waits on something only its own
 //     screen has: the composer's attach button for the conversation, the
 //     album/poll bubbles for the photo frame, the nav bar for the rest.
+//
+//  5. A SECURE FIELD CLEARS ITSELF WHEN IT IS RE-FOCUSED, so a password
+//     typed across that moment arrives as its own tail. `typeText` put
+//     "password123" in, the field held "123", the server said 401 and the
+//     screen said "Wrong username or password." — while the harness
+//     reported the field as "filled" and the refusal as absent, so three
+//     runs blamed the credentials, the seed and the Go key. Count the
+//     bullets after typing into a secure field; never trust the tap.
 //
 //  4. `app.swipeUp()` IS A SILENT NO-OP ON IPHONE IN LANDSCAPE. Twelve of
 //     them left every row frame identical to the decimal. Everything here
@@ -160,6 +168,10 @@ final class StoreScreenshotUITests: XCTestCase {
         // password to save, and is logged in — measured, and the state
         // every step below assumes.
         relaunch(app, server: server)
+        // The prompt follows the first sync, so it usually arrives within a
+        // second or two of this relaunch — wait for it here rather than
+        // discovering it in a frame.
+        settle()
 
         // 1 — the chat list.
         let family = familyRow(in: app)
@@ -304,7 +316,7 @@ final class StoreScreenshotUITests: XCTestCase {
         let secure = app.secureTextFields["Password"]
         XCTAssertTrue(secure.waitForExistence(timeout: 5), "password field should exist")
         secure.tap()
-        secure.typeText(password)
+        guard typeSecure(secure, password, in: app) else { return }
 
         // VERIFY BEFORE SUBMITTING. AutoFill can steal focus between the
         // two taps, and the failure mode is silent: the password lands in
@@ -356,7 +368,15 @@ final class StoreScreenshotUITests: XCTestCase {
         // the third case is the one worth describing rather than retrying
         // for ever.
         let row = familyRow(in: app)
-        let refused = app.staticTexts["Something went wrong. Try again."]
+        // BOTH refusals. Watching only the generic one is how a 401 came
+        // to be reported as "no refusal" three runs running: a wrong
+        // password says "Wrong username or password.", and only a request
+        // that failed outright says "Something went wrong. Try again."
+        // (`AuthView.swift:184` and `:194`).
+        let refused = app.staticTexts.matching(NSPredicate(
+            format: "label == %@ OR label == %@",
+            "Wrong username or password.",
+            "Something went wrong. Try again.")).firstMatch
         for attempt in 0..<3 {
             if attempt == 0 {
                 // The Go key, typed into the field that owns the submit.
@@ -373,9 +393,9 @@ final class StoreScreenshotUITests: XCTestCase {
                 if row.exists { return }
                 if refused.exists {
                     capture("00-login-failed")
-                    XCTFail("login was REJECTED by the server — is the seed fresh, and is "
-                            + "\(app.launchArguments) the seeded server? (built WITHOUT "
-                            + "CODE_SIGNING_ALLOWED=NO — see #45)")
+                    XCTFail("the login was REFUSED: \"\(refused.label)\". Is the seed "
+                            + "fresh, and is \(app.launchArguments) the seeded server? "
+                            + "(built WITHOUT CODE_SIGNING_ALLOWED=NO — see #45)")
                     return
                 }
                 sleep(1)
@@ -386,6 +406,69 @@ final class StoreScreenshotUITests: XCTestCase {
             }
         }
         report(app, why: "the Go key and two button taps all went nowhere: no chat list, no refusal")
+    }
+
+    /// Types into a secure field ONE CHARACTER AT A TIME, proving each
+    /// one landed before typing the next, and returns false (having
+    /// reported) if it cannot.
+    ///
+    /// `typeText("password123")` does not arrive whole. What the field
+    /// held on 2026-09-16, across three runs: "123" (the eight letters
+    /// lost), then three of eleven, then eight of eleven (the digits
+    /// lost). The boundary sits exactly where the KEYBOARD CHANGES PLANES,
+    /// letters to digits, and the characters typed across that switch are
+    /// never delivered. Nothing about it is a race with the server: the
+    /// first run posted `password="123"` and got an honest 401, which the
+    /// screen showed as "Wrong username or password." while the harness
+    /// printed the field as "filled" and the refusal as absent — so three
+    /// runs blamed the credentials, the seed and the Go key in turn.
+    ///
+    /// A secure field says exactly one thing about its contents, one
+    /// bullet per character. That count is the only witness there is, and
+    /// checking it per character is what makes this deterministic.
+    @MainActor
+    private func typeSecure(_ field: XCUIElement, _ text: String,
+                            in app: XCUIApplication) -> Bool {
+        _ = app.keyboards.element.waitForExistence(timeout: 10)
+        // A secure field reports BULLETS, one per character — but an
+        // EMPTY one reports its placeholder, "Password", which counted as
+        // eight characters and made an untouched field look eight elevenths
+        // typed. Only bullets count.
+        func count() -> Int {
+            let v = (field.value as? String) ?? ""
+            return v.allSatisfy { $0 == "\u{2022}" } ? v.count : 0
+        }
+        let characters = Array(text)
+
+        for attempt in 0..<3 {
+            var typed = 0
+            while typed < characters.count {
+                let ch = String(characters[typed])
+                var landed = false
+                for _ in 0..<8 {
+                    field.typeText(ch)
+                    let n = count()
+                    if n == typed + 1 { landed = true; break }
+                    // More than expected means a keystroke arrived late
+                    // and this one doubled it; the field is no longer the
+                    // password and has to be cleared.
+                    if n > typed + 1 { break }
+                    usleep(250_000) // the plane switch, mid-animation
+                }
+                if !landed { break }
+                typed += 1
+            }
+            if typed == characters.count, count() == characters.count { return true }
+            if attempt == 2 {
+                report(app, why: "the password field holds \(count()) of \(characters.count) "
+                       + "characters — the keystrokes are being dropped, not refused")
+                return false
+            }
+            field.tap()
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 64))
+            sleep(1)
+        }
+        return false
     }
 
     /// What the screen actually held when the login did not land.
@@ -409,12 +492,22 @@ final class StoreScreenshotUITests: XCTestCase {
             "submit: exists=\(submit?.exists ?? false) enabled=\(submit?.isEnabled ?? false) "
                 + "hittable=\(submit?.isHittable ?? false) frame=\(submit?.frame ?? .zero)",
             "username field: \(String(describing: username.value))",
-            "password field: \(((password.value as? String) ?? "").isEmpty ? "EMPTY" : "filled")",
+            // THE COUNT, never "filled": a field holding three of eleven
+            // characters is exactly what "filled" hid on 2026-09-16.
+            "password field: \(((password.value as? String) ?? "").count) characters",
             "windows=\(app.windows.count) alerts=\(app.alerts.count)",
+            "keyboard: up=\(app.keyboards.count > 0) keys=\(app.keyboards.keys.count) "
+                + "raw password value=\(String(describing: password.value))",
             "AutoFill bar: Passwords=\(app.buttons["Passwords"].exists) NotNow=\(app.buttons["Not Now"].exists)",
             "still on auth: \(username.exists)",
             "server: \(app.launchArguments)",
         ].joined(separator: "\n  ")
+        // THE TREE, as an attachment: which plane the keyboard is showing
+        // and what is stacked over it is not guessable from a screenshot.
+        let tree = XCTAttachment(string: app.debugDescription)
+        tree.name = "00-login-failed-tree"
+        tree.lifetime = .keepAlways
+        add(tree)
         XCTFail("login did not land.\n  \(state)")
     }
 
@@ -696,8 +789,41 @@ final class StoreScreenshotUITests: XCTestCase {
     /// `.keepAlways` is load-bearing. The default lifetime is
     /// `.deleteOnSuccess`, so a screenshot test that PASSES throws its own
     /// attachments away and the result bundle comes back empty.
+    /// Clears the two things that can sit over a frame.
+    ///
+    /// THE NOTIFICATION PROMPT IS SPRINGBOARD'S, so it is in no app's tree:
+    /// `app.alerts` reports zero while it covers the list and the rows
+    /// behind it report hittable, which is why nothing caught it. It is
+    /// asked at the end of the first successful sync — iOS in context,
+    /// never at launch — so it can land after the relaunch, mid-shoot.
+    /// "Don't Allow" on purpose: allowing makes the app register for APNs,
+    /// which a Simulator has none of.
+    ///
+    /// THE PILL is the connection banner: "Connecting…" means the socket
+    /// is not up yet, and a store screenshot that says so is a screenshot
+    /// of a bad network.
+    @MainActor
+    private func settle(patience: Int = 12) {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        for label in ["Don't Allow", "Don\u{2019}t Allow"] {
+            let button = springboard.buttons[label]
+            if button.exists { button.tap(); break }
+        }
+        let app = XCUIApplication()
+        let connecting = app.staticTexts["Connecting…"]
+        for _ in 0..<patience {
+            if !connecting.exists { return }
+            usleep(500_000)
+        }
+    }
+
     @MainActor
     private func capture(_ name: String) {
+        // NOTHING IS PHOTOGRAPHED THROUGH THE PROMPT OR THE PILL. Both
+        // cost a fraction of a second to check and both ruined a frame:
+        // `01-chats` came out dimmed under the notification prompt with a
+        // "Connecting…" pill where the newest message should be.
+        settle()
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways

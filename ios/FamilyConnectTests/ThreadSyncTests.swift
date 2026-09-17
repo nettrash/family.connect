@@ -274,6 +274,51 @@ struct ThreadSyncTests {
         #expect(harness.message(serverID: 100)?.replyCount == 1)
     }
 
+    /// THE FIRST SYNC, and the shape of the bug it hid: a catch-up whose
+    /// page carries the root AND its replies. The root's copy is recomputed
+    /// truth, so the replies riding with it are already in its count, and
+    /// counting them again drew "8 replies" under a message with four —
+    /// which is what a store screenshot of the seeded family showed.
+    ///
+    /// The loop below is `runCatchUp`'s, with its cursor: everything the
+    /// client held is at or below `heldThrough`, which a first sync makes 0.
+    @Test("a catch-up that brought the root itself does not count its replies")
+    func catchUpWithTheRootDoesNotDoubleCount() throws {
+        let harness = try makeHarness(host: "thread-sync-firstsync.test")
+        defer { harness.tearDown() }
+        let heldThrough: Int64 = 0
+
+        let page = [
+            dto(id: 100, body: "Still coming Sunday?", replyCount: 2),
+            dto(id: 101, body: "Sunday works", replyTo: 100, threadRootID: 100),
+            dto(id: 102, body: "I'll bring the bread", replyTo: 100, threadRootID: 100),
+        ]
+        for arriving in page {
+            _ = harness.coordinator.upsert(
+                arriving, bumpUnread: false,
+                live: ChatSyncCoordinator.catchUpCounts(forRootOf: arriving, heldThrough: heldThrough))
+        }
+
+        #expect(harness.message(serverID: 100)?.replyCount == 2,
+                "the root rode with the page, so its recomputed count already holds both replies")
+    }
+
+    /// The rule alone, both sides of the cursor — because the cursor is the
+    /// whole of what tells "the root was already here" from "the root came
+    /// with the page".
+    @Test("the catch-up rule turns on the cursor the pass opened with")
+    func catchUpRule() throws {
+        let reply = dto(id: 101, replyTo: 100, threadRootID: 100)
+        #expect(ChatSyncCoordinator.catchUpCounts(forRootOf: reply, heldThrough: 100),
+                "a root at the cursor was already held, and its cached count predates this reply")
+        #expect(ChatSyncCoordinator.catchUpCounts(forRootOf: reply, heldThrough: 140),
+                "a root below the cursor was held too")
+        #expect(!ChatSyncCoordinator.catchUpCounts(forRootOf: reply, heldThrough: 99),
+                "a root above the cursor rides on this pass, already counting this reply")
+        #expect(ChatSyncCoordinator.catchUpCounts(forRootOf: dto(id: 101), heldThrough: 0),
+                "a row that answers nothing has no root to count for")
+    }
+
     /// The thread read is no part of catch-up: the rows it fetches outside
     /// the window must not move the two paging cursors, or the next history
     /// page — or the next catch-up — would skip everything in between.

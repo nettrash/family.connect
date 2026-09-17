@@ -77,6 +77,9 @@ nonisolated enum KeychainStore {
 
     /// Remove the item if present. No-op if absent.
     static func delete(account: String) throws {
+        #if DEBUG
+        if account == tokenAccount, injectedToken != nil { return }
+        #endif
         let status = SecItemDelete(query(account: account) as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
             throw KeychainError.unhandled(status)
@@ -86,13 +89,45 @@ nonisolated enum KeychainStore {
     // MARK: - String convenience (the token is UTF-8 text)
 
     static func setString(_ value: String, account: String) throws {
+        #if DEBUG
+        // Nothing to store when the token came from the command line: see
+        // `getString`. Writing it would raise the very prompt that hook
+        // exists to avoid.
+        if account == tokenAccount, injectedToken != nil { return }
+        #endif
         try set(Data(value.utf8), account: account)
     }
 
     static func getString(account: String) throws -> String? {
+        #if DEBUG
+        // THE MAC SCREENSHOT CAPTURE'S SESSION, handed in on the command
+        // line (`-v1.sessionToken`) instead of stored here. DEBUG-only, and
+        // the same argument shape as `-v1.serverURL`, `-v1.storeURL` and
+        // `-v1.showScreen`.
+        //
+        // WHY IT EXISTS, measured 2026-09-17 with `sample`: an UNSIGNED
+        // local build reading a real Keychain item raises the ACL
+        // confirmation dialog, and every rebuild is a new binary, so
+        // "Always Allow" does not carry over. On a Mac where the capture is
+        // relaunching the app, that dialog can open on another Space —
+        // invisible — and `SecItemCopyMatching` then blocks inside
+        // `applicationDidFinishLaunching`, so the app comes up with NO
+        // WINDOW AT ALL and nothing anywhere says why. Handing the token in
+        // skips the Keychain, and with it the prompt.
+        if account == tokenAccount, let injected = injectedToken { return injected }
+        #endif
         guard let data = try get(account: account) else { return nil }
         return String(decoding: data, as: UTF8.self)
     }
+
+    #if DEBUG
+    /// A session token passed on the command line, or nil. See `getString`.
+    static var injectedToken: String? {
+        guard let token = UserDefaults.standard.string(forKey: "v1.sessionToken"),
+              !token.isEmpty else { return nil }
+        return token
+    }
+    #endif
 
     // MARK: - Internals
 
