@@ -64,3 +64,8 @@ win/**/obj/
 win/AppPackages/
 win/tools/board-oracle/target/
 win/tools/board-oracle/Cargo.lock
+
+# Mutation-run scratch output. `mut-threads.out` and `mut-viewer.out` reached
+# the release branch in #64 holding nothing but a "can't open file" error and an
+# absolute developer path: a harness writes one per run and none is a fixture.
+mut-*.out

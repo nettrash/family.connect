@@ -1,3 +1,4 @@
+using FamilyConnect.App.Logic;
 using Windows.Storage;
 using Windows.Storage.Pickers;
 using Windows.System;
@@ -13,7 +14,7 @@ internal static class AttachmentSaving
     /// </summary>
     public static async Task<bool> SaveAsync(nint window, string suggestedName, byte[] bytes)
     {
-        var safe = Safe(suggestedName);
+        var safe = AttachmentFiles.SafeFileName(suggestedName);
         var extension = Path.GetExtension(safe);
         if (string.IsNullOrEmpty(extension))
         {
@@ -42,21 +43,10 @@ internal static class AttachmentSaving
     {
         var folder = Path.Combine(Path.GetTempPath(), "FamilyConnect");
         Directory.CreateDirectory(folder);
-        var path = Path.Combine(folder, Safe(name));
+        var path = Path.Combine(folder, AttachmentFiles.SafeFileName(name));
         await File.WriteAllBytesAsync(path, bytes);
         var file = await StorageFile.GetFileFromPathAsync(path);
         await Launcher.LaunchFileAsync(file);
     }
 
-    /// <summary>
-    /// A name from the server is already sanitised; this is the belt to that braces — never a path, and
-    /// never a character Windows refuses in a file name.
-    /// </summary>
-    internal static string Safe(string name)
-    {
-        var bare = Path.GetFileName(name.Replace('\\', '/').Split('/').Last());
-        var invalid = Path.GetInvalidFileNameChars();
-        var cleaned = string.Concat(bare.Select(c => invalid.Contains(c) ? '_' : c)).Trim().TrimEnd('.');
-        return cleaned.Length > 0 ? cleaned : "attachment.bin";
-    }
 }

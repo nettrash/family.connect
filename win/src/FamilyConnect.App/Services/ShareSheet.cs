@@ -1,3 +1,4 @@
+using FamilyConnect.App.Logic;
 using System.Runtime.InteropServices;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage;
@@ -28,7 +29,7 @@ internal static class ShareSheet
     public static async Task ShareFileAsync(nint window, string name, byte[] bytes)
     {
         var folder = await ApplicationData.Current.TemporaryFolder.CreateFolderAsync("Share", CreationCollisionOption.OpenIfExists);
-        var file = await folder.CreateFileAsync(AttachmentSaving.Safe(name), CreationCollisionOption.ReplaceExisting);
+        var file = await folder.CreateFileAsync(AttachmentFiles.SafeFileName(name), CreationCollisionOption.ReplaceExisting);
         await FileIO.WriteBytesAsync(file, bytes);
 
         var interop = DataTransferManager.As<IDataTransferManagerInterop>();
