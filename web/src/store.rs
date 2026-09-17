@@ -46,6 +46,13 @@ pub enum Via {
     CatchUp {
         /// The chat's `last_message.id` in the list read, 0 when none.
         counted_up_to: i64,
+        /// The cursor the pass OPENED with: everything this client held is
+        /// at or below it. A thread root ABOVE it arrives on this very
+        /// pass, carrying a recomputed count that already holds every
+        /// reply riding with it, so counting those replies again doubles
+        /// it — "8 replies" under a message with four, on every first
+        /// sync, where this is 0 (docs/protocol.md, "Threads" -> Live).
+        held_through: i64,
     },
     /// The answer to this device's own send: raises a thread root's count.
     Answer,
@@ -838,9 +845,16 @@ impl Store {
 
         // Each copy of the root counts a reply the first time THAT copy sees
         // it: the thread read may already have delivered — and counted — a
-        // reply the chat's own window is only now receiving.
-        if via != Via::Pending {
-            if let Some(root) = thread_root {
+        // reply the chat's own window is only now receiving. A catch-up is
+        // the exception, and only for a root it brought along itself: that
+        // copy's count already holds the replies on the page.
+        if let Some(root) = thread_root {
+            let counts = match via {
+                Via::Frame | Via::Answer => true,
+                Via::CatchUp { held_through, .. } => root <= held_through,
+                Via::Pending => false,
+            };
+            if counts {
                 if arrival == Arrival::New {
                     self.bump_root(chat_id, root, false);
                 }
@@ -851,7 +865,7 @@ impl Store {
         }
         let counts = match via {
             Via::Frame => message_id > self.listed.get(&chat_id).copied().unwrap_or(0),
-            Via::CatchUp { counted_up_to } => message_id > counted_up_to,
+            Via::CatchUp { counted_up_to, .. } => message_id > counted_up_to,
             Via::Answer | Via::Pending => false,
         };
 
@@ -1899,7 +1913,14 @@ mod tests {
         let mut reply = message(101, ANNA, "at 7");
         reply.thread_root_id = Some(100);
         store.chats[0].last_message = Some(message(101, ANNA, "at 7"));
-        store.apply_message(reply, None, Via::CatchUp { counted_up_to: 101 });
+        store.apply_message(
+            reply,
+            None,
+            Via::CatchUp {
+                counted_up_to: 101,
+                held_through: 100,
+            },
+        );
 
         assert_eq!(store.chats[0].unread_count, 3, "the server's count stands");
         assert_eq!(
@@ -1907,6 +1928,39 @@ mod tests {
             Some(1)
         );
         assert_eq!(store.threads[&42].newest_server_id(), Some(101));
+    }
+
+    /// THE FIRST SYNC. Root and replies arrive on one catch-up page, and
+    /// the root's own copy already counts them — so counting them again is
+    /// what drew "8 replies" under a message with four (docs/protocol.md,
+    /// "Threads" -> Live). The cursor the pass opened with is what tells
+    /// the two cases apart: a root at or below it was already held.
+    #[wasm_bindgen_test]
+    fn a_catch_up_that_brought_the_root_itself_does_not_count_its_replies() {
+        let mut store = store();
+        let mut root = message(100, ANNA, "Still coming Sunday?");
+        root.reply_count = Some(2);
+        let mut first = message(101, ANNA, "Sunday works");
+        first.thread_root_id = Some(100);
+        let mut second = message(102, ANNA, "I'll bring the bread");
+        second.thread_root_id = Some(100);
+
+        for arriving in [root, first, second] {
+            store.apply_message(
+                arriving,
+                None,
+                Via::CatchUp {
+                    counted_up_to: 0,
+                    held_through: 0, // a first sync holds nothing
+                },
+            );
+        }
+
+        assert_eq!(
+            store.threads[&42].get(100).and_then(|m| m.reply_count),
+            Some(2),
+            "the root rode with the page, so its recomputed count already holds both replies"
+        );
     }
 
     /// The "@" mark: a live message naming ME, from somebody I have not
@@ -2567,6 +2621,7 @@ mod tests {
                 None,
                 Via::CatchUp {
                     counted_up_to: counted,
+                    held_through: 100,
                 },
             );
         }

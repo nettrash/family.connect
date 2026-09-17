@@ -557,22 +557,28 @@ their message is delivered and their poll is listed, because the hidden row has 
 to reveal and a count that differed per member would be a small oracle of who blocked whom.
 
 **Live.** A new reply's `message` frame carries its `thread_root_id`, and that is the whole live
-protocol: a client that holds the root raises the root's count by one on arrival — on the frame,
-or on the `after_id` catch-up that stands in for the frames missed while away, which by
-construction delivers only what is newer than everything the client holds, so a cached root's
-count cannot yet include it. Never on a history page, the edits catch-up or the thread read below:
-those deliver replies the root's own recomputed copy already includes, and a client that counted
-them would show two where there is one — the thread read in particular answers the root first, so
-the count it carries already holds every reply on the page, this client's own pending one included.
-Any server copy of the root — a page, the edits catch-up, the thread read — overwrites the count
-with the recomputed truth. The root's own frame is NOT re-sent: a sequence for "somebody answered
-this" would be a third cursor on every message, kept to carry a number a page corrects anyway.
-Retention lowering a count is not announced either. Which also says how fresh a cached count is:
-as fresh as the last copy of the root or the last reply that arrived, because no page re-delivers a
-root a client already holds; the thread read is what refreshes it, and a client may ask it whenever
-it opens the surface. And the thread read is no part of catch-up in a second sense: rows it fetches
-may sit outside the contiguous window a client holds — a root older than it, a reply newer — and a
-client must not move its paging cursors to them, or the next page would skip everything between.
+protocol: a client that holds the root raises the root's count by one on arrival — on the frame, or
+on the `after_id` catch-up that stands in for the frames missed while away, which by construction
+delivers only what is newer than everything the client holds, so a cached root's count cannot yet
+include it. THE ROOT ITSELF MAY BE NEWER THAN THAT, and then it is no longer cached: a root above
+the cursor the pass opened with arrives ON the pass, carrying a recomputed count that already holds
+every reply riding with it, so a client that also counted those replies would show twice what there
+is. So the catch-up raises the count of a root at or below the cursor the pass opened with, and of
+no other — and a first sync, whose cursor is 0 and which delivers a root and its replies together,
+is the ordinary case of that, not an exotic one. It showed "8 replies" under a message with four.
+Never on a history page, the edits catch-up or the thread read below: those deliver replies the
+root's own recomputed copy already includes, and a client that counted them would show two where
+there is one — the thread read in particular answers the root first, so the count it carries
+already holds every reply on the page, this client's own pending one included. Any server copy of
+the root — a page, the edits catch-up, the thread read — overwrites the count with the recomputed
+truth. The root's own frame is NOT re-sent: a sequence for "somebody answered this" would be a
+third cursor on every message, kept to carry a number a page corrects anyway. Retention lowering a
+count is not announced either. Which also says how fresh a cached count is: as fresh as the last
+copy of the root or the last reply that arrived, because no page re-delivers a root a client
+already holds; the thread read is what refreshes it, and a client may ask it whenever it opens the
+surface. And the thread read is no part of catch-up in a second sense: rows it fetches may sit
+outside the contiguous window a client holds — a root older than it, a reply newer — and a client
+must not move its paging cursors to them, or the next page would skip everything between.
 
 **Reading a chain:** `GET /chats/{id}/messages/{message_id}/thread` → `{messages: [Message]}` — the
 root first, then every reply in the chain, oldest first by id. The id named may be the root OR any

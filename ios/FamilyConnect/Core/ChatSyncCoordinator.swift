@@ -3135,12 +3135,39 @@ final class ChatSyncCoordinator {
         AppLog.sync.info("Resync complete")
     }
 
+    /// Whether a row arriving on an `after_id` catch-up counts for its
+    /// thread root — the one thing the pass's opening cursor decides
+    /// (docs/protocol.md, "Threads" -> Live).
+    ///
+    /// A row that is not a reply has no root to count for and is a
+    /// live-equivalent arrival like any other. A reply counts only for a
+    /// root the client ALREADY HELD when the pass opened: a root above
+    /// that cursor rides on the pass itself, carrying a recomputed count
+    /// that already holds every reply with it, and counting them again
+    /// drew "8 replies" under a message with four — on every first sync,
+    /// where the cursor is 0 and root and replies always arrive together.
+    static func catchUpCounts(forRootOf dto: MessageDTO, heldThrough: Int64) -> Bool {
+        guard let rootID = dto.threadRootID else { return true }
+        return rootID <= heldThrough
+    }
+
     private func runCatchUp(_ step: SyncPlan.FetchStep) async {
         let limit = 100
+        // THE CURSOR THE PASS OPENED WITH. Everything this client held is
+        // at or below it, so a thread root above it arrives on this very
+        // pass — with a recomputed count that already holds every reply
+        // riding with it. Counting those replies again is what drew
+        // "8 replies" under a message with four, on every first sync,
+        // where the cursor is 0 and root and replies always arrive
+        // together (docs/protocol.md, "Threads" → Live).
+        let heldThrough = step.afterID
         var afterID = step.afterID
         while true {
             guard let page = try? await api.messages(chatID: step.chatID, afterID: afterID, limit: limit) else { return }
-            for dto in page { _ = upsert(dto, bumpUnread: false, live: true) }
+            for dto in page {
+                _ = upsert(dto, bumpUnread: false,
+                           live: Self.catchUpCounts(forRootOf: dto, heldThrough: heldThrough))
+            }
             if let last = page.last { afterID = max(afterID, last.id) }
             if page.count < limit { return }
         }

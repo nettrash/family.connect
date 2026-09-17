@@ -96,11 +96,40 @@ struct FamilyConnectApp: App {
             BlockEntity.self,
             GoneNoteEntity.self,
         ])
-        let configuration = ModelConfiguration(
+        var configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,
             cloudKitDatabase: .none
         )
+        // SCREENSHOT/UI HOOK: put the store somewhere else. DEBUG-only,
+        // and the same argument shape as `-v1.serverURL`.
+        //
+        // A local macOS build is NOT sandboxed, so SwiftData's default
+        // store is ~/Library/Application Support/default.store for EVERY
+        // bundle id alike — the real app's cache included. The Mac
+        // screenshot build (`ios/scripts/capture-mac-screenshot.sh`)
+        // therefore shared one SQLite file with whatever the real app was
+        // doing, and the old answer — back the file up, restore it on quit
+        // — rolled back the real app's writes and raced its process.
+        //
+        // The environment cannot fix it: LaunchServices drops HOME from
+        // `open --env`, and a direct launch that DOES keep HOME still
+        // opens the real path, because Foundation resolves the home
+        // directory from the user record and not from the environment.
+        // Both measured on 2026-09-17, the second with `lsof`.
+        //
+        // It also makes `--uitest-reset` safe on a Mac: that flag deletes
+        // the store at `configuration.url`, which without this override is
+        // the real app's cache.
+        #if DEBUG
+        if let path = UserDefaults.standard.string(forKey: "v1.storeURL"), !path.isEmpty {
+            configuration = ModelConfiguration(
+                schema: schema,
+                url: URL(fileURLWithPath: path),
+                cloudKitDatabase: .none
+            )
+        }
+        #endif
         // …AND the message cache, which the wipe above cannot reach: it
         // clears UserDefaults and the keychain token, both of which live
         // somewhere else entirely (#55).

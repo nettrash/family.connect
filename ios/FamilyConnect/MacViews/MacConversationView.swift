@@ -296,6 +296,41 @@ struct MacConversationView: View {
     /// What the strip offers for the prefix being typed: never the reader
     /// themself, never the blocked, and never the assistant — which is not
     /// in the roster and has its own button.
+    #if DEBUG
+    /// The Mac App Store capture's one-screen-per-launch hook
+    /// (MacScreenshotRoute): the sheets over a conversation, which only this
+    /// view can raise. Does nothing without `-v1.showScreen`, which no
+    /// Release build can be given.
+    @MainActor
+    private func presentScreenshotRoute() async {
+        switch MacScreenshotRoute.requested {
+        case .polls:
+            showsOpenPolls = true
+        case .thread:
+            // WAITS for the chain, because this runs on a cold launch: the
+            // cache is empty until the first sync lands, and a chat with no
+            // rows yet has no answered message to open. Ten seconds is far
+            // longer than the fixture takes and still finite, so a capture
+            // against a server with no thread fails as an empty sheet
+            // rather than hanging.
+            for _ in 0..<20 {
+                // The NEWEST answered message, which is the chip a person
+                // would click.
+                let root = messages
+                    .filter { $0.chatID == chatID && $0.replyCount > 0 }
+                    .max { ($0.serverID ?? 0) < ($1.serverID ?? 0) }
+                if let rootID = root?.serverID {
+                    threadTarget = ThreadTarget(chatID: chatID, rootID: rootID)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        case .family, .board, .settings, .none:
+            break
+        }
+    }
+    #endif
+
     private func mentionCandidates(matching query: String) -> [MentionDTO] {
         MemberMentions.candidates(
             in: mentionRoster, matching: query,
@@ -902,6 +937,9 @@ struct MacConversationView: View {
                 if draft.isEmpty, let parked = ComposerDrafts.take(for: chatID) {
                     draft = parked
                 }
+                #if DEBUG
+                await presentScreenshotRoute() // -v1.showScreen, DEBUG only
+                #endif
                 // Files shared into the app and addressed to THIS chat
                 // land in the composer, staged — the ordinary arrival,
                 // since the picker selects the chat and the sidebar's
