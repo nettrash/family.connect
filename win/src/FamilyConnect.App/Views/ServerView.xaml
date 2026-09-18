@@ -1,0 +1,35 @@
+<UserControl
+    x:Class="FamilyConnect.App.Views.ServerView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Structure and x:Name only: every word is set from code, through the catalogue. The first thing anybody sees: one card. -->
+    <ScrollViewer>
+        <Border
+            MaxWidth="440"
+            Margin="24,56,24,24"
+            Padding="32,28,32,24"
+            HorizontalAlignment="Stretch"
+            VerticalAlignment="Top"
+            CornerRadius="12"
+            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1">
+            <StackPanel Spacing="14">
+                <Image Width="56" Height="56" HorizontalAlignment="Left" Source="ms-appx:///Assets/Square150x150Logo.png" />
+                <TextBlock x:Name="HeadingText" Style="{StaticResource TitleTextBlockStyle}" TextWrapping="Wrap" />
+                <TextBox x:Name="AddressBox" PlaceholderText="chat.example.com" IsSpellCheckEnabled="False" />
+                <TextBlock x:Name="HelpText" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock x:Name="WarningText" TextWrapping="Wrap" Foreground="{ThemeResource SystemFillColorCautionBrush}" Visibility="Collapsed" />
+                <TextBlock x:Name="ErrorText" TextWrapping="Wrap" Foreground="{ThemeResource SystemFillColorCriticalBrush}" Visibility="Collapsed" />
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="ConnectButton" HorizontalAlignment="Stretch" Style="{StaticResource AccentButtonStyle}" />
+                    <ProgressRing x:Name="Working" Grid.Column="1" IsActive="False" Width="20" Height="20" />
+                </Grid>
+            </StackPanel>
+        </Border>
+    </ScrollViewer>
+</UserControl>

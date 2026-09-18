@@ -72,7 +72,7 @@ object AssistantMention {
      * Anything else — punctuation, whitespace, any non-ASCII character — is
      * a boundary.
      */
-    private fun isBoundary(char: Char): Boolean =
+    internal fun isBoundary(char: Char): Boolean =
         !(char in '0'..'9' || char in 'a'..'z' || char in 'A'..'Z' || char == '_')
 
     // -- Pictures ---------------------------------------------------------

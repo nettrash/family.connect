@@ -136,6 +136,7 @@ class ChatRepositoryTest {
         unreadCount: Int,
         countedThrough: Long = 0L,
         lastReadMessageId: Long? = null,
+        mentioned: Boolean? = null,
     ) = ApiResult.Ok(
         ChatsResponse(
             listOf(
@@ -148,10 +149,59 @@ class ChatRepositoryTest {
                     },
                     unreadCount = unreadCount,
                     lastReadMessageId = lastReadMessageId,
+                    mentioned = mentioned,
                 ),
             ),
         ),
     )
+
+    // -- The "@" mark follows GET /chats (docs/protocol.md, "Mentioning a member") --
+
+    @Test
+    fun refreshWritesTheServersMentionedAndAbsentMeansNo() = runTest(dispatcher) {
+        insertChat(unreadCount = 0)
+        chatApi.chatsResult = chatsResponse(unreadCount = 2, countedThrough = 20L, mentioned = true)
+        repository.refreshChats()
+        assertThat(chatDao.getById(CHAT)!!.mentionedUnread).isTrue()
+
+        chatApi.chatsResult = chatsResponse(unreadCount = 2, countedThrough = 20L)
+        repository.refreshChats()
+        assertThat(chatDao.getById(CHAT)!!.mentionedUnread).isFalse()
+    }
+
+    /**
+     * The mark is a filter over the rows the count counts, so it survives
+     * the same race: a frame that names the reader while `GET /chats` is in
+     * flight keeps its place in the badge AND its "@", or the row shows a
+     * count whose only message names the reader and no mark at all
+     * (docs/protocol.md, "Mentioning a member": the two "cannot drift").
+     */
+    @Test
+    fun aMentionThatRacesTheRefreshKeepsItsMark() = runTest(dispatcher) {
+        insertChat(unreadCount = 0)
+        // The response was computed with `last_message` 20 and no mention.
+        chatApi.chatsResult = chatsResponse(unreadCount = 0, countedThrough = 20L)
+        val gate = CompletableDeferred<Unit>()
+        chatApi.chatsGate = gate
+
+        val refresh = launch { repository.refreshChats() }
+        runCurrent()
+        // 21 is newer than anything the server counted, and it names me.
+        repository.bumpUnread(CHAT, messageId = 21L)
+        repository.markMentioned(CHAT, messageId = 21L)
+        runCurrent()
+        gate.complete(Unit)
+        refresh.join()
+
+        assertThat(chatDao.getById(CHAT)!!.unreadCount).isEqualTo(1)
+        assertThat(chatDao.getById(CHAT)!!.mentionedUnread).isTrue()
+
+        // And a mention the server HAS counted is the server's to report:
+        // once it says nothing, the mark goes.
+        chatApi.chatsResult = chatsResponse(unreadCount = 1, countedThrough = 21L)
+        repository.refreshChats()
+        assertThat(chatDao.getById(CHAT)!!.mentionedUnread).isFalse()
+    }
 
     // -- postRead: the marker follows the SERVER ---------------------------------------
 

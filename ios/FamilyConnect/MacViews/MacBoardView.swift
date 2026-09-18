@@ -48,58 +48,114 @@ struct MacBoardView: View {
 
     @State private var editing: NoteEntity?
     @State private var composing = false
+    /// A note or an event: the one sheet writes both.
+    @State private var composingKind = NoteKind.text
     @State private var draftText = ""
     @State private var draftColor = NoteColor.palette.first ?? "yellow"
     @State private var draftSize = NoteSize.medium
+    @State private var draftFont = NoteFont.plain
+    @State private var draftEvent = MacEventFields()
+    /// A new task list's lines (docs/protocol.md, "Board").
+    @State private var draftLines: [DraftTaskLine] = []
+    /// Pinning a picture: the upload it turns into, and what went wrong.
+    @State private var pinning = false
+    @State private var pinFailure: String?
+    /// What the server refused on a note, SAID rather than swallowed: a
+    /// tick that bounced puts its box back and a backdrop that never
+    /// arrived leaves the menu exactly as it was, and neither tells the
+    /// reader anything on its own. The web says both (docs/protocol.md,
+    /// "Board").
+    @State private var failure: String?
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack(alignment: .topLeading) {
-                Color(nsColor: .underPageBackgroundColor)
-                ForEach(notes) { note in
-                    MacNoteView(
-                        note: note,
-                        board: geometry.size,
-                        isMine: note.authorID == coordinator.currentUserID,
-                        authorName: displayName(for: note.authorID),
-                        isHiddenByBlock: MessagePresentation.isNoteHiddenByBlock(
-                            authorID: note.authorID,
-                            blockedUserIDs: coordinator.blockedUserIDs,
-                            currentUserID: coordinator.currentUserID),
-                        onMove: { x, y in
-                            _ = await coordinator.updateNote(id: note.noteID, x: x, y: y)
-                        },
-                        onResize: { size in
-                            Task { await coordinator.updateNote(id: note.noteID, size: size.name) }
-                        },
-                        onEdit: { editing = note },
-                        onDelete: {
-                            Task { _ = await coordinator.deleteNote(id: note.noteID) }
-                        })
+            // THE WALL SCROLLS: it is taller than the window
+            // (docs/protocol.md, "Board"), so a family can pin something
+            // without taking something down. The fractions are read
+            // against the WALL, which is why the notes are given its size
+            // and not the window's.
+            let wall = BoardWall.size(visible: geometry.size)
+            ScrollView(.vertical) {
+                ZStack(alignment: .topLeading) {
+                    BoardGround()
+                    ForEach(notes) { note in
+                        sticker(for: note, board: wall)
+                    }
+                    if notes.isEmpty {
+                        ContentUnavailableView(
+                            "The board is empty",
+                            systemImage: "square.grid.2x2",
+                            description: Text("Add a note — everyone in the family sees it."))
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                    }
                 }
-                if notes.isEmpty {
-                    ContentUnavailableView(
-                        "The board is empty",
-                        systemImage: "square.grid.2x2",
-                        description: Text("Add a note — everyone in the family sees it."))
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                }
+                .frame(width: wall.width, height: wall.height, alignment: .topLeading)
             }
+            .scrollBounceBehavior(.basedOnSize)
         }
         .frame(minWidth: 480, minHeight: 360)
         .navigationTitle("Board")
         .toolbar {
             ToolbarItem {
                 Button {
-                    draftText = ""
-                    draftColor = NoteColor.palette.randomElement() ?? "yellow"
-                    draftSize = .medium
-                    composing = true
+                    startComposing(.text)
                 } label: {
                     Label("Add Note", systemImage: "plus")
                 }
                 .keyboardShortcut("n", modifiers: .command)
                 .help("Add a note")
+            }
+            // The Mac could not pin an event at all — only answer one from a
+            // context menu, on a card that did not even say when it was
+            // (issue #69). The phone's button, the phone's fields.
+            ToolbarItem {
+                Button {
+                    startComposing(.event)
+                } label: {
+                    Label("Add an event", systemImage: "calendar.badge.plus")
+                }
+                .help("Add an event")
+            }
+            ToolbarItem {
+                Button {
+                    startComposing(.tasks)
+                } label: {
+                    Label("Add List", systemImage: "checklist")
+                }
+                .help("Add a task list")
+            }
+            ToolbarItem {
+                Button {
+                    pinPicture()
+                } label: {
+                    Label("Pin a Photo", systemImage: "photo.badge.plus")
+                }
+                .disabled(pinning)
+                .help("Pin a photo")
+            }
+        }
+        .alert(
+            "Couldn't pin that photo.",
+            isPresented: Binding(
+                get: { pinFailure != nil },
+                set: { if !$0 { pinFailure = nil } })
+        ) {
+            Button("OK", role: .cancel) { pinFailure = nil }
+        } message: {
+            Text(pinFailure ?? "")
+        }
+        // What the server refused on a note, in the reader's own words.
+        .alert(
+            Text(failure ?? ""),
+            isPresented: Binding(
+                get: { failure != nil },
+                set: { if !$0 { failure = nil } })
+        ) {
+            Button("OK", role: .cancel) { failure = nil }
+        }
+        .overlay {
+            if pinning {
+                ProgressView().controlSize(.large)
             }
         }
         .task { await coordinator.loadBoard() }
@@ -113,7 +169,18 @@ struct MacBoardView: View {
         .onChange(of: boardMark, initial: true) { _, _ in markSeenIfFrontmost() }
         .onChange(of: windowActivation, initial: true) { _, _ in markSeenIfFrontmost() }
         .sheet(isPresented: $composing) {
-            MacNoteEditor(text: $draftText, color: $draftColor, size: $draftSize, title: "New Note") {
+            MacNoteEditor(
+                text: $draftText, color: $draftColor, size: $draftSize, font: $draftFont,
+                event: $draftEvent,
+                kind: composingKind,
+                title: newTitle,
+                mentionCandidates: mentionCandidates(matching:),
+                lines: $draftLines
+            ) {
+                let isEvent = composingKind == .event
+                let isList = composingKind == .tasks
+                let event = draftEvent
+                let lines = draftLines
                 Task {
                     // Dropped near the middle with a little scatter, so a
                     // run of new notes does not stack into one pile.
@@ -121,8 +188,15 @@ struct MacBoardView: View {
                         text: draftText,
                         color: draftColor,
                         size: draftSize.name,
+                        font: draftFont.name,
                         x: Double.random(in: 0.25...0.65),
-                        y: Double.random(in: 0.25...0.65))
+                        y: Double.random(in: 0.25...0.65),
+                        startsAt: isEvent ? event.startsAt : nil,
+                        endsAt: isEvent && event.hasEnd ? event.endsAt : nil,
+                        place: isEvent && !event.trimmedPlace.isEmpty ? event.trimmedPlace : nil,
+                        // Empty is still a list — it is what makes the
+                        // note one (docs/protocol.md, "Board").
+                        items: isList ? DraftTaskLine.written(lines) : nil)
                 }
             }
         }
@@ -131,11 +205,97 @@ struct MacBoardView: View {
         }
     }
 
+    private var newTitle: LocalizedStringKey {
+        switch composingKind {
+        case .event: "New Event"
+        case .tasks: "New List"
+        default: "New Note"
+        }
+    }
+
     /// What the marks WOULD be if this wall counted as shown — an
     /// Equatable value, so `onChange` fires on a note arriving, on one
     /// being rewritten, and on nothing else. A drag changes no part of it.
     private var boardMark: BoardBadge.Marks {
         BoardBadge.marksAfterShowing(notes: notes, marks: .zero)
+    }
+
+    /// What the editor's strip offers for a half-typed name: the live
+    /// roster, never the reader themself, never the blocked — the chat's
+    /// own rule (docs/protocol.md, "Mentioning a member").
+    private func mentionCandidates(matching query: String) -> [MentionDTO] {
+        let roster = members
+            .filter { !$0.hasLeft && !$0.accountDeleted }
+            .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) }
+        return MemberMentions.candidates(
+            in: roster, matching: query,
+            excluding: coordinator.blockedUserIDs.union([coordinator.currentUserID]))
+    }
+
+    /// One sticker. Its own function for the reason BoardView's drafts are:
+    /// a literal this long inside a `ForEach` inside a `GeometryReader` is
+    /// more than the type-checker will do in reasonable time, and it says so
+    /// rather than being slow.
+    private func sticker(for note: NoteEntity, board: CGSize) -> MacNoteView {
+        MacNoteView(
+            note: note,
+            board: board,
+            isMine: note.authorID == coordinator.currentUserID,
+            authorName: displayName(for: note.authorID),
+            isHiddenByBlock: MessagePresentation.isNoteHiddenByBlock(
+                authorID: note.authorID,
+                blockedUserIDs: coordinator.blockedUserIDs,
+                currentUserID: coordinator.currentUserID),
+            onMove: { x, y in
+                _ = await coordinator.updateNote(id: note.noteID, x: x, y: y)
+            },
+            onResize: { size in
+                Task { await coordinator.updateNote(id: note.noteID, size: size.name) }
+            },
+            onEdit: { editing = note },
+            onDelete: {
+                Task { _ = await coordinator.deleteNote(id: note.noteID) }
+            },
+            myAnswer: note.myAnswer(coordinator.currentUserID),
+            onAnswer: { answer in
+                Task { await coordinator.answerEvent(id: note.noteID, answer: answer) }
+            },
+            onTick: { itemID, done in
+                Task {
+                    if await coordinator.tickTask(
+                        noteID: note.noteID, itemID: itemID, done: done) == false {
+                        failure = String(localized: "Couldn't tick that off.")
+                    }
+                }
+            },
+            names: displayName(for:),
+            canDraw: AppSettings.assistantImages,
+            onDrawBackdrop: {
+                Task {
+                    if await coordinator.drawBackdrop(noteID: note.noteID) == nil {
+                        failure = String(localized: "Couldn't draw that.")
+                    }
+                }
+            })
+    }
+
+    /// A blank note — or event — to write. An event starts on the next
+    /// round hour and is blue, as on the phone; a note is any colour.
+    private func startComposing(_ kind: NoteKind) {
+        composingKind = kind
+        draftText = ""
+        draftColor = switch kind {
+        case .event: "blue"
+        case .tasks: "green"
+        default: NoteColor.palette.randomElement() ?? "yellow"
+        }
+        draftSize = .medium
+        draftFont = .plain
+        draftEvent = MacEventFields()
+        // A new list opens with one empty line, so the first thing to do
+        // is one tap away rather than two.
+        draftLines = kind == .tasks ? [DraftTaskLine()] : []
+        composing = true
     }
 
     private func markSeenIfFrontmost() {
@@ -152,7 +312,7 @@ struct MacBoardView: View {
 }
 
 /// One sticker: positioned by fraction, dragged locally, committed once.
-private struct MacNoteView: View {
+fileprivate struct MacNoteView: View {
     @State private var confirmDelete = false
     let note: NoteEntity
     let board: CGSize
@@ -166,6 +326,23 @@ private struct MacNoteView: View {
     let onResize: (NoteSize) -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
+    /// What this reader has answered, if it is an event.
+    var myAnswer: String?
+    /// Say whether you are coming — ANY member may, so it sits outside
+    /// every author gate (docs/protocol.md, "Board"). nil retracts.
+    var onAnswer: (String?) -> Void = { _ in }
+    /// Tick a line off the list — ANY member may, for the same reason, and
+    /// on this platform the MENU is where they do it: a reader cannot open
+    /// somebody else's note here, and ticking must be reachable by every
+    /// member on every client (docs/protocol.md, "Board").
+    var onTick: (Int64, Bool) -> Void = { _, _ in }
+    /// Every name this family has, for naming who is coming
+    /// (docs/protocol.md, "Board").
+    var names: (Int64) -> String = { _ in "" }
+    /// Whether this SERVER can draw at all (`assistant.images`).
+    var canDraw: Bool = false
+    /// Ask the assistant for a backdrop — the author's.
+    var onDrawBackdrop: () -> Void = {}
 
     @State private var drag: CGSize = .zero
     @State private var committing = false
@@ -190,9 +367,41 @@ private struct MacNoteView: View {
             y: min(max(point.y, 0), max(board.height - size.height, 0)))
     }
 
+    /// A PHOTO WITH NO CAPTION IS THE BARE PICTURE (docs/protocol.md,
+    /// "Board") — the same rule the phone follows: no paper behind it, no
+    /// padding around it, no author line under it.
+    private var isBarePicture: Bool {
+        !isHidden && NoteKind(name: note.kind) == .photo && note.text.isEmpty
+    }
+
+    /// An EVENT's picture is its BACKDROP — the card's ground, not its
+    /// content (docs/protocol.md, "Board").
+    private var backdropID: Int64? {
+        guard !isHidden, NoteKind(name: note.kind) == .event else { return nil }
+        return note.attachmentID
+    }
+
+    /// The pinned picture's own shape, where the server recorded it — the
+    /// card of a bare photo, fitted (docs/protocol.md, "Board"). Nil
+    /// otherwise, and then the card is the step's own.
+    private var pictureShape: CGSize? {
+        guard let width = note.attachmentWidth, let height = note.attachmentHeight,
+            width > 0, height > 0
+        else { return nil }
+        return CGSize(width: CGFloat(width), height: CGFloat(height))
+    }
+
     var body: some View {
         let noteSize = NoteSize(name: note.size)
-        let size = noteSize.frame
+        // A BARE photo's CARD IS THE PICTURE, fitted in both dimensions
+        // (docs/protocol.md, "Board"): the box hugs the photograph, so the
+        // pin sits on it and the wall shows around it. Issue #71 — the card
+        // kept its own shape and the picture was cropped to fill a strip of
+        // it.
+        let size =
+            isBarePicture
+            ? BoardPicture.fitted(space: noteSize.frame, picture: pictureShape ?? .zero)
+            : noteSize.frame
         // Where it is drawn RIGHT NOW: its stored position plus whatever
         // the drag has moved it, held inside the board either way. Clamping
         // only on release would let a note be dragged off the edge and then
@@ -203,30 +412,88 @@ private struct MacNoteView: View {
             size: size, board: board)
 
         VStack(alignment: .leading, spacing: 4) {
-            (isHidden ? Text("Hidden — blocked member") : Text(note.text))
-                .font(noteSize.font)
+            // A pinned picture fills the card, with the caption under it —
+            // and nothing while hidden by a block: the picture is content,
+            // exactly as the text is (protocol.md, "Board").
+            if !isHidden, NoteKind(name: note.kind) == .photo, let attachmentID = note.attachmentID {
+                NotePicture(
+                    attachmentID: attachmentID,
+                    height: NotePicture.height(
+                        cardHeight: size.height, hasCaption: !note.text.isEmpty),
+                    shape: pictureShape)
+            }
+            // An event says WHEN before it says what — the date is the reason
+            // it is on the wall — and who is coming. The Mac drew an event as
+            // its bare title (issue #69).
+            if !isHidden, NoteKind(name: note.kind) == .event, let starts = note.startsAt {
+                NoteEventBlock(
+                    starts: starts,
+                    ends: note.endsAt,
+                    place: note.place,
+                    going: note.answerCount(RsvpAnswer.going.name),
+                    maybe: note.answerCount(RsvpAnswer.maybe.name))
+            }
+            if !isBarePicture {
+            // The names, bold and in the note's own ink — and not doors on
+            // the wall, for the reason BoardView gives (docs/protocol.md,
+            // "Board").
+            (isHidden
+                ? Text("Hidden — blocked member")
+                : Text(MemberMentions.noteText(
+                    note.text, mentions: note.mentionList, linking: false)))
+                // The hand the author chose (docs/protocol.md, "Board").
+                .font(NoteFont(name: note.font).font(for: noteSize))
                 // Forced ink, matching BoardView: the pastels are fixed
                 // light colors in both appearances, so .primary’s dark-mode
                 // white was unreadable on them.
                 .foregroundStyle(.black.opacity(isHidden ? 0.45 : 0.85))
                 .italic(isHidden)
-                .lineLimit(noteSize.lineLimit)
+                // The text FITS the sticker (docs/protocol.md, "Board") —
+                // the same rule and the same floor as the phone.
+                .lineLimit(noteSize.fittedLineLimit)
+                .minimumScaleFactor(noteSize.minimumTextScale)
+            // A LIST says what is on it, UNDER ITS TITLE (docs/protocol.md,
+            // "Board"): the first lines with their state, and then how many
+            // are left. Drawn after the text for exactly that reason — the
+            // Mac had it above, so the title of a list read as a caption
+            // under it. No click here: the tick is in the menu on this
+            // platform.
+            if !isHidden, NoteKind(name: note.kind) == .tasks {
+                NoteTaskBlock(items: note.taskList)
+            }
             Spacer(minLength: 0)
-            // No author line at all while hidden — not an empty one, which
-            // would still say a note came from somebody.
-            if !isHidden {
+            }
+            // No author line at all while hidden — nor on a bare picture,
+            // which has no paper under it to write one on.
+            if !isHidden && !isBarePicture {
                 Text(authorName)
                     .font(.caption2)
                     .foregroundStyle(.black.opacity(0.5))
             }
         }
-        .padding(10)
+        .padding(isBarePicture ? 0 : 10)
         .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .background(NoteColor.swiftUI(note.color), in: RoundedRectangle(cornerRadius: 8))
+        // The card's ground: its colour, and over that the assistant's
+        // backdrop where there is one — the phone's rule exactly
+        // (docs/protocol.md, "Board").
+        .background {
+            let shape = RoundedRectangle(cornerRadius: isBarePicture ? 4 : 8)
+            shape
+                .fill(isBarePicture ? Color.clear : NoteColor.swiftUI(note.color))
+                .overlay {
+                    if let backdropID {
+                        NoteBackdrop(attachmentID: backdropID)
+                    }
+                }
+                .clipShape(shape)
+        }
         // Lifted off the wall while it is in hand — the same cue the phone
         // gives, and the only feedback a cursor drag has.
         .shadow(color: .black.opacity(isDragging ? 0.28 : 0.12),
                 radius: isDragging ? 10 : 3, y: 2)
+        // The pin, over the card's top edge — an overlay, so the words
+        // keep all their room (docs/protocol.md, "Board").
+        .overlay(alignment: .top) { NotePin().offset(y: -4) }
         .scaleEffect(isDragging ? 1.04 : 1)
         .animation(.easeOut(duration: 0.12), value: isDragging)
         // Asks first, as the phone does: one menu click used to take a
@@ -299,7 +566,93 @@ private struct MacNoteView: View {
                 // Anyone may MOVE a note; only its author may change it.
                 Text("Written by someone else")
             }
+            // TICKING IS NOT AUTHORSHIP either, and this is the one
+            // client where the menu is the only way to it: a reader never
+            // opens somebody else's note here (protocol.md, "Board").
+            if !isHidden, NoteKind(name: note.kind) == .tasks, !note.taskList.isEmpty {
+                Divider()
+                Menu("Things to do") {
+                    ForEach(note.taskList, id: \.id) { item in
+                        Toggle(item.text, isOn: Binding(
+                            get: { item.done },
+                            set: { onTick(item.id, $0) }))
+                    }
+                }
+            }
+            // WHO IS COMING, by name — and on this client the menu IS
+            // the opened note, so this is where the names belong
+            // (protocol.md, "Board"). Plain rows: it is news, not an
+            // action.
+            if !isHidden, NoteKind(name: note.kind) == .event {
+                Divider()
+                if guestGroups.isEmpty {
+                    Text("Nobody has answered yet.")
+                } else {
+                    ForEach(guestGroups, id: \.0) { group in
+                        Text(verbatim: "\(group.0.plainTitle): \(group.1)")
+                    }
+                }
+                // A copy for this reader's own calendar — anybody's — and
+                // the picture behind it, which is the author's.
+                Button("Add to Calendar") { addToCalendar() }
+                if isMine, canDraw {
+                    Button(
+                        note.attachmentID == nil
+                            ? "Draw a backdrop"
+                            : "Draw another backdrop",
+                        action: onDrawBackdrop)
+                }
+            }
+            // ANSWERING IS NOT AUTHORSHIP: outside the isMine branch on
+            // purpose, and offered on a hidden note no more than its text
+            // is (protocol.md, "Board").
+            if !isHidden, NoteKind(name: note.kind) == .event {
+                Divider()
+                // Checkmarked, like the Size menu: the answer already given
+                // reads as a state, where plain buttons said nothing about it.
+                Menu("Are you coming?") {
+                    ForEach(RsvpAnswer.allCases) { choice in
+                        Toggle(choice.title, isOn: Binding(
+                            get: { RsvpAnswer(name: myAnswer) == choice },
+                            set: { on in onAnswer(on ? choice.name : nil) }))
+                    }
+                    Divider()
+                    Toggle("No answer", isOn: Binding(
+                        get: { RsvpAnswer(name: myAnswer) == nil },
+                        set: { on in if on { onAnswer(nil) } }))
+                }
+            }
         }
+    }
+}
+
+extension MacNoteView {
+    /// Who is coming, grouped by answer and named — the sticker's counts
+    /// with the people put back (docs/protocol.md, "Board").
+    var guestGroups: [(RsvpAnswer, String)] {
+        RsvpAnswer.allCases.compactMap { choice in
+            let named = note.rsvpList
+                .filter { $0.answer == choice.name }
+                .map { names($0.userID) }
+                .filter { !$0.isEmpty }
+            return named.isEmpty ? nil : (choice, named.joined(separator: ", "))
+        }
+    }
+
+    /// Write the `.ics` and let the Mac open it — Calendar's own import
+    /// dialog, which costs no permission and no entitlement
+    /// (EventCalendar).
+    func addToCalendar() {
+        let title = note.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let ics = EventCalendar.ics(
+            noteID: note.noteID,
+            title: title,
+            startsAt: note.startsAt,
+            endsAt: note.endsAt,
+            place: note.place),
+            let file = EventCalendar.file(named: title, ics: ics)
+        else { return }
+        NSWorkspace.shared.open(file)
     }
 }
 
@@ -321,24 +674,164 @@ private extension Double {
     func clampedToBoard() -> Double { Swift.min(Swift.max(self, 0), 1) }
 }
 
-/// Compose a new note.
+/// What an event adds to a note: when it starts, whether and when it ends,
+/// and where. An hour is the shape most family things take, and only a
+/// starting point for the pickers.
+struct MacEventFields {
+    var startsAt: Date = Date().nextRoundHour
+    var hasEnd = false
+    var endsAt: Date = Date().nextRoundHour.addingTimeInterval(3600)
+    var place = ""
+
+    /// Trimmed, as the server stores it.
+    var trimmedPlace: String { place.trimmingCharacters(in: .whitespacesAndNewlines) }
+}
+
+/// Compose a new note — or event — or rewrite one.
 private struct MacNoteEditor: View {
     @Binding var text: String
     @Binding var color: String
     @Binding var size: NoteSize
+    @Binding var font: NoteFont
+    @Binding var event: MacEventFields
+    /// What is being written. An event adds its when and where; a photo's
+    /// caption may be left empty — the picture is the note, and a caption
+    /// the Mac insisted on made a caption-less photo impossible to recolour
+    /// or resize at all.
+    let kind: NoteKind
     /// A key, not a String: `Text(title)` then goes through the catalog
     /// ("New Note" / "Edit Note") instead of shipping English verbatim.
     let title: LocalizedStringKey
+    /// The members a half-typed `@` could mean (docs/protocol.md,
+    /// "Board"). Empty where nobody is offered, which is what a board with
+    /// no roster loaded yet has.
+    var mentionCandidates: (String) -> [MentionDTO] = { _ in [] }
+    /// A task list's lines as the author is writing them (docs/protocol.md,
+    /// "Board"). Empty on every other kind.
+    @Binding var lines: [DraftTaskLine]
+    /// What a line's box draws, and what a tap on it asks for. Ticking is
+    /// ANY member's act, so it does not go through `onSave`; on a list
+    /// nobody has saved yet there is nothing to tick and the boxes are
+    /// disabled.
+    var isDone: (Int64) -> Bool = { _ in false }
+    var onTick: (Int64, Bool) -> Void = { _, _ in }
+    /// An event's backdrop, where it has one: the picture the family asked
+    /// for, drawn over the note that is open as well as behind its card
+    /// (docs/protocol.md, "Board"). Read from the note itself rather than
+    /// passed as a flag, so a REDRAW — which replaces the picture with a new
+    /// attachment — is visible here without anything being told to refresh.
+    var backdropID: Int64?
+    /// Last, because SwiftUI's trailing closure is this one.
     let onSave: () -> Void
+
+    private var canSave: Bool {
+        kind == .photo || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// What the preview says before anything is typed.
+    private var blankPreview: String.LocalizationValue {
+        switch kind {
+        case .tasks: "Your list"
+        case .event: "Your event"
+        default: "Your note"
+        }
+    }
+
+    /// The lines the author is writing, each with the box that says
+    /// whether it is done.
+    ///
+    /// Its own property for the reason the phone's is: a block this long
+    /// inside the body is more than the type-checker will do in reasonable
+    /// time.
+    @ViewBuilder
+    private var taskLines: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Things to do").font(.subheadline)
+            ForEach($lines) { $line in
+                NoteTaskRow(
+                    itemID: line.itemID,
+                    done: line.itemID.map(isDone) ?? false,
+                    canEdit: true,
+                    onTick: { done in
+                        if let itemID = line.itemID { onTick(itemID, done) }
+                    },
+                    onRemove: { lines.removeAll { $0.id == line.id } },
+                    text: $line.text)
+                    // The cap where the typing is, as the title has it.
+                    .onChange(of: line.text) { _, new in
+                        let capped = NoteText.capped(new, to: NoteText.maxTaskItemLength)
+                        if capped != new { line.text = capped }
+                    }
+            }
+            Button {
+                lines.append(DraftTaskLine())
+            } label: {
+                Label("Add a thing", systemImage: "plus.circle")
+            }
+            .disabled(lines.count >= NoteText.maxTaskItems)
+        }
+        .frame(width: 320, alignment: .leading)
+    }
 
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.headline)
+            if kind == .event, let backdropID {
+                NoteBackdrop(attachmentID: backdropID)
+                    .frame(width: 320, height: 120)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
             TextEditor(text: $text)
                 .frame(width: 320, height: 120)
                 .border(.separator)
+                // The cap where the typing is, as on the phone
+                // (docs/protocol.md, "Board").
+                .onChange(of: text) { _, new in
+                    let capped = NoteText.capped(new)
+                    if capped != new { text = capped }
+                }
+            // The names a half-typed `@` could mean — the chat's own strip,
+            // under the words (docs/protocol.md, "Board").
+            if let query = MemberMentions.query(in: text) {
+                let offered = mentionCandidates(query)
+                if !offered.isEmpty {
+                    MentionSuggestions(candidates: offered) { name in
+                        text = MemberMentions.accept(draft: text, name: name)
+                    }
+                    .frame(width: 320)
+                }
+            }
+            if NoteText.shouldShowCounter(text) {
+                Text("\(NoteText.remaining(text)) characters left")
+                    .font(.caption)
+                    .foregroundStyle(NoteText.remaining(text) == 0 ? .red : .secondary)
+            }
+            // THE LINES, above the look: they are what the note says
+            // (docs/protocol.md, "Board").
+            if kind == .tasks {
+                taskLines
+            }
+            // WHEN and WHERE, above the look: they are why the note is on
+            // the wall (docs/protocol.md, "Board").
+            if kind == .event {
+                DatePicker("Starts", selection: $event.startsAt)
+                    // A start moved past the end takes the end with it.
+                    .onChange(of: event.startsAt) { _, starts in
+                        if event.endsAt < starts { event.endsAt = starts.addingTimeInterval(3600) }
+                    }
+                Toggle("Has an end", isOn: $event.hasEnd)
+                if event.hasEnd {
+                    DatePicker("Ends", selection: $event.endsAt, in: event.startsAt...)
+                }
+                TextField("Place", text: $event.place)
+                    // Scalars, as the server counts them.
+                    .onChange(of: event.place) { _, new in
+                        let capped = NoteText.capped(new, to: NoteText.maxPlaceLength)
+                        if capped != new { event.place = capped }
+                    }
+            }
             HStack(spacing: 6) {
                 ForEach(NoteColor.palette, id: \.self) { name in
                     Circle()
@@ -355,6 +848,28 @@ private struct MacNoteEditor: View {
                 }
             }
             .pickerStyle(.segmented)
+            // The hand, with text, colour and size: all four are the
+            // author's (docs/protocol.md, "Board").
+            Picker("Font", selection: $font) {
+                ForEach(NoteFont.allCases) { face in
+                    Text(face.title)
+                        .font(Font.system(.body, design: face.design))
+                        .tag(face)
+                }
+            }
+            .pickerStyle(.segmented)
+            // The sticker as the wall will draw it, type already fitted.
+            HStack {
+                Spacer(minLength: 0)
+                NotePreview(
+                    text: text.isEmpty ? String(localized: blankPreview) : text,
+                    color: color,
+                    size: size,
+                    font: font)
+                Spacer(minLength: 0)
+            }
+            .animation(.easeOut(duration: 0.15), value: size)
+            .animation(.easeOut(duration: 0.15), value: font)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -364,10 +879,42 @@ private struct MacNoteEditor: View {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!canSave)
             }
         }
         .padding(16)
+    }
+}
+
+extension MacBoardView {
+    /// Pick, prepare, pin. The pin itself — upload, preview, note, in that
+    /// order — is the coordinator's, shared with the phone (issue #69); the
+    /// pick is the Mac's own open panel, which reaches the file system and,
+    /// through its Media sidebar, the Photos library as well.
+    fileprivate func pinPicture() {
+        guard let url = MacFilePicker.pickPhotoToPin() else { return }
+        pinning = true
+        Task {
+            defer { pinning = false }
+            let prepared: MediaPrep.Prepared
+            do {
+                prepared = try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit)
+            } catch {
+                pinFailure = String(localized: "Couldn't read that photo.")
+                return
+            }
+            defer { MediaPrep.discard(prepared) }
+            // An animated image prepares as a file: a wall pins pictures.
+            guard prepared.kind == AttachmentDTO.Kind.photo else {
+                pinFailure = String(localized: "The board pins photos only.")
+                return
+            }
+            pinFailure = await coordinator.pinPhoto(
+                prepared,
+                color: NoteColor.palette.randomElement() ?? "yellow",
+                x: 0.35 + Double.random(in: -0.05...0.05),
+                y: 0.30 + Double.random(in: -0.05...0.05))
+        }
     }
 }
 
@@ -377,24 +924,115 @@ private struct MacNoteEditorForExisting: View {
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(\.dismiss) private var dismiss
+    @Query private var members: [MemberEntity]
     @State private var text: String = ""
     @State private var color: String = "yellow"
     @State private var size: NoteSize = .medium
+    @State private var font: NoteFont = .plain
+    @State private var event = MacEventFields()
+    @State private var lines: [DraftTaskLine] = []
+    /// Ticks on their way: the line and the state being sent, so a box
+    /// answers the click at once and goes back to the note's own truth
+    /// when the answer — or the refusal — lands.
+    @State private var ticking: [Int64: Bool] = [:]
+    /// A refused tick, said rather than swallowed: the box going back on
+    /// its own tells nobody why (docs/protocol.md, "Board").
+    @State private var failure: String?
+
+    private var kind: NoteKind { NoteKind(name: note.kind) }
+
+    private var editTitle: LocalizedStringKey {
+        switch kind {
+        case .event: "Edit Event"
+        case .tasks: "Edit List"
+        default: "Edit Note"
+        }
+    }
+
+    /// The same strip the new-note editor gets (docs/protocol.md, "Board").
+    private func mentionCandidates(matching query: String) -> [MentionDTO] {
+        let roster = members
+            .filter { !$0.hasLeft && !$0.accountDeleted }
+            .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) }
+        return MemberMentions.candidates(
+            in: roster, matching: query,
+            excluding: coordinator.blockedUserIDs.union([coordinator.currentUserID]))
+    }
 
     var body: some View {
-        MacNoteEditor(text: $text, color: $color, size: $size, title: "Edit Note") {
+        MacNoteEditor(
+            text: $text, color: $color, size: $size, font: $font, event: $event,
+            kind: kind,
+            title: editTitle,
+            mentionCandidates: mentionCandidates(matching:),
+            lines: $lines,
+            isDone: { itemID in
+                if let sending = ticking[itemID] { return sending }
+                return note.taskList.first { $0.id == itemID }?.done ?? false
+            },
+            onTick: { itemID, done in
+                // One request per line at a time: a second click while the
+                // first is in flight is the click that would undo it.
+                guard ticking[itemID] == nil else { return }
+                ticking[itemID] = done
+                failure = nil
+                Task {
+                    if await coordinator.tickTask(
+                        noteID: note.noteID, itemID: itemID, done: done) == false {
+                        failure = String(localized: "Couldn't tick that off.")
+                    }
+                    ticking[itemID] = nil
+                }
+            },
+            // Read live from the note, so a redraw is visible here.
+            backdropID: NoteKind(name: note.kind) == .event ? note.attachmentID : nil
+        ) {
+            let isEvent = kind == .event
+            let isList = kind == .tasks
+            let event = event
+            let written = DraftTaskLine.written(lines)
+            let held = note.taskList.map { APIClient.TaskLineRequest(id: $0.id, text: $0.text) }
             Task {
-                // Size only when the author changed it, so a name this
-                // Mac does not know survives a text edit (NoteSize).
+                // Size and font only when the author changed them, so a
+                // name this Mac does not know survives a text edit
+                // (NoteSize, NoteFont). An event's own three only on an
+                // event — the server refuses them anywhere else — with the
+                // end a DOUBLE option: none clears it.
                 await coordinator.updateNote(
                     id: note.noteID, text: text, color: color,
-                    size: size.patchName(replacing: note.size))
+                    size: size.patchName(replacing: note.size),
+                    font: font.patchName(replacing: note.font),
+                    startsAt: isEvent ? event.startsAt : nil,
+                    endsAt: isEvent ? .some(event.hasEnd ? event.endsAt : nil) : nil,
+                    place: isEvent ? event.trimmedPlace : nil,
+                    // Sent only when they DIFFER: `items` is the author's
+                    // field, and one sent unchanged would make opening a
+                    // list to read it an edit.
+                    items: isList && written != held ? written : nil)
             }
+        }
+        // What the server refused, in the reader's own words.
+        .alert(
+            Text(failure ?? ""),
+            isPresented: Binding(
+                get: { failure != nil },
+                set: { if !$0 { failure = nil } })
+        ) {
+            Button("OK", role: .cancel) { failure = nil }
         }
         .onAppear {
             text = note.text
             color = note.color
             size = NoteSize(name: note.size)
+            font = NoteFont(name: note.font)
+            lines = note.taskList.map { DraftTaskLine(itemID: $0.id, text: $0.text) }
+            if let starts = note.startsAt {
+                event = MacEventFields(
+                    startsAt: starts,
+                    hasEnd: note.endsAt != nil,
+                    endsAt: note.endsAt ?? starts.addingTimeInterval(3600),
+                    place: note.place ?? "")
+            }
         }
     }
 }

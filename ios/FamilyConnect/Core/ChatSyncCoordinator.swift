@@ -420,6 +420,10 @@ final class ChatSyncCoordinator {
                 chatID: presence.chatID, isAtNewest: presence.isAtNewest, isFrontmost: false)
         }
         isInBackground = true
+        // The bytes go to the system on the way out. `UploadLifeline` only
+        // ever bought seconds; this is what finishes a video somebody
+        // pressed Send on and walked away from.
+        Task { await handOverPendingUploads() }
         guard socketTask != nil else { return }
         // A call holds the socket open: its `call_end`, its candidates and
         // an ICE restart all arrive over it, and the audio session (or the
@@ -510,11 +514,11 @@ final class ChatSyncCoordinator {
     func handle(frame: ServerFrame) {
         switch frame {
         case .ack(let clientMsgID, let message):
-            _ = upsert(message, bumpUnread: false)
+            _ = upsert(message, bumpUnread: false, live: true)
             resolveAckWaiter(clientMsgID, delivered: true)
 
         case .message(let message):
-            _ = upsert(message, bumpUnread: true)
+            _ = upsert(message, bumpUnread: true, live: true)
             noteAssistantAnswerStarted(message)
             announce(message)
 
@@ -580,7 +584,42 @@ final class ChatSyncCoordinator {
             guard let chat = fetchChat(chatID) else { return }
             if userID == currentUserID {
                 // Our own read relayed back (or from another device).
+                //
+                // The marker is per-USER and always was, so this frame is
+                // this person reading on their laptop — and the badge on
+                // THIS device has to follow, or it sits there wrong until
+                // something else makes it resync (protocol.md, WebSocket
+                // "Semantics"). Raising the marker alone was the whole of
+                // this branch and left the count untouched.
                 chat.myLastReadID = max(chat.myLastReadID, lastReadMessageID)
+                // Re-read rather than reused: `max` may have kept a HIGHER
+                // marker this device already had, and recounting against the
+                // incoming one would resurrect messages it has already read.
+                // (Android's applyMyReadMarker says the same, and this is the
+                // same operation.)
+                chat.unreadCount = inboundCount(chatID: chatID, after: chat.myLastReadID)
+                // The mark is a filter over the unread rows: nothing unread,
+                // nothing marked.
+                if chat.unreadCount == 0 {
+                    chat.hasUnreadMention = false
+                    liveMentionedMessageIDs[chat.chatID] = nil
+                }
+                // The banners are the same statement as the badge, and they
+                // come down through the THRESHOLD door — every banner at or
+                // below the marker — not only at zero. A partial read on the
+                // other device (twenty of thirty) used to leave all thirty
+                // banners standing here, because the marker had been raised
+                // and the resync's own threshold door, which keys on a marker
+                // that moved, no longer had anything to notice. This is that
+                // door, called directly with the marker that won.
+                ChatNotifier.dismissDelivered(readMarkers: [chatID: chat.myLastReadID])
+                if chat.unreadCount == 0 {
+                    // And the whole-chat door too, for the rows a threshold
+                    // cannot name — a banner for a message still pending
+                    // locally has no server id to compare. `markRead` does
+                    // the same for a local read.
+                    ChatNotifier.dismissDelivered(chatID: chatID)
+                }
             } else {
                 // Stored in EVERY chat kind, drawn in only one. In a family
                 // chat this is roster data that no bubble may draw
@@ -872,10 +911,25 @@ final class ChatSyncCoordinator {
         // before the field existed needs its content mark seeded, or the
         // server's backfill badges the whole wall (BoardBadge).
         seedBoardContentMarkIfNeeded()
+        // A TOMBSTONE IS THE LAST WORD (docs/protocol.md, "Board"). Board seqs commit out of
+        // order and a catch-up page carries the pre-delete copy, so without this an older answer
+        // crossing the tombstone on the wire puts a note the family took down back on the wall.
+        if noteIsGone(dto.id) { return false }
         let existing = fetchNote(dto.id)
-        if let existing, dto.boardSeq <= existing.boardSeq { return false }
+        // STRICTLY older is refused; the SAME seq is written. An equal seq is
+        // the same server state, so writing it changes nothing — except for a
+        // row this device cached before it knew about a field: a photo note
+        // or an event stored by a build from before kinds is a blank text
+        // note at that very seq, and refusing the identical copy left it
+        // blank on this device for good (issue #69). A board open's full
+        // read now repairs it.
+        if let existing, dto.boardSeq < existing.boardSeq { return false }
 
         if dto.isTombstone {
+            // The guard above covers deletion too, so a stale tombstone never reaches here and
+            // removes nothing. One that does is remembered even when this device held no row for
+            // it: the copy it is about may still be on its way.
+            rememberNoteGone(dto.id)
             if let existing { modelContext.delete(existing) }
             return true
         }
@@ -892,6 +946,12 @@ final class ChatSyncCoordinator {
         // A server from before sizes never sends one; "medium" is the size
         // every note had then, so the wall does not change under it.
         let size = dto.size ?? NoteSize.medium.name
+        // And from before fonts sends none; "plain" is the face every note
+        // was written in then, for the same reason.
+        let font = dto.font ?? NoteFont.plain.name
+        // A server from before kinds sends none, and every note it has is a
+        // text note — which is also what an unknown kind DRAWS as.
+        let kind = dto.kind ?? NoteKind.text.name
         // A server from before content seqs sends none either, and 0 is how
         // this store spells "nobody said" — the badge then judges the note
         // by its id, exactly as it always did (BoardBadge).
@@ -901,6 +961,17 @@ final class ChatSyncCoordinator {
             existing.text = text
             existing.color = color
             existing.size = size
+            existing.font = font
+            existing.kind = kind
+            existing.attachmentID = dto.attachment?.id
+            existing.attachmentWidth = dto.attachment?.width
+            existing.attachmentHeight = dto.attachment?.height
+            existing.startsAt = dto.startsAt
+            existing.endsAt = dto.endsAt
+            existing.place = dto.place
+            existing.rsvpsJSON = dto.rsvps.flatMap(RsvpCodec.encode)
+            existing.mentionsJSON = dto.mentions.flatMap(MentionCodec.encode)
+            existing.itemsJSON = dto.items.flatMap(TaskCodec.encode)
             existing.x = x
             existing.y = y
             existing.updatedAt = dto.updatedAt ?? existing.updatedAt
@@ -913,6 +984,17 @@ final class ChatSyncCoordinator {
                 text: text,
                 color: color,
                 size: size,
+                font: font,
+                kind: kind,
+                attachmentID: dto.attachment?.id,
+                attachmentWidth: dto.attachment?.width,
+                attachmentHeight: dto.attachment?.height,
+                startsAt: dto.startsAt,
+                endsAt: dto.endsAt,
+                place: dto.place,
+                rsvpsJSON: dto.rsvps.flatMap(RsvpCodec.encode),
+                mentionsJSON: dto.mentions.flatMap(MentionCodec.encode),
+                itemsJSON: dto.items.flatMap(TaskCodec.encode),
                 x: x,
                 y: y,
                 createdAt: dto.createdAt ?? Date(),
@@ -942,13 +1024,56 @@ final class ChatSyncCoordinator {
         return (try? modelContext.fetch(descriptor))?.first
     }
 
+    /// Whether this device has been told that note is gone (`GoneNoteEntity`).
+    ///
+    /// Asked before anything is written, because the copy still travelling may carry a seq ABOVE
+    /// the tombstone's and the per-note guard would let it straight through.
+    func noteIsGone(_ id: Int64) -> Bool {
+        var descriptor = FetchDescriptor<GoneNoteEntity>(
+            predicate: #Predicate { $0.noteID == id })
+        descriptor.fetchLimit = 1
+        return ((try? modelContext.fetch(descriptor))?.first) != nil
+    }
+
+    /// Remember that it is gone, once and for all.
+    ///
+    /// The guard is belt beside braces and a mutation run says so: `noteID` is `.unique`, so
+    /// SwiftData upserts a second insert of the same id rather than duplicating it or throwing.
+    /// It stays because a fetch is cheaper than an insert, and because the intent — one row per
+    /// note, ever — should be readable without knowing that.
+    func rememberNoteGone(_ id: Int64) {
+        guard !noteIsGone(id) else { return }
+        modelContext.insert(GoneNoteEntity(noteID: id))
+    }
+
     /// Full board read — used the first time a board is opened, and
     /// whenever the local cursor is 0 (nothing applied yet).
+    ///
+    /// It REPLACES what is held (docs/protocol.md, "Board"): the read never
+    /// returns tombstones, so a note it leaves out is a note that is gone,
+    /// and merely applying what it did return kept every note deleted while
+    /// this device was not listening on the wall for as long as the cache
+    /// lived. The one exception is a note held at a seq ABOVE the read's
+    /// mark — it arrived after the read was taken — and it stays.
     func loadBoard() async {
         guard let response = try? await api.board() else { return }
-        for note in response.notes { applyNote(note) }
+        replaceBoard(with: response)
         boardCursor = max(boardCursor, response.maxBoardSeq)
         saveContext()
+    }
+
+    /// The cache half of `loadBoard`: everything but the cursor.
+    func replaceBoard(with response: BoardResponse) {
+        let listed = Set(response.notes.map(\.id))
+        let held = (try? modelContext.fetch(FetchDescriptor<NoteEntity>())) ?? []
+        for note in held
+        where !listed.contains(note.noteID) && note.boardSeq <= response.maxBoardSeq {
+            // Remembered as well as removed: a note the read left out is a note that is gone,
+            // and the next page that carries it must not put it back.
+            rememberNoteGone(note.noteID)
+            modelContext.delete(note)
+        }
+        for note in response.notes { applyNote(note) }
     }
 
     /// Board catch-up: after_seq pages until a short page, tombstones
@@ -971,39 +1096,208 @@ final class ChatSyncCoordinator {
         }
     }
 
-    func addNote(text: String, color: String, size: String, x: Double, y: Double) async -> Bool {
-        guard let dto = try? await api.createNote(text: text, color: color, size: size, x: x, y: y)
+    /// The members a note's text names (docs/protocol.md, "Board").
+    ///
+    /// Resolved HERE rather than in each board view, because both of them
+    /// would otherwise do it and the two would drift: the names are read
+    /// off the text against the live roster, exactly as a message's are, so
+    /// a name typed by hand names somebody and a name deleted after being
+    /// picked from the strip names nobody.
+    func namedMembers(in text: String) -> [MentionDTO] {
+        guard text.contains("@") else { return [] }
+        let roster = (try? modelContext.fetch(FetchDescriptor<MemberEntity>()))?
+            .filter { !$0.hasLeft && !$0.accountDeleted }
+            .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) } ?? []
+        return MemberMentions.resolve(body: text, roster: roster)
+    }
+
+    func addNote(
+        text: String,
+        color: String,
+        size: String,
+        font: String,
+        x: Double,
+        y: Double,
+        /// The picture, on a photo note: uploaded and unclaimed. The kind
+        /// rides with it — the two arrive together or not at all
+        /// (docs/protocol.md, "Board").
+        attachmentID: Int64? = nil,
+        /// An event's own three. `startsAt` is what makes this an event.
+        startsAt: Date? = nil,
+        endsAt: Date? = nil,
+        place: String? = nil,
+        /// A task list's lines — what makes this a list, the way `startsAt`
+        /// makes a note an event (docs/protocol.md, "Board"). Empty is
+        /// still a list; nil is not one.
+        items: [APIClient.TaskLineRequest]? = nil
+    ) async -> Bool {
+        let kind: String? = if startsAt != nil {
+            NoteKind.event.name
+        } else if attachmentID != nil {
+            NoteKind.photo.name
+        } else if items != nil {
+            NoteKind.tasks.name
+        } else {
+            nil
+        }
+        guard let dto = try? await api.createNote(
+            text: text, color: color, size: size, font: font, x: x, y: y,
+            kind: kind, attachmentID: attachmentID,
+            startsAt: startsAt, endsAt: endsAt, place: place,
+            mentions: namedMembers(in: text), items: items)
         else {
             return false
         }
+        // The answer to this device's own change moves NO cursor
+        // (docs/protocol.md, "Board"): it says nothing about another note's
+        // lower seq, and REST works while the socket is down — exactly when
+        // the frames carrying those were missed.
         applyNote(dto)
-        boardCursor = max(boardCursor, dto.boardSeq)
         saveContext()
         return true
     }
 
+    /// Pin a prepared photo to the board: upload, preview, note — in that
+    /// order, because the server claims the upload inside the transaction
+    /// that writes the note (docs/protocol.md, "Board"). Answers nil once it
+    /// is on the wall, and otherwise why not, in words.
+    ///
+    /// One flow for the phone and the Mac (issue #69). The picture's own
+    /// preview goes into the attachment cache on the way, as a chat send's
+    /// does, so the pinning device draws its sticker from bytes it already
+    /// holds rather than fetching back what it just sent.
+    func pinPhoto(_ prepared: MediaPrep.Prepared, color: String, x: Double, y: Double) async -> String? {
+        let uploaded: AttachmentDTO
+        do {
+            uploaded = try await api.uploadAttachment(
+                fileURL: prepared.fileURL,
+                mime: prepared.mime,
+                kind: prepared.kind,
+                width: prepared.width,
+                height: prepared.height,
+                durationMS: nil)
+        } catch {
+            return Self.pinFailure(error)
+        }
+        if let previewJPEG = prepared.previewJPEG {
+            attachmentStore?.seed(previewJPEG, id: uploaded.id, preview: true)
+            try? await api.uploadPreview(attachmentID: uploaded.id, jpeg: previewJPEG)
+        }
+        do {
+            let dto = try await api.createNote(
+                text: "", color: color, size: NoteSize.medium.name, font: NoteFont.plain.name,
+                x: x, y: y, kind: NoteKind.photo.name, attachmentID: uploaded.id)
+            applyNote(dto)
+            saveContext()
+            return nil
+        } catch {
+            return Self.pinFailure(error)
+        }
+    }
+
+    /// Why a pin did not go up, as a person would be told it. `board_full`
+    /// is said, never swallowed (docs/protocol.md, "Board"), and a request
+    /// that never got an answer is not reported as a refusal.
+    nonisolated static func pinFailure(_ error: Error) -> String {
+        switch error as? APIError {
+        case .conflict(code: "board_full"?, message: _):
+            return String(localized: "The board is full. Take a note down to make room for this one.")
+        case .transport, .throttled, .server:
+            return String(localized: "The photo didn't reach the server. Check your connection and try again.")
+        case .payloadTooLarge:
+            return String(localized: "That photo is too large to pin.")
+        default:
+            return String(localized: "The server refused it.")
+        }
+    }
+
     /// Move (anyone) or rewrite (the author) — which fields are sent is
-    /// what the server checks permission against. Text, colour and size
-    /// are the author's; a MOVE must therefore send x/y and nothing else,
-    /// or a non-author's drag comes back `not_note_author`.
+    /// what the server checks permission against. Text, colour, size and
+    /// font are the author's; a MOVE must therefore send x/y and nothing
+    /// else, or a non-author's drag comes back `not_note_author`.
     @discardableResult
     func updateNote(
         id: Int64,
         text: String? = nil,
         color: String? = nil,
         size: String? = nil,
+        font: String? = nil,
         x: Double? = nil,
-        y: Double? = nil
+        y: Double? = nil,
+        /// An event's own three. `endsAt` is a DOUBLE option: absent leaves
+        /// it alone, `.some(nil)` clears it (docs/protocol.md, "Board").
+        startsAt: Date? = nil,
+        endsAt: Date?? = nil,
+        place: String? = nil,
+        /// REPLACES a task list's lines, and the author's like its title: a
+        /// line carrying its id keeps its TICK (docs/protocol.md, "Board").
+        items: [APIClient.TaskLineRequest]? = nil
     ) async -> Bool {
+        // A text edit carries the names again — they are re-decided on
+        // every one, and a text patch without them clears them
+        // (docs/protocol.md, "Board"). A move sends none, so a note that
+        // was only dragged keeps the names it had.
+        let named = text.map { namedMembers(in: $0) }
         guard let dto = try? await api.patchNote(
-            id: id, text: text, color: color, size: size, x: x, y: y)
+            id: id, text: text, color: color, size: size, font: font, x: x, y: y,
+            startsAt: startsAt, endsAt: endsAt, place: place, mentions: named,
+            items: items)
         else {
             return false
         }
+        // The answer to this device's own change moves NO cursor
+        // (docs/protocol.md, "Board"): it says nothing about another note's
+        // lower seq, and REST works while the socket is down — exactly when
+        // the frames carrying those were missed.
         applyNote(dto)
-        boardCursor = max(boardCursor, dto.boardSeq)
         saveContext()
         return true
+    }
+
+    /// Say whether you are coming — `going`, `maybe`, `no`, or nil to
+    /// retract. ANY member may, which is why this is not `updateNote`
+    /// (docs/protocol.md, "Board").
+    @discardableResult
+    func answerEvent(id: Int64, answer: String?) async -> Bool {
+        guard let dto = try? await api.answerNote(id: id, answer: answer) else { return false }
+        // The answer to this device's own change moves NO cursor
+        // (docs/protocol.md, "Board"): it says nothing about another note's
+        // lower seq, and REST works while the socket is down — exactly when
+        // the frames carrying those were missed.
+        applyNote(dto)
+        saveContext()
+        return true
+    }
+
+    /// Tick or untick one line of a task list. ANY member may, which is
+    /// why this is not `updateNote` — ticking is not authorship, and it is
+    /// a STATE rather than a toggle (docs/protocol.md, "Board").
+    @discardableResult
+    func tickTask(noteID: Int64, itemID: Int64, done: Bool) async -> Bool {
+        guard let dto = try? await api.tickTask(noteID: noteID, itemID: itemID, done: done)
+        else { return false }
+        applyNote(dto)
+        saveContext()
+        return true
+    }
+
+    /// Ask the assistant for a picture to sit behind an event. The
+    /// AUTHOR's, and drawn from the note's own title — there is nothing to
+    /// send (docs/protocol.md, "Board").
+    @discardableResult
+    /// Ask the assistant for an event's backdrop, and answer with the
+    /// picture's id — nil when it did not arrive.
+    ///
+    /// The ID rather than a Bool, because a REDRAW replaces the picture with
+    /// a NEW attachment (docs/protocol.md, "Board") and the sheet that asked
+    /// holds a snapshot of the note as it was: without the new id it would
+    /// keep drawing the old picture, or none, which is what made asking
+    /// again look like nothing happening.
+    func drawBackdrop(noteID: Int64) async -> Int64? {
+        guard let dto = try? await api.drawBackdrop(noteID: noteID) else { return nil }
+        applyNote(dto)
+        saveContext()
+        return dto.attachment?.id
     }
 
     func deleteNote(id: Int64) async -> Bool {
@@ -1012,6 +1306,10 @@ final class ChatSyncCoordinator {
         } catch {
             return false
         }
+        // The third of the protocol's three doors to "gone": a tombstone, a full read that left
+        // it out, and this client's own DELETE. The frame confirming it arrives later and finds
+        // the id already remembered, which is the point.
+        rememberNoteGone(id)
         if let existing = fetchNote(id) { modelContext.delete(existing) }
         saveContext()
         return true
@@ -1082,6 +1380,38 @@ final class ChatSyncCoordinator {
         applyAttachment(dto, to: entity)
     }
 
+    /// The chain fields, on every server copy — and the root's count raised
+    /// by one the first time a reply is seen LIVE (docs/protocol.md,
+    /// "Threads").
+    ///
+    /// `threadRootID` is the server's to say and never changes, so it is
+    /// overwritten like the quote. `replyCount` is overwritten too: a page,
+    /// a catch-up copy or the thread read carries the recomputed truth, and
+    /// ABSENT on the wire means nobody has answered, which is 0 here. The
+    /// bump is the live half — the root's own frame is never re-sent, so a
+    /// client holding the root counts the reply itself — and it happens
+    /// once: on the LIVE ack of a pending row, or on a live first sight of
+    /// a message never held (see `upsert`'s `live`). The REST echo and the
+    /// socket's frame are two copies of one reply, and counting both would
+    /// show "2 replies" under a message with one; a page — the thread read
+    /// included, which answers the root first with a count that already
+    /// holds the reply — must not count it either.
+    private func applyThread(_ dto: MessageDTO, to entity: MessageEntity, firstSight: Bool) {
+        entity.threadRootID = dto.threadRootID
+        entity.replyCount = dto.replyCount ?? 0
+        guard firstSight, let rootID = dto.threadRootID,
+              let root = fetchMessage(serverID: rootID) else { return }
+        root.replyCount += 1
+    }
+
+    /// The members a message names: the server's list, decided at send
+    /// time and never changed, overwrites whatever the pending row guessed
+    /// — and absent means nobody, which is what [] stores (docs/protocol.md,
+    /// "Mentioning a member").
+    private func applyMentions(_ dto: MessageDTO, to entity: MessageEntity) {
+        entity.setMentions(dto.mentions ?? [])
+    }
+
     /// An attachment set is fixed at send time and never changes — except
     /// `has_preview`, which flips once the client's preview upload lands,
     /// so a non-empty incoming copy always wins wholesale. The read rule
@@ -1112,11 +1442,32 @@ final class ChatSyncCoordinator {
     /// `message` frames — resync trusts the server's unread_count from
     /// GET /chats instead of counting for itself.
     @discardableResult
-    func upsert(_ dto: MessageDTO, bumpUnread: Bool) -> MessageEntity {
+    /// - `live`: this copy is the FIRST this device could have seen of the
+    ///   message — the socket's frame, this device's own send answered, or
+    ///   the `after_id` catch-up that stands in for the frames missed while
+    ///   away, which by construction delivers only what is newer than
+    ///   everything held. It decides the chain's count and nothing else
+    ///   (protocol.md, "Threads"): a history page, the edits catch-up and
+    ///   the thread read are not live, because the root's own recomputed
+    ///   copy already counts the replies they carry.
+    /// - `movesCursors`: false for the thread read, which may fetch rows
+    ///   OUTSIDE the contiguous window — a root older than it, a reply
+    ///   newer — and must not drag the history or catch-up cursor to them,
+    ///   or the next page would skip everything in between, for good.
+    func upsert(
+        _ dto: MessageDTO,
+        bumpUnread: Bool,
+        live: Bool = false,
+        movesCursors: Bool = true
+    ) -> MessageEntity {
         let entity: MessageEntity
         if let clientMsgID = dto.clientMsgID,
            let existing = fetchMessage(clientMsgID: clientMsgID, chatID: dto.chatID) {
             // Case 1/2a: reconcile in place (ours pending, or re-delivery).
+            // A pending row taking its server id is the one moment an own
+            // reply is FIRST seen as sent — the live half of the chain —
+            // unless the copy came on a page, whose root already counts it.
+            let firstSight = existing.serverID == nil && live
             existing.serverID = dto.id
             existing.createdAt = dto.createdAt
             applyBody(dto, to: existing)
@@ -1131,6 +1482,8 @@ final class ChatSyncCoordinator {
             resolveAckWaiter(clientMsgID, delivered: true)
             applyReply(dto, to: existing)
             applyCall(dto, to: existing)
+            applyThread(dto, to: existing, firstSight: firstSight)
+            applyMentions(dto, to: existing)
         } else if let existing = fetchMessage(localID: "s:\(dto.id)") {
             // Case 2b: idempotent re-delivery of a server-keyed row.
             applyBody(dto, to: existing)
@@ -1140,6 +1493,8 @@ final class ChatSyncCoordinator {
             entity = existing
             applyReply(dto, to: existing)
             applyCall(dto, to: existing)
+            applyThread(dto, to: existing, firstSight: false)
+            applyMentions(dto, to: existing)
         } else {
             // Case 3: first sight — insert under the server key.
             entity = MessageEntity(
@@ -1156,12 +1511,17 @@ final class ChatSyncCoordinator {
                 replyToMessageID: dto.replyTo?.messageID,
                 replySenderID: dto.replyTo?.senderID,
                 replyExcerpt: dto.replyTo?.excerpt,
+                mentions: dto.mentions,
                 editSeq: dto.editSeq ?? 0,
                 editedAt: dto.editedAt,
                 attachment: dto.attachment,
                 attachments: dto.attachmentList,
                 call: dto.call)
             modelContext.insert(entity)
+            // First sight counts for the chain only when it is LIVE (see
+            // `live` above): a history page or the thread read deliver
+            // replies the root's own recomputed count already includes.
+            applyThread(dto, to: entity, firstSight: live)
         }
         // Embedded reaction state (history/resync pages): the same seq
         // guard as live frames, so a page fetched before a live frame can
@@ -1180,16 +1540,21 @@ final class ChatSyncCoordinator {
             entity.pollSeq = poll.pollSeq
             entity.pollJSON = Self.pollJSON(poll)
         }
-        updateChat(after: dto, bumpUnread: bumpUnread)
+        updateChat(after: dto, bumpUnread: bumpUnread, movesCursors: movesCursors)
         saveContext()
         return entity
     }
 
-    private func updateChat(after dto: MessageDTO, bumpUnread: Bool) {
+    private func updateChat(after dto: MessageDTO, bumpUnread: Bool, movesCursors: Bool) {
         guard let chat = fetchChat(dto.chatID) else { return }
-        if dto.id > chat.maxServerMessageID { chat.maxServerMessageID = dto.id }
-        if chat.oldestLoadedMessageID == nil || dto.id < (chat.oldestLoadedMessageID ?? 0) {
-            chat.oldestLoadedMessageID = dto.id
+        // The two paging cursors follow only what a page or a frame
+        // delivered: a row the thread read fetched may sit outside the
+        // window, and a cursor moved to it would skip the gap for good.
+        if movesCursors {
+            if dto.id > chat.maxServerMessageID { chat.maxServerMessageID = dto.id }
+            if chat.oldestLoadedMessageID == nil || dto.id < (chat.oldestLoadedMessageID ?? 0) {
+                chat.oldestLoadedMessageID = dto.id
+            }
         }
         if chat.lastMessageDate == nil || dto.createdAt >= (chat.lastMessageDate ?? .distantPast) {
             chat.lastMessagePreview = Self.preview(
@@ -1217,6 +1582,20 @@ final class ChatSyncCoordinator {
         } else {
             chat.unreadCount += 1
             liveBumpedMessageIDs[chat.chatID, default: []].insert(dto.id)
+            // The "@" mark: an unread message that names this reader AND
+            // comes from somebody they have not blocked — the server's
+            // `mentioned` is that same filter. A blocked member's frame
+            // DOES reach here (the message arrives unfiltered so the
+            // "Hidden — blocked member" row has something to reveal, and so
+            // the read cursor keeps moving), so without this test the mark
+            // would advertise the one person a block is meant to remove,
+            // and the next `GET /chats` would take it away again
+            // (protocol.md, "Mentioning a member").
+            if !blockedUserIDs.contains(dto.senderID),
+               dto.mentions?.contains(where: { $0.userID == currentUserID }) == true {
+                chat.hasUnreadMention = true
+                liveMentionedMessageIDs[chat.chatID, default: []].insert(dto.id)
+            }
         }
     }
 
@@ -1234,6 +1613,13 @@ final class ChatSyncCoordinator {
     /// counts as unread is exactly a message worth telling somebody about;
     /// if the two ever disagreed the loser would be a message silently
     /// marked read AND silently not announced.
+    /// The subset of `liveBumpedMessageIDs` whose messages NAME this
+    /// reader — the mark's own ledger, kept and pruned exactly like the
+    /// count's, so a frame that races an in-flight `GET /chats` keeps its
+    /// mark as well as its place in the count (protocol.md, "Mentioning a
+    /// member": the two "cannot drift").
+    var liveMentionedMessageIDs: [Int64: Set<Int64>] = [:]
+
     private func announce(_ dto: MessageDTO) {
         #if os(macOS)
         guard dto.senderID != currentUserID, !isReading(dto.chatID) else { return }
@@ -1242,7 +1628,10 @@ final class ChatSyncCoordinator {
             chatID: dto.chatID,
             messageID: dto.id,
             title: ChatNotifier.title(
-                chatKind: chat.kind, chatTitle: chat.title, senderName: displayName(of: dto.senderID)),
+                chatKind: chat.kind,
+                chatTitle: chat.title,
+                senderName: displayName(of: dto.senderID),
+                namesMe: dto.mentions?.contains { $0.userID == currentUserID } == true),
             body: ChatNotifier.body(text: dto.body, attachments: dto.attachmentList, call: dto.call))
         #endif
     }
@@ -1507,7 +1896,8 @@ final class ChatSyncCoordinator {
         question: String,
         options: [String],
         in chatID: Int64,
-        replyTo: ReplyToDTO? = nil
+        replyTo: ReplyToDTO? = nil,
+        mentions: [MentionDTO]? = nil
     ) -> String? {
         // A poll's body may NOT be empty, unlike a message carrying an
         // attachment: `message_empty` applies to a poll with no question.
@@ -1515,7 +1905,7 @@ final class ChatSyncCoordinator {
               let sanitized = PollPresentation.sanitizedOptions(options)
         else { return nil }
         guard let localID = enqueue(
-            body: question, in: chatID, replyTo: replyTo, pollOptions: sanitized)
+            body: question, in: chatID, replyTo: replyTo, pollOptions: sanitized, mentions: mentions)
         else {
             return nil
         }
@@ -1557,8 +1947,11 @@ final class ChatSyncCoordinator {
     /// Optimistic send: the pending bubble exists before this returns.
     /// Returns the new row's localID (nil for an empty body).
     @discardableResult
-    func send(body: String, in chatID: Int64, replyTo: ReplyToDTO? = nil) -> String? {
-        guard let localID = enqueue(body: body, in: chatID, replyTo: replyTo) else { return nil }
+    func send(
+        body: String, in chatID: Int64, replyTo: ReplyToDTO? = nil, mentions: [MentionDTO]? = nil
+    ) -> String? {
+        guard let localID = enqueue(body: body, in: chatID, replyTo: replyTo, mentions: mentions)
+        else { return nil }
         pendingDelivery = Task { await self.deliver(localID: localID) }
         return localID
     }
@@ -1614,10 +2007,13 @@ final class ChatSyncCoordinator {
         label: String?,
         caption: String = "",
         replyTo: ReplyToDTO? = nil,
+        /// The members the caption names — a caption is a body like any
+        /// other (docs/protocol.md, "Mentioning a member").
+        mentions: [MentionDTO]? = nil,
         in chatID: Int64
     ) -> String? {
         guard let localID = enqueue(
-            body: caption, in: chatID, replyTo: replyTo, allowEmpty: true)
+            body: caption, in: chatID, replyTo: replyTo, allowEmpty: true, mentions: mentions)
         else { return nil }
         let item = PendingMediaItemEntity(
             messageLocalID: localID,
@@ -1642,9 +2038,10 @@ final class ChatSyncCoordinator {
         _ prepared: MediaPrep.Prepared,
         caption: String,
         replyTo: ReplyToDTO? = nil,
+        mentions: [MentionDTO]? = nil,
         in chatID: Int64
     ) -> String? {
-        sendMedia([prepared], caption: caption, replyTo: replyTo, in: chatID)
+        sendMedia([prepared], caption: caption, replyTo: replyTo, mentions: mentions, in: chatID)
     }
 
     /// Queue up to ten attachments as ONE message, in the order given.
@@ -1669,11 +2066,12 @@ final class ChatSyncCoordinator {
         _ prepared: [MediaPrep.Prepared],
         caption: String,
         replyTo: ReplyToDTO? = nil,
+        mentions: [MentionDTO]? = nil,
         in chatID: Int64
     ) -> String? {
         guard !prepared.isEmpty else { return nil }
         guard let localID = enqueue(
-            body: caption, in: chatID, replyTo: replyTo, allowEmpty: true)
+            body: caption, in: chatID, replyTo: replyTo, allowEmpty: true, mentions: mentions)
         else { return nil }
 
         // Armed before a single file is touched. `enqueue` has already
@@ -1787,10 +2185,44 @@ final class ChatSyncCoordinator {
         // the allowance merely postpones it to the next trigger rather than
         // destroying it — but finishing an upload already in progress is
         // still far better than starting it again later.
+        // What had already landed before this pass — the system's uploader
+        // brought these back while the app was away, so their previews are
+        // still owed here. Anything uploaded BELOW keeps the send path's
+        // own best-effort-once rule, whose second chance is the poster
+        // repair pass (issue #54).
+        let landedElsewhere = Set(
+            pendingMediaItems(for: localID)
+                .filter { $0.attachmentID != nil && !$0.previewUploaded }
+                .map(\.itemID))
+
+        // One uploader per item: bytes the system is already carrying are
+        // not uploaded again here — two copies of one video cost somebody
+        // their data allowance and leave the server holding an unclaimed
+        // one until the sweep (docs/protocol.md, "Sending on an unreliable
+        // network").
+        #if os(iOS)
+        let handedOver = await BackgroundUploads.shared.inFlightItemIDs()
+        #else
+        let handedOver: Set<String> = []
+        #endif
         await UploadLifeline.withLifeline {
             for item in self.pendingMediaItems(for: localID) where item.attachmentID == nil {
+                if handedOver.contains(item.itemID) { continue }
                 guard await self.upload(item: item, localID: localID) else { return }
             }
+        }
+
+        // A preview still owed for bytes that landed somewhere else — the
+        // system's uploader, or an attempt whose PUT failed. The poster is
+        // the one picture with no second source of pixels, so it is not
+        // left to the repair pass alone (issue #54).
+        for item in pendingMediaItems(for: localID)
+        where landedElsewhere.contains(item.itemID) && item.previewFileName != nil {
+            guard let attachmentID = item.attachmentID, !item.previewUploaded else { continue }
+            let jpeg = item.previewFileName.flatMap(PendingMediaStaging.url(for:))
+                .flatMap { try? Data(contentsOf: $0) }
+            guard jpeg != nil else { continue }
+            await sendPreview(for: item, attachmentID: attachmentID, jpeg: jpeg)
         }
 
         // Everything landed? Write the set onto the row and hand it to the
@@ -1885,14 +2317,29 @@ final class ChatSyncCoordinator {
         fetchMessage(localID: localID)?.pendingAttachmentCount -= 1
         saveContext()
 
+        await sendPreview(for: item, attachmentID: attachment.id, jpeg: previewJPEG)
+        return true
+    }
+
+    /// The poster or thumbnail that rides with an item whose bytes have
+    /// landed — from either uploader.
+    ///
+    /// Split out of `upload(item:)` because the bytes and the preview no
+    /// longer always go up together: the system's uploader carries the
+    /// bytes alone (`BackgroundUploads`), so the resume leg has to be able
+    /// to finish the preview for an item it never uploaded itself.
+    /// Idempotent through `previewUploaded`.
+    private func sendPreview(
+        for item: PendingMediaItemEntity, attachmentID: Int64, jpeg: Data?
+    ) async {
         var hasPreview = false
-        if let previewJPEG {
+        if let jpeg {
             // Best-effort: a bubble with no preview fetches the full image,
             // which is worse but not broken. The RESULT is what the row
             // records — claiming a preview that failed would leave the
             // bubble waiting for bytes that are not there.
             do {
-                try await api.uploadPreview(attachmentID: attachment.id, jpeg: previewJPEG)
+                try await api.uploadPreview(attachmentID: attachmentID, jpeg: jpeg)
                 hasPreview = true
             } catch {
                 AppLog.sync.error("Preview upload failed: \(String(describing: error), privacy: .public)")
@@ -1901,17 +2348,104 @@ final class ChatSyncCoordinator {
             // Distinguishable on purpose from the line above: a video that
             // never HAD a poster and one whose poster upload failed need
             // different fixes.
-            AppLog.sync.error("Video \(attachment.id, privacy: .public) sent with no poster frame")
+            AppLog.sync.error("Video \(attachmentID, privacy: .public) sent with no poster frame")
         }
         if item.kind == "video" {
             // Best-effort ONCE was the bug (issue #54): a poster is the only
             // image with no second source of pixels, so a lost one is a grey
             // tile for every recipient, forever.
-            attachmentStore?.notePosterUpload(id: attachment.id, landed: hasPreview)
+            attachmentStore?.notePosterUpload(id: attachmentID, landed: hasPreview)
         }
         item.previewUploaded = hasPreview
         saveContext()
-        return true
+    }
+
+    // MARK: - Uploads the app is not around for
+
+    /// Hand every upload still owed to the system, so a send survives
+    /// somebody leaving the app (docs/protocol.md, "Sending on an
+    /// unreliable network"; `BackgroundUploads` for why it is only the
+    /// bytes). iOS only — a Mac app is not suspended for being in the
+    /// background, and its in-process leg is already the right answer.
+    func handOverPendingUploads() async {
+        #if os(iOS)
+        let descriptor = FetchDescriptor<PendingMediaItemEntity>(
+            predicate: #Predicate { $0.attachmentID == nil },
+            sortBy: [SortDescriptor(\.createdAt), SortDescriptor(\.position)])
+        guard let items = try? modelContext.fetch(descriptor), !items.isEmpty else { return }
+        // Read off the store on this actor, then build the requests on
+        // the API client's: a `PendingMediaItemEntity` is a model object
+        // and does not leave the main actor.
+        struct Owed {
+            let itemID: String
+            let fileURL: URL
+            let mime: String
+            let kind: String
+            let width: Int?
+            let height: Int?
+            let durationMS: Int?
+            let name: String?
+        }
+        let owed: [Owed] = items.compactMap { item in
+            // A location has no bytes to upload and a missing file has none
+            // left; both are the in-process leg's business.
+            guard item.kind != AttachmentDTO.Kind.location,
+                  let fileName = item.fileName,
+                  let fileURL = PendingMediaStaging.url(for: fileName),
+                  FileManager.default.fileExists(atPath: fileURL.path)
+            else { return nil }
+            return Owed(
+                itemID: item.itemID, fileURL: fileURL, mime: item.mime, kind: item.kind,
+                width: item.width, height: item.height, durationMS: item.durationMS,
+                name: item.name)
+        }
+        var handovers: [BackgroundUploads.Handover] = []
+        for item in owed {
+            guard let request = try? await api.attachmentUploadRequest(
+                mime: item.mime,
+                kind: item.kind,
+                width: item.width,
+                height: item.height,
+                durationMS: item.durationMS,
+                name: item.name)
+            else { continue }
+            handovers.append(BackgroundUploads.Handover(
+                itemID: item.itemID, request: request, fileURL: item.fileURL))
+        }
+        await BackgroundUploads.shared.hand(over: handovers)
+        #endif
+    }
+
+    /// Write down an upload the system finished while the app was away.
+    ///
+    /// The same two fields `upload(item:)` writes in one save, and for the
+    /// same reason: a count decremented without the id is a row that will
+    /// be delivered with an attachment missing. The preview and the message
+    /// itself are left to the ordinary leg, which the caller kicks.
+    func recordBackgroundUpload(itemID: String, attachment: AttachmentDTO) {
+        let descriptor = FetchDescriptor<PendingMediaItemEntity>(
+            predicate: #Predicate { $0.itemID == itemID })
+        guard let item = (try? modelContext.fetch(descriptor))?.first,
+              item.attachmentID == nil
+        else { return }
+        item.attachmentID = attachment.id
+        fetchMessage(localID: item.messageLocalID)?.pendingAttachmentCount -= 1
+        saveContext()
+        // What this device already holds, so its own bubble draws from
+        // those bytes rather than fetching back what it just sent.
+        if let previewJPEG = item.previewFileName.flatMap(PendingMediaStaging.url(for:))
+            .flatMap({ try? Data(contentsOf: $0) }) {
+            attachmentStore?.seed(previewJPEG, id: attachment.id, preview: true)
+            // A marker, in case nothing else gets the chance: the resume
+            // leg normally PUTs this poster within the second, but a
+            // process that is killed again before it runs would otherwise
+            // leave a video with no poster for everybody else, forever
+            // (issue #54). `repairPosters()` clears it on success.
+            if item.kind == AttachmentDTO.Kind.video {
+                attachmentStore?.notePosterUpload(id: attachment.id, landed: false)
+            }
+        }
+        AppLog.sync.info("A background upload landed for a queued send")
     }
 
     /// The unfinished attachments of one send, in the sender's order.
@@ -2157,7 +2691,10 @@ final class ChatSyncCoordinator {
         /// provisional poll built from them — negative ids, no votes,
         /// `pollSeq: 0` — so the bubble draws as a poll immediately and
         /// the ack's real one still passes the guard. See `sendPoll`.
-        pollOptions: [String]? = nil
+        pollOptions: [String]? = nil,
+        /// The members the body names, resolved by the composer (protocol.md,
+        /// "Mentioning a member"). Held on the row so a retry re-sends them.
+        mentions: [MentionDTO]? = nil
     ) -> String? {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         // A photo needs no caption (docs/protocol.md) — but only an
@@ -2187,7 +2724,14 @@ final class ChatSyncCoordinator {
             // instant it appears, not once the server answers.
             replyToMessageID: replyTo?.messageID,
             replySenderID: replyTo?.senderID,
-            replyExcerpt: replyTo?.excerpt)
+            replyExcerpt: replyTo?.excerpt,
+            // The chain, derived from the quoted row this client holds so
+            // the thread surface shows the reply the instant it is sent;
+            // the ack's copy overwrites it with the server's own answer.
+            threadRootID: replyTo.flatMap { quote in
+                fetchMessage(serverID: quote.messageID).map { $0.threadRootID ?? quote.messageID }
+            },
+            mentions: mentions)
         modelContext.insert(entity)
         if let chat = fetchChat(chatID) {
             chat.lastMessagePreview = trimmed
@@ -2226,6 +2770,9 @@ final class ChatSyncCoordinator {
         let chatID = row.chatID
         let body = row.body
         let replyToMessageID = row.replyToMessageID
+        // Off the row for the same reason as the poll options below: a
+        // retry must still name whom the sender named.
+        let mentions = row.mentionList.isEmpty ? nil : row.mentionList
         // The whole set's ids, in the sender's order — the array spelling
         // is the only one this client sends (`attachment_ids`).
         let ids = row.attachmentList.map(\.id)
@@ -2246,7 +2793,8 @@ final class ChatSyncCoordinator {
                 body: body,
                 replyToMessageID: replyToMessageID,
                 attachmentIDs: attachmentIDs,
-                pollOptions: pollOptions))
+                pollOptions: pollOptions,
+                mentions: mentions))
             if await waitForAck(clientMsgID: clientMsgID, timeout: ackTimeout) { return }
         } catch {
             // fall through to REST
@@ -2264,8 +2812,9 @@ final class ChatSyncCoordinator {
                 body: body,
                 replyToMessageID: replyToMessageID,
                 attachmentIDs: attachmentIDs,
-                pollOptions: pollOptions)
-            _ = upsert(dto, bumpUnread: false)
+                pollOptions: pollOptions,
+                mentions: mentions)
+            _ = upsert(dto, bumpUnread: false, live: true)
         } catch APIError.unauthorized {
             session?.handleUnauthorized()
         } catch {
@@ -2503,18 +3052,22 @@ final class ChatSyncCoordinator {
         // live messages the response shows the server had not counted.
         //
         // The response also carries this caller's OWN read marker per chat
-        // (protocol.md, resync step 2), and a marker that moves FORWARD is
-        // the only thing that ever tells this device the chat was read on
-        // another one: the live `read` frame is relayed to other members
-        // only, so a reader's own devices never see their own read go past.
-        // The count corrects itself from `unread_count` either way; what
-        // needs the marker is Notification Center, which no resync has ever
-        // touched and which would otherwise still be showing banners for
-        // messages this person read on their phone an hour ago.
+        // (protocol.md, resync step 2). Since #61 the live `read` frame
+        // reaches a reader's own other devices too, so this is no longer the
+        // only way a device learns the chat was read elsewhere — it is the
+        // way a device that had NO SOCKET at the time learns it, which is
+        // what a resync is for. The count corrects itself from
+        // `unread_count` either way; what needs the marker is Notification
+        // Center, which would otherwise still be showing banners for
+        // messages this person read on their phone while this one was off.
         guard let chatList = try? await api.chats() else { return }
         var readElsewhere: [Int64: Int64] = [:]
         for item in chatList.chats {
-            if let marker = upsertChat(item, uncountedLiveMessages: uncountedBumps(in: item)) {
+            if let marker = upsertChat(
+                item,
+                uncountedLiveMessages: uncountedBumps(in: item),
+                uncountedMention: uncountedMention(in: item)
+            ) {
                 readElsewhere[item.chat.id] = marker
             }
         }
@@ -2582,12 +3135,39 @@ final class ChatSyncCoordinator {
         AppLog.sync.info("Resync complete")
     }
 
+    /// Whether a row arriving on an `after_id` catch-up counts for its
+    /// thread root — the one thing the pass's opening cursor decides
+    /// (docs/protocol.md, "Threads" -> Live).
+    ///
+    /// A row that is not a reply has no root to count for and is a
+    /// live-equivalent arrival like any other. A reply counts only for a
+    /// root the client ALREADY HELD when the pass opened: a root above
+    /// that cursor rides on the pass itself, carrying a recomputed count
+    /// that already holds every reply with it, and counting them again
+    /// drew "8 replies" under a message with four — on every first sync,
+    /// where the cursor is 0 and root and replies always arrive together.
+    static func catchUpCounts(forRootOf dto: MessageDTO, heldThrough: Int64) -> Bool {
+        guard let rootID = dto.threadRootID else { return true }
+        return rootID <= heldThrough
+    }
+
     private func runCatchUp(_ step: SyncPlan.FetchStep) async {
         let limit = 100
+        // THE CURSOR THE PASS OPENED WITH. Everything this client held is
+        // at or below it, so a thread root above it arrives on this very
+        // pass — with a recomputed count that already holds every reply
+        // riding with it. Counting those replies again is what drew
+        // "8 replies" under a message with four, on every first sync,
+        // where the cursor is 0 and root and replies always arrive
+        // together (docs/protocol.md, "Threads" → Live).
+        let heldThrough = step.afterID
         var afterID = step.afterID
         while true {
             guard let page = try? await api.messages(chatID: step.chatID, afterID: afterID, limit: limit) else { return }
-            for dto in page { _ = upsert(dto, bumpUnread: false) }
+            for dto in page {
+                _ = upsert(dto, bumpUnread: false,
+                           live: Self.catchUpCounts(forRootOf: dto, heldThrough: heldThrough))
+            }
             if let last = page.last { afterID = max(afterID, last.id) }
             if page.count < limit { return }
         }
@@ -2725,6 +3305,31 @@ final class ChatSyncCoordinator {
         }
     }
 
+    /// Fill in the chain `rootID` heads — the root and every reply, oldest
+    /// first, page after page until a short one — through the same upsert
+    /// a page of history goes through, so the thread surface reads it from
+    /// the store exactly as the chat does (docs/protocol.md, "Threads").
+    /// Answers whether the read completed; whatever it fetched is in the
+    /// store either way.
+    func loadThread(chatID: Int64, rootID: Int64, limit: Int = 50) async -> Bool {
+        var afterID: Int64?
+        do {
+            while true {
+                let page = try await api.thread(
+                    chatID: chatID, messageID: rootID, afterID: afterID, limit: limit)
+                for dto in page { _ = upsert(dto, bumpUnread: false, movesCursors: false) }
+                guard page.count == limit, let last = page.last else { break }
+                afterID = last.id
+            }
+            saveContext()
+            return true
+        } catch {
+            AppLog.sync.info("loadThread(\(chatID), \(rootID)) failed: \(String(describing: error))")
+            saveContext()
+            return false
+        }
+    }
+
     // MARK: - Read markers
 
     /// Report everything currently held for `chatID` as read.
@@ -2753,6 +3358,10 @@ final class ChatSyncCoordinator {
         // message, and most of those have nothing left to read.
         guard chat.unreadCount > 0 || advances else { return }
         chat.unreadCount = 0
+        chat.hasUnreadMention = false
+        // And the ledger with it: a mark this device has just read must not
+        // be added back by the next `GET /chats` that races it.
+        liveMentionedMessageIDs[chatID] = nil
         saveContext()
         // The banners are the same statement as the badge; leaving them in
         // Notification Center contradicts an icon that now says nothing.
@@ -2877,6 +3486,25 @@ final class ChatSyncCoordinator {
         return uncounted.count
     }
 
+    #if DEBUG
+    /// The two ledgers, reachable from tests: the race they exist for is
+    /// only visible if a test can ask them the same question `resync` does.
+    func uncountedBumpsForTesting(in item: ChatListItemDTO) -> Int { uncountedBumps(in: item) }
+
+    func uncountedMentionForTesting(in item: ChatListItemDTO) -> Bool { uncountedMention(in: item) }
+    #endif
+
+    /// The same question for the "@" mark: did any message this client
+    /// counted live, and the response did not, NAME the reader? Pruned on
+    /// the same line as the count's ledger, because it is a subset of it.
+    private func uncountedMention(in item: ChatListItemDTO) -> Bool {
+        guard let mentioned = liveMentionedMessageIDs[item.chat.id] else { return false }
+        let counted = item.lastMessage?.id ?? 0
+        let uncounted = mentioned.filter { $0 > counted }
+        liveMentionedMessageIDs[item.chat.id] = uncounted.isEmpty ? nil : uncounted
+        return !uncounted.isEmpty
+    }
+
     /// `uncountedLiveMessages`: live messages this client counted that the
     /// server's `unread_count` demonstrably does not include. See resync
     /// step 3 and `uncountedBumps`.
@@ -2887,10 +3515,14 @@ final class ChatSyncCoordinator {
     /// did not move proves nothing either way and must cost nothing: it is
     /// what this device already believed.
     @discardableResult
-    private func upsertChat(
+    func upsertChat(
         _ item: ChatListItemDTO,
         resetWhenNoLastMessage: Bool = true,
-        uncountedLiveMessages: Int = 0
+        uncountedLiveMessages: Int = 0,
+        /// Did one of those uncounted messages name the reader? The mark is
+        /// a filter over the rows the count counts, so it survives the race
+        /// the same way (protocol.md, "Mentioning a member").
+        uncountedMention: Bool = false
     ) -> Int64? {
         let dto = item.chat
         let chat: ChatEntity
@@ -2909,6 +3541,11 @@ final class ChatSyncCoordinator {
         chat.peerUserID = dto.peerUserID
         chat.title = dto.title
         chat.unreadCount = item.unreadCount + max(0, uncountedLiveMessages) // server-authoritative
+        // Server-authoritative too, and absent means no — plus what named
+        // the reader after the server counted, which is the same message
+        // the line above is still counting (protocol.md, "Mentioning a
+        // member").
+        chat.hasUnreadMention = (item.mentioned ?? false) || uncountedMention
         // The caller's OWN read marker, off the same row of the same query
         // as `unread_count` (protocol.md, GET /chats) — so the count and
         // the marker always describe one instant, and the count stays the
@@ -2981,6 +3618,7 @@ final class ChatSyncCoordinator {
         typingByChat[chatID] = nil
         lastTypingSentAt[chatID] = nil
         liveBumpedMessageIDs[chatID] = nil
+        liveMentionedMessageIDs[chatID] = nil
         readPostsInFlight.remove(chatID)
         pendingReadTargets[chatID] = nil
     }
@@ -3185,6 +3823,22 @@ final class ChatSyncCoordinator {
         do {
             _ = try await api.createReport(
                 reportedUserID: reportedUserID, reason: reason, messageID: messageID)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Report an ASSISTANT reply — a separate path from `report` above, and
+    /// deliberately so: the assistant belongs to no family, so the
+    /// member-report endpoint refuses it, and what a member needs here is to
+    /// say that a MODEL got something wrong. The people who run the server
+    /// read it, never the family owner (docs/protocol.md, "Reporting the
+    /// assistant").
+    func reportAssistant(messageID: Int64, reason: String, note: String?) async -> Bool {
+        do {
+            _ = try await api.createAssistantReport(
+                messageID: messageID, reason: reason, note: note)
             return true
         } catch {
             return false
@@ -3408,6 +4062,30 @@ final class ChatSyncCoordinator {
     func storedUnreadTotal() -> Int {
         let chats = (try? modelContext.fetch(FetchDescriptor<ChatEntity>())) ?? []
         return UnreadBadge.total(unreadCounts: chats.map(\.unreadCount))
+    }
+
+    /// How many messages in this chat are unread by this reader — inbound
+    /// only, and strictly above the marker.
+    ///
+    /// Inbound only because your own messages are not unread to you, and
+    /// strictly above because the marker names the last message READ rather
+    /// than the first unread. A message this device holds without a server id
+    /// is one it is still sending, which is likewise not unread to its own
+    /// author.
+    ///
+    /// The mirror of Android's `MessageDao.countInboundAfter`, and it exists
+    /// for the one caller that needs a recount rather than a reset: a `read`
+    /// frame from this person's OTHER device may name a marker part-way up
+    /// the chat, where `markRead`'s "set it to zero" would be wrong.
+    private func inboundCount(chatID: Int64, after marker: Int64) -> Int {
+        let me = currentUserID
+        let descriptor = FetchDescriptor<MessageEntity>(
+            predicate: #Predicate { message in
+                message.chatID == chatID
+                    && message.senderID != me
+                    && (message.serverID ?? 0) > marker
+            })
+        return (try? modelContext.fetchCount(descriptor)) ?? 0
     }
 
     /// Push the total unread onto the app icon.

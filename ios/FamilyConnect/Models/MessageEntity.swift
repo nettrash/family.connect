@@ -126,6 +126,21 @@ final class MessageEntity {
     var replyParentMessageID: Int64?
     var replyParentSenderID: Int64?
     var replyParentExcerpt: String?
+    /// The TOP of this reply's chain, as the server decided it at send time
+    /// — or, on a pending row, as this client derived it from the quoted
+    /// message it holds (docs/protocol.md, "Threads"). nil on a message
+    /// that is not a reply, and once retention has swept the root.
+    var threadRootID: Int64?
+    /// How many messages name this one as their root. 0 is "nobody has
+    /// answered" — the wire's ABSENT, stored as a number so the chip rule
+    /// is one comparison. Raised by one per reply that arrives live, and
+    /// overwritten by every server copy of this message.
+    var replyCount: Int64 = 0
+    /// The members this message names, as the wire's `mentions` array,
+    /// stored verbatim as JSON (the attachments idiom); nil when it names
+    /// nobody. Written on the pending row from what the composer resolved,
+    /// so a retry re-sends the list, and overwritten by every server copy.
+    var mentionsJSON: String?
     /// Set once the body has been edited. `editSeq` is the apply guard:
     /// a stored body is overwritten only by a body at least as new, or a
     /// history page fetched before an edit would restore the old text
@@ -347,6 +362,29 @@ final class MessageEntity {
     /// `attachmentList` runs once per message per view-body pass.
     private static let attachmentsDecoder = JSONDecoder()
     private static let attachmentsEncoder = JSONEncoder()
+    /// The mentions pair, for the same reason: `mentionList` runs on every
+    /// body pass of a bubble that names somebody.
+    private static let mentionsDecoder = JSONDecoder()
+    private static let mentionsEncoder = JSONEncoder()
+
+    /// The members this message names, in the sender's order; [] for none.
+    var mentionList: [MentionDTO] {
+        guard let mentionsJSON, !mentionsJSON.isEmpty,
+              let list = try? Self.mentionsDecoder.decode([MentionDTO].self, from: Data(mentionsJSON.utf8))
+        else { return [] }
+        return list
+    }
+
+    /// Overwrite the list with a server copy's — nil, and so absent, when
+    /// the message names nobody.
+    func setMentions(_ list: [MentionDTO]) {
+        mentionsJSON = list.isEmpty ? nil : Self.encodeMentions(list)
+    }
+
+    private static func encodeMentions(_ list: [MentionDTO]) -> String? {
+        guard !list.isEmpty, let data = try? mentionsEncoder.encode(list) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
 
     init(
         localID: String,
@@ -364,6 +402,8 @@ final class MessageEntity {
         replyToMessageID: Int64? = nil,
         replySenderID: Int64? = nil,
         replyExcerpt: String? = nil,
+        threadRootID: Int64? = nil,
+        mentions: [MentionDTO]? = nil,
         editSeq: Int64 = 0,
         editedAt: Date? = nil,
         attachment: AttachmentDTO? = nil,
@@ -390,6 +430,8 @@ final class MessageEntity {
         self.replyToMessageID = replyToMessageID
         self.replySenderID = replySenderID
         self.replyExcerpt = replyExcerpt
+        self.threadRootID = threadRootID
+        self.mentionsJSON = mentions.flatMap(Self.encodeMentions)
         self.editSeq = editSeq
         self.editedAt = editedAt
         self.attachmentID = attachment?.id

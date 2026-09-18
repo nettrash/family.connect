@@ -1422,3 +1422,232 @@ async fn editing_a_poll_changes_its_question_and_leaves_the_options_alone() {
     let entry = chat_entry(&ts, &member, chat_id).await;
     assert_eq!(entry["max_poll_seq"].as_i64(), Some(vote_seq));
 }
+
+// ---------------------------------------------------------------------------
+// Finding the open ones (protocol.md, "Finding the open ones")
+//
+// The surface's read: `GET /chats/{id}/polls/open`. What is pinned here is
+// what the endpoint deliberately is NOT — not a cursor, not ordered by
+// `poll_seq`, not filtered per caller — because each of those is a thing the
+// obvious implementation would have got wrong.
+
+/// The bodies of the open polls, in the order the endpoint returned them.
+async fn open_polls(ts: &TestServer, token: &str, chat_id: i64) -> Vec<String> {
+    let response = ts.get(token, &format!("/chats/{chat_id}/polls/open")).await;
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.expect("JSON");
+    body["messages"]
+        .as_array()
+        .expect("messages array")
+        .iter()
+        .map(|m| m["body"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_open_polls_come_back_as_whole_messages() {
+    let ts = spawn_server().await;
+    let (owner, owner_id, _member, _, chat_id) = family_of_two(&ts).await;
+    let (message_id, _, _) = a_poll(&ts, &owner, chat_id).await;
+
+    let response = ts
+        .get(&owner, &format!("/chats/{chat_id}/polls/open"))
+        .await;
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.expect("JSON");
+    let messages = body["messages"].as_array().expect("messages array");
+    assert_eq!(messages.len(), 1);
+
+    let message = &messages[0];
+    // The whole message, not a bare poll: the question IS the body, and a
+    // client that got only the poll would draw buttons under nothing.
+    assert_eq!(message["id"].as_i64(), Some(message_id));
+    assert_eq!(message["body"], json!("Pizza or pasta?"));
+    assert_eq!(message["sender_id"].as_i64(), Some(owner_id));
+    assert!(message["created_at"].is_string(), "{message}");
+
+    // …with the poll hydrated inside it, exactly as every other message
+    // shape carries one.
+    let (_, closed, options) = read_poll(&message["poll"]);
+    assert!(!closed);
+    assert_eq!(options.len(), 2);
+    assert_eq!(options[0].1, "Pizza");
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_closed_poll_is_not_open() {
+    let ts = spawn_server().await;
+    let (owner, _, _member, _, chat_id) = family_of_two(&ts).await;
+    let (open_id, _, _) = a_poll(&ts, &owner, chat_id).await;
+    let response = post_poll(
+        &ts,
+        &owner,
+        chat_id,
+        "Beach or mountains?",
+        json!(["Beach", "Mountains"]),
+    )
+    .await;
+    assert_eq!(response.status(), 201);
+    let body: Value = response.json().await.expect("JSON");
+    let closed_id = body["message"]["id"].as_i64().expect("id");
+
+    assert_eq!(open_polls(&ts, &owner, chat_id).await.len(), 2);
+
+    let response = ts
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages/{closed_id}/poll/close"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(response.status(), 200);
+
+    // A closed poll is a RESULT, and a result belongs in the scroll where it
+    // happened rather than on a list of things still to decide.
+    let bodies = open_polls(&ts, &owner, chat_id).await;
+    assert_eq!(bodies, vec!["Pizza or pasta?".to_string()]);
+    let _ = open_id;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn ordinary_messages_are_not_polls() {
+    let ts = spawn_server().await;
+    let (owner, _, _member, _, chat_id) = family_of_two(&ts).await;
+    let response = ts
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({"client_msg_id": Uuid::new_v4().to_string(), "body": "just talking"}),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+
+    assert!(open_polls(&ts, &owner, chat_id).await.is_empty());
+}
+
+/// The one that the obvious implementation gets wrong. `poll_seq` is the
+/// sequence of the last CHANGE, so a list ordered by it reshuffles under a
+/// reader every time anybody votes — which is the single thing a list of
+/// things still to decide must not do.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn voting_does_not_reorder_the_list() {
+    let ts = spawn_server().await;
+    let (owner, _, member, _, chat_id) = family_of_two(&ts).await;
+    let (first_id, _, first_options) = a_poll(&ts, &owner, chat_id).await;
+    let response = post_poll(
+        &ts,
+        &owner,
+        chat_id,
+        "Beach or mountains?",
+        json!(["Beach", "Mountains"]),
+    )
+    .await;
+    assert_eq!(response.status(), 201);
+
+    let before = open_polls(&ts, &member, chat_id).await;
+    assert_eq!(
+        before,
+        vec![
+            "Pizza or pasta?".to_string(),
+            "Beach or mountains?".to_string()
+        ],
+        "oldest first, by message id"
+    );
+
+    // A vote on the OLDER poll takes the newest poll_seq in the chat.
+    let response = vote(&ts, &member, chat_id, first_id, first_options[0]).await;
+    assert_eq!(response.status(), 200);
+
+    assert_eq!(
+        open_polls(&ts, &member, chat_id).await,
+        before,
+        "the order moved when somebody voted — it is creation order, not poll_seq"
+    );
+}
+
+/// Every member sees the same list. "Which of these have I not voted in" is
+/// the client's to derive from the `votes` lists, exactly as "did I vote" is
+/// — a value that depends on who is reading cannot ride on a frame
+/// serialised once for everybody.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_list_is_not_projected_per_caller() {
+    let ts = spawn_server().await;
+    let (owner, _, member, member_id, chat_id) = family_of_two(&ts).await;
+    let (message_id, _, options) = a_poll(&ts, &owner, chat_id).await;
+    let response = vote(&ts, &member, chat_id, message_id, options[0]).await;
+    assert_eq!(response.status(), 200);
+
+    // The voter still sees it — it is still open, and it is still a decision
+    // the family has not finished.
+    assert_eq!(open_polls(&ts, &member, chat_id).await.len(), 1);
+    assert_eq!(open_polls(&ts, &owner, chat_id).await.len(), 1);
+
+    // And the votes ride along, which is what lets a client work out for
+    // itself which ones it has not answered.
+    let response = ts
+        .get(&member, &format!("/chats/{chat_id}/polls/open"))
+        .await;
+    let body: Value = response.json().await.expect("JSON");
+    let (_, _, options) = read_poll(&body["messages"][0]["poll"]);
+    assert_eq!(options[0].2, vec![member_id]);
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_chat_that_holds_no_polls_answers_an_empty_list() {
+    let ts = server_with_assistant().await;
+    let (owner, _, _member, _, _chat_id) = family_of_two(&ts).await;
+    // The assistant's own chat can never hold a poll (`invalid_poll`), and
+    // asking it is not an error — there is nothing wrong with asking.
+    let chats: Value = ts.get(&owner, "/chats").await.json().await.expect("JSON");
+    let ai_chat_id = chats["chats"]
+        .as_array()
+        .expect("chats")
+        .iter()
+        .find(|entry| entry["chat"]["kind"] == "ai")
+        .and_then(|entry| entry["chat"]["id"].as_i64())
+        .expect("the assistant's chat");
+
+    assert!(open_polls(&ts, &owner, ai_chat_id).await.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_stranger_cannot_read_a_chats_open_polls() {
+    let ts = spawn_server().await;
+    let (owner, _, _member, _, chat_id) = family_of_two(&ts).await;
+    a_poll(&ts, &owner, chat_id).await;
+    let (stranger, _) = ts.register("stranger", "Stranger").await;
+
+    // 403 and not 404: the chat EXISTS, and this caller is simply not in it.
+    // The same two answers `ensure_chat_access` gives every other poll route.
+    assert_error(
+        ts.get(&stranger, &format!("/chats/{chat_id}/polls/open"))
+            .await,
+        403,
+        "not_chat_member",
+    )
+    .await;
+}
+
+/// It is a plain read with a `limit` and no cursor — and a bad `limit` is
+/// refused rather than silently ignored, like every other paged read here.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_limit_is_validated() {
+    let ts = spawn_server().await;
+    let (owner, _, _member, _, chat_id) = family_of_two(&ts).await;
+
+    assert_error(
+        ts.get(&owner, &format!("/chats/{chat_id}/polls/open?limit=nope"))
+            .await,
+        400,
+        "invalid_pagination",
+    )
+    .await;
+}

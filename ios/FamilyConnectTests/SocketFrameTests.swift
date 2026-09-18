@@ -32,7 +32,8 @@ struct SocketFrameTests {
             body: "Dinner at 7?",
             replyToMessageID: nil,
             attachmentIDs: nil,
-            pollOptions: nil))
+            pollOptions: nil,
+            mentions: nil))
         #expect(json["type"] as? String == "send")
         #expect(json["chat_id"] as? Int == 42)
         #expect(json["client_msg_id"] as? String == "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01")
@@ -51,7 +52,8 @@ struct SocketFrameTests {
             body: "Six works",
             replyToMessageID: 1337,
             attachmentIDs: nil,
-            pollOptions: nil))
+            pollOptions: nil,
+            mentions: nil))
         #expect(json["type"] as? String == "send")
         #expect(json["reply_to_message_id"] as? Int == 1337)
         #expect(json["body"] as? String == "Six works")
@@ -66,7 +68,8 @@ struct SocketFrameTests {
             body: "",
             replyToMessageID: nil,
             attachmentIDs: [34],
-            pollOptions: nil))
+            pollOptions: nil,
+            mentions: nil))
         #expect(json["type"] as? String == "send")
         // The ARRAY spelling, even for one: the legacy `attachment_id`
         // is a one-element alias this client no longer sends.
@@ -88,7 +91,8 @@ struct SocketFrameTests {
             body: "",
             replyToMessageID: nil,
             attachmentIDs: [34, 35, 36],
-            pollOptions: nil))
+            pollOptions: nil,
+            mentions: nil))
         #expect(json["type"] as? String == "send")
         #expect(json["chat_id"] as? Int == 42)
         #expect(json["body"] as? String == "")
@@ -108,7 +112,8 @@ struct SocketFrameTests {
             body: "Pizza or pasta?",
             replyToMessageID: nil,
             attachmentIDs: nil,
-            pollOptions: ["Pizza", "Pasta"]))
+            pollOptions: ["Pizza", "Pasta"],
+            mentions: nil))
         #expect(json["type"] as? String == "send")
         // The QUESTION is the body — there is no question field, which is
         // the whole reason a poll costs no new case anywhere else.

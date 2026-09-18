@@ -12,6 +12,14 @@ fn uuid() -> String {
     Uuid::new_v4().to_string()
 }
 
+/// Bytes the server will take as a JPEG: the magic it sniffs, then padding.
+/// Small on purpose — the test config caps an attachment at 64 KB.
+fn jpeg_bytes(len: usize) -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0];
+    bytes.resize(len.max(4), 0);
+    bytes
+}
+
 /// A family of three: owner, and two members.
 async fn family_of_three(ts: &common::TestServer) -> (String, String, i64, String, i64) {
     let (owner, owner_id) = ts.register("owner", "Olive").await;
@@ -80,8 +88,12 @@ async fn a_member_reports_another_and_the_owner_resolves_it() {
         "resolved reports leave the list: {listed}"
     );
 
-    // Resolving twice is `report_not_pending`, the same answer an unknown
-    // id gets.
+    // Resolving twice is 204, not an error: a double tap, an owner resolving
+    // from a SECOND DEVICE, and a retry after a timeout that actually worked
+    // are the same request twice, and none of them is an error
+    // (docs/protocol.md, `POST /families/reports/{id}/resolve`). An unknown
+    // id is still `report_not_pending`, because that is the one answer for
+    // everything outside this owner's own inbox.
     let again = ts
         .post(
             &owner,
@@ -89,7 +101,17 @@ async fn a_member_reports_another_and_the_owner_resolves_it() {
             json!({}),
         )
         .await;
-    assert_error(again, 409, "report_not_pending").await;
+    assert_eq!(again.status(), 204, "resolving twice is idempotent");
+    let after: Value = ts
+        .get(&owner, "/families/reports")
+        .await
+        .json()
+        .await
+        .expect("reports");
+    assert!(
+        after["reports"].as_array().expect("array").is_empty(),
+        "and it is still off the list, exactly once: {after}"
+    );
     let unknown = ts
         .post(&owner, "/families/reports/999999/resolve", json!({}))
         .await;
@@ -151,6 +173,149 @@ async fn a_message_report_freezes_the_body_against_a_later_edit() {
     assert_eq!(
         listed["reports"][0]["message_excerpt"], "something regrettable",
         "the excerpt is frozen at the moment the report was raised: {listed}"
+    );
+}
+
+/// WHAT A REPORTED PHOTO SAYS. A photo sent without a caption has an EMPTY
+/// body by design, and "inappropriate" is very often exactly that message — so
+/// without `message_attachments` the owner's inbox is a reason word and two
+/// names, which is the screen a reviewer probing moderation walks into
+/// (docs/protocol.md, "Reporting a member").
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_reported_photo_says_what_it_was_even_with_no_caption() {
+    let ts = spawn_server().await;
+    let (owner, reporter, _reporter_id, other, other_id) = family_of_three(&ts).await;
+    let chat_id = ts.family_chat_id(&other).await;
+
+    // A photo, sent with no words at all.
+    let uploaded: Value = ts
+        .put_bytes_method(
+            "POST",
+            &other,
+            "/attachments?kind=photo",
+            "image/jpeg",
+            jpeg_bytes(64),
+        )
+        .await
+        .json()
+        .await
+        .expect("attachment");
+    let photo_id = uploaded["attachment"]["id"].as_i64().expect("id");
+    let posted: Value = ts
+        .post(
+            &other,
+            &format!("/chats/{chat_id}/messages"),
+            json!({"client_msg_id": uuid(), "body": "", "attachment_ids": [photo_id]}),
+        )
+        .await
+        .json()
+        .await
+        .expect("message");
+    let message_id = posted["message"]["id"].as_i64().expect("id");
+
+    let filed: Value = ts
+        .post(
+            &reporter,
+            "/families/reports",
+            json!({
+                "reported_user_id": other_id,
+                "reason": "inappropriate",
+                "message_id": message_id
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("report");
+    let carried = &filed["report"]["message_attachments"][0];
+    assert_eq!(filed["report"]["message_excerpt"], "");
+    assert_eq!(carried["kind"], "photo");
+    assert!(
+        carried["name"].is_null(),
+        "a photo has no name, and the key is present as null: {filed}"
+    );
+    // TRIMMED AS A CHAT-LIST PREVIEW IS — kind and name, nothing else. A
+    // moderator needs to know that a place was sent, never where the sender
+    // was standing.
+    assert!(
+        carried.get("id").is_none()
+            && carried.get("size").is_none()
+            && carried.get("width").is_none()
+            && carried.get("latitude").is_none(),
+        "only kind and name travel: {filed}"
+    );
+
+    // The owner's own screen — the one that matters — carries it too.
+    let listed: Value = ts
+        .get(&owner, "/families/reports")
+        .await
+        .json()
+        .await
+        .expect("reports");
+    assert_eq!(
+        listed["reports"][0]["message_attachments"][0]["kind"], "photo",
+        "the inbox says what was reported: {listed}"
+    );
+
+    // A FILE says its NAME, which is what a client falls back on.
+    let file: Value = ts
+        .put_bytes_method(
+            "POST",
+            &other,
+            "/attachments?kind=file&name=budget.pdf",
+            "application/pdf",
+            jpeg_bytes(64),
+        )
+        .await
+        .json()
+        .await
+        .expect("attachment");
+    let file_id = file["attachment"]["id"].as_i64().expect("id");
+    let with_file: Value = ts
+        .post(
+            &other,
+            &format!("/chats/{chat_id}/messages"),
+            json!({"client_msg_id": uuid(), "body": "", "attachment_ids": [file_id]}),
+        )
+        .await
+        .json()
+        .await
+        .expect("message");
+    let file_message = with_file["message"]["id"].as_i64().expect("id");
+    let reported_file: Value = ts
+        .post(
+            &reporter,
+            "/families/reports",
+            json!({
+                "reported_user_id": other_id,
+                "reason": "spam",
+                "message_id": file_message
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("report");
+    assert_eq!(
+        reported_file["report"]["message_attachments"][0]["name"], "budget.pdf",
+        "a file's name is its whole identity: {reported_file}"
+    );
+
+    // And a report that names a PERSON carries no attachment key at all.
+    let person: Value = ts
+        .post(
+            &reporter,
+            "/families/reports",
+            json!({"reported_user_id": other_id, "reason": "other"}),
+        )
+        .await
+        .json()
+        .await
+        .expect("report");
+    assert!(
+        person["report"].get("message_attachments").is_none(),
+        "no message, no attachments key: {person}"
     );
 }
 

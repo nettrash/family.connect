@@ -13,6 +13,7 @@ package me.nettrash.familyconnect.data.net.ws
 import com.google.common.truth.Truth.assertThat
 import me.nettrash.familyconnect.data.net.dto.CallDto
 import me.nettrash.familyconnect.data.net.dto.IceCandidateDto
+import me.nettrash.familyconnect.data.net.dto.MentionDto
 import kotlinx.serialization.json.Json
 import org.junit.Test
 
@@ -51,6 +52,20 @@ class WsFrameSerdeTest {
                 body = "Dinner at 7?",
             ),
             """{"type": "send", "chat_id": 42, "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01", "body": "Dinner at 7?"}""",
+        )
+    }
+
+    /** protocol.md's `send` example naming a member: the list rides the frame. */
+    @Test
+    fun sendFrameCarriesMentions() {
+        assertEncodesTo(
+            ClientFrame.Send(
+                chatId = 42,
+                clientMsgId = "e7a1d9c3-0000-4000-8000-000000000001",
+                body = "@Anna are you in?",
+                mentions = listOf(MentionDto(userId = 9, name = "Anna")),
+            ),
+            """{"type": "send", "chat_id": 42, "client_msg_id": "e7a1d9c3-0000-4000-8000-000000000001", "body": "@Anna are you in?", "mentions": [{"user_id": 9, "name": "Anna"}]}""",
         )
     }
 

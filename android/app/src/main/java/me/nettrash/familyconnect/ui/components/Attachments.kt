@@ -143,6 +143,28 @@ val LocalAttachments = staticCompositionLocalOf<AttachmentRepository?> { null }
  * the key after a bounded re-check and the bubble keeps its play badge;
  * see [AttachmentRepository.load].
  */
+/**
+ * The one image a TILE should draw, and the one request it should make.
+ *
+ * A bubble's thumbnail wants the small copy when there is one and the original when there is not
+ * — and that is decided by the ATTACHMENT, never by whether the preview happens to be downloaded
+ * yet. `preview = true ?: preview = false` reads like the same thing and is not: while a preview
+ * is merely PENDING the left side is null, so the fallback fires and the client downloads the
+ * ORIGINAL as well — megabytes over somebody's phone connection, for a thumbnail — and then
+ * cancels it mid-flight when the preview lands and the second call leaves the composition.
+ *
+ * `has_preview` is a fact rather than a hint: the server makes no preview for a picture the
+ * ASSISTANT drew, and none at all for a file, audio or a location (docs/protocol.md, "Photos,
+ * videos, audio, files and locations"). A VIDEO is the other way round — its poster is the only
+ * image it has, and [rememberAttachmentImage] answers null for `preview = false` on one.
+ *
+ * The same rule the board keeps (BoardScreen's NotePicture) and the Windows client keeps in one
+ * place (AttachmentCache); issue #71's follow-up is what it is for.
+ */
+@Composable
+fun rememberTileImage(attachment: AttachmentDto): ImageBitmap? =
+    rememberAttachmentImage(attachment, preview = attachment.isVideo || attachment.hasPreview)
+
 @Composable
 fun rememberAttachmentImage(attachment: AttachmentDto, preview: Boolean): ImageBitmap? {
     val attachments = LocalAttachments.current ?: return null
@@ -339,8 +361,7 @@ private fun AlbumCard(
     modifier: Modifier = Modifier,
     overlay: @Composable BoxScope.() -> Unit = {},
 ) {
-    val image = rememberAttachmentImage(attachment, preview = true)
-        ?: rememberAttachmentImage(attachment, preview = false)
+    val image = rememberTileImage(attachment)
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -776,8 +797,7 @@ private fun MediaThumbnail(
     /** False when this tile IS the message — see [AttachmentGroup]. */
     onBalloon: Boolean = true,
 ) {
-    val image = rememberAttachmentImage(attachment, preview = true)
-        ?: rememberAttachmentImage(attachment, preview = false)
+    val image = rememberTileImage(attachment)
     // Resolved out here: a semantics block is not a composable context.
     val mediaDescription = stringResource(
         if (attachment.isVideo) R.string.s_video else R.string.s_photo)

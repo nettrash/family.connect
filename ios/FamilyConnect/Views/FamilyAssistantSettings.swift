@@ -109,6 +109,44 @@ struct FamilyAssistantSettings: View {
             footer(historyPhotosExplanation)
         }
 
+        // The FIFTH switch, and the fourth about what leaves: the profile
+        // pictures of the members named in the transcript (protocol.md,
+        // "Profile pictures of members"). Under the SAME two locks as
+        // "Recent photos" — a server that can see, and `ai_vision` on — and
+        // drawn with the same withheld-with-the-reason rule, so the two
+        // disclosure switches cannot disagree about when they are offered.
+        Section {
+            Toggle("Member faces", isOn: facesBinding)
+                .disabled(isSaving || !historyPhotosSwitch.isEnabled)
+            caption(facesExplanation)
+        } footer: {
+            footer(facesExplanation)
+        }
+
+        // The FOURTH switch, and the only one on this screen that is not
+        // about what leaves the server. It decides whether the assistant
+        // SPEAKS without being asked (protocol.md, "The daily greeting"),
+        // which is why it stands in its own section rather than under
+        // "Pictures" — and why nothing above gates it.
+        //
+        // PRESENT even on a server that posts no greetings, disabled with
+        // the reason, following "Recent photos" rather than "Can be shown
+        // photos". The two cases are genuinely different: a picture switch
+        // on a server that cannot see would promise that photographs are one
+        // tap from leaving, which is a frightening thing to say untruthfully.
+        // This one promises only a message, and an owner who has turned it on
+        // and seen nothing all week is owed the reason — which is their
+        // operator's to change, and which they can now go and ask for.
+        Section {
+            Toggle("Good morning message", isOn: greetingBinding)
+                .disabled(isSaving || !AppSettings.greetingsEnabled)
+            caption(greetingExplanation)
+        } header: {
+            Text("Daily greeting")
+        } footer: {
+            footer(greetingExplanation)
+        }
+
         // Inline rather than in a footer: a refusal has to be visible on
         // both platforms, and only one of them draws footers on this
         // screen. Its own section now that there are four switches above
@@ -199,6 +237,46 @@ struct FamilyAssistantSettings: View {
         return text
     }
 
+    /// What it does, what it will NOT do, and — when the server posts none —
+    /// why nothing has arrived.
+    ///
+    /// Three promises are made explicitly because each is a thing a family
+    /// would otherwise have to discover: it is silent (no device is woken —
+    /// the server has no timezone and cannot know whose night its hour is),
+    /// it names nobody (only the star signs travel, never a name, a birth
+    /// date or the roster), and it invents no facts about the date. The last
+    /// is worth saying to the family and not only to the model: a message
+    /// that appears every morning unattended earns its trust cheaply, and
+    /// this one is deliberately not in the business of telling them things.
+    private var greetingExplanation: String {
+        var text = String(localized: "With this on, the assistant posts one short good-morning message into the family chat each day, mentioning the star signs of the birthdays your family has set. It never sends anyone's name or birth date, only the signs; it makes no claims about the date; and it never sounds a notification — it is simply there when you next open the chat.")
+        if !AppSettings.greetingsEnabled {
+            text += " " + String(localized: "Not available here: this server doesn't post daily greetings.")
+        }
+        return text
+    }
+
+    /// What leaves, why, and whose never — the facts "Profile pictures of
+    /// members" requires every client to carry; then the reason the switch is
+    /// withheld, or that it is inert while the history switch is off. A face
+    /// is the most identifying thing a photograph can carry, so the sentence
+    /// says out loud what it is for (recognising who is who) and who is never
+    /// sent (anyone who has left, anyone outside the family).
+    private var facesExplanation: String {
+        var text = String(localized: "With this on, whenever anyone mentions \(AssistantMention.token) in the family chat, the profile pictures of the members named in that chat's recent history — up to \(AssistantPictureLimits.maxPerQuestion) — also go to the model your server is set up to use, so it can tell who is who. They are the pictures members chose for themselves, not photos anyone attached; never a member who has left, and never anyone outside this family. Most mentions then send pictures, which costs more. It is off unless you turn it on; with it off, no face is ever sent.")
+        switch historyPhotosSwitch {
+        case .offered:
+            if !family.aiHistory {
+                text += " " + String(localized: "While Sees recent history is off this does nothing: no names are sent, so no faces are either.")
+            }
+        case .withheldNoVisionDeployment:
+            text += " " + String(localized: "Not available here: the assistant on this server can't look at pictures.")
+        case .withheldVisionOff:
+            text += " " + String(localized: "Turn on Can be shown photos first — the server refuses this while that is off.")
+        }
+        return text
+    }
+
     /// The Mac's spelling of an explanation — a caption inside the section.
     @ViewBuilder
     private func caption(_ text: String) -> some View {
@@ -260,6 +338,24 @@ struct FamilyAssistantSettings: View {
             })
     }
 
+    private var greetingBinding: Binding<Bool> {
+        Binding(
+            get: { family.aiGreeting },
+            set: { enabled in
+                guard enabled != family.aiGreeting else { return }
+                save { try await coordinator.api.setAIGreeting(enabled) }
+            })
+    }
+
+    private var facesBinding: Binding<Bool> {
+        Binding(
+            get: { family.aiFaces },
+            set: { enabled in
+                guard enabled != family.aiFaces else { return }
+                save { try await coordinator.api.setAIFaces(enabled) }
+            })
+    }
+
     private func save(_ work: @escaping () async throws -> FamilyDTO) {
         isSaving = true
         errorText = nil
@@ -286,6 +382,13 @@ struct FamilyAssistantSettings: View {
                     // Likewise — and this one may have gone off without
                     // being asked, when `aiVision` did.
                     aiHistoryPhotos: updated.aiHistoryPhotos,
+                    // And the fourth, which cannot have moved on its own —
+                    // but is carried for the same reason as the rest: what
+                    // the server answered with is what this family now is.
+                    aiGreeting: updated.aiGreeting,
+                    // And the fifth — which, like the third, may have gone
+                    // off without being asked, when `aiVision` did.
+                    aiFaces: updated.aiFaces,
                     maxMembers: updated.maxMembers))
             } catch APIError.forbidden {
                 errorText = String(localized: "Only the family owner can change this.")

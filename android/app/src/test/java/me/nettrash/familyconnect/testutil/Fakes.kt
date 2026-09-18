@@ -36,12 +36,16 @@ import me.nettrash.familyconnect.data.net.dto.ChatResponse
 import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.net.dto.DeviceResponse
 import me.nettrash.familyconnect.data.net.dto.MessagePollStateDto
+import me.nettrash.familyconnect.data.net.dto.MentionDto
+import me.nettrash.familyconnect.data.net.dto.TaskItemDto
+import me.nettrash.familyconnect.data.net.dto.TaskLineRequest
 import me.nettrash.familyconnect.data.net.dto.NewPollDto
 import me.nettrash.familyconnect.data.net.dto.PollDto
 import me.nettrash.familyconnect.data.net.dto.PollOptionDto
 import me.nettrash.familyconnect.data.net.dto.PollsCatchUpResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyResponse
+import me.nettrash.familyconnect.data.net.dto.AssistantReportResponse
 import me.nettrash.familyconnect.data.net.dto.ReportResponse
 import me.nettrash.familyconnect.data.net.dto.ReportsResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyStatsDto
@@ -60,6 +64,7 @@ import me.nettrash.familyconnect.data.net.dto.BoardChangesResponse
 import me.nettrash.familyconnect.data.net.dto.BoardResponse
 import me.nettrash.familyconnect.data.net.dto.CreateNoteRequest
 import me.nettrash.familyconnect.data.net.dto.NoteDto
+import me.nettrash.familyconnect.data.net.dto.RsvpDto
 import me.nettrash.familyconnect.data.net.dto.NoteResponse
 import me.nettrash.familyconnect.data.net.dto.PatchNoteRequest
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
@@ -211,6 +216,14 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
 
     override suspend fun setFamilyAiHistoryPhotos(enabled: Boolean) {
         _state.value = _state.value.copy(familyAiHistoryPhotos = enabled)
+    }
+
+    override suspend fun setFamilyAiGreeting(enabled: Boolean) {
+        _state.value = _state.value.copy(familyAiGreeting = enabled)
+    }
+
+    override suspend fun setGreetingsEnabled(enabled: Boolean) {
+        _state.value = _state.value.copy(greetingsEnabled = enabled)
     }
 
     override suspend fun setCallsEnabled(enabled: Boolean) {
@@ -476,6 +489,9 @@ class FakeChatApi : ChatApi {
     /** Every poll a REST send carried, in order (null for an ordinary message). */
     val postedPolls = mutableListOf<NewPollDto?>()
 
+    /** Every mention list a REST send carried, in order (null = names nobody). */
+    val postedMentions = mutableListOf<List<MentionDto>?>()
+
     override suspend fun postMessage(
         chatId: Long,
         clientMsgId: String,
@@ -483,11 +499,13 @@ class FakeChatApi : ChatApi {
         replyToMessageId: Long?,
         attachmentIds: List<Long>?,
         poll: NewPollDto?,
+        mentions: List<MentionDto>?,
     ): ApiResult<MessageResponse> {
         postedMessages += Triple(chatId, clientMsgId, body)
         postedReplyTargets += replyToMessageId
         postedAttachmentIds += attachmentIds
         postedPolls += poll
+        postedMentions += mentions
         return postMessageHandler(chatId, clientMsgId, body)
     }
 
@@ -592,6 +610,34 @@ class FakeChatApi : ChatApi {
         pollsCalls += 1
         return pollsHandler(chatId, afterSeq, limit)
     }
+
+    /** What `GET /chats/{id}/polls/open` answers; the open-polls screen's read. */
+    var openPollsResult: ApiResult<MessagesResponse> = ApiResult.Ok(MessagesResponse(emptyList()))
+
+    /** Every open-polls read, in order, so a test can assert it re-reads. */
+    val openPollsCalls = mutableListOf<Long>()
+
+    override suspend fun getOpenPolls(chatId: Long, limit: Int): ApiResult<MessagesResponse> {
+        openPollsCalls += chatId
+        return openPollsResult
+    }
+
+    /** What `GET /chats/{id}/messages/{mid}/thread` answers, per (messageId, afterId, limit). */
+    var threadHandler: (messageId: Long, afterId: Long?, limit: Int) -> ApiResult<MessagesResponse> =
+        { _, _, _ -> ApiResult.Ok(MessagesResponse(emptyList())) }
+
+    /** Every thread read, in order: (messageId, afterId). */
+    val threadCalls = mutableListOf<Pair<Long, Long?>>()
+
+    override suspend fun getThread(
+        chatId: Long,
+        messageId: Long,
+        afterId: Long?,
+        limit: Int,
+    ): ApiResult<MessagesResponse> {
+        threadCalls += messageId to afterId
+        return threadHandler(messageId, afterId, limit)
+    }
 }
 
 class FakeFamilyApi : FamilyApi {
@@ -650,6 +696,22 @@ class FakeFamilyApi : FamilyApi {
         aiHistoryPhotosSet += enabled
         return createResult
     }
+
+    /** Every ai_greeting PATCH, in order. */
+    val aiGreetingSet = mutableListOf<Boolean>()
+
+    override suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse> {
+        aiGreetingSet += enabled
+        return createResult
+    }
+
+    /** Every ai_faces PATCH, in order. */
+    val aiFacesSet = mutableListOf<Boolean>()
+
+    override suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> {
+        aiFacesSet += enabled
+        return createResult
+    }
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> = joinRequestsResult
 
     var approveResult: ApiResult<ApproveResponse> =
@@ -705,6 +767,20 @@ class FakeFamilyApi : FamilyApi {
         reportsRaised += Triple(reportedUserId, reason, messageId)
         return reportResult
             ?: ApiResult.NetworkError(IllegalStateException("unscripted report"))
+    }
+
+    /** What was reported about the ASSISTANT: message id, reason, note. */
+    val assistantReportsRaised = mutableListOf<Triple<Long, String, String?>>()
+    var assistantReportResult: ApiResult<AssistantReportResponse>? = null
+
+    override suspend fun reportAssistant(
+        messageId: Long,
+        reason: String,
+        note: String?,
+    ): ApiResult<AssistantReportResponse> {
+        assistantReportsRaised += Triple(messageId, reason, note)
+        return assistantReportResult
+            ?: ApiResult.NetworkError(IllegalStateException("unscripted assistant report"))
     }
 
     override suspend fun reports(): ApiResult<ReportsResponse> = reportsResult
@@ -804,6 +880,10 @@ class FakeBoardApi : BoardApi {
 
     var createResult: ((NoteDto) -> ApiResult<NoteResponse>)? = null
     var nextSeq = 1L
+    /** The ids this fake hands out for new task lines, as a server does. */
+    var nextItemId = 100L
+    /** Every tick, as (note, item, state). */
+    val ticked = mutableListOf<Triple<Long, Long, Boolean>>()
 
     override suspend fun getBoard(): ApiResult<BoardResponse> = ApiResult.Ok(board)
 
@@ -819,11 +899,50 @@ class FakeBoardApi : BoardApi {
         text: String,
         color: String,
         size: String,
+        font: String,
         x: Double,
         y: Double,
+        attachmentId: Long?,
+        startsAt: String?,
+        endsAt: String?,
+        place: String?,
+        mentions: List<MentionDto>,
+        items: List<TaskLineRequest>?,
     ): ApiResult<NoteResponse> {
-        created += CreateNoteRequest(text, color, size, x, y)
-        val note = noteDto(id = nextSeq, text = text, color = color, size = size, x = x, y = y, boardSeq = nextSeq)
+        val kind = when {
+            startsAt != null -> "event"
+            attachmentId != null -> "photo"
+            items != null -> "tasks"
+            else -> null
+        }
+        created += CreateNoteRequest(
+            text, color, size, x, y, font,
+            kind = kind,
+            attachmentId = attachmentId,
+            startsAt = startsAt,
+            endsAt = endsAt,
+            place = place,
+            // Absent when nobody is named, as the wire has it: the
+            // client sends names only when there are some.
+            mentions = mentions.takeIf { it.isNotEmpty() },
+            // An empty list IS a list, so it is not dropped here.
+            items = items,
+        )
+        val note = noteDto(
+            id = nextSeq, text = text, color = color, size = size, font = font,
+            x = x, y = y, boardSeq = nextSeq,
+            kind = kind,
+            attachment = attachmentId?.let { FakeAttachmentApi.attachment(id = it) },
+            startsAt = startsAt,
+            endsAt = endsAt,
+            place = place,
+            rsvps = if (kind == "event") emptyList() else null,
+            mentions = mentions.takeIf { it.isNotEmpty() },
+            // The ids are the SERVER's, which this fake plays too.
+            items = items?.map { line ->
+                TaskItemDto(id = line.id ?: (nextItemId++), text = line.text)
+            },
+        )
         nextSeq++
         return createResult?.invoke(note) ?: ApiResult.Ok(NoteResponse(note))
     }
@@ -833,10 +952,15 @@ class FakeBoardApi : BoardApi {
         text: String?,
         color: String?,
         size: String?,
+        font: String?,
         x: Double?,
         y: Double?,
+        mentions: List<MentionDto>?,
+        items: List<TaskLineRequest>?,
     ): ApiResult<NoteResponse> {
-        patched += id to PatchNoteRequest(text, color, size, x, y)
+        patched += id to PatchNoteRequest(
+            text, color, size, x, y, font, mentions = mentions, items = items,
+        )
         val note = noteDto(
             id = id,
             text = text ?: "note $id",
@@ -845,8 +969,67 @@ class FakeBoardApi : BoardApi {
             x = x ?: 0.0,
             y = y ?: 0.0,
             boardSeq = nextSeq++,
+            mentions = mentions,
+            items = items?.map { line ->
+                TaskItemDto(id = line.id ?: (nextItemId++), text = line.text)
+            },
         )
         return ApiResult.Ok(NoteResponse(note))
+    }
+
+    /** Every answer this fake was asked to record, in order (null = retract). */
+    val answers = mutableListOf<Pair<Long, String?>>()
+
+    override suspend fun answerNote(id: Long, answer: String?): ApiResult<NoteResponse> {
+        answers += id to answer
+        nextSeq++
+        return ApiResult.Ok(
+            NoteResponse(
+                noteDto(
+                    id = id, boardSeq = nextSeq, kind = "event",
+                    startsAt = "2026-12-24T17:00:00Z",
+                    rsvps = answer?.let { listOf(RsvpDto(userId = 7, answer = it)) } ?: emptyList(),
+                ),
+            ),
+        )
+    }
+
+    /** Every backdrop asked for, and the picture this fake draws. */
+    val backdrops = mutableListOf<Long>()
+
+    override suspend fun drawBackdrop(noteId: Long): ApiResult<NoteResponse> {
+        backdrops += noteId
+        return ApiResult.Ok(
+            NoteResponse(
+                noteDto(
+                    id = noteId,
+                    boardSeq = nextSeq++,
+                    kind = "event",
+                    startsAt = "2026-12-24T16:00:00Z",
+                    attachment = FakeAttachmentApi.attachment(id = 900 + noteId),
+                ),
+            ),
+        )
+    }
+
+    override suspend fun tickTask(
+        noteId: Long,
+        itemId: Long,
+        done: Boolean,
+    ): ApiResult<NoteResponse> {
+        ticked += Triple(noteId, itemId, done)
+        return ApiResult.Ok(
+            NoteResponse(
+                noteDto(
+                    id = noteId,
+                    boardSeq = nextSeq++,
+                    kind = "tasks",
+                    items = listOf(
+                        TaskItemDto(id = itemId, text = "Milk", done = done, doneBy = 7L),
+                    ),
+                ),
+            ),
+        )
     }
 
     override suspend fun deleteNote(id: Long): ApiResult<Unit> {
@@ -874,6 +1057,17 @@ fun noteDto(
      */
     contentSeq: Long? = boardSeq,
     deleted: Boolean? = null,
+    font: String? = null,
+    kind: String? = null,
+    attachment: AttachmentDto? = null,
+    startsAt: String? = null,
+    endsAt: String? = null,
+    place: String? = null,
+    rsvps: List<RsvpDto>? = null,
+    /** The members the text names (docs/protocol.md, "Board"). */
+    mentions: List<MentionDto>? = null,
+    /** The things to do: `[]` on an empty list, null on any other kind. */
+    items: List<TaskItemDto>? = null,
 ) = NoteDto(
     id = id,
     authorId = if (deleted == true) null else authorId,
@@ -886,6 +1080,15 @@ fun noteDto(
     updatedAt = if (deleted == true) null else "2026-08-22T12:00:00Z",
     boardSeq = boardSeq,
     contentSeq = if (deleted == true) null else contentSeq,
+    font = if (deleted == true) null else font,
+    kind = if (deleted == true) null else kind,
+    attachment = if (deleted == true) null else attachment,
+    startsAt = if (deleted == true) null else startsAt,
+    endsAt = if (deleted == true) null else endsAt,
+    place = if (deleted == true) null else place,
+    rsvps = if (deleted == true) null else rsvps,
+    mentions = if (deleted == true) null else mentions,
+    items = if (deleted == true) null else items,
     deleted = deleted,
 )
 

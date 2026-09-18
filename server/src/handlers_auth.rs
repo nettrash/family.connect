@@ -687,14 +687,17 @@ pub async fn scrub_account(
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
-    // An upload NO message ever claimed is a half-finished action of an
+    // An upload NOTHING ever claimed is a half-finished action of an
     // account that no longer exists, and nothing else would remove it for
-    // hours. A CLAIMED one is not touched: its message is part of the
-    // shared record and keeps its picture.
-    sqlx::query("DELETE FROM attachments WHERE uploader_id = $1 AND message_id IS NULL")
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?;
+    // hours. A CLAIMED one is not touched: its message — or the board note
+    // it is pinned to, which survives the account like the message does —
+    // is part of the shared record and keeps its picture.
+    sqlx::query(
+        "DELETE FROM attachments WHERE uploader_id = $1 AND message_id IS NULL AND note_id IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
 
     // (e) The scrub itself.
     //
@@ -905,7 +908,7 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 f.id AS family_id, f.name AS family_name, f.join_policy,
                 f.created_at AS family_created_at, f.owner_user_id, f.invite_code,
                 f.language, f.max_members, f.ai_history, f.ai_vision,
-                f.ai_history_photos
+                f.ai_history_photos, f.ai_greeting, f.ai_faces
          FROM users u
          LEFT JOIN families f ON f.id = u.family_id
          WHERE u.id = $1",
@@ -944,6 +947,13 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 // And the third, which decides whether they may leave
                 // without anybody pointing the assistant at them.
                 ai_history_photos: row.get("ai_history_photos"),
+                // And the fourth, which is not about their words or pictures
+                // at all: whether the assistant greets the family each
+                // morning without being asked.
+                ai_greeting: row.get("ai_greeting"),
+                // And the fifth, which decides whether a member's own FACE
+                // may leave the server with a mention.
+                ai_faces: row.get("ai_faces"),
             };
             let role = if is_owner { "owner" } else { "member" };
             (Some(family), Some(role))
@@ -1019,6 +1029,19 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             // honest escalation path for when the family's moderator is
             // the problem (protocol.md, "Reporting a member").
             "support_contact": state.cfg.server.support_contact,
+            // Whether this server posts the assistant's daily greeting at
+            // all. ALWAYS present, for exactly `calls_enabled`'s reason: the
+            // family's own `ai_greeting` switch is one half of a two-key
+            // arrangement, and without this an owner who turned their half on
+            // and saw nothing for a week would have no way to tell a server
+            // that never posts from a switch that did not save.
+            //
+            // ANDed with the assistant's own usability, like
+            // `video_calls_enabled` is with `calls_enabled`: the greeting is
+            // written by that deployment, so a server with `[greetings]` on
+            // and no usable `[ai]` posts nothing and says so here rather than
+            // promising otherwise (protocol.md, "The daily greeting").
+            "greetings_enabled": state.cfg.greetings.is_usable() && state.cfg.ai.is_usable(),
         })),
     )
         .into_response())

@@ -13,7 +13,9 @@
 package me.nettrash.familyconnect
 
 import android.app.Application
+import androidx.hilt.work.HiltWorkerFactory
 import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.work.Configuration
 import dagger.hilt.android.HiltAndroidApp
 import me.nettrash.familyconnect.calls.CallNotifications
 import me.nettrash.familyconnect.calls.CallServiceLauncher
@@ -23,7 +25,7 @@ import me.nettrash.familyconnect.data.push.PushNotifications
 import javax.inject.Inject
 
 @HiltAndroidApp
-class FamilyConnectApp : Application() {
+class FamilyConnectApp : Application(), Configuration.Provider {
 
     // Injecting the manager here also instantiates the repository graph
     // eagerly, so the WS frame collectors (messages, roster) are live
@@ -37,6 +39,18 @@ class FamilyConnectApp : Application() {
     /** Family's calls, registered with the platform's Telecom (headsets, Wear, Auto, the call log). */
     @Inject
     lateinit var telecomCalls: TelecomCalls
+
+    /** So `MediaUploadWorker` can be given the repository graph it needs. */
+    @Inject
+    lateinit var workerFactory: HiltWorkerFactory
+
+    /**
+     * WorkManager is initialised ON DEMAND rather than by its manifest
+     * provider — the manifest disables that one — because a worker of ours
+     * is built by Hilt and the default factory cannot make one.
+     */
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder().setWorkerFactory(workerFactory).build()
 
     override fun onCreate() {
         super.onCreate()

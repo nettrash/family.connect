@@ -85,7 +85,7 @@ nonisolated enum AssistantMention {
     /// ASCII letters, digits and `_` are what a token may NOT sit against.
     /// Anything else — punctuation, whitespace, the lead or continuation
     /// byte of a multi-byte character — is a boundary.
-    private static func isBoundary(_ byte: UInt8) -> Bool {
+    static func isBoundary(_ byte: UInt8) -> Bool {
         let isDigit = byte >= 0x30 && byte <= 0x39
         let isUpper = byte >= 0x41 && byte <= 0x5A
         let isLower = byte >= 0x61 && byte <= 0x7A

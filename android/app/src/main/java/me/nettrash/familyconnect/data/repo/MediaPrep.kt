@@ -392,9 +392,28 @@ class MediaPrep @Inject constructor(
                 runCatching { retriever.release() }
             }
 
+            val mime = audioMime(uri, destination, declaredMime)
+            if (!Magic.honest(destination, mime)) {
+                // The bytes are not what this would have called them — a raw `.aac`, or anything
+                // renamed. Sent as a FILE, where the type is metadata and nothing is verified,
+                // rather than as an audio upload the server will refuse (see [Magic]). The copy
+                // already made IS the file to send, so nothing is read twice.
+                return@withContext Prepared(
+                    file = destination,
+                    mime = providerType(uri) ?: declaredMime ?: DEFAULT_FILE_MIME,
+                    kind = AttachmentDto.KIND_FILE,
+                    width = null,
+                    height = null,
+                    durationMs = null,
+                    previewJpeg = null,
+                    // A file's name is its whole identity, and `kind=file` requires one.
+                    name = name,
+                )
+            }
+
             Prepared(
                 file = destination,
-                mime = audioMime(uri, destination, declaredMime),
+                mime = mime,
                 kind = AttachmentDto.KIND_AUDIO,
                 width = null,
                 height = null,
@@ -405,6 +424,66 @@ class MediaPrep @Inject constructor(
                 name = name.takeIf { it.isNotBlank() },
             )
         }
+
+    /**
+     * The server's own magic-number check, on this side of the wire.
+     *
+     * A CLAIM ABOUT BYTES IS CHECKED BEFORE IT IS MADE. The server verifies that a declared type
+     * matches what the bytes ARE for every photo, video and audio upload and refuses the whole
+     * upload when it does not (docs/protocol.md) — so a client that types a file by its
+     * EXTENSION or by what a provider says can be wrong in a way the sender cannot act on: the
+     * send just fails, again, for that file.
+     *
+     * The one that bit here is `.aac`: a raw ADTS stream is not ISO base media, so calling it
+     * `audio/mp4` — which the extension table above does, and `audio/aac` is in
+     * [SENDABLE_AUDIO_TYPES] so the gate lets it through — is a 400 for every such file a family
+     * ever picks. The protocol says what to do with a container a client cannot honestly type:
+     * "a recording that a client cannot encode into a checkable container should be sent as
+     * `kind=file` instead, where nothing is verified."
+     *
+     * Mirrors `server/src/handlers_attachment.rs::matches_magic`, `fc_text::media::matches_magic`
+     * and Apple's `MediaPrep.Magic` table for table. The VIDEO path needs no such check: it
+     * transcodes anything outside [SENDABLE_VIDEO_TYPES] rather than relabelling it.
+     */
+    object Magic {
+        /** Enough bytes to judge any of the types below. */
+        const val HEAD = 12
+
+        fun matches(mime: String, head: ByteArray): Boolean = when (mime) {
+            "image/jpeg" -> head.startsWith(0xFF, 0xD8, 0xFF)
+            "image/png" -> head.startsWith(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
+            // HEIC/HEIF, MP4/MOV and m4a are all ISO base media: "ftyp" at offset 4, with the
+            // brand that follows telling them apart.
+            "image/heic", "image/heif", "video/mp4", "video/quicktime",
+            "audio/mp4", "audio/m4a",
+            -> head.size >= 12 && String(head, 4, 4, Charsets.US_ASCII) == "ftyp"
+            // An MP3 is either an ID3 tag or a raw frame sync (11 set bits).
+            "audio/mpeg" ->
+                head.startsWith(0x49, 0x44, 0x33) ||
+                    (head.size >= 2 && head[0] == 0xFF.toByte() && (head[1].toInt() and 0xE0) == 0xE0)
+            "audio/wav" ->
+                head.size >= 12 &&
+                    String(head, 0, 4, Charsets.US_ASCII) == "RIFF" &&
+                    String(head, 8, 4, Charsets.US_ASCII) == "WAVE"
+            "audio/ogg" -> head.startsWith(0x4F, 0x67, 0x67, 0x53)
+            else -> false
+        }
+
+        /** Whether this file may honestly be uploaded as [mime]. Unreadable counts as NO. */
+        fun honest(file: File, mime: String): Boolean {
+            val head = runCatching {
+                file.inputStream().use { input ->
+                    val buffer = ByteArray(HEAD)
+                    val read = input.read(buffer)
+                    if (read <= 0) ByteArray(0) else buffer.copyOf(read)
+                }
+            }.getOrNull() ?: return false
+            return matches(mime, head)
+        }
+
+        private fun ByteArray.startsWith(vararg bytes: Int): Boolean =
+            size >= bytes.size && bytes.withIndex().all { (at, byte) -> this[at] == byte.toByte() }
+    }
 
     /**
      * The type the SERVER will accept, which is narrower than what the

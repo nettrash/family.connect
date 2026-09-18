@@ -28,6 +28,7 @@ import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AuthApi
 import me.nettrash.familyconnect.data.net.FamilyApi
+import me.nettrash.familyconnect.data.net.dto.AssistantReportResponse
 import me.nettrash.familyconnect.data.net.dto.BirthdayDto
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyResponse
@@ -183,6 +184,18 @@ class FamilyRepository @Inject constructor(
         reason: String,
         messageId: Long?,
     ): ApiResult<ReportResponse> = familyApi.report(reportedUserId, reason, messageId)
+
+    /**
+     * Report an ASSISTANT reply. A separate path from [report]: the assistant
+     * belongs to no family, so that endpoint refuses it, and this one is read
+     * by the people who run the server rather than by the family owner
+     * (docs/protocol.md, "Reporting the assistant").
+     */
+    suspend fun reportAssistant(
+        messageId: Long,
+        reason: String,
+        note: String?,
+    ): ApiResult<AssistantReportResponse> = familyApi.reportAssistant(messageId, reason, note)
 
     suspend fun unblock(userId: Long): ApiResult<Unit> =
         familyApi.unblockMember(userId).also {
@@ -370,6 +383,27 @@ class FamilyRepository @Inject constructor(
         }
         return result
     }
+
+    /**
+     * Owner-only: the fourth switch (docs/protocol.md, "The daily
+     * greeting"). Mirrored like the three above so the owner's own device
+     * agrees with the server at once — no frame will tell it what it just
+     * did itself.
+     */
+    suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse> {
+        val result = familyApi.setAiGreeting(enabled)
+        if (result is ApiResult.Ok) {
+            settings.setFamilyAiGreeting(result.value.family.aiGreeting)
+        }
+        return result
+    }
+
+    /**
+     * Owner-only: the fifth switch (docs/protocol.md, "Profile pictures of
+     * members"). Nothing is mirrored into settings: no composer strip reads
+     * it — the protocol asks for the switch and its sentence, nothing more.
+     */
+    suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> = familyApi.setAiFaces(enabled)
 
     /**
      * My own birthday, mirrored onto my roster row.

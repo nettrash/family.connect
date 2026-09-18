@@ -10,6 +10,8 @@
 
 package me.nettrash.familyconnect.data.net
 
+import me.nettrash.familyconnect.data.net.dto.AssistantReportResponse
+import me.nettrash.familyconnect.data.net.dto.CreateAssistantReportRequest
 import me.nettrash.familyconnect.data.net.dto.ResetPasswordRequest
 import me.nettrash.familyconnect.data.net.dto.ApproveResponse
 import me.nettrash.familyconnect.data.net.dto.BirthdayRequest
@@ -83,6 +85,27 @@ interface FamilyApi {
      * off — there is no transcript for it to widen.
      */
     suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: whether the assistant posts one unprompted good-morning
+     * message a day into the family chat (docs/protocol.md, "The daily
+     * greeting"). Family-wide, OFF by default, and — unlike
+     * [setAiHistoryPhotos] — bound to none of the other switches, so it can
+     * never be refused for the state of one of them.
+     *
+     * What it cannot promise is that a greeting arrives: that also needs the
+     * operator's half, `MeResponse.greetingsEnabled`.
+     */
+    suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: the fifth switch — whether a mention may be shown the
+     * profile pictures of the members named in its transcript
+     * (docs/protocol.md, "Profile pictures of members"). Family-wide, OFF by
+     * default, and only openable while `ai_vision` is on, exactly as
+     * [setAiHistoryPhotos] is.
+     */
+    suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse>
     suspend fun joinRequests(): ApiResult<JoinRequestsResponse>
     suspend fun approve(requestId: Long): ApiResult<ApproveResponse>
     suspend fun reject(requestId: Long): ApiResult<Unit>
@@ -123,6 +146,20 @@ interface FamilyApi {
      * nothing, so a double tap is not two rows in the owner's list.
      */
     suspend fun report(reportedUserId: Long, reason: String, messageId: Long?): ApiResult<ReportResponse>
+
+    /**
+     * What the ASSISTANT got wrong (docs/protocol.md, "Reporting the
+     * assistant"). A separate endpoint from [report], and deliberately not
+     * under `/families`: the assistant belongs to no family, so the
+     * member-report endpoint refuses it, and the people who run the server
+     * read this one rather than the family owner. Reporting the same reply
+     * twice answers 200 with the stored row and creates nothing.
+     */
+    suspend fun reportAssistant(
+        messageId: Long,
+        reason: String,
+        note: String?,
+    ): ApiResult<AssistantReportResponse>
 
     /** Owner-only: the open reports, oldest first. */
     suspend fun reports(): ApiResult<ReportsResponse>
@@ -188,6 +225,12 @@ class DefaultFamilyApi @Inject constructor(
     override suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse> =
         client.patch("/families/mine", PatchFamilyRequest.aiHistoryPhotos(enabled))
 
+    override suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.aiGreeting(enabled))
+
+    override suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.aiFaces(enabled))
+
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> =
         client.get("/families/join-requests")
 
@@ -235,6 +278,16 @@ class DefaultFamilyApi @Inject constructor(
         messageId: Long?,
     ): ApiResult<ReportResponse> =
         client.post("/families/reports", CreateReportRequest(reportedUserId, reason, messageId))
+
+    override suspend fun reportAssistant(
+        messageId: Long,
+        reason: String,
+        note: String?,
+    ): ApiResult<AssistantReportResponse> =
+        client.post(
+            "/reports/assistant",
+            CreateAssistantReportRequest(messageId, reason, note?.trim()?.ifEmpty { null }),
+        )
 
     override suspend fun reports(): ApiResult<ReportsResponse> =
         client.get("/families/reports")

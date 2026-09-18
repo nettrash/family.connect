@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+#[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -18,7 +19,7 @@ use tracing_subscriber::EnvFilter;
 use family_connect::config::Config;
 use family_connect::state::AppState;
 use family_connect::{
-    app, calls, db, handlers_attachment, handlers_auth, handlers_chat, migrate, push,
+    app, calls, db, greetings, handlers_attachment, handlers_auth, handlers_chat, migrate, push,
 };
 
 #[derive(Parser, Debug)]
@@ -133,6 +134,14 @@ async fn main() -> Result<()> {
     // A 1 s tick, cancelled on shutdown.
     calls::spawn_sweeper(state.clone());
 
+    // The daily greeting (docs/protocol.md, "The daily greeting"). Its own
+    // ticker rather than a fourth job in the hourly loop above: that loop is
+    // three deletes on one clock, and this is a WRITE on a wall-clock time an
+    // operator chose to the minute. Returns immediately, having spawned
+    // nothing, on a server with greetings off — which is every server that
+    // has not been told otherwise.
+    greetings::spawn_sweeper(state.clone());
+
     let listener = tokio::net::TcpListener::bind(&state.cfg.server.bind)
         .await
         .with_context(|| format!("binding {}", state.cfg.server.bind))?;
@@ -147,18 +156,42 @@ async fn main() -> Result<()> {
     });
 
     // Wait for a signal — or for the server to die on its own.
-    let mut sigterm = signal(SignalKind::terminate()).context("install SIGTERM handler")?;
-    let mut sigint = signal(SignalKind::interrupt()).context("install SIGINT handler")?;
-    tokio::select! {
-        _ = sigterm.recv() => info!("received SIGTERM, shutting down"),
-        _ = sigint.recv()  => info!("received SIGINT, shutting down"),
-        result = &mut server => {
-            match result {
-                Ok(Ok(())) => error!("server exited unexpectedly"),
-                Ok(Err(err)) => error!(error = %err, "server failed"),
-                Err(err) => error!(error = %err, "server task panicked"),
+    #[cfg(unix)]
+    {
+        let mut sigterm = signal(SignalKind::terminate()).context("install SIGTERM handler")?;
+        let mut sigint = signal(SignalKind::interrupt()).context("install SIGINT handler")?;
+        tokio::select! {
+            _ = sigterm.recv() => info!("received SIGTERM, shutting down"),
+            _ = sigint.recv()  => info!("received SIGINT, shutting down"),
+            result = &mut server => {
+                match result {
+                    Ok(Ok(())) => error!("server exited unexpectedly"),
+                    Ok(Err(err)) => error!(error = %err, "server failed"),
+                    Err(err) => error!(error = %err, "server task panicked"),
+                }
+                std::process::exit(1);
             }
-            std::process::exit(1);
+        }
+    }
+    // Off Unix there is no SIGTERM: Ctrl+C is how a developer stops a local
+    // fixture (the Microsoft Store screenshots are shot against one on
+    // Windows, `win/store/seed-store-screenshots.ps1`). The server ships for
+    // Linux, where the block above is what runs.
+    #[cfg(not(unix))]
+    {
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                result.context("install Ctrl+C handler")?;
+                info!("received Ctrl+C, shutting down");
+            }
+            result = &mut server => {
+                match result {
+                    Ok(Ok(())) => error!("server exited unexpectedly"),
+                    Ok(Err(err)) => error!(error = %err, "server failed"),
+                    Err(err) => error!(error = %err, "server task panicked"),
+                }
+                std::process::exit(1);
+            }
         }
     }
     shutdown.cancel();

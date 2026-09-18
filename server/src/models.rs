@@ -225,6 +225,89 @@ pub struct Family {
     /// server can see. A client that never heard of it reads an absent key
     /// as false, which is the truth for every family that predates it.
     pub ai_history_photos: bool,
+
+    /// Whether the assistant may post one unprompted good-morning message a
+    /// day into this family's chat (protocol.md, "The daily greeting").
+    ///
+    /// Always serialized, like the three above, and for the same reason: a
+    /// switch has no third state. Default FALSE, for every family created
+    /// before this and after it — a message a family cannot stop, mute or
+    /// delete may only ever start because somebody chose it.
+    ///
+    /// INDEPENDENT of the other three, uniquely among them. They answer
+    /// widening forms of one question — how much of what this family said and
+    /// photographed may be shown to a model — and so `ai_history_photos` is
+    /// bound to `ai_vision` by a CHECK. This one answers a different question
+    /// altogether: whether the assistant SPEAKS when nobody asked. Nothing it
+    /// sends is the family's own words or pictures, so there is no setting of
+    /// the others under which it becomes a wider disclosure, and none of them
+    /// clears it.
+    ///
+    /// It does nothing unless the OPERATOR has also turned greetings on for
+    /// the server, which is a value no client can see — so this is the
+    /// family's answer, not a promise that a greeting will arrive.
+    pub ai_greeting: bool,
+
+    /// Whether an `@ai` mention in the family chat may ALSO be shown the
+    /// profile pictures of the members whose lines are in the transcript it
+    /// sends (protocol.md, "Profile pictures of members"). A FIFTH switch,
+    /// and the fourth about disclosure: it stands beside `ai_history_photos`
+    /// rather than inside it because that switch's sentence names "the most
+    /// recent photos in the family chat", and a profile picture is not in
+    /// the chat — it is the first image in this protocol attached to no
+    /// message at all.
+    ///
+    /// Always serialized, like its neighbours, and **false** by default for
+    /// every family before and after it. It can only be `true` while
+    /// `ai_vision` is — migration 0038 says so as a CHECK, and
+    /// `PATCH /families/mine` refuses the one and clears the other — and it
+    /// does nothing unless `ai_history` is on and the server can see: a face
+    /// travels only for a name the model has been told, and with no
+    /// transcript there are no names. A client that never heard of it reads
+    /// an absent key as false, which is the truth for every family that
+    /// predates it.
+    pub ai_faces: bool,
+}
+
+/// What a member says the ASSISTANT got wrong (docs/protocol.md, "Reporting
+/// the assistant"). The OPERATOR's row, never the family owner's: it appears
+/// in no client read, and this shape exists only so the reporter's own app can
+/// show that the report was taken.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssistantReport {
+    pub id: i64,
+    /// The assistant reply reported, while it still exists. Retention drops
+    /// it; `message_excerpt` outlives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<i64>,
+    /// The WHOLE reply, frozen when the report was raised — the same
+    /// inversion of the recompute rule a member report makes, and for the
+    /// same reason: retention deletes the message and the evidence with it.
+    pub message_excerpt: String,
+    /// `"ai"` for the reporter's private thread, `"family"` for an `@ai`
+    /// answer the whole family could already read. Frozen too: it is the one
+    /// piece of context the operator cannot rebuild once retention has taken
+    /// the message.
+    pub chat_kind: String,
+    /// One of `"spam"`, `"harassment"`, `"inappropriate"`, `"other"` — the
+    /// product's one vocabulary for this.
+    pub reason: String,
+    /// The reporter's own words, when they wrote any. Free text where a member
+    /// report has none, because the reader is one operator rather than a
+    /// nine-language owner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+/// `POST /reports/assistant`.
+#[derive(Debug, Deserialize)]
+pub struct CreateAssistantReportRequest {
+    pub message_id: i64,
+    pub reason: String,
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// `Report` object as listed for the owner (protocol.md, "Reporting a
@@ -253,8 +336,32 @@ pub struct Report {
     /// otherwise leave the owner an empty screen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_excerpt: Option<String>,
+    /// What the reported message CARRIED, trimmed exactly as a chat-list
+    /// preview is. A photo sent without a caption has an EMPTY body, and
+    /// "inappropriate" is very often exactly that message — the excerpt is
+    /// then the empty string and this is the only thing on the row that says
+    /// what was reported. Recomputed on every read rather than frozen with
+    /// the excerpt: the bytes are not copied, so a client offers to open one
+    /// only while `message_id` survives, exactly as it offers the jump.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub message_attachments: Vec<ReportedAttachment>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+}
+
+/// One attachment of a reported message, as the owner's inbox needs it: what
+/// it is, and what it is called. No id, no size, no preview flag — and no
+/// COORDINATES, deliberately: a moderator judging a report needs to know that
+/// a place was sent, not where the sender was (docs/protocol.md, "Reporting a
+/// member").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReportedAttachment {
+    /// "photo" | "video" | "audio" | "file" | "location".
+    pub kind: String,
+    /// A file's name, or the label on a voice note or a location — and
+    /// `null` rather than absent where there is none, because a client
+    /// falls back on the kind and the key is what it reads to find out.
+    pub name: Option<String>,
 }
 
 /// `JoinRequest` object as listed for the owner.
@@ -355,6 +462,18 @@ pub struct Message {
     /// every read from the quoted row, never stored — see `ReplyTo`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reply_to: Option<ReplyTo>,
+    /// Present when (and only when) this message is a reply: the id of the
+    /// TOP of its chain — the first message in its ancestry that is not
+    /// itself a reply — decided at send time and STORED, unlike the quote
+    /// (protocol.md, "Threads"). Absent once retention has swept that root.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub thread_root_id: Option<i64>,
+    /// Present when (and only when) this message is the root of a chain
+    /// with at least one reply: how many messages name it as their root,
+    /// recomputed on every read. Absent — never 0 — on a message nobody
+    /// has answered and on every reply, whose count belongs to its root.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reply_count: Option<i64>,
     /// Both present when (and only when) the body has been edited. Absent —
     /// not null, and not a zero seq — on a message still in its original
     /// form, which is how a client tells "never edited" from "edited".
@@ -394,6 +513,13 @@ pub struct Message {
     /// column for it.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub call: Option<CallRecord>,
+    /// Present when (and only when) the message names members — decided at
+    /// send time from what the sender's client sent, in the order sent,
+    /// never changed by an edit (protocol.md, "Mentioning a member").
+    /// Hydrated AFTER the fact by `handlers_chat::attach_mentions`, exactly
+    /// as `attachments` is. Absent, never an empty array, otherwise.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mentions: Option<Vec<Mention>>,
 }
 
 /// `Call` object: what a voice call left behind in the direct chat
@@ -601,6 +727,17 @@ impl Message {
         let edited_at = row
             .try_get::<Option<OffsetDateTime>, _>("edited_at")
             .unwrap_or_default();
+        // The chain, under the same try_get rule as the quote: a narrow
+        // SELECT that carries neither column reports both as absent. The
+        // count is a `count(*)` in MESSAGE_COLS and zero means "nobody
+        // answered", which is ABSENT on the wire, never 0.
+        let thread_root_id = row
+            .try_get::<Option<i64>, _>("thread_root_id")
+            .unwrap_or_default();
+        let reply_count = match row.try_get::<i64, _>("reply_count") {
+            Ok(count) if count > 0 => Some(count),
+            _ => None,
+        };
         Self {
             id: row.get("id"),
             chat_id: row.get("chat_id"),
@@ -611,6 +748,8 @@ impl Message {
             reactions: None,
             reaction_seq,
             reply_to,
+            thread_root_id,
+            reply_count,
             edited_at,
             edit_seq,
             // Not read from columns, by design: see each field's doc. The
@@ -620,6 +759,7 @@ impl Message {
             attachments: None,
             poll: None,
             call: None,
+            mentions: None,
         }
     }
 }
@@ -656,6 +796,23 @@ pub struct ChatListEntry {
     /// exactly as the two above (protocol.md, "Polls").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_poll_seq: Option<i64>,
+    /// `true` when (and only when) a message newer than the caller's read
+    /// marker, from somebody the caller has not blocked, names the caller
+    /// — a FILTER over exactly the rows `unread_count` counts, never a
+    /// second definition of unread. Omitted otherwise, never `false`
+    /// (protocol.md, "Mentioning a member").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mentioned: Option<bool>,
+}
+
+/// A member a message names (protocol.md, "Mentioning a member"): the id,
+/// and the display name AS TYPED after the `@`, so a client can find the
+/// token in the body to highlight it without knowing what the member is
+/// called today. The same shape travels in and out.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Mention {
+    pub user_id: i64,
+    pub name: String,
 }
 
 /// Something a message carries: a photo, a video, a piece of audio, a file,
@@ -731,6 +888,9 @@ impl Attachment {
         ("audio/ogg", "audio"),
     ];
 
+    /// The kinds a client and the board name by hand. `photo` is the one a
+    /// board note may pin (docs/protocol.md, "Board").
+    pub const KIND_PHOTO: &'static str = "photo";
     pub const KIND_FILE: &'static str = "file";
     pub const KIND_AUDIO: &'static str = "audio";
     pub const KIND_LOCATION: &'static str = "location";
@@ -821,6 +981,53 @@ pub struct Note {
     /// `medium`, which is what every note was before the field existed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
+    /// `plain` / `serif` / `mono` / `casual` — an intent, not a typeface,
+    /// drawn with a system face at each client's own idiom. Always present
+    /// on a live note; a reader that finds it missing (an older server)
+    /// draws the note plain, which is what every note was before the field
+    /// existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
+    /// `text` or `photo`. Always present on a live note; a reader that
+    /// finds it missing (an older server) reads `text`, which is what every
+    /// note was before the field existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The picture: the content of a `photo` note, the backdrop of an
+    /// `event`, and absent on a text note.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<Attachment>,
+    /// When it starts — an `event` note and nowhere else.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        with = "crate::models::opt_rfc3339"
+    )]
+    pub starts_at: Option<OffsetDateTime>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        with = "crate::models::opt_rfc3339"
+    )]
+    pub ends_at: Option<OffsetDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<String>,
+    /// Who is planning to come. Present on every event, `[]` when nobody
+    /// has answered; absent on every other kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rsvps: Option<Vec<Rsvp>>,
+    /// The things to do, in the author's order. Present on every `tasks`
+    /// note and `[]` on one nothing has been written into yet; absent on
+    /// every other kind (docs/protocol.md, "Board").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<TaskItem>>,
+    /// The members this note NAMES, in the author's order (docs/protocol.md,
+    /// "Board"). Absent when it names nobody — never `[]`, so a client that
+    /// has never heard of note mentions reads exactly what it read before.
+    /// Re-decided on every edit, unlike a message's, because an edit to a
+    /// note notifies nobody.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<Vec<Mention>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub x: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -869,6 +1076,38 @@ impl Note {
     /// arrived.
     pub const DEFAULT_SIZE: &str = "medium";
 
+    /// The hands a note may be written in — an INTENT each client resolves
+    /// to a system face of its own (docs/protocol.md, "Board"): the
+    /// interface face, the one with the strokes, the one whose letters all
+    /// take the same width, and the most informal face the platform has.
+    ///
+    /// Names rather than families for the reason colours are names rather
+    /// than hex values, only more so: a family name on the wire would name
+    /// a font one platform has and another does not, and a note would come
+    /// out unreadable on the phone it was not written on.
+    pub const FONTS: [&'static str; 4] = ["plain", "serif", "mono", "casual"];
+
+    /// The face a note takes when none is sent — and the face every note
+    /// had before fonts existed, so nothing on a wall changed when the
+    /// field arrived.
+    pub const DEFAULT_FONT: &str = "plain";
+
+    /// What a note IS (docs/protocol.md, "Board"): words on a sticker, or a
+    /// picture pinned to the wall. A photo note is a note in every other
+    /// respect — same slot, same ceiling, same feed, same block rule.
+    pub const KINDS: [&'static str; 4] = ["text", "photo", "event", "tasks"];
+
+    /// The kind a note takes when none is sent — and what every note on
+    /// every wall was before kinds existed.
+    pub const DEFAULT_KIND: &str = "text";
+
+    pub const KIND_PHOTO: &str = "photo";
+    pub const KIND_EVENT: &str = "event";
+    pub const KIND_TASKS: &str = "tasks";
+
+    /// Longest a place may be. A line on a card, not an address book.
+    pub const MAX_PLACE_CHARS: usize = 200;
+
     /// Longest note text. A sticker, not a message.
     pub const MAX_TEXT_CHARS: usize = 280;
 
@@ -890,6 +1129,15 @@ impl Note {
                 text: None,
                 color: None,
                 size: None,
+                font: None,
+                kind: None,
+                attachment: None,
+                starts_at: None,
+                ends_at: None,
+                place: None,
+                rsvps: None,
+                items: None,
+                mentions: None,
                 x: None,
                 y: None,
                 created_at: None,
@@ -905,6 +1153,26 @@ impl Note {
             text: Some(row.get("text")),
             color: Some(row.get("color")),
             size: Some(row.get("size")),
+            font: Some(row.get("font")),
+            kind: Some(row.get("kind")),
+            // Hydrated by the caller when the join carried one: a row read
+            // without the attachment columns has no picture to report, and
+            // `from_row` is used on both.
+            attachment: None,
+            starts_at: row.get("starts_at"),
+            ends_at: row.get("ends_at"),
+            place: row.get("place"),
+            // Hydrated by the caller too, for the same reason — and `[]`
+            // rather than absent on an event, which the caller decides
+            // because only it knows the kind is meaningful here.
+            rsvps: None,
+            // Hydrated by the caller as well, and `[]` rather than absent
+            // on a task list — an empty list is a list.
+            items: None,
+            // Hydrated by the caller as well: a note that names nobody
+            // reports nothing rather than `[]`, so a client that predates
+            // note mentions reads exactly what it read before.
+            mentions: None,
             x: Some(row.get("x")),
             y: Some(row.get("y")),
             created_at: Some(row.get("created_at")),
@@ -912,6 +1180,61 @@ impl Note {
             board_seq: row.get("board_seq"),
             content_seq: Some(row.get("content_seq")),
             deleted: false,
+        }
+    }
+}
+
+/// One member's answer to an event on the board (docs/protocol.md,
+/// "Board"): `going`, `maybe` or `no`, one per member, replaced rather
+/// than added to.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Rsvp {
+    pub user_id: i64,
+    pub answer: String,
+}
+
+/// One line of a task list (docs/protocol.md, "Board").
+///
+/// `id` is the server's and stable for the life of the item, because it is
+/// what a tick refers to: a position would move under somebody's finger the
+/// moment the author inserted a line above it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskItem {
+    pub id: i64,
+    pub text: String,
+    pub done: bool,
+    /// Who ticked it — absent while it is not done. Kept after they leave:
+    /// a tick is a fact about the ITEM, not about the member.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_by: Option<i64>,
+}
+
+impl TaskItem {
+    /// Longest one line may be. A thing to do, not a paragraph about it.
+    pub const MAX_TEXT_CHARS: usize = 100;
+
+    pub fn from_row(row: &PgRow) -> Self {
+        let done_at: Option<OffsetDateTime> = row.get("done_at");
+        Self {
+            id: row.get("id"),
+            text: row.get("text"),
+            done: done_at.is_some(),
+            // Only meaningful while it is done, and a deleted account's
+            // tick keeps the item done without a name behind it.
+            done_by: done_at.and_then(|_| row.get::<Option<i64>, _>("done_by")),
+        }
+    }
+}
+
+impl Rsvp {
+    /// The three answers. Names rather than a number, for the reason every
+    /// other vocabulary here is: a client draws them at its own idiom.
+    pub const ANSWERS: [&'static str; 3] = ["going", "maybe", "no"];
+
+    pub fn from_row(row: &PgRow) -> Self {
+        Self {
+            user_id: row.get("user_id"),
+            answer: row.get("answer"),
         }
     }
 }
@@ -943,6 +1266,8 @@ mod tests {
             ai_history: true,
             ai_vision: false,
             ai_history_photos: false,
+            ai_greeting: false,
+            ai_faces: false,
         };
         let json = serde_json::to_value(&family).expect("serialize");
         assert!(
@@ -967,13 +1292,16 @@ mod tests {
             ai_history: true,
             ai_vision: false,
             ai_history_photos: false,
+            ai_greeting: false,
+            ai_faces: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
             serde_json::json!({
                 "id": 3, "name": "The Smiths", "join_policy": "open",
                 "created_at": "2026-08-19T17:03:12Z", "ai_history": true,
-                "ai_vision": false, "ai_history_photos": false
+                "ai_vision": false, "ai_history_photos": false,
+                "ai_greeting": false, "ai_faces": false
             })
         );
     }
@@ -991,6 +1319,8 @@ mod tests {
             ai_history: true,
             ai_vision: false,
             ai_history_photos: false,
+            ai_greeting: false,
+            ai_faces: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -998,7 +1328,8 @@ mod tests {
                 "id": 3, "name": "The Smiths", "join_policy": "open",
                 "created_at": "2026-08-19T17:03:12Z",
                 "invite_code": "ABCD2345", "language": "ru", "ai_history": true,
-                "ai_vision": false, "ai_history_photos": false
+                "ai_vision": false, "ai_history_photos": false,
+                "ai_greeting": false, "ai_faces": false
             })
         );
     }
@@ -1019,6 +1350,8 @@ mod tests {
             ai_history: true,
             ai_vision: false,
             ai_history_photos: false,
+            ai_greeting: false,
+            ai_faces: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1026,7 +1359,7 @@ mod tests {
                 "id": 3, "name": "The Smiths", "join_policy": "closed",
                 "created_at": "2026-08-19T17:03:12Z",
                 "max_members": 12, "ai_history": true, "ai_vision": false,
-                "ai_history_photos": false
+                "ai_history_photos": false, "ai_greeting": false, "ai_faces": false
             })
         );
     }
@@ -1066,12 +1399,17 @@ mod tests {
             reason: "harassment".to_string(),
             message_id: None,
             message_excerpt: None,
+            message_attachments: Vec::new(),
             created_at: datetime!(2026-08-19 17:03:12 UTC),
         };
         let json = serde_json::to_value(&report).expect("serialize");
         assert!(
             json.get("message_id").is_none() && json.get("message_excerpt").is_none(),
             "both message keys must be absent, not null: {json}"
+        );
+        assert!(
+            json.get("message_attachments").is_none(),
+            "no message, so nothing it carried either: {json}"
         );
     }
 
@@ -1088,6 +1426,7 @@ mod tests {
             reason: "inappropriate".to_string(),
             message_id: None,
             message_excerpt: Some("dinner at 7?".to_string()),
+            message_attachments: Vec::new(),
             created_at: datetime!(2026-08-19 17:03:12 UTC),
         };
         let json = serde_json::to_value(&report).expect("serialize");
@@ -1096,6 +1435,40 @@ mod tests {
             json.get("message_excerpt").and_then(|v| v.as_str()),
             Some("dinner at 7?"),
             "the excerpt outlives the message: {json}"
+        );
+    }
+
+    /// A CAPTION-LESS PHOTO is the report where what the message carried is
+    /// the only thing on the row that says what was reported. `name` rides as
+    /// NULL rather than absent — a client reads the key to learn there is
+    /// nothing to call it — and nothing else rides at all: a moderator needs
+    /// to know a place was sent, never where the sender was standing.
+    #[test]
+    fn a_reported_photo_carries_its_kind_and_a_null_name() {
+        let report = Report {
+            id: 4,
+            reporter: a_reporter(),
+            reported: a_reported(),
+            reason: "inappropriate".to_string(),
+            message_id: Some(1338),
+            message_excerpt: Some(String::new()),
+            message_attachments: vec![ReportedAttachment {
+                kind: "photo".to_string(),
+                name: None,
+            }],
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+        };
+        let json = serde_json::to_value(&report).expect("serialize");
+        let carried = &json["message_attachments"][0];
+        assert_eq!(carried["kind"], "photo");
+        assert!(
+            carried.get("name").is_some() && carried["name"].is_null(),
+            "name is null, not absent: {json}"
+        );
+        assert_eq!(
+            carried.as_object().expect("object").len(),
+            2,
+            "kind and name only — no id, no size, no coordinates: {json}"
         );
     }
 
@@ -1242,6 +1615,7 @@ mod tests {
             max_reaction_seq: None,
             max_edit_seq: None,
             max_poll_seq: None,
+            mentioned: None,
         };
         assert_eq!(
             serde_json::to_value(&entry).expect("serialize"),

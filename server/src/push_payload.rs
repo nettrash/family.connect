@@ -203,22 +203,75 @@ pub fn message_notification(
     }
 }
 
+/// The message push for a member the message NAMES: the same push, a
+/// different title — `"<Family> — <Sender> mentioned you"` — and never a
+/// second one (protocol.md, "Mentioning a member"). Family chat only, which
+/// is the only chat a mention is accepted in, so the direct-chat title rule
+/// has no mention form.
+pub fn mention_notification(
+    include_message_body: bool,
+    family_name: &str,
+    sender_name: &str,
+    message: &Message,
+    badge: i64,
+    chat_unread: i64,
+) -> Notification {
+    let mut note = message_notification(
+        include_message_body,
+        "family",
+        family_name,
+        sender_name,
+        message,
+        badge,
+        chat_unread,
+    );
+    note.title = format!("{family_name} — {sender_name} mentioned you");
+    note
+}
+
 /// Compose the notification for a new board note.
 ///
 /// Title `"<Family> — <Author>"`, body the note's text — governed by the
 /// SAME `include_message_body` switch as a message, because a note is family
 /// content in exactly the way a message is.
-pub fn board_note_notification(
-    include_body: bool,
-    family_name: &str,
-    author_name: &str,
-    family_id: i64,
-    note_id: i64,
-    text: &str,
-    badge: i64,
-) -> Notification {
+///
+/// A member the note NAMES gets `"<Family> — <Author> mentioned you"`
+/// instead, exactly as a mentioned member does in the family chat
+/// (protocol.md, "Board"). It is the same notification with a different
+/// title, never a second one: naming somebody does not push twice.
+/// One board-note alert's ingredients. A struct rather than eight
+/// arguments — the codebase carries no `allow` attributes, and "who wrote
+/// it, on whose board, and does it name this reader" reads better named
+/// than positional.
+pub struct BoardNoteAlert<'a> {
+    pub include_body: bool,
+    pub family_name: &'a str,
+    pub author_name: &'a str,
+    pub family_id: i64,
+    pub note_id: i64,
+    pub text: &'a str,
+    pub badge: i64,
+    /// Whether THIS reader is one of the members the note names.
+    pub mentioned: bool,
+}
+
+pub fn board_note_notification(alert: BoardNoteAlert<'_>) -> Notification {
+    let BoardNoteAlert {
+        include_body,
+        family_name,
+        author_name,
+        family_id,
+        note_id,
+        text,
+        badge,
+        mentioned,
+    } = alert;
     Notification {
-        title: format!("{family_name} — {author_name}"),
+        title: if mentioned {
+            format!("{family_name} — {author_name} mentioned you")
+        } else {
+            format!("{family_name} — {author_name}")
+        },
         body: if include_body {
             text.to_string()
         } else {
@@ -510,6 +563,8 @@ mod tests {
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             reactions: None,
             reply_to: None,
+            thread_root_id: None,
+            reply_count: None,
             edited_at: None,
             edit_seq: None,
             attachment: None,
@@ -517,6 +572,7 @@ mod tests {
             reaction_seq: None,
             poll: None,
             call: None,
+            mentions: None,
         }
     }
 
@@ -610,6 +666,27 @@ mod tests {
             message["message"]["data"].get("video").is_none(),
             "a voice call's data stays byte-identical: no video key at all"
         );
+    }
+
+    /// A mention is the message's own push with a different title and
+    /// nothing else different: same body, same badge, same event, same
+    /// `kind` — so routing and grouping never change.
+    #[test]
+    fn a_mention_changes_the_title_and_nothing_else() {
+        let message = protocol_message();
+        let plain = message_notification(true, "family", "The Smiths", "Anna", &message, 3, 1);
+        let named = mention_notification(true, "The Smiths", "Anna", &message, 3, 1);
+        assert_eq!(named.title, "The Smiths — Anna mentioned you");
+        assert_eq!(named.body, plain.body);
+        assert_eq!(named.badge, plain.badge);
+        assert_eq!(named.chat_unread, plain.chat_unread);
+        assert_eq!(named.event, plain.event);
+        assert_eq!(named.event.kind(), "message");
+        // Under the privacy switch the body is withheld exactly as it is
+        // for everybody else — the title says who, never what.
+        let hidden = mention_notification(false, "The Smiths", "Anna", &message, 3, 1);
+        assert_eq!(hidden.body, "New message");
+        assert_eq!(hidden.title, "The Smiths — Anna mentioned you");
     }
 
     #[test]
@@ -742,7 +819,16 @@ mod tests {
     fn only_message_pushes_carry_a_notification_count() {
         let cases = [
             fcm_message(
-                &board_note_notification(true, "The Smiths", "Junior", 7, 3, "Milk", 0),
+                &board_note_notification(BoardNoteAlert {
+                    include_body: true,
+                    family_name: "The Smiths",
+                    author_name: "Junior",
+                    family_id: 7,
+                    note_id: 3,
+                    text: "Milk",
+                    badge: 0,
+                    mentioned: false,
+                }),
                 "t",
             ),
             fcm_message(

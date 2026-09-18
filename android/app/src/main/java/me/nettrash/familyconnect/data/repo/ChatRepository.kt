@@ -142,6 +142,22 @@ class ChatRepository @Inject constructor(
      * this ledger does not is exactly the message [refreshChats] would
      * overwrite away.
      */
+    /**
+     * A live message naming this reader (docs/protocol.md, "Mentioning a
+     * member").
+     *
+     * Takes the message id for the same reason [bumpUnread] does: the mark
+     * is a filter over the rows the badge counts, so it has to survive the
+     * same race. Without the ledger, a frame that names the reader while
+     * `GET /chats` is in flight keeps its place in the COUNT and loses its
+     * mark, and the row shows a badge whose only message names them and no
+     * "@" until the next refresh.
+     */
+    suspend fun markMentioned(chatId: Long, messageId: Long) {
+        chatDao.markMentioned(chatId)
+        liveMentionIds.computeIfAbsent(chatId) { ConcurrentHashMap.newKeySet() }.add(messageId)
+    }
+
     suspend fun bumpUnread(chatId: Long, messageId: Long) {
         chatDao.bumpUnread(chatId)
         liveUnreadIds.computeIfAbsent(chatId) { ConcurrentHashMap.newKeySet() }.add(messageId)
@@ -169,6 +185,13 @@ class ChatRepository @Inject constructor(
      * refresh runs on the caller's.
      */
     private val liveUnreadIds = ConcurrentHashMap<Long, MutableSet<Long>>()
+
+    /**
+     * The subset of [liveUnreadIds] whose messages NAME this reader —
+     * the mark's own ledger, kept and pruned exactly like the count's
+     * (docs/protocol.md, "Mentioning a member").
+     */
+    private val liveMentionIds = ConcurrentHashMap<Long, MutableSet<Long>>()
 
     // Declared AFTER the state it touches: the collector body may run on
     // the very first dispatch after construction, and a lambda reading a
@@ -227,6 +250,7 @@ class ChatRepository @Inject constructor(
         // not — permanently, because the catch-up path never bumps and
         // the server marker never goes backwards.
         val idsAtRequest = liveUnreadIds.mapValues { it.value.toSet() }
+        val mentionIdsAtRequest = liveMentionIds.mapValues { it.value.toSet() }
         // Snapshotted before the await for the same reason, and it is the
         // prune's whole safety margin: a direct chat this device started
         // WHILE the request was in flight cannot be in a response the
@@ -257,11 +281,23 @@ class ChatRepository @Inject constructor(
                     // what keeps the ledger the size of a race rather
                     // than the size of the conversation.
                     live?.removeAll { it <= countedThrough }
+                    // The mark's half of the same race.
+                    val liveMentions = liveMentionIds[item.chat.id]
+                    val mentionedDuringRequest = liveMentions.orEmpty().any {
+                        it !in mentionIdsAtRequest[item.chat.id].orEmpty() && it > countedThrough
+                    }
+                    liveMentions?.removeAll { it <= countedThrough }
                     ChatEntity(
                         id = item.chat.id,
                         kind = item.chat.kind,
                         peerUserId = item.chat.peerUserId,
                         title = item.chat.title,
+                        // Server-authoritative, and absent means no —
+                        // plus what named this reader after the server
+                        // counted, which is the same message the line
+                        // below is still counting
+                        // (protocol.md, "Mentioning a member").
+                        mentionedUnread = item.mentioned == true || mentionedDuringRequest,
                         // Authoritative (protocol: resync step 2), plus
                         // what arrived after the server counted.
                         unreadCount = item.unreadCount + arrivedDuringRequest,
@@ -422,6 +458,7 @@ class ChatRepository @Inject constructor(
         messageDao.deleteByChat(chatId)
         chatDao.deleteById(chatId)
         liveUnreadIds.remove(chatId)
+        liveMentionIds.remove(chatId)
     }
 
     /** POST /chats/direct — get-or-create, idempotent server-side. */

@@ -276,6 +276,16 @@ actor APIClient {
         /// `ai_vision` goes off — both are the server's to enforce, and
         /// this client learns them from the answer.
         var aiHistoryPhotos: Bool?
+        /// The fourth boolean, and the one bound to nothing: whether the
+        /// assistant greets the family unprompted once a day (protocol.md,
+        /// "The daily greeting"). Absent leaves it alone, like the three
+        /// above; unlike `ai_history_photos` there is no state of the others
+        /// that can refuse it or clear it.
+        var aiGreeting: Bool?
+        /// The fifth boolean, of the third's exact shape (protocol.md,
+        /// "Profile pictures of members"): the server refuses `true` while
+        /// `ai_vision` is off, and turns it off whenever `ai_vision` goes off.
+        var aiFaces: Bool?
         /// The same double Optional the language uses, and for the same
         /// reason: the outer is "was this field touched", the inner is the
         /// value, and a real JSON `null` CLEARS the cap. These are the two
@@ -289,6 +299,8 @@ actor APIClient {
             case aiHistory = "ai_history"
             case aiVision = "ai_vision"
             case aiHistoryPhotos = "ai_history_photos"
+            case aiGreeting = "ai_greeting"
+            case aiFaces = "ai_faces"
             case maxMembers = "max_members"
         }
 
@@ -308,6 +320,8 @@ actor APIClient {
             try container.encodeIfPresent(aiHistory, forKey: .aiHistory)
             try container.encodeIfPresent(aiVision, forKey: .aiVision)
             try container.encodeIfPresent(aiHistoryPhotos, forKey: .aiHistoryPhotos)
+            try container.encodeIfPresent(aiGreeting, forKey: .aiGreeting)
+            try container.encodeIfPresent(aiFaces, forKey: .aiFaces)
             if let maxMembers {
                 if let cap = maxMembers {
                     try container.encode(cap, forKey: .maxMembers)
@@ -356,6 +370,34 @@ actor APIClient {
     /// File a report. `messageID` names one message of theirs, or nil to
     /// report the person. Raising the same report twice answers 200 with
     /// the open row rather than creating a second.
+    /// What the ASSISTANT got wrong (docs/protocol.md, "Reporting the
+    /// assistant"). A separate endpoint from `createReport`, and not under
+    /// `/families` at all: it needs no family, and no family owner may read
+    /// it — the people who run the server do. A second report of the same
+    /// reply answers 200 with the stored row and creates nothing.
+    func createAssistantReport(
+        messageID: Int64, reason: String, note: String?
+    ) async throws -> AssistantReportDTO {
+        struct Body: Encodable {
+            let messageID: Int64
+            let reason: String
+            let note: String?
+            enum CodingKeys: String, CodingKey {
+                case messageID = "message_id"
+                case reason
+                case note
+            }
+        }
+        let trimmed = note?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let response: AssistantReportResponse = try await request(
+            "POST", "/reports/assistant",
+            body: Body(
+                messageID: messageID,
+                reason: reason,
+                note: (trimmed?.isEmpty ?? true) ? nil : trimmed))
+        return response.report
+    }
+
     func createReport(reportedUserID: Int64, reason: String, messageID: Int64?) async throws -> ReportDTO {
         struct Body: Encodable {
             let reportedUserID: Int64
@@ -431,6 +473,32 @@ actor APIClient {
     func setAIHistoryPhotos(_ enabled: Bool) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
             "PATCH", "/families/mine", body: FamilyPatchRequest(aiHistoryPhotos: enabled))
+        return response.family
+    }
+
+    /// Turn the assistant's daily greeting on or off for this family
+    /// (protocol.md, "The daily greeting").
+    ///
+    /// Sends this one key and nothing else, and — unlike `setAIHistoryPhotos`
+    /// — cannot be refused for the state of another switch: this one is bound
+    /// to none of them. What it CANNOT promise is that a greeting will
+    /// arrive; that also needs the operator's half, which the caller reads
+    /// from `MeResponse.greetingsEnabled`.
+    func setAIGreeting(_ enabled: Bool) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(aiGreeting: enabled))
+        return response.family
+    }
+
+    /// Turn the fifth switch on or off — whether a mention may be shown the
+    /// profile pictures of the members named in its transcript (protocol.md,
+    /// "Profile pictures of members"). Sends this one key and nothing else;
+    /// the server answers `validation` (400) to `true` while `ai_vision` is
+    /// off, which is why the switch that calls this is disabled in that
+    /// state rather than left to find out.
+    func setAIFaces(_ enabled: Bool) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(aiFaces: enabled))
         return response.family
     }
 
@@ -589,12 +657,15 @@ actor APIClient {
         /// What makes the message a poll; the body is then the QUESTION.
         /// Mutually exclusive with `attachmentIDs` server-side.
         let poll: NewPollRequest?
+        /// The members this message names — absent when nil, like the rest.
+        let mentions: [MentionDTO]?
         enum CodingKeys: String, CodingKey {
             case clientMsgID = "client_msg_id"
             case body
             case replyToMessageID = "reply_to_message_id"
             case attachmentIDs = "attachment_ids"
             case poll
+            case mentions
         }
     }
 
@@ -617,7 +688,8 @@ actor APIClient {
         body: String,
         replyToMessageID: Int64? = nil,
         attachmentIDs: [Int64]? = nil,
-        pollOptions: [String]? = nil
+        pollOptions: [String]? = nil,
+        mentions: [MentionDTO]? = nil
     ) async throws -> MessageDTO {
         let response: MessageResponse = try await request(
             "POST", "/chats/\(chatID)/messages",
@@ -626,7 +698,8 @@ actor APIClient {
                 body: body,
                 replyToMessageID: replyToMessageID,
                 attachmentIDs: attachmentIDs,
-                poll: pollOptions.map { NewPollRequest(options: $0) }))
+                poll: pollOptions.map { NewPollRequest(options: $0) },
+                mentions: mentions))
         return response.message
     }
 
@@ -688,15 +761,19 @@ actor APIClient {
         String(format: "%.7f", locale: Locale(identifier: "en_US_POSIX"), value)
     }
 
-    func uploadAttachment(
-        fileURL: URL,
+    /// The one `POST /attachments` request, built once and performed by
+    /// either uploader: this client, or the background `URLSession` that
+    /// finishes a send somebody has walked away from (see
+    /// `BackgroundUploads`). Two places building the same query is two
+    /// places to get `name`'s encoding wrong.
+    func attachmentUploadRequest(
         mime: String,
         kind: String,
         width: Int?,
         height: Int?,
         durationMS: Int?,
         name: String? = nil
-    ) async throws -> AttachmentDTO {
+    ) throws -> URLRequest {
         guard let serverURL else { throw APIError.notConfigured }
         var query = [URLQueryItem(name: "kind", value: kind)]
         if let width { query.append(URLQueryItem(name: "width", value: String(width))) }
@@ -718,6 +795,21 @@ actor APIClient {
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
+        return request
+    }
+
+    func uploadAttachment(
+        fileURL: URL,
+        mime: String,
+        kind: String,
+        width: Int?,
+        height: Int?,
+        durationMS: Int?,
+        name: String? = nil
+    ) async throws -> AttachmentDTO {
+        let request = try attachmentUploadRequest(
+            mime: mime, kind: kind, width: width, height: height,
+            durationMS: durationMS, name: name)
 
         let (data, response) = try await uploadFromFile(request, fileURL: fileURL)
         guard (200..<300).contains(response.statusCode) else {
@@ -779,13 +871,57 @@ actor APIClient {
         let text: String
         let color: String
         let size: String
+        let font: String
         let x: Double
         let y: Double
+        /// Omitted on a text note, both of them: the server refuses a kind
+        /// without a picture and a picture without the kind.
+        let kind: String?
+        let attachmentID: Int64?
+        /// An event's own three, omitted everywhere else — the server
+        /// refuses them on any other kind.
+        let startsAt: Date?
+        let endsAt: Date?
+        let place: String?
+        /// The members the text names (docs/protocol.md, "Board"), omitted
+        /// when it names nobody.
+        let mentions: [MentionDTO]?
+        /// A task list's lines, on a `tasks` note and nowhere else — the
+        /// server refuses them on any other kind.
+        let items: [TaskLineRequest]?
+
+        enum CodingKeys: String, CodingKey {
+            case text, color, size, font, x, y, kind, place, mentions, items
+            case attachmentID = "attachment_id"
+            case startsAt = "starts_at"
+            case endsAt = "ends_at"
+        }
+    }
+
+    /// One line the author is writing. `id` says "the line you already
+    /// have", which is what carries its TICK through a rewrite; nil, the
+    /// line is new (docs/protocol.md, "Board").
+    struct TaskLineRequest: Encodable, Equatable, Sendable {
+        let id: Int64?
+        let text: String
+
+        init(id: Int64? = nil, text: String) {
+            self.id = id
+            self.text = text
+        }
+    }
+
+    private struct TaskDoneRequest: Encodable {
+        let done: Bool
+    }
+
+    private struct RsvpRequest: Encodable {
+        let answer: String
     }
 
     /// Every field optional: a MOVE sends only x/y (any member may), an
-    /// edit sends text, color and/or size (author only). Which fields are
-    /// present is what decides the permission the server applies — so a
+    /// edit sends text, color, size and/or font (author only). Which fields
+    /// are present is what decides the permission the server applies — so a
     /// nil here must be ABSENT on the wire, not null. The synthesised
     /// encoder does that (`encodeIfPresent` per optional); a hand-written
     /// one that encoded nulls would turn every move into an author-only
@@ -794,8 +930,47 @@ actor APIClient {
         let text: String?
         let color: String?
         let size: String?
+        let font: String?
         let x: Double?
         let y: Double?
+        let startsAt: Date?
+        /// A DOUBLE option: absent leaves the end alone, `.some(nil)`
+        /// clears it. `encodeIfPresent` would drop both, so it is encoded
+        /// by hand below.
+        let endsAt: Date??
+        let place: String?
+        /// REPLACES the note's names, and rides with every text edit: a
+        /// note's names are re-decided on each one, and a text patch
+        /// without them clears them (docs/protocol.md, "Board").
+        let mentions: [MentionDTO]?
+        /// REPLACES a task list's lines, and is the author's like its
+        /// title: a line carrying its id keeps its TICK, one without an id
+        /// is new, and a line left out is gone (docs/protocol.md, "Board").
+        let items: [TaskLineRequest]?
+
+        enum CodingKeys: String, CodingKey {
+            case text, color, size, font, x, y, place, mentions, items
+            case startsAt = "starts_at"
+            case endsAt = "ends_at"
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(text, forKey: .text)
+            try container.encodeIfPresent(color, forKey: .color)
+            try container.encodeIfPresent(size, forKey: .size)
+            try container.encodeIfPresent(font, forKey: .font)
+            try container.encodeIfPresent(x, forKey: .x)
+            try container.encodeIfPresent(y, forKey: .y)
+            try container.encodeIfPresent(place, forKey: .place)
+            try container.encodeIfPresent(mentions, forKey: .mentions)
+            try container.encodeIfPresent(items, forKey: .items)
+            try container.encodeIfPresent(startsAt, forKey: .startsAt)
+            if let endsAt {
+                // Present, and possibly null — which is what CLEARS it.
+                try container.encode(endsAt, forKey: .endsAt)
+            }
+        }
     }
 
     func board() async throws -> BoardResponse {
@@ -819,11 +994,51 @@ actor APIClient {
     }
 
     func createNote(
-        text: String, color: String, size: String, x: Double, y: Double
+        text: String,
+        color: String,
+        size: String,
+        font: String,
+        x: Double,
+        y: Double,
+        kind: String? = nil,
+        attachmentID: Int64? = nil,
+        startsAt: Date? = nil,
+        endsAt: Date? = nil,
+        place: String? = nil,
+        mentions: [MentionDTO] = [],
+        items: [TaskLineRequest]? = nil
     ) async throws -> NoteDTO {
         let response: NoteResponse = try await request(
             "POST", "/families/mine/board/notes",
-            body: CreateNoteRequest(text: text, color: color, size: size, x: x, y: y))
+            body: CreateNoteRequest(
+                text: text, color: color, size: size, font: font, x: x, y: y,
+                kind: kind, attachmentID: attachmentID,
+                startsAt: startsAt, endsAt: endsAt, place: place,
+                mentions: mentions.isEmpty ? nil : mentions,
+                items: items))
+        return response.note
+    }
+
+    /// Tick or untick one line of a task list. ANY member may; ticking is
+    /// not authorship, and it is a STATE rather than a toggle so two
+    /// phones cannot undo each other (docs/protocol.md, "Board").
+    func tickTask(noteID: Int64, itemID: Int64, done: Bool) async throws -> NoteDTO {
+        let response: NoteResponse = try await request(
+            "PUT", "/families/mine/board/notes/\(noteID)/tasks/\(itemID)",
+            body: TaskDoneRequest(done: done))
+        return response.note
+    }
+
+    /// `nil` retracts. Any member may send either.
+    func answerNote(id: Int64, answer: String?) async throws -> NoteDTO {
+        let response: NoteResponse
+        if let answer {
+            response = try await request(
+                "PUT", "/families/mine/board/notes/\(id)/rsvp",
+                body: RsvpRequest(answer: answer))
+        } else {
+            response = try await request("DELETE", "/families/mine/board/notes/\(id)/rsvp")
+        }
         return response.note
     }
 
@@ -832,12 +1047,31 @@ actor APIClient {
         text: String? = nil,
         color: String? = nil,
         size: String? = nil,
+        font: String? = nil,
         x: Double? = nil,
-        y: Double? = nil
+        y: Double? = nil,
+        startsAt: Date? = nil,
+        endsAt: Date?? = nil,
+        place: String? = nil,
+        mentions: [MentionDTO]? = nil,
+        items: [TaskLineRequest]? = nil
     ) async throws -> NoteDTO {
         let response: NoteResponse = try await request(
             "PATCH", "/families/mine/board/notes/\(id)",
-            body: PatchNoteRequest(text: text, color: color, size: size, x: x, y: y))
+            body: PatchNoteRequest(
+                text: text, color: color, size: size, font: font, x: x, y: y,
+                startsAt: startsAt, endsAt: endsAt, place: place,
+                mentions: mentions?.isEmpty == true ? nil : mentions,
+                items: items))
+        return response.note
+    }
+
+    /// `POST …/notes/{id}/backdrop` — the assistant draws a picture for an
+    /// event from its own title. No body: the prompt is the title
+    /// (docs/protocol.md, "Board").
+    func drawBackdrop(noteID: Int64) async throws -> NoteDTO {
+        let response: NoteResponse = try await request(
+            "POST", "/families/mine/board/notes/\(noteID)/backdrop")
         return response.note
     }
 
@@ -934,6 +1168,35 @@ actor APIClient {
     /// no-op. A non-author gets 403 `not_message_author`.
     func closePoll(chatID: Int64, messageID: Int64) async throws -> PollStateDTO {
         try await request("POST", "/chats/\(chatID)/messages/\(messageID)/poll/close")
+    }
+
+    /// The chat's OPEN polls, as whole messages, oldest first
+    /// (protocol.md, "Finding the open ones").
+    ///
+    /// A plain read and NOT a cursor: it takes no `after_seq`, it moves no
+    /// chat cursor, and it is no part of catch-up — `polls(chatID:afterSeq:)`
+    /// below remains the feed of what changed and remains what the sync loop
+    /// runs. This answers a different question, "what is still open right
+    /// now", and the surface that shows them asks it when it opens.
+    ///
+    /// Messages rather than polls because the question IS the message body: a
+    /// list of bare polls would draw vote buttons with nothing above them.
+    func openPolls(chatID: Int64, limit: Int = 50) async throws -> [MessageDTO] {
+        let query = [URLQueryItem(name: "limit", value: String(limit))]
+        let response: MessagesResponse = try await request(
+            "GET", "/chats/\(chatID)/polls/open", query: query)
+        return response.messages
+    }
+
+    /// The chain `messageID` belongs to, resolved to its root by the
+    /// server: the root first, then every reply oldest-first; `afterID`
+    /// pages it like every oldest-first read (docs/protocol.md, "Threads").
+    func thread(chatID: Int64, messageID: Int64, afterID: Int64? = nil, limit: Int = 50) async throws -> [MessageDTO] {
+        var query = [URLQueryItem(name: "limit", value: String(limit))]
+        if let afterID { query.append(URLQueryItem(name: "after_id", value: String(afterID))) }
+        let response: MessagesResponse = try await request(
+            "GET", "/chats/\(chatID)/messages/\(messageID)/thread", query: query)
+        return response.messages
     }
 
     /// Poll catch-up pages, ascending by poll_seq; the caller loops

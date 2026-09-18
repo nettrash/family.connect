@@ -1,0 +1,7 @@
+{
+  "profiles": {
+    "FamilyConnect (Package)": {
+      "commandName": "MsixPackage"
+    }
+  }
+}
