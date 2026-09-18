@@ -1317,6 +1317,25 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     private void AddSafety(MenuFlyout menu, MessageDto message, bool assistantChat, long? assistantId, bool mayReport = true)
     {
+        // THE ASSISTANT'S OWN SAFETY ITEM, and only the one: a reply can be
+        // reported, and there is nothing to block — the assistant is not a
+        // member, and whether it speaks at all is the owner's `ai_greeting`
+        // and the operator's `[ai]` switch. The report goes to the people who
+        // run the server rather than to the family owner, for the reason
+        // docs/protocol.md gives under "Reporting the assistant".
+        if (BubbleRules.MayReportAssistant(message, Reader, assistantChat, assistantId))
+        {
+            var assistantSafety = new MenuFlyoutSubItem { Text = services.Say.Get("Safety") };
+            var reportReply = new MenuFlyoutItem { Text = services.Say.Get("Report this reply…") };
+            reportReply.Click += (_, _) => _ = ReportAssistantReplyAsync(message);
+            assistantSafety.Items.Add(reportReply);
+            if (menu.Items.Count > 0)
+            {
+                menu.Items.Add(new MenuFlyoutSeparator());
+            }
+            menu.Items.Add(assistantSafety);
+            return;
+        }
         if (!BubbleRules.IsOtherMember(message, Reader, assistantChat, assistantId))
         {
             return;
@@ -1339,6 +1358,35 @@ public sealed partial class ChatsView : UserControl
             menu.Items.Add(new MenuFlyoutSeparator());
         }
         menu.Items.Add(safety);
+    }
+
+    /// <summary>
+    /// One assistant reply reported. The operator reads it, not the owner, and the sheet says so
+    /// before it is sent (docs/protocol.md, "Reporting the assistant").
+    /// </summary>
+    private async Task ReportAssistantReplyAsync(MessageDto message)
+    {
+        var say = services.Say;
+        try
+        {
+            var chosen = await Dialogs.ReportAssistantAsync(
+                XamlRoot, say, connection.Session.State.SupportContact);
+            if (chosen is not { } report)
+            {
+                return;
+            }
+            var answer = await connection.Api.ReportAssistant(message.Id, report.Reason, report.Note);
+            if (answer.Ok)
+            {
+                ShowProblem(say.Get("Report sent."));
+                return;
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reporting an assistant reply: {e.GetType().Name}");
+        }
+        ShowProblem(say.Get("Couldn't send the report. Try again."));
     }
 
     /// <summary>One message reported: the four reasons, and the disclosure that the owner will read it.</summary>

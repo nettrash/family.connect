@@ -432,6 +432,13 @@ fun ChatScreen(
     // full-picker sheet is open for. Both are transient snapshots.
     var pickerTarget by remember { mutableStateOf<ReactionPickerTarget?>(null) }
     var reportTarget by remember { mutableStateOf<ReportTarget?>(null) }
+    /**
+     * The assistant reply being reported, by server id. Its own state
+     * because it goes to its own endpoint and its own reader — the people
+     * who run the server, never the family owner (docs/protocol.md,
+     * "Reporting the assistant").
+     */
+    var assistantReportTarget by remember { mutableStateOf<Long?>(null) }
     // Held by the SCREEN, not by the row. A reveal is a peek — per row,
     // per device, never on the wire and never stored — but "per row" has
     // to survive the row leaving the LazyColumn and coming back, or
@@ -1507,15 +1514,30 @@ fun ChatScreen(
             onReport = {
                 val entity = target.item.entity
                 pickerTarget = null
-                reportTarget = ReportTarget(
-                    userId = entity.senderId,
-                    // Resolved OUTSIDE the lambda: `context.getString` in a
-                    // composable is what LocalContextGetResourceValueCall
-                    // exists to catch, and the fallback is the same for
-                    // every sender anyway.
-                    displayName = target.item.senderName ?: memberFallbackName,
-                    messageId = entity.serverId,
-                )
+                // THE ASSISTANT'S PATH, when the bubble is its reply: a
+                // different endpoint and a different reader, so a different
+                // sheet (docs/protocol.md, "Reporting the assistant").
+                if (SafetyRules.canReportAssistant(
+                        senderId = entity.senderId,
+                        myUserId = myUserId,
+                        assistantUserId = assistantUserId,
+                        isAiChat = chat?.kind == "ai",
+                        hasServerId = entity.serverId != null,
+                    )
+                ) {
+                    assistantReportTarget = entity.serverId
+                } else {
+                    reportTarget = ReportTarget(
+                        userId = entity.senderId,
+                        // Resolved OUTSIDE the lambda: `context.getString`
+                        // in a composable is what
+                        // LocalContextGetResourceValueCall exists to catch,
+                        // and the fallback is the same for every sender
+                        // anyway.
+                        displayName = target.item.senderName ?: memberFallbackName,
+                        messageId = entity.serverId,
+                    )
+                }
             },
             onToggleBlock = {
                 val entity = target.item.entity
@@ -1772,6 +1794,15 @@ private fun ReactionPickerPopup(
                 if (onSafetyPage) {
                     MessageSafetyMenu(
                         isSenderBlocked = target.item.entity.senderId in blockedUserIds,
+                        // The assistant is not a member: there is nothing to
+                        // block, and the report goes down its own path.
+                        isAssistantReply = SafetyRules.canReportAssistant(
+                            senderId = target.item.entity.senderId,
+                            myUserId = myUserId,
+                            assistantUserId = assistantUserId,
+                            isAiChat = isAiChat,
+                            hasServerId = target.item.entity.serverId != null,
+                        ),
                         onBack = { onSafetyPage = false },
                         onReport = { exitThen(onReport) },
                         onToggleBlock = { exitThen(onToggleBlock) },
@@ -1812,10 +1843,25 @@ private fun ReactionPickerPopup(
                     // iOS and macOS exclude it the same way; without this
                     // the three apps disagree in public on every `@ai`
                     // answer.
-                    canModerate = target.item.entity.serverId != null &&
-                        target.item.entity.senderId != myUserId &&
-                        target.item.entity.senderId != assistantUserId &&
-                        !isAiChat,
+                    canModerate = SafetyRules.canModerateMember(
+                        senderId = target.item.entity.senderId,
+                        myUserId = myUserId,
+                        assistantUserId = assistantUserId,
+                        isAiChat = isAiChat,
+                        hasServerId = target.item.entity.serverId != null,
+                    ) ||
+                        // THE ASSISTANT'S OWN ROW (docs/protocol.md,
+                        // "Reporting the assistant"): a reply may be
+                        // reported, to the people who run the server rather
+                        // than to the family owner. The Safety page below
+                        // draws the one row that applies.
+                        SafetyRules.canReportAssistant(
+                            senderId = target.item.entity.senderId,
+                            myUserId = myUserId,
+                            assistantUserId = assistantUserId,
+                            isAiChat = isAiChat,
+                            hasServerId = target.item.entity.serverId != null,
+                        ),
                     showSafety = { onSafetyPage = true },
                 )
                 }
@@ -2025,6 +2071,8 @@ private fun MessageContextMenu(
 @Composable
 private fun MessageSafetyMenu(
     isSenderBlocked: Boolean,
+    /** An assistant reply: one row, and it is the assistant's report. */
+    isAssistantReply: Boolean = false,
     onBack: () -> Unit,
     onReport: () -> Unit,
     onToggleBlock: () -> Unit,
@@ -2046,11 +2094,24 @@ private fun MessageSafetyMenu(
                 onClick = onBack,
             )
             MessageContextMenuItem(
-                label = stringResource(R.string.s_report_ellipsis),
+                // Two labels, because the two reports go to two readers: a
+                // row that said "Report…" for an assistant reply would tell
+                // somebody their family owner was about to read their own
+                // private thread.
+                label = if (isAssistantReply) {
+                    stringResource(R.string.s_report_this_reply_ellipsis)
+                } else {
+                    stringResource(R.string.s_report_ellipsis)
+                },
                 icon = Icons.Outlined.Flag,
                 onClick = onReport,
                 tint = MaterialTheme.colorScheme.error,
             )
+            if (isAssistantReply) {
+                // And nothing else: the assistant is not a member, so there
+                // is no Block half to draw.
+                return@Column
+            }
             MessageContextMenuItem(
                 label = if (isSenderBlocked) {
                     stringResource(R.string.s_unblock)

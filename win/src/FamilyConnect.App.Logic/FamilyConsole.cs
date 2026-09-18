@@ -80,6 +80,15 @@ public static class FamilyText
             : say.Get("Your family owner will be told you reported this member.");
 
     /// <summary>
+    /// Who reads a report about the ASSISTANT, said before it is sent. NOT the family owner: a
+    /// private assistant thread belongs to its member alone, so the people who run the server are
+    /// the ones told — and a member reporting a reply out of that thread has to know that before
+    /// they send it, not afterwards (docs/protocol.md, "Reporting the assistant").
+    /// </summary>
+    public static string AssistantReportDisclosure(IStringCatalog say) =>
+        say.Get("The people who run this server will see this reply and what you write here. Your family will not.");
+
+    /// <summary>
     /// A failure with nothing more particular to say. The server ANSWERING with trouble of its own —
     /// <c>internal</c>, or a status with no protocol body, a proxy's 502 while it restarts — is not
     /// "can't reach the server", which would send somebody to check a network that is fine.

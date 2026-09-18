@@ -28,6 +28,7 @@ import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AuthApi
 import me.nettrash.familyconnect.data.net.FamilyApi
+import me.nettrash.familyconnect.data.net.dto.AssistantReportResponse
 import me.nettrash.familyconnect.data.net.dto.BirthdayDto
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyResponse
@@ -183,6 +184,18 @@ class FamilyRepository @Inject constructor(
         reason: String,
         messageId: Long?,
     ): ApiResult<ReportResponse> = familyApi.report(reportedUserId, reason, messageId)
+
+    /**
+     * Report an ASSISTANT reply. A separate path from [report]: the assistant
+     * belongs to no family, so that endpoint refuses it, and this one is read
+     * by the people who run the server rather than by the family owner
+     * (docs/protocol.md, "Reporting the assistant").
+     */
+    suspend fun reportAssistant(
+        messageId: Long,
+        reason: String,
+        note: String?,
+    ): ApiResult<AssistantReportResponse> = familyApi.reportAssistant(messageId, reason, note)
 
     suspend fun unblock(userId: Long): ApiResult<Unit> =
         familyApi.unblockMember(userId).also {

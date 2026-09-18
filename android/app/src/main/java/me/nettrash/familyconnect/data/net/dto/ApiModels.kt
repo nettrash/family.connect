@@ -1434,6 +1434,41 @@ data class ReportResponse(val report: ReportDto)
  * config is what keeps it off the wire rather than sending an explicit
  * null.
  */
+/**
+ * `POST /reports/assistant` — what a member says the ASSISTANT got wrong
+ * (docs/protocol.md, "Reporting the assistant"). Not under `/families`: it
+ * needs no family, and no family owner may read it. [note] is free text and
+ * is omitted when empty, which `encodeDefaults=false` in the house Json
+ * config takes care of.
+ */
+@Serializable
+data class CreateAssistantReportRequest(
+    @SerialName("message_id") val messageId: Long,
+    val reason: String,
+    val note: String? = null,
+)
+
+/**
+ * The OPERATOR's row, answered back to the reporter's own app so it can say
+ * the report was taken. It appears in no other read — the owner's inbox
+ * included.
+ */
+@Serializable
+data class AssistantReportDto(
+    val id: Long,
+    /** The reply reported, while it lasts; retention drops it and the excerpt outlives it. */
+    @SerialName("message_id") val messageId: Long? = null,
+    /** The WHOLE reply, frozen when the report was raised. */
+    @SerialName("message_excerpt") val messageExcerpt: String? = null,
+    /** `ai` for the reporter's private thread, `family` for an `@ai` answer. */
+    @SerialName("chat_kind") val chatKind: String? = null,
+    val reason: String? = null,
+    val note: String? = null,
+)
+
+@Serializable
+data class AssistantReportResponse(val report: AssistantReportDto)
+
 @Serializable
 data class CreateReportRequest(
     @SerialName("reported_user_id") val reportedUserId: Long,

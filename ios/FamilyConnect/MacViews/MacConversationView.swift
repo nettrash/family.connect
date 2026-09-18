@@ -132,6 +132,10 @@ struct MacConversationView: View {
     @State private var showPollComposer = false
     /// Owned by the window rather than by a row, which scrolls away.
     @State private var reportTarget: ReportTarget?
+    /// The assistant reply being reported, if any — its own target, because
+    /// it goes to its own endpoint and its own reader (docs/protocol.md,
+    /// "Reporting the assistant").
+    @State private var assistantReportTarget: AssistantReportTarget?
     /// One fix, on demand — never a running location service.
     @State private var locationProvider = LocationProvider()
     /// A drag is over this window and would be accepted. Drawn, because a
@@ -489,6 +493,20 @@ struct MacConversationView: View {
         .onPasteCommand(of: ClipboardAttachment.pasteCommandTypes) { _ in
             pasteFromClipboard()
         }
+        .sheet(item: $assistantReportTarget) { target in
+            AssistantReportSheet(
+                target: target,
+                onSubmit: { reason, note in
+                    assistantReportTarget = nil
+                    Task {
+                        await coordinator.reportAssistant(
+                            messageID: target.messageID,
+                            reason: reason.rawValue,
+                            note: note)
+                    }
+                },
+                onCancel: { assistantReportTarget = nil })
+        }
         .sheet(item: $reportTarget) { target in
             ReportSheet(
                 target: target,
@@ -831,6 +849,14 @@ struct MacConversationView: View {
                                             ?? String(localized: "Someone"),
                                         messageID: row.message.serverID)
                                 },
+                                onReportAssistant: {
+                                    if let serverID = row.message.serverID {
+                                        assistantReportTarget = AssistantReportTarget(
+                                            messageID: serverID,
+                                            isPrivateThread: isAssistantChat)
+                                    }
+                                },
+                                isAssistantChat: isAssistantChat,
                                 isHiddenByBlock: row.isHiddenByBlock,
                                 isRevealed: revealedMessageIDs.contains(row.message.localID),
                                 onReveal: {

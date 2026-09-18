@@ -361,6 +361,10 @@
     <string name="s_which_replied_to_hidden">que respondía a un mensaje oculto</string>
     <string name="s_report">Denunciar</string>
     <string name="s_report_ellipsis">Denunciar…</string>
+    <string name="s_report_this_reply_ellipsis">Informar sobre esta respuesta…</string>
+    <string name="s_what_was_wrong_with_this_reply">¿Qué estaba mal en esta respuesta?</string>
+    <string name="s_say_something_about_it_optional">Cuenta algo al respecto (opcional)</string>
+    <string name="s_assistant_report_disclosure">Las personas que gestionan este servidor verán esta respuesta y lo que escribas aquí. Tu familia no.</string>
     <string name="s_block">Bloquear</string>
     <string name="s_unblock">Desbloquear</string>
     <string name="s_report_member_title">¿Por qué denuncias a %1$s?</string>

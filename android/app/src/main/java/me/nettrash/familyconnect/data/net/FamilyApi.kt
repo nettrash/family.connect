@@ -10,6 +10,8 @@
 
 package me.nettrash.familyconnect.data.net
 
+import me.nettrash.familyconnect.data.net.dto.AssistantReportResponse
+import me.nettrash.familyconnect.data.net.dto.CreateAssistantReportRequest
 import me.nettrash.familyconnect.data.net.dto.ResetPasswordRequest
 import me.nettrash.familyconnect.data.net.dto.ApproveResponse
 import me.nettrash.familyconnect.data.net.dto.BirthdayRequest
@@ -145,6 +147,20 @@ interface FamilyApi {
      */
     suspend fun report(reportedUserId: Long, reason: String, messageId: Long?): ApiResult<ReportResponse>
 
+    /**
+     * What the ASSISTANT got wrong (docs/protocol.md, "Reporting the
+     * assistant"). A separate endpoint from [report], and deliberately not
+     * under `/families`: the assistant belongs to no family, so the
+     * member-report endpoint refuses it, and the people who run the server
+     * read this one rather than the family owner. Reporting the same reply
+     * twice answers 200 with the stored row and creates nothing.
+     */
+    suspend fun reportAssistant(
+        messageId: Long,
+        reason: String,
+        note: String?,
+    ): ApiResult<AssistantReportResponse>
+
     /** Owner-only: the open reports, oldest first. */
     suspend fun reports(): ApiResult<ReportsResponse>
 
@@ -262,6 +278,16 @@ class DefaultFamilyApi @Inject constructor(
         messageId: Long?,
     ): ApiResult<ReportResponse> =
         client.post("/families/reports", CreateReportRequest(reportedUserId, reason, messageId))
+
+    override suspend fun reportAssistant(
+        messageId: Long,
+        reason: String,
+        note: String?,
+    ): ApiResult<AssistantReportResponse> =
+        client.post(
+            "/reports/assistant",
+            CreateAssistantReportRequest(messageId, reason, note?.trim()?.ifEmpty { null }),
+        )
 
     override suspend fun reports(): ApiResult<ReportsResponse> =
         client.get("/families/reports")

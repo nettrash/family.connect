@@ -286,6 +286,23 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
+     * Report an ASSISTANT reply. A separate path from [report]: the assistant
+     * belongs to no family, so the member endpoint refuses it, and the people
+     * who run the server read this one rather than the family owner
+     * (docs/protocol.md, "Reporting the assistant").
+     */
+    fun reportAssistant(messageId: Long, reason: String, note: String?, onDone: () -> Unit) {
+        viewModelScope.launch {
+            val result = familyRepository.reportAssistant(messageId, reason, note)
+            if (result is ApiResult.Ok<*>) {
+                onDone()
+            } else {
+                _transientMessages.tryEmit(appContext.getString(R.string.e_report_failed))
+            }
+        }
+    }
+
+    /**
      * Whether it also allows VIDEO calls (`GET /me` → video_calls_enabled,
      * docs/protocol.md, "Video") — gates the video-call button alone.
      */

@@ -351,6 +351,10 @@
     <string name="s_which_replied_to_hidden">该消息回复了一条已隐藏的消息</string>
     <string name="s_report">举报</string>
     <string name="s_report_ellipsis">举报…</string>
+    <string name="s_report_this_reply_ellipsis">举报这条回复…</string>
+    <string name="s_what_was_wrong_with_this_reply">这条回复哪里有问题？</string>
+    <string name="s_say_something_about_it_optional">说说是怎么回事（可选）</string>
+    <string name="s_assistant_report_disclosure">运行这台服务器的人会看到这条回复和你在这里写的内容，你的家人不会看到。</string>
     <string name="s_block">屏蔽</string>
     <string name="s_unblock">取消屏蔽</string>
     <string name="s_report_member_title">为什么举报%1$s？</string>

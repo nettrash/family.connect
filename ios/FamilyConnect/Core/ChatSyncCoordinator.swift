@@ -3829,6 +3829,22 @@ final class ChatSyncCoordinator {
         }
     }
 
+    /// Report an ASSISTANT reply — a separate path from `report` above, and
+    /// deliberately so: the assistant belongs to no family, so the
+    /// member-report endpoint refuses it, and what a member needs here is to
+    /// say that a MODEL got something wrong. The people who run the server
+    /// read it, never the family owner (docs/protocol.md, "Reporting the
+    /// assistant").
+    func reportAssistant(messageID: Int64, reason: String, note: String?) async -> Bool {
+        do {
+            _ = try await api.createAssistantReport(
+                messageID: messageID, reason: reason, note: note)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// Apply one block or unblock — the `member_blocked` frame, and the
     /// optimistic write behind the Block button.
     func applyBlock(userID: Int64, blocked: Bool) {

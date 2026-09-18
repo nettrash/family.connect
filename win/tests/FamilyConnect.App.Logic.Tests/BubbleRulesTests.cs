@@ -68,4 +68,35 @@ public sealed class BubbleRulesTests
         Assert.False(BubbleRules.MayReport(From(Me), Me, false, Assistant));
         Assert.False(BubbleRules.MayReport(From(Assistant), Me, false, Assistant));
     }
+
+    /// <summary>
+    /// The assistant's own path, which the member one refuses: a reply may be reported, and the two
+    /// rules never both answer true for the same bubble — the member endpoint would answer
+    /// `not_same_family` for the assistant, and the assistant endpoint answers `message_not_found`
+    /// for a member (docs/protocol.md, "Reporting the assistant").
+    /// </summary>
+    [Fact]
+    public void AnAssistantReplyMayBeReportedDownItsOwnPath()
+    {
+        Assert.True(BubbleRules.MayReportAssistant(From(Assistant), Me, false, Assistant));
+        // Its own chat, where anybody who is not the reader is the assistant.
+        Assert.True(BubbleRules.MayReportAssistant(From(Assistant), Me, assistantChat: true, assistantUserId: null));
+        // Not until the server has numbered it.
+        Assert.False(BubbleRules.MayReportAssistant(From(Assistant, id: 0), Me, false, Assistant));
+        // A member's message is not this path's business, and neither is your own.
+        Assert.False(BubbleRules.MayReportAssistant(From(Anna), Me, false, Assistant));
+        Assert.False(BubbleRules.MayReportAssistant(From(Me), Me, assistantChat: true, Assistant));
+        // Exclusive, both ways, for every bubble a chat can hold.
+        foreach (var (message, chat) in new[]
+        {
+            (From(Assistant), false), (From(Anna), false), (From(Me), false),
+            (From(Assistant), true), (From(Anna), true), (From(Me), true),
+        })
+        {
+            Assert.False(
+                BubbleRules.MayReport(message, Me, chat, Assistant)
+                    && BubbleRules.MayReportAssistant(message, Me, chat, Assistant),
+                "one bubble is never both a member report and an assistant report");
+        }
+    }
 }

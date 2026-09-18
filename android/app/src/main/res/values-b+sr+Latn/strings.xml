@@ -354,6 +354,10 @@
     <string name="s_which_replied_to_hidden">koja je odgovarala na sakrivenu poruku</string>
     <string name="s_report">Prijavi</string>
     <string name="s_report_ellipsis">Prijavi…</string>
+    <string name="s_report_this_reply_ellipsis">Prijavi ovaj odgovor…</string>
+    <string name="s_what_was_wrong_with_this_reply">Šta nije bilo u redu sa ovim odgovorom?</string>
+    <string name="s_say_something_about_it_optional">Napiši nešto o tome (opciono)</string>
+    <string name="s_assistant_report_disclosure">Ljudi koji vode ovaj server videće ovaj odgovor i ono što ovde napišeš. Tvoja porodica neće.</string>
     <string name="s_block">Blokiraj</string>
     <string name="s_unblock">Odblokiraj</string>
     <string name="s_report_member_title">Zašto prijavljujete korisnika %1$s?</string>

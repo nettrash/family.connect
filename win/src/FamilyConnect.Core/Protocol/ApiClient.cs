@@ -506,6 +506,21 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
                 : (object)new { reported_user_id = reportedUserId, reason },
             ct: ct);
 
+    /// <summary>
+    /// What the ASSISTANT got wrong. A separate endpoint from <see cref="Report"/>, and not under
+    /// <c>/families</c> at all: it needs no family, and no owner may read it (docs/protocol.md,
+    /// "Reporting the assistant"). A second report of the same reply answers 200 with the stored
+    /// row and creates nothing.
+    /// </summary>
+    public Task<ApiResult<AssistantReportResponse>> ReportAssistant(
+        long messageId, string reason, string? note = null, CancellationToken ct = default) =>
+        Send<AssistantReportResponse>(
+            HttpMethod.Post, "/reports/assistant",
+            string.IsNullOrWhiteSpace(note)
+                ? new { message_id = messageId, reason }
+                : (object)new { message_id = messageId, reason, note },
+            ct: ct);
+
     /// <summary>The owner's moderation list: open only, oldest first.</summary>
     public Task<ApiResult<ReportsResponse>> Reports(CancellationToken ct = default) =>
         Send<ReportsResponse>(HttpMethod.Get, "/families/reports", ct: ct);

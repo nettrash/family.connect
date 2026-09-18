@@ -68,6 +68,11 @@
     <string name="e_block_failed">Couldn\'t change that right now. Try again.</string>
     <string name="e_report_failed">Couldn\'t send the report. Try again.</string>
     <string name="s_report_ellipsis">Report…</string>
+    <!-- Reporting the assistant (docs/protocol.md, "Reporting the assistant"). -->
+    <string name="s_report_this_reply_ellipsis">Report this reply…</string>
+    <string name="s_what_was_wrong_with_this_reply">What was wrong with this reply?</string>
+    <string name="s_say_something_about_it_optional">Say something about it (optional)</string>
+    <string name="s_assistant_report_disclosure">The people who run this server will see this reply and what you write here. Your family will not.</string>
     <string name="s_block">Block</string>
     <string name="s_unblock">Unblock</string>
     <string name="s_report">Report</string>

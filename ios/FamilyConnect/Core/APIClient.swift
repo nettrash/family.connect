@@ -370,6 +370,34 @@ actor APIClient {
     /// File a report. `messageID` names one message of theirs, or nil to
     /// report the person. Raising the same report twice answers 200 with
     /// the open row rather than creating a second.
+    /// What the ASSISTANT got wrong (docs/protocol.md, "Reporting the
+    /// assistant"). A separate endpoint from `createReport`, and not under
+    /// `/families` at all: it needs no family, and no family owner may read
+    /// it — the people who run the server do. A second report of the same
+    /// reply answers 200 with the stored row and creates nothing.
+    func createAssistantReport(
+        messageID: Int64, reason: String, note: String?
+    ) async throws -> AssistantReportDTO {
+        struct Body: Encodable {
+            let messageID: Int64
+            let reason: String
+            let note: String?
+            enum CodingKeys: String, CodingKey {
+                case messageID = "message_id"
+                case reason
+                case note
+            }
+        }
+        let trimmed = note?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let response: AssistantReportResponse = try await request(
+            "POST", "/reports/assistant",
+            body: Body(
+                messageID: messageID,
+                reason: reason,
+                note: (trimmed?.isEmpty ?? true) ? nil : trimmed))
+        return response.report
+    }
+
     func createReport(reportedUserID: Int64, reason: String, messageID: Int64?) async throws -> ReportDTO {
         struct Body: Encodable {
             let reportedUserID: Int64

@@ -3387,6 +3387,59 @@ Blocking and reporting are independent. Reporting does not block, blocking does 
 owner's inbox NEVER shows who blocked whom — a family owner is often a parent and the blocked person
 is often in the same house, which is the exact case the silence exists for.
 
+### Reporting the assistant
+
+The assistant writes new text, and a member has to be able to say that what it wrote was wrong.
+That is a product duty and also a store one: Microsoft Store policy 11.16 requires a product with
+generative AI to give people a way to report what the AI generated, and 1.1 was held in
+certification for the want of it.
+
+**It is not a member report, and `POST /families/reports` still refuses it.** The assistant sends
+under a reserved account that belongs to no family, so that endpoint answers `not_same_family`, and
+it goes on doing so: the member-report path is about a PERSON in your family and the owner's power
+over them, neither of which applies to a model. This is a separate path with a separate reader.
+
+**The operator reads it, never the family owner.** Two reasons, and the first is the invariant in
+"The assistant": a private `ai` thread belongs to that member alone and no other member can read
+it, so handing a reply from it to the owner would break the one guarantee that thread has — and the
+owner is very often the parent the member might least want reading it. The second is that there is
+nothing an owner could DO: they cannot edit a model's answer, and the deployment's own switches
+(`ai`, `ai_history`, `ai_vision`, `greetings`) are the operator's. So an assistant report is stored
+for the operator and logged at WARN, exactly as a report ABOUT the owner already is, and it is
+absent from `GET /families/reports`. A client SAYS, where it offers the affordance, that the reply
+and the words around it go to the people who run the server — the same disclosure rule as reporting
+a message from a direct chat.
+
+**Both surfaces the assistant speaks on can be reported**: a reply in the member's private `ai`
+chat, and an `@ai` answer in the family chat. The second carries a reply the whole family could
+already read; the first carries one only that member could, which is exactly why the disclosure is
+part of the screen rather than a line in a policy.
+
+`reason` is one of the same four — `spam`, `harassment`, `inappropriate`, `other` — so the vocabulary
+is the product's one vocabulary. Unlike a member report it may also carry a free-text `note`, up to
+1,000 characters: the reader here is the one operator of this deployment rather than a
+nine-language owner, and "it invented a person" is not any of four words. The note is the
+reporter's own text and is stored verbatim.
+
+The assistant's reply is FROZEN into the row, the same inversion "Reporting a member" makes and for
+the same reason: retention deletes messages, and a report whose evidence has been swept is a reason
+word and a timestamp. `message_id` is kept beside it while it lasts.
+
+A report is identified by `(reporter, message_id)`: a second tap on the same reply returns the
+stored row and creates nothing, whatever `reason` came with it. There is no cap and no rate limit
+beyond that, because the bound is natural — a member can only report replies that exist, and each
+of them once.
+
+No push and no frame: the operator is not a user of this protocol, and nobody in the family is told
+that a report was made.
+
+**Four clients draw it**: iOS and iPadOS in the bubble's Safety page, macOS in the row's Safety
+submenu, Android on its own Safety page, and Windows in the right-click Safety submenu — all of
+them worded "Report this reply…", all of them saying who reads it before anything is sent. THE WEB
+CLIENT DOES NOT YET, and until it does a member there has the operator's `support_contact` and
+nothing nearer, which is a gap rather than a design. Windows drew it first because that is the
+client whose store asked.
+
 ### Voice calls
 
 Two members can talk. A call is **one to one, voice or video, and peer to peer**: the audio — and
@@ -3641,6 +3694,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /families/reports` | `{reported_user_id, reason, message_id?}` → `201 {report: Report}`, or `200 {report: Report}` when an open report by this caller against this member already exists. `reason` is one of `spam`, `harassment`, `inappropriate`, `other`. `message_id` must name a message in a chat the caller is in AND have been sent by `reported_user_id`; anything else — including a real message in a chat the caller cannot see — is `message_not_found`, so the endpoint never confirms an id exists elsewhere, exactly as `reply_to_message_id` does not. A report is identified by `(reporter, reported, message_id)`, with a null `message_id` for one that names a person rather than a message; raising one that matches an OPEN row returns that row and creates nothing, whatever `reason` was sent — the stored reason is not overwritten. So a double tap is not two rows in the owner's list, while reporting a second message of the same member IS a second report, which is what a moderator needs in order to see a pattern. The excerpt is frozen here (see "Reporting a member"). Errors: `not_in_family` (409), `cannot_report_self` (400), `not_same_family` (403), `message_not_found` (404), `validation`. |
 | `GET /families/reports` | (owner) → `200 {reports: [Report]}`, open only, oldest first — shaped exactly as `GET /families/join-requests`. Reports naming the owner themselves are NOT listed (see "Reporting a member"). Open reports are capped per family at the page maximum (200); the oldest are what the owner sees, and a family that has hit the ceiling has a moderation problem rather than a pagination problem. Error: `not_family_owner` (403). |
 | `POST /families/reports/{id}/resolve` | (owner) → `204`. Takes it off the list; what "dealt with" MEANS is the owner's business. Idempotent for the owner's own inbox: resolving a report they have already resolved is still `204`, because a double tap and a retry after a timeout that actually worked are the same request twice and neither is an error. `report_not_pending` (409) is kept for what the owner may not see at all — a report of another family, or one that names the owner — one answer for both, so the endpoint never confirms an id exists elsewhere. Errors: `not_family_owner` (403), `report_not_pending` (409). |
+| `POST /reports/assistant` | `{message_id, reason, note?}` → `201 {report: AssistantReport}`, or `200 {report: AssistantReport}` when this caller has already reported that message. Deliberately NOT under `/families`: it needs no family, because it is about the assistant rather than about anybody's member. `message_id` must name a message in a chat the caller is in AND have been sent by the assistant; anything else — a member's message, or a real message in a chat the caller cannot see — is `message_not_found`, the same non-enumeration rule `POST /families/reports` follows. `reason` is one of `spam`, `harassment`, `inappropriate`, `other`; `note` is optional free text, at most 1,000 characters. The reply is frozen into the row. The row is the OPERATOR's: it is logged at WARN and appears in no client read, `GET /families/reports` included (see "Reporting the assistant"). Errors: `message_not_found` (404), `validation`. |
 
 ### Attachments
 

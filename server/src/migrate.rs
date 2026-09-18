@@ -248,6 +248,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "note_tasks",
         sql: include_str!("../migrations/0045_note_tasks.sql"),
     },
+    Migration {
+        version: 46,
+        name: "assistant_reports",
+        sql: include_str!("../migrations/0046_assistant_reports.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

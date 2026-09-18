@@ -45,6 +45,7 @@ import me.nettrash.familyconnect.data.net.dto.PollOptionDto
 import me.nettrash.familyconnect.data.net.dto.PollsCatchUpResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyResponse
+import me.nettrash.familyconnect.data.net.dto.AssistantReportResponse
 import me.nettrash.familyconnect.data.net.dto.ReportResponse
 import me.nettrash.familyconnect.data.net.dto.ReportsResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyStatsDto
@@ -766,6 +767,20 @@ class FakeFamilyApi : FamilyApi {
         reportsRaised += Triple(reportedUserId, reason, messageId)
         return reportResult
             ?: ApiResult.NetworkError(IllegalStateException("unscripted report"))
+    }
+
+    /** What was reported about the ASSISTANT: message id, reason, note. */
+    val assistantReportsRaised = mutableListOf<Triple<Long, String, String?>>()
+    var assistantReportResult: ApiResult<AssistantReportResponse>? = null
+
+    override suspend fun reportAssistant(
+        messageId: Long,
+        reason: String,
+        note: String?,
+    ): ApiResult<AssistantReportResponse> {
+        assistantReportsRaised += Triple(messageId, reason, note)
+        return assistantReportResult
+            ?: ApiResult.NetworkError(IllegalStateException("unscripted assistant report"))
     }
 
     override suspend fun reports(): ApiResult<ReportsResponse> = reportsResult

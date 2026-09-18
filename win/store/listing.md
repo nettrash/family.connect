@@ -141,6 +141,11 @@ REPORT AND BLOCK: right-click a message → Safety → Report… or Block; or Fa
 
 DELETE ACCOUNT: Settings → Delete Account… (password, then a confirmation). Immediate and irreversible.
 
+GENERATIVE AI (policy 11.16), and the answer to the 2026-09-18 certification comment. The product has an assistant: a member can ask it questions in a private chat of their own, and can address it in the family chat by writing @ai. Both halves of what 11.16 asks are now in place.
+- REPORTING WHAT THE AI GENERATED: right-click any assistant reply → Safety → "Report this reply…". It offers the same four reasons the rest of the product uses and a free-text box, and it is on both surfaces the assistant speaks on. The report goes to the people who run the server — NOT to the family owner, deliberately: a private assistant thread belongs to its member alone, and the owner can neither read it nor change what a model said. The sheet says so before anything is sent. (Server: `POST /api/v1/reports/assistant`; the reply is frozen into the row so it survives retention. docs/protocol.md, "Reporting the assistant".)
+- THE DECLARATION: Properties → Product Declarations → "This product incorporates generative AI features…" is ticked for this submission.
+- The assistant is also the operator's switch: a server run by somebody else can have it off entirely, in which case the app shows no assistant chat and no @ai.
+
 RUNFULLTRUST: a WinUI 3 desktop app packaged as MSIX; full trust is the Windows App SDK's standard model, not a special use.
 
 NOT END-TO-END ENCRYPTED, and the app does not claim to be. Calls are peer to peer; please test them between two PCs.

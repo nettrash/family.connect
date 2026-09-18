@@ -366,6 +366,10 @@
     <string name="s_which_replied_to_hidden">которое было ответом на скрытое сообщение</string>
     <string name="s_report">Пожаловаться</string>
     <string name="s_report_ellipsis">Пожаловаться…</string>
+    <string name="s_report_this_reply_ellipsis">Пожаловаться на этот ответ…</string>
+    <string name="s_what_was_wrong_with_this_reply">Что было не так с этим ответом?</string>
+    <string name="s_say_something_about_it_optional">Напишите пару слов (необязательно)</string>
+    <string name="s_assistant_report_disclosure">Это увидят те, кто обслуживает этот сервер: сам ответ и то, что вы напишете здесь. Ваша семья — нет.</string>
     <string name="s_block">Заблокировать</string>
     <string name="s_unblock">Разблокировать</string>
     <string name="s_report_member_title">Почему вы жалуетесь на %1$s?</string>
