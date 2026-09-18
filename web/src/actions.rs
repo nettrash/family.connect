@@ -86,6 +86,15 @@ pub enum Action {
         message_id: Option<i64>,
         reason: String,
     },
+    /// What the ASSISTANT got wrong: a separate action from [`Action::Report`]
+    /// because it is a separate endpoint with a separate reader — the people
+    /// who run the server, never the family owner (docs/protocol.md,
+    /// "Reporting the assistant").
+    ReportAssistant {
+        message_id: i64,
+        reason: String,
+        note: Option<String>,
+    },
     Block {
         user_id: i64,
         blocked: bool,
@@ -689,6 +698,27 @@ impl Actions {
                         // kept from them, and the server's answer is the same
                         // either way on purpose (docs/protocol.md, "Reporting
                         // a member") — so this says only what is true of both.
+                        Ok(()) => this.notice(session, t("Report sent.")),
+                        Err(error) => this.fail_saying(
+                            session,
+                            &error,
+                            t("Couldn't send the report. Try again."),
+                        ),
+                    }
+                });
+            }
+            Action::ReportAssistant {
+                message_id,
+                reason,
+                note,
+            } => {
+                spawn_local(async move {
+                    match api::report_assistant(&token, message_id, &reason, note.as_deref()).await
+                    {
+                        // The same sentence the member report answers with,
+                        // and for a cousin of the same reason: what happens
+                        // next is the operator's, and a client that promised
+                        // more would be inventing it.
                         Ok(()) => this.notice(session, t("Report sent.")),
                         Err(error) => this.fail_saying(
                             session,

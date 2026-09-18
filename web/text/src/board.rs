@@ -388,7 +388,6 @@ pub fn going_line(going: usize, maybe: usize) -> Option<String> {
     }
 }
 
-
 /// A few degrees of tilt, derived from the id so a note keeps the same
 /// angle for everyone and across reloads — a wall of perfectly square notes
 /// reads as a table, not a pinboard. The Mac's -3…3.
@@ -572,7 +571,10 @@ mod tests {
         assert!((h - 84.375).abs() < 0.01, "{h}");
         // A picture the shape of its space fills it exactly, and neither
         // side ever grows past it.
-        assert_eq!(fitted_picture((150.0, 110.0), (300.0, 220.0)), (150.0, 110.0));
+        assert_eq!(
+            fitted_picture((150.0, 110.0), (300.0, 220.0)),
+            (150.0, 110.0)
+        );
         let (w, h) = fitted_picture((150.0, 110.0), (15.0, 11.0));
         assert!(w <= 150.0 && h <= 110.0);
         // Dimensions the server never recorded take the whole space: a

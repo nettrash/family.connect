@@ -29,7 +29,7 @@ use crate::views::attach::{
 use crate::views::bubble::Bubble;
 use crate::views::composer::{resolve_mentions, Composer, Editing, Pictures, Replying};
 use crate::views::poll::PollComposer;
-use crate::views::report::{ReportDialog, ReportTarget};
+use crate::views::report::{AssistantReportDialog, ReportDialog, ReportTarget};
 use fc_text::assistant_pictures::{self, Candidate};
 
 #[derive(Properties, PartialEq)]
@@ -162,6 +162,10 @@ pub fn conversation(props: &ConversationProps) -> Html {
     let editing_now = use_mut_ref(|| Option::<i64>::None);
     *editing_now.borrow_mut() = *editing;
     let report = use_state(|| Option::<ReportTarget>::None);
+    /// The assistant reply being reported, by server id — its own state,
+    /// because it goes to its own endpoint and its own reader
+    /// (docs/protocol.md, "Reporting the assistant").
+    let assistant_report = use_state(|| Option::<i64>::None);
     let poll_open = use_state(|| false);
     let highlight = use_state(|| Option::<i64>::None);
     let at_newest = use_state(|| true);
@@ -368,6 +372,11 @@ pub fn conversation(props: &ConversationProps) -> Html {
                 message_id,
             }));
         })
+    };
+
+    let on_report_assistant = {
+        let assistant_report = assistant_report.clone();
+        Callback::from(move |message_id: i64| assistant_report.set(Some(message_id)))
     };
 
     let replying_to = replying.and_then(|id| {
@@ -961,6 +970,33 @@ pub fn conversation(props: &ConversationProps) -> Html {
         html! { <PollComposer {on_submit} {on_cancel} /> }
     });
 
+    let assistant_report_dialog = (*assistant_report).map(|message_id| {
+        let on_submit = {
+            let on_action = props.on_action.clone();
+            let assistant_report = assistant_report.clone();
+            Callback::from(move |(reason, note): (String, Option<String>)| {
+                assistant_report.set(None);
+                on_action.emit(Action::ReportAssistant {
+                    message_id,
+                    reason,
+                    note,
+                });
+            })
+        };
+        let on_cancel = {
+            let assistant_report = assistant_report.clone();
+            Callback::from(move |_: ()| assistant_report.set(None))
+        };
+        html! {
+            <AssistantReportDialog
+                {message_id}
+                support_contact={props.support_contact.clone()}
+                {on_submit}
+                {on_cancel}
+            />
+        }
+    });
+
     let report_dialog = (*report).clone().map(|target| {
         let on_submit = {
             let on_action = props.on_action.clone();
@@ -1109,6 +1145,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                                     on_reply={on_reply.clone()}
                                     on_edit={on_edit.clone()}
                                     on_report={on_report.clone()}
+                                    on_report_assistant={on_report_assistant.clone()}
                                     on_jump={on_jump.clone()}
                                 />
                             </div>
@@ -1175,6 +1212,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
             />
             { poll_dialog.unwrap_or_default() }
             { report_dialog.unwrap_or_default() }
+            { assistant_report_dialog.unwrap_or_default() }
         </section>
     }
 }

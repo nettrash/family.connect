@@ -3433,12 +3433,12 @@ of them once.
 No push and no frame: the operator is not a user of this protocol, and nobody in the family is told
 that a report was made.
 
-**Four clients draw it**: iOS and iPadOS in the bubble's Safety page, macOS in the row's Safety
-submenu, Android on its own Safety page, and Windows in the right-click Safety submenu — all of
-them worded "Report this reply…", all of them saying who reads it before anything is sent. THE WEB
-CLIENT DOES NOT YET, and until it does a member there has the operator's `support_contact` and
-nothing nearer, which is a gap rather than a design. Windows drew it first because that is the
-client whose store asked.
+**Every client draws it**: iOS and iPadOS in the bubble's Safety page, macOS in the row's Safety
+submenu, Android on its own Safety page, Windows in the right-click Safety submenu and the web in
+the bubble's menu — all of them worded "Report this reply…", all of them showing one Safety row and
+no Block for a reply, and all of them saying who reads it before anything is sent. Windows drew it
+first because that is the client whose store asked; the web drew it last and needed no store to
+ask.
 
 ### Voice calls
 
