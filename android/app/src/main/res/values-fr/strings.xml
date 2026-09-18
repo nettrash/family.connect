@@ -361,6 +361,10 @@
     <string name="s_which_replied_to_hidden">qui répondait à un message masqué</string>
     <string name="s_report">Signaler</string>
     <string name="s_report_ellipsis">Signaler…</string>
+    <string name="s_report_this_reply_ellipsis">Signaler cette réponse…</string>
+    <string name="s_what_was_wrong_with_this_reply">Qu’est-ce qui n’allait pas dans cette réponse ?</string>
+    <string name="s_say_something_about_it_optional">Dites-en un mot (facultatif)</string>
+    <string name="s_assistant_report_disclosure">Les personnes qui gèrent ce serveur verront cette réponse et ce que vous écrivez ici. Votre famille, non.</string>
     <string name="s_block">Bloquer</string>
     <string name="s_unblock">Débloquer</string>
     <string name="s_report_member_title">Pourquoi signalez-vous %1$s ?</string>

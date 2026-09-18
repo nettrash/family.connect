@@ -148,6 +148,11 @@ struct MessageContextMenu: View {
     /// design is that every refusal is aimed at the blocker and looks
     /// innocent.
     var canReport: Bool = false
+    /// Whether the Report row reports the ASSISTANT rather than a member —
+    /// the LABEL only, deliberately: the row count must not change with it,
+    /// because `size(...)` and `body` agree on rows and not on wording
+    /// (docs/protocol.md, "Reporting the assistant").
+    var reportsAssistant: Bool = false
     /// `nil` when blocking does not apply to this message at all (own, or
     /// the assistant's); otherwise which way the row reads.
     var blockState: BlockState?
@@ -288,7 +293,13 @@ struct MessageContextMenu: View {
         case .back:
             row("Back", systemImage: "chevron.backward", action: { onPage(.main) })
         case .report:
-            row("Report…", systemImage: "exclamationmark.bubble", action: onReport)
+            // Two labels, one row: the assistant's reply is reported down a
+            // different endpoint to a different reader, and a row that said
+            // "Report…" for both would tell somebody their family owner was
+            // about to read their private thread.
+            row(
+                reportsAssistant ? "Report this reply…" : "Report…",
+                systemImage: "exclamationmark.bubble", action: onReport)
         case .block:
             row("Block", systemImage: "hand.raised", action: onBlock, isDestructive: true)
         case .unblock:

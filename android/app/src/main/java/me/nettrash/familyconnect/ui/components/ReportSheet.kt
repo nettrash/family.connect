@@ -26,6 +26,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -33,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -176,3 +178,109 @@ internal fun ReportSheet(
         }
     }
 }
+
+/**
+ * Reporting an ASSISTANT reply (docs/protocol.md, "Reporting the assistant").
+ *
+ * A sheet of its own rather than a flag on [ReportSheet], for the two things
+ * that differ and both matter. It says WHO READS IT — the people who run the
+ * server, never the family owner — because a private assistant thread belongs
+ * to its member alone, and somebody reporting a reply out of one has to know
+ * that before they send it. And it takes a NOTE, which a member report has
+ * none of: the reader here is one operator rather than a nine-language owner,
+ * and "it invented a person" is not any of four words.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun AssistantReportSheet(
+    supportContact: String?,
+    onDismiss: () -> Unit,
+    onSubmit: (reason: String, note: String?) -> Unit,
+) {
+    // INAPPROPRIATE, matching iOS and macOS: the reason somebody reaches for
+    // about a model's answer is not the one they reach for about a person.
+    var reason by remember { mutableStateOf(ReportReason.INAPPROPRIATE) }
+    var note by rememberSaveable { mutableStateOf("") }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.s_what_was_wrong_with_this_reply),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Column(modifier = Modifier.selectableGroup()) {
+                ReportReason.entries.forEach { choice ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = reason == choice,
+                                role = Role.RadioButton,
+                                onClick = { reason = choice },
+                            )
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        RadioButton(selected = reason == choice, onClick = null)
+                        Text(
+                            text = stringResource(choice.label),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    }
+                }
+            }
+            OutlinedTextField(
+                value = note,
+                // The server's cap, enforced here so nobody types past it
+                // and is refused (`POST /reports/assistant`).
+                onValueChange = { typed -> note = typed.take(ASSISTANT_NOTE_LIMIT) },
+                label = { Text(stringResource(R.string.s_say_something_about_it_optional)) },
+                minLines = 3,
+                maxLines = 6,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                text = stringResource(R.string.s_assistant_report_disclosure),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (!supportContact.isNullOrEmpty()) {
+                HorizontalDivider()
+                SelectionContainer {
+                    Text(text = supportContact, style = MaterialTheme.typography.bodyMedium)
+                }
+                Text(
+                    text = stringResource(R.string.s_operator_published_contact),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.s_cancel))
+                }
+                TextButton(onClick = { onSubmit(reason.wire, note.trim().ifEmpty { null }) }) {
+                    Text(
+                        text = stringResource(R.string.s_report),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** The server's cap on a note (`POST /reports/assistant`). */
+private const val ASSISTANT_NOTE_LIMIT = 1000

@@ -269,6 +269,47 @@ pub struct Family {
     pub ai_faces: bool,
 }
 
+/// What a member says the ASSISTANT got wrong (docs/protocol.md, "Reporting
+/// the assistant"). The OPERATOR's row, never the family owner's: it appears
+/// in no client read, and this shape exists only so the reporter's own app can
+/// show that the report was taken.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssistantReport {
+    pub id: i64,
+    /// The assistant reply reported, while it still exists. Retention drops
+    /// it; `message_excerpt` outlives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<i64>,
+    /// The WHOLE reply, frozen when the report was raised — the same
+    /// inversion of the recompute rule a member report makes, and for the
+    /// same reason: retention deletes the message and the evidence with it.
+    pub message_excerpt: String,
+    /// `"ai"` for the reporter's private thread, `"family"` for an `@ai`
+    /// answer the whole family could already read. Frozen too: it is the one
+    /// piece of context the operator cannot rebuild once retention has taken
+    /// the message.
+    pub chat_kind: String,
+    /// One of `"spam"`, `"harassment"`, `"inappropriate"`, `"other"` — the
+    /// product's one vocabulary for this.
+    pub reason: String,
+    /// The reporter's own words, when they wrote any. Free text where a member
+    /// report has none, because the reader is one operator rather than a
+    /// nine-language owner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+/// `POST /reports/assistant`.
+#[derive(Debug, Deserialize)]
+pub struct CreateAssistantReportRequest {
+    pub message_id: i64,
+    pub reason: String,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
 /// `Report` object as listed for the owner (protocol.md, "Reporting a
 /// member").
 ///

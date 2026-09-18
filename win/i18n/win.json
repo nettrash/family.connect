@@ -106,7 +106,6 @@
     "Recording %@": {},
     "Report sent.": {},
     "Safety for %@": {},
-    "Say something about it (optional)": {},
     "Shows a map on a shared location. Drawing one asks OpenStreetMap for the map around that place, so OpenStreetMap sees a request from this device. With maps off, a shared location still shows its pin and opens in a map when you click it.": {
       "de": "Zeigt bei einem geteilten Standort eine Karte. Dafür wird OpenStreetMap nach der Karte rund um diesen Ort gefragt, daher sieht OpenStreetMap eine Anfrage von diesem Gerät. Ohne Karten zeigt ein geteilter Standort weiterhin seine Markierung und öffnet sich beim Klicken in einer Karte.",
       "es": "Muestra un mapa en una ubicación compartida. Para dibujarlo se pide a OpenStreetMap el mapa alrededor de ese lugar, así que OpenStreetMap ve una solicitud desde este dispositivo. Sin mapas, una ubicación compartida sigue mostrando su marcador y se abre en un mapa al hacer clic.",

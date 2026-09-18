@@ -526,6 +526,38 @@ nonisolated struct ReportResponse: Codable, Equatable, Sendable {
     let report: ReportDTO
 }
 
+/// What a member said the ASSISTANT got wrong (docs/protocol.md, "Reporting
+/// the assistant"). The OPERATOR's row: it comes back to the reporter's own
+/// app so it can say the report was taken, and appears in no other read —
+/// the family owner's inbox included.
+nonisolated struct AssistantReportDTO: Codable, Equatable, Sendable {
+    let id: Int64
+    /// The reply reported, while it lasts. Retention drops it; the excerpt
+    /// outlives it.
+    let messageID: Int64?
+    /// The WHOLE reply, frozen when the report was raised.
+    let messageExcerpt: String?
+    /// `"ai"` for the reporter's private thread, `"family"` for an `@ai`
+    /// answer the whole family could already read.
+    let chatKind: String?
+    let reason: String?
+    /// The reporter's own words, when they wrote any.
+    let note: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case messageID = "message_id"
+        case messageExcerpt = "message_excerpt"
+        case chatKind = "chat_kind"
+        case reason
+        case note
+    }
+}
+
+nonisolated struct AssistantReportResponse: Codable, Equatable, Sendable {
+    let report: AssistantReportDTO
+}
+
 nonisolated struct ChatDTO: Codable, Equatable, Sendable {
     let id: Int64
     /// "family" | "direct"

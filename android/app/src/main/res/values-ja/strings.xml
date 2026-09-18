@@ -351,6 +351,10 @@
     <string name="s_which_replied_to_hidden">非表示のメッセージに返信したもの</string>
     <string name="s_report">報告</string>
     <string name="s_report_ellipsis">報告…</string>
+    <string name="s_report_this_reply_ellipsis">この返信を報告…</string>
+    <string name="s_what_was_wrong_with_this_reply">この返信のどこが問題でしたか？</string>
+    <string name="s_say_something_about_it_optional">ひとこと添える（任意）</string>
+    <string name="s_assistant_report_disclosure">このサーバーの運営者に、この返信とここに書いた内容が表示されます。ファミリーには表示されません。</string>
     <string name="s_block">ブロック</string>
     <string name="s_unblock">ブロックを解除</string>
     <string name="s_report_member_title">%1$sさんを報告する理由は？</string>

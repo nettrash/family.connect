@@ -343,6 +343,25 @@ public sealed record ReportDto(
 
 public sealed record ReportResponse(ReportDto Report);
 
+/// <summary>
+/// What a member said the ASSISTANT got wrong (docs/protocol.md, "Reporting the assistant"). The
+/// OPERATOR's row: it is returned to the reporter's own app so it can show the report was taken,
+/// and appears in no other read — the family owner's inbox included.
+/// </summary>
+public sealed record AssistantReportDto(
+    [property: JsonPropertyName("id")] long Id,
+    /// <summary>The reply reported, while it lasts. Retention drops it; the excerpt outlives it.</summary>
+    [property: JsonPropertyName("message_id")] long? MessageId = null,
+    /// <summary>The WHOLE reply, frozen when the report was raised.</summary>
+    [property: JsonPropertyName("message_excerpt")] string? MessageExcerpt = null,
+    /// <summary>`ai` for the reporter's private thread, `family` for an `@ai` answer.</summary>
+    [property: JsonPropertyName("chat_kind")] string? ChatKind = null,
+    [property: JsonPropertyName("reason")] string? Reason = null,
+    /// <summary>The reporter's own words, when they wrote any.</summary>
+    [property: JsonPropertyName("note")] string? Note = null);
+
+public sealed record AssistantReportResponse(AssistantReportDto Report);
+
 public sealed record ReportsResponse(ReportDto[]? Reports);
 
 /// <summary>

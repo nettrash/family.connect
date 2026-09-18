@@ -109,4 +109,22 @@ public sealed class FamilyConsoleTests
         Assert.Equal("That didn't work. Try again.",
             FamilyText.RequestFailure(new ApiError(ErrorCodes.JoinRequestNotPending, "x", 409), Say));
     }
+
+    /// <summary>
+    /// The sentence a member reads before reporting an assistant reply. It has to say the operator
+    /// and NOT the family owner: a private assistant thread belongs to its member alone, so
+    /// somebody reporting a reply out of one needs to know who will read it before they send it.
+    /// </summary>
+    [Fact]
+    public void ReportingTheAssistantNamesTheOperatorAndNotTheOwner()
+    {
+        var said = FamilyText.AssistantReportDisclosure(Say);
+        Assert.Contains("run this server", said);
+        // It names the operator, never the owner, and says the family's part OUT LOUD rather than
+        // leaving a reader to assume it.
+        Assert.DoesNotContain("owner", said, System.StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Your family will not", said);
+        // And the member one still says the owner, which is the point of having two.
+        Assert.Contains("owner", FamilyText.ReportDisclosure(aboutMessage: true, Say));
+    }
 }

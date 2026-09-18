@@ -215,6 +215,50 @@ internal static class Dialogs
             : null;
     }
 
+    /// <summary>
+    /// Reporting an ASSISTANT reply: the same four reasons, an optional note, and a different
+    /// disclosure — the people who run the server read this one, never the family owner
+    /// (docs/protocol.md, "Reporting the assistant"). Answers the reason and the note, or null if
+    /// the reader changed their mind.
+    /// </summary>
+    public static async Task<(string Reason, string? Note)?> ReportAssistantAsync(
+        XamlRoot root, IStringCatalog say, string? supportContact)
+    {
+        var reasons = new RadioButtons { Header = say.Get("What was wrong with this reply?") };
+        foreach (var (code, key) in FamilyText.Reasons)
+        {
+            reasons.Items.Add(new RadioButton { Content = say.Get(key), Tag = code });
+            if (code == FamilyText.FirstReason)
+            {
+                reasons.SelectedIndex = reasons.Items.Count - 1;
+            }
+        }
+        // Free text, which a member report does not have: the reader here is one operator rather
+        // than a nine-language owner, and "it invented a person" is not any of four words. The cap
+        // is the server's (1,000 characters), enforced here so nobody types past it and is refused.
+        var note = new TextBox
+        {
+            PlaceholderText = say.Get("Say something about it (optional)"),
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MaxLength = 1000,
+            Height = 92,
+        };
+        var content = Column(reasons, note, Footnote(FamilyText.AssistantReportDisclosure(say)));
+        if (!string.IsNullOrEmpty(supportContact))
+        {
+            content.Children.Add(new TextBlock { Text = supportContact, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true });
+            content.Children.Add(Footnote(say.Get("This server's operator published this contact.")));
+        }
+        var dialog = Create(root, say.Get("Report this reply"), content);
+        dialog.PrimaryButtonText = say.Get("Report");
+        dialog.CloseButtonText = say.Get("Cancel");
+        return await dialog.ShowAsync() == ContentDialogResult.Primary
+            && reasons.SelectedItem is RadioButton { Tag: string chosen }
+            ? (chosen, string.IsNullOrWhiteSpace(note.Text) ? null : note.Text.Trim())
+            : null;
+    }
+
     public static StackPanel Column(params UIElement[] children)
     {
         var column = new StackPanel { Spacing = 12, MinWidth = 320 };

@@ -296,6 +296,10 @@ struct ConversationView: View {
     @State private var menuPage: MessageContextMenu.Page = .main
     /// The member a report sheet is open for, if any.
     @State private var reportTarget: ReportTarget?
+    /// The assistant reply being reported, if any — a separate target from
+    /// `reportTarget` because it goes to a separate endpoint and a separate
+    /// reader (docs/protocol.md, "Reporting the assistant").
+    @State private var assistantReportTarget: AssistantReportTarget?
     /// The bubble the "+" full emoji picker sheet is up for.
     @State private var fullPickerTarget: ReactionTarget?
     /// Text handed to the share sheet, nil while it is closed.
@@ -843,6 +847,22 @@ struct ConversationView: View {
                     }
                 },
                 onCancel: { reportTarget = nil })
+        }
+        .sheet(item: $assistantReportTarget) { target in
+            AssistantReportSheet(
+                target: target,
+                onSubmit: { reason, note in
+                    assistantReportTarget = nil
+                    Task {
+                        await coordinator.reportAssistant(
+                            messageID: target.messageID,
+                            // The RAW value: the untranslated wire string,
+                            // never the label somebody reads.
+                            reason: reason.rawValue,
+                            note: note)
+                    }
+                },
+                onCancel: { assistantReportTarget = nil })
         }
         .sheet(item: $shareText) { share in
             ShareSheet(text: share.text)
@@ -2437,7 +2457,22 @@ struct ConversationView: View {
                         let isOther = message.senderID != currentUserID
                         let isAssistantSender = isAssistantChat
                             || message.senderID == AppSettings.assistantUserID
-                        let canReport = isOther && !isAssistantSender && message.serverID != nil
+                        let canReportMember = SafetyRules.canReportMember(
+                            senderID: message.senderID, currentUserID: currentUserID,
+                            isAssistant: isAssistantSender, hasServerID: message.serverID != nil)
+                        // THE ASSISTANT'S OWN PATH (docs/protocol.md,
+                        // "Reporting the assistant"): a reply may be
+                        // reported, to the people who run the server rather
+                        // than to the family owner. There is still nothing to
+                        // BLOCK — the assistant is not a member — so the
+                        // Safety page holds one row for it.
+                        let canReportAssistant = SafetyRules.canReportAssistant(
+                            senderID: message.senderID, currentUserID: currentUserID,
+                            isAssistant: isAssistantSender, hasServerID: message.serverID != nil)
+                        // ONE value for the size call and the menu, as the
+                        // note below insists: a row counted here and drawn
+                        // there places the panel for the wrong height.
+                        let canReport = canReportMember || canReportAssistant
                         let blockState: MessageContextMenu.BlockState? =
                             (isOther && !isAssistantSender)
                             ? (coordinator.blockedUserIDs.contains(message.senderID)
@@ -2500,9 +2535,16 @@ struct ConversationView: View {
                                 canEdit: canEdit,
                                 canCopy: canCopy,
                                 canReport: canReport,
+                                reportsAssistant: canReportAssistant,
                                 blockState: blockState,
                                 onReport: {
                                     dismissReactionPicker()
+                                    if canReportAssistant, let serverID = message.serverID {
+                                        assistantReportTarget = AssistantReportTarget(
+                                            messageID: serverID,
+                                            isPrivateThread: isAssistantChat)
+                                        return
+                                    }
                                     reportTarget = ReportTarget(
                                         senderID: message.senderID,
                                         senderName: displayName(for: message.senderID)

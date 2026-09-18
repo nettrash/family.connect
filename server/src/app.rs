@@ -123,6 +123,13 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/families/reports/{id}/resolve",
             post(handlers_report::resolve_report),
         )
+        .route(
+            // NOT under /families: an assistant report needs no family, and
+            // no owner may read it (docs/protocol.md, "Reporting the
+            // assistant").
+            "/api/v1/reports/assistant",
+            post(handlers_report::create_assistant_report),
+        )
         // Chats & messages
         .route("/api/v1/chats", get(handlers_chat::list_chats))
         .route("/api/v1/chats/direct", post(handlers_chat::direct_chat))

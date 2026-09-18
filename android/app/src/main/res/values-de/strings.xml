@@ -356,6 +356,10 @@
     <string name="s_which_replied_to_hidden">die auf eine ausgeblendete Nachricht geantwortet hat</string>
     <string name="s_report">Melden</string>
     <string name="s_report_ellipsis">Melden…</string>
+    <string name="s_report_this_reply_ellipsis">Diese Antwort melden…</string>
+    <string name="s_what_was_wrong_with_this_reply">Was war an dieser Antwort falsch?</string>
+    <string name="s_say_something_about_it_optional">Schreib etwas dazu (optional)</string>
+    <string name="s_assistant_report_disclosure">Die Betreiber dieses Servers sehen diese Antwort und was du hier schreibst. Deine Familie nicht.</string>
     <string name="s_block">Blockieren</string>
     <string name="s_unblock">Blockierung aufheben</string>
     <string name="s_report_member_title">Warum meldest du %1$s?</string>

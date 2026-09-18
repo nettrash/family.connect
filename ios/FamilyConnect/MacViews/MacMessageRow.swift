@@ -54,6 +54,13 @@ struct MacMessageRow: View {
     /// sender. The row does not own the sheet: on the Mac it belongs to the
     /// window, not to a row that scrolls away under it.
     var onReport: () -> Void = {}
+    /// Report an ASSISTANT reply — a separate closure from `onReport`
+    /// because it is a separate endpoint with a separate reader
+    /// (docs/protocol.md, "Reporting the assistant").
+    var onReportAssistant: () -> Void = {}
+    /// Whether this row is in the reader's own assistant chat, where
+    /// anybody who is not the reader is the assistant.
+    var isAssistantChat: Bool = false
     /// Whether this surface can act on Edit and Report: the chat can, the
     /// thread sheet cannot, and a menu row that silently does nothing is
     /// worse than none (docs/protocol.md, "Threads").
@@ -476,7 +483,17 @@ struct MacMessageRow: View {
         // React / See who reacted / Try Again / Delete and no Share, and
         // porting the iOS row set wholesale would smuggle a Share item
         // onto the Mac that nobody asked for.
-        if isOtherMember {
+        // THE ASSISTANT'S REPLY, which has a Safety row of its own and only
+        // the one: a reply can be reported — to the people who run the
+        // server, never to the family owner — and there is nothing to
+        // block, because the assistant is not a member (docs/protocol.md,
+        // "Reporting the assistant").
+        if isAssistantSender, canReport, message.serverID != nil {
+            Divider()
+            Menu("Safety") {
+                Button("Report this reply…") { onReportAssistant() }
+            }
+        } else if isOtherMember {
             Divider()
             // Grouped under Safety, matching the phone and the roster. A
             // native submenu here, unlike iOS's paged custom panel: an
@@ -505,7 +522,15 @@ struct MacMessageRow: View {
     /// server would refuse a block naming it.
     private var isOtherMember: Bool {
         message.senderID != coordinator.currentUserID
-            && message.senderID != AppSettings.assistantUserID
+            && !isAssistantSender
+    }
+
+    /// The assistant, by its account or by the chat it is speaking in — the
+    /// same belt and braces the phone uses, because a client that has not
+    /// read the assistant's id yet still knows whose chat this is.
+    private var isAssistantSender: Bool {
+        message.senderID != coordinator.currentUserID
+            && (isAssistantChat || message.senderID == AppSettings.assistantUserID)
     }
 
     @ViewBuilder

@@ -46,4 +46,14 @@ public static class BubbleRules
     /// <summary>A message may be reported once it is numbered, and only another member's — hidden or not.</summary>
     public static bool MayReport(MessageDto message, long me, bool assistantChat, long? assistantUserId) =>
         message.Id != 0 && IsOtherMember(message, me, assistantChat, assistantUserId);
+
+    /// <summary>
+    /// An ASSISTANT reply may be reported, once it is numbered — a separate path from
+    /// <see cref="MayReport"/> and deliberately so (docs/protocol.md, "Reporting the assistant").
+    /// The assistant belongs to no family, so the member-report endpoint refuses it with
+    /// <c>not_same_family</c>; what a member needs here is to say that a MODEL got something wrong,
+    /// which is the operator's business and not the family owner's.
+    /// </summary>
+    public static bool MayReportAssistant(MessageDto message, long me, bool assistantChat, long? assistantUserId) =>
+        message.Id != 0 && IsAssistant(message, me, assistantChat, assistantUserId);
 }
