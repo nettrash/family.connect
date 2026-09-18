@@ -407,6 +407,17 @@ struct RsvpRequest<'a> {
     answer: &'a str,
 }
 
+/// `POST /reports/assistant` — not under `/families`: it needs no family,
+/// and no family owner may read it (docs/protocol.md, "Reporting the
+/// assistant").
+#[derive(Debug, Serialize)]
+struct AssistantReportRequest<'a> {
+    message_id: i64,
+    reason: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<&'a str>,
+}
+
 #[derive(Debug, Serialize)]
 struct ReportRequest<'a> {
     reported_user_id: i64,
@@ -1300,6 +1311,29 @@ pub async fn report(
         Some(&body),
     )
     .await
+}
+
+/// `POST /reports/assistant`: what the ASSISTANT got wrong.
+///
+/// A separate endpoint from [`report`], and deliberately so — the assistant
+/// belongs to no family, so the member-report endpoint answers
+/// `not_same_family`, and this row is read by the people who run the server
+/// rather than by the family owner (docs/protocol.md, "Reporting the
+/// assistant"). Reporting the same reply twice answers 200 with the stored
+/// row and creates nothing, so this needs no idempotency of its own.
+pub async fn report_assistant(
+    token: &str,
+    message_id: i64,
+    reason: &str,
+    note: Option<&str>,
+) -> Result<(), ApiError> {
+    let note = note.map(str::trim).filter(|note| !note.is_empty());
+    let body = AssistantReportRequest {
+        message_id,
+        reason,
+        note,
+    };
+    empty(Request::post(&path("/reports/assistant")), token, Some(&body)).await
 }
 
 /// `PUT` / `DELETE /families/members/{id}/block`.

@@ -85,6 +85,11 @@ pub struct BubbleProps {
     pub on_reply: Callback<i64>,
     pub on_edit: Callback<i64>,
     pub on_report: Callback<(i64, Option<i64>)>,
+    /// One ASSISTANT reply, by server id — its own callback because it goes
+    /// to its own endpoint and its own reader (docs/protocol.md, "Reporting
+    /// the assistant").
+    #[prop_or_default]
+    pub on_report_assistant: Callback<i64>,
     /// Asked to show the quoted message.
     pub on_jump: Callback<i64>,
 }
@@ -148,6 +153,20 @@ pub fn bubble(props: &BubbleProps) -> Html {
         })
     };
     let can_report = acked && is_other_member && !props.in_thread;
+    // THE ASSISTANT'S OWN ROW (docs/protocol.md, "Reporting the assistant"):
+    // a reply may be reported, to the people who run the server rather than
+    // to the family owner, and there is nothing to block — the assistant is
+    // not a member. Exclusive with `can_report` by construction, since
+    // `is_other_member` is `!mine && !is_assistant`.
+    let can_report_assistant = acked && is_assistant && !mine && !props.in_thread;
+    let report_assistant = {
+        let on_report_assistant = props.on_report_assistant.clone();
+        let menu_open = menu_open.clone();
+        Callback::from(move |_: MouseEvent| {
+            menu_open.set(false);
+            on_report_assistant.emit(id);
+        })
+    };
 
     if props.hidden {
         // The placeholder and the timestamp and NOTHING else: no name, no
@@ -418,6 +437,14 @@ pub fn bubble(props: &BubbleProps) -> Html {
                 if failed {
                     <button role="menuitem" onclick={act(Action::Retry(client_msg_id.clone()))}>{ t("Try Again") }</button>
                     <button role="menuitem" class="danger" onclick={act(Action::Discard(client_msg_id))}>{ t("Delete") }</button>
+                }
+                if can_report_assistant {
+                    // One row and no Block: the assistant is not a member,
+                    // and the report goes to the people who run the server.
+                    <div class="menu-section">{ t("Safety") }</div>
+                    <button role="menuitem" onclick={report_assistant.clone()}>
+                        { t("Report this reply…") }
+                    </button>
                 }
                 if is_other_member {
                     <div class="menu-section">{ t("Safety") }</div>
@@ -710,6 +737,7 @@ mod tests {
             on_reply: Callback::noop(),
             on_edit: Callback::noop(),
             on_report: Callback::noop(),
+            on_report_assistant: Callback::noop(),
             on_jump: Callback::noop(),
             sender_avatar_version: 0,
         }
@@ -1059,6 +1087,59 @@ mod tests {
         root.remove();
     }
 
+    /// THE ASSISTANT'S REPLY gets one Safety row, and it is a different one:
+    /// "Report this reply…", which goes to the people who run the server
+    /// rather than to the family owner, and NO Block — the assistant is not
+    /// a member, so blocking it would name a non-member and the server would
+    /// refuse (docs/protocol.md, "Reporting the assistant").
+    #[wasm_bindgen_test]
+    async fn an_assistant_reply_offers_its_own_report_and_no_block() {
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let reported = Rc::new(RefCell::new(Vec::new()));
+        let member_reports = Rc::new(RefCell::new(Vec::new()));
+        // Sender 2 is the assistant in these fixtures (`assistant_user_id`).
+        let mut reply = props(message(101, 2, "Your grandmother was born in 1812."), actions.clone());
+        reply.on_report_assistant = {
+            let reported = reported.clone();
+            Callback::from(move |message_id: i64| reported.borrow_mut().push(message_id))
+        };
+        reply.on_report = {
+            let member_reports = member_reports.clone();
+            Callback::from(move |target: (i64, Option<i64>)| member_reports.borrow_mut().push(target))
+        };
+        let (root, handle) = render(reply).await;
+
+        click(&root, ".more");
+        settle().await;
+        let rows = labels(&root, ".menu [role=menuitem]");
+        assert!(
+            rows.contains(&"Report this reply…".to_string()),
+            "the assistant's own row is missing: {rows:?}"
+        );
+        assert!(
+            !rows.contains(&"Report…".to_string()),
+            "the MEMBER report must not be offered for a model: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row == "Block" || row == "Unblock"),
+            "there is nothing to block: {rows:?}"
+        );
+
+        click_text(&root, ".menu [role=menuitem]", "Report this reply…");
+        settle().await;
+        assert_eq!(*reported.borrow(), vec![101], "it names the reply, by id");
+        assert!(
+            member_reports.borrow().is_empty(),
+            "the member path must not have been rung"
+        );
+        assert!(
+            actions.borrow().is_empty(),
+            "the dialog asks for a reason first; nothing is sent from the menu"
+        );
+        handle.destroy();
+        root.remove();
+    }
+
     /// Each level of a hidden quote is its own reveal, asked of the app —
     /// which holds it, so it outlives this bubble being drawn again.
     #[wasm_bindgen_test]
@@ -1161,6 +1242,7 @@ mod tests {
                 on_reply: self.on_reply.clone(),
                 on_edit: self.on_edit.clone(),
                 on_report: self.on_report.clone(),
+                on_report_assistant: self.on_report_assistant.clone(),
                 on_jump: self.on_jump.clone(),
                 sender_avatar_version: 0,
             }
