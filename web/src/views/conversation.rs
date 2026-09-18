@@ -162,9 +162,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
     let editing_now = use_mut_ref(|| Option::<i64>::None);
     *editing_now.borrow_mut() = *editing;
     let report = use_state(|| Option::<ReportTarget>::None);
-    /// The assistant reply being reported, by server id — its own state,
-    /// because it goes to its own endpoint and its own reader
-    /// (docs/protocol.md, "Reporting the assistant").
+    // The assistant reply being reported, by server id — its own state,
+    // because it goes to its own endpoint and its own reader
+    // (docs/protocol.md, "Reporting the assistant").
     let assistant_report = use_state(|| Option::<i64>::None);
     let poll_open = use_state(|| false);
     let highlight = use_state(|| Option::<i64>::None);

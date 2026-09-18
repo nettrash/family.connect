@@ -432,12 +432,10 @@ fun ChatScreen(
     // full-picker sheet is open for. Both are transient snapshots.
     var pickerTarget by remember { mutableStateOf<ReactionPickerTarget?>(null) }
     var reportTarget by remember { mutableStateOf<ReportTarget?>(null) }
-    /**
-     * The assistant reply being reported, by server id. Its own state
-     * because it goes to its own endpoint and its own reader — the people
-     * who run the server, never the family owner (docs/protocol.md,
-     * "Reporting the assistant").
-     */
+    // The assistant reply being reported, by server id. Its own state
+    // because it goes to its own endpoint and its own reader — the people
+    // who run the server, never the family owner (docs/protocol.md,
+    // "Reporting the assistant").
     var assistantReportTarget by remember { mutableStateOf<Long?>(null) }
     // Held by the SCREEN, not by the row. A reveal is a peek — per row,
     // per device, never on the wire and never stored — but "per row" has
