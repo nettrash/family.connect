@@ -616,7 +616,23 @@ impl AiConfig {
             && !self.processor.trim().is_empty()
     }
 
-    /// The chat-completions URL for the configured deployment.
+    /// Everything an assistant needs EXCEPT somebody to name.
+    ///
+    /// The one upgrade footgun this section has: a server that ran an
+    /// assistant before `processor` existed keeps its config, starts
+    /// cleanly, and quietly has no assistant at all — the object vanishes
+    /// from `GET /families/mine` and every client stops offering it. Not a
+    /// refusal to start, deliberately: a family's chat going down is worse
+    /// than a family's assistant going quiet. So it boots, and says so
+    /// (see `main`).
+    pub fn configured_but_nameless(&self) -> bool {
+        self.enabled
+            && !self.endpoint.trim().is_empty()
+            && !self.deployment.trim().is_empty()
+            && !self.api_key.trim().is_empty()
+            && self.processor.trim().is_empty()
+    }
+
     /// The chat-completions URL for the configured deployment.
     ///
     /// Azure has more than one shape. Classic Azure OpenAI is

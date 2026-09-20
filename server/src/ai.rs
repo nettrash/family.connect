@@ -1187,9 +1187,25 @@ mod tests {
             !cfg.is_usable(),
             "a deployment with no processor named must behave as off"
         );
+        // …and THAT state is the one an upgrade lands in, so it has its own
+        // question: everything filled in but the name. `main` warns on it at
+        // boot, because a server that quietly lost its assistant looks
+        // exactly like one whose provider is down.
+        assert!(
+            cfg.configured_but_nameless(),
+            "an upgraded config is nameless, not half-filled"
+        );
         cfg.processor = "Microsoft — Azure OpenAI".to_string();
         assert!(cfg.is_usable());
+        assert!(
+            !cfg.configured_but_nameless(),
+            "named, so nothing to warn about"
+        );
         cfg.enabled = false;
         assert!(!cfg.is_usable());
+        assert!(
+            !cfg.configured_but_nameless(),
+            "a section switched off is not a warning either"
+        );
     }
 }

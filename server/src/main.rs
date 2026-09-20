@@ -72,6 +72,20 @@ async fn main() -> Result<()> {
     // blocking pool is how an unbounded login flood OOMs this process.
     family_connect::auth::configure_hash_concurrency(cfg.limits.max_password_hashes_in_flight);
 
+    // The upgrade footgun, said out loud at boot: an `[ai]` section filled
+    // in before `processor` existed is an assistant this server will not
+    // advertise and no client may offer, because nobody can be asked
+    // permission to send their words to an unnamed recipient
+    // (docs/protocol.md, "Consenting to the assistant"). A WARN rather than
+    // a refusal — a quiet assistant beats a chat that will not start.
+    if cfg.ai.configured_but_nameless() {
+        warn!(
+            "[ai] is configured but names no processor, so the assistant is OFF. \
+             Set `processor` to who actually answers — e.g. \
+             processor = \"Microsoft — Azure OpenAI (Sweden Central)\" — and restart."
+        );
+    }
+
     let pool = db::connect(&cfg.database).await?;
     migrate::run(&pool).await.context("running migrations")?;
 
