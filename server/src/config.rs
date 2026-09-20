@@ -300,6 +300,22 @@ pub struct AiConfig {
     #[serde(default)]
     pub model: String,
 
+    /// WHO ANSWERS, in the operator's own words — "Microsoft — Azure OpenAI
+    /// (Sweden Central)", or whoever this deployment actually points at.
+    ///
+    /// Required for the assistant to exist at all ([`AiConfig::is_usable`]),
+    /// and that is deliberate: this product is self-hosted, so only the
+    /// operator knows whose model the endpoint belongs to, and a client
+    /// cannot ask a member's permission to send their words to someone it
+    /// cannot name (docs/protocol.md, "Consenting to the assistant"). An
+    /// `[ai]` section with everything else filled in and no `processor`
+    /// therefore behaves exactly like one that is switched off.
+    ///
+    /// It is shown to people verbatim, so it says a NAME and not a URL —
+    /// the endpoint is not the answer to "who is this going to".
+    #[serde(default)]
+    pub processor: String,
+
     /// The key itself. Never logged, never sent to a client. How it is
     /// PRESENTED is [`AiConfig::auth`]'s business.
     #[serde(default)]
@@ -513,6 +529,7 @@ impl Default for AiConfig {
             endpoint: String::new(),
             deployment: String::new(),
             model: String::new(),
+            processor: String::new(),
             api_key: String::new(),
             auth: AuthScheme::default(),
             api_version: default_ai_api_version(),
@@ -594,6 +611,9 @@ impl AiConfig {
             && !self.endpoint.trim().is_empty()
             && !self.deployment.trim().is_empty()
             && !self.api_key.trim().is_empty()
+            // See `processor`: an assistant nobody can name is one no
+            // client may ask permission for, so it does not exist.
+            && !self.processor.trim().is_empty()
     }
 
     /// The chat-completions URL for the configured deployment.
@@ -1306,6 +1326,7 @@ const AI_KEYS: &[&str] = &[
     "endpoint",
     "deployment",
     "model",
+    "processor",
     "api_key",
     "auth",
     "api_version",
@@ -1930,6 +1951,7 @@ enabled = true
 endpoint = "https://example.openai.azure.com"
 deployment = "text"
 api_key = "k"
+processor = "Microsoft — Azure OpenAI"
 
 [ai.vision]
 deployment = "sees"
@@ -2070,6 +2092,7 @@ endpoint = "https://nettrash.openai.azure.com"
 deployment = "nettrash-gpt-oss-120b"
 model = "gpt-oss-120b"
 api_key = "secret"
+processor = "Microsoft - Azure OpenAI"
 api_version = "2024-10-21"
 
 [ai.vision]
@@ -2134,6 +2157,7 @@ size = "1024x1024"
             enabled: true,
             endpoint: "https://example.openai.azure.com".to_string(),
             deployment: "text".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "k".to_string(),
             ..Default::default()
         };
@@ -2152,6 +2176,7 @@ size = "1024x1024"
             enabled: true,
             endpoint: "https://example.openai.azure.com".to_string(),
             deployment: "text".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "k".to_string(),
             ..Default::default()
         };
@@ -2172,6 +2197,7 @@ size = "1024x1024"
             enabled: true,
             endpoint: "https://example.openai.azure.com".to_string(),
             deployment: "text".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "k".to_string(),
             ..Default::default()
         };
@@ -2200,6 +2226,7 @@ enabled = true
 endpoint = "https://example.openai.azure.com"
 deployment = "text"
 api_key = "k"
+processor = "Microsoft — Azure OpenAI"
 
 [ai.images]
 deployment = "draws"
@@ -2221,6 +2248,7 @@ contextual = false
             enabled: true,
             endpoint: "https://text.openai.azure.com".to_string(),
             deployment: "text".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "text-key".to_string(),
             api_version: "2024-10-21".to_string(),
             ..Default::default()
@@ -2254,6 +2282,7 @@ contextual = false
             enabled: true,
             endpoint: "https://nettrash.openai.azure.com/openai/v1".to_string(),
             deployment: "nettrash-gpt-oss-120b".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "k".to_string(),
             ..Default::default()
         };
@@ -2290,6 +2319,7 @@ enabled = true
 endpoint = "https://nettrash-openai.openai.azure.com"
 deployment = "nettrash-gpt-oss-120b"
 api_key = "one-key-for-both"
+processor = "Microsoft - Azure OpenAI"
 api_version = "2024-10-21"
 
 [ai.images]
@@ -2418,6 +2448,7 @@ height = 1024
             enabled: true,
             endpoint: "https://r.openai.azure.com".to_string(),
             deployment: "text".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "k".to_string(),
             ..Default::default()
         };

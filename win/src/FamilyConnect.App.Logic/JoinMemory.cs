@@ -25,6 +25,11 @@ public sealed class MemoryAwaitingJoin : IAwaitingJoin
 public static class AssistantButtons
 {
     public static (bool AskAssistant, bool AskPicture) Offered(string? chatKind, Core.Protocol.AssistantDto? assistant, bool editing) =>
-        (chatKind == "family" && assistant is not null && !editing,
-         chatKind == "ai" && assistant is { Images: true } && !editing);
+        // A server that names no processor offers no assistant at all: a consent screen with a
+        // hole where the recipient goes is not consent (docs/protocol.md, "Consenting to the
+        // assistant"), so the doors that would type `@ai` are not there either.
+        (chatKind == "family" && assistant is not null
+            && AssistantConsent.IsAvailable(assistant.Processor) && !editing,
+         chatKind == "ai" && assistant is { Images: true }
+            && AssistantConsent.IsAvailable(assistant.Processor) && !editing);
 }

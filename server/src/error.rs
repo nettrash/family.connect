@@ -49,12 +49,22 @@ pub mod codes {
     pub const CANNOT_REPORT_SELF: &str = "cannot_report_self";
     pub const REPORT_NOT_PENDING: &str = "report_not_pending";
     pub const NOT_SAME_FAMILY: &str = "not_same_family";
+    /// The thing addressed does not exist ON THIS SERVER — used where a
+    /// more specific code would itself be an answer, as on
+    /// `POST /me/assistant-consent` for a deployment with no assistant:
+    /// "no such endpoint" tells a caller nothing about the configuration,
+    /// while "no assistant" would.
+    pub const NOT_FOUND: &str = "not_found";
     pub const USER_NOT_FOUND: &str = "user_not_found";
     pub const CHAT_NOT_FOUND: &str = "chat_not_found";
     pub const NOT_CHAT_MEMBER: &str = "not_chat_member";
     pub const MESSAGE_EMPTY: &str = "message_empty";
     pub const MESSAGE_TOO_LONG: &str = "message_too_long";
     pub const MESSAGE_NOT_FOUND: &str = "message_not_found";
+    /// The sender has not agreed that their words may go to the model
+    /// (docs/protocol.md, "Consenting to the assistant"). A refusal rather
+    /// than a silent drop, so the client can ask and offer to send again.
+    pub const ASSISTANT_CONSENT_REQUIRED: &str = "assistant_consent_required";
     pub const NOT_MESSAGE_AUTHOR: &str = "not_message_author";
     pub const INVALID_POLL: &str = "invalid_poll";
     pub const POLL_CLOSED: &str = "poll_closed";

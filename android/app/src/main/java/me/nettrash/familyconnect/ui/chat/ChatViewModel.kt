@@ -1035,6 +1035,115 @@ class ChatViewModel @Inject constructor(
             }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    /**
+     * WHO ANSWERS, verbatim as the operator named them, or null on a
+     * server that named nobody — which is a server whose assistant this
+     * client does not offer at all (docs/protocol.md, "Consenting to the
+     * assistant").
+     */
+    val assistantProcessor: StateFlow<String?> = settings.state
+        .map { it.assistantProcessor }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * Whether this draft would go to the model with nobody having agreed
+     * to that yet. The composer shows the line that says where it would
+     * go, and the send raises the screen that asks.
+     *
+     * Eager, for [mentionPictureNotice]'s reason: the line has to be there
+     * on the frame the `@ai` is, not one frame later.
+     */
+    val assistantConsentNeeded: StateFlow<Boolean> =
+        combine(chat, draftText, settings.state, _editTarget) {
+                chatEntity, draft, settingsState, editing ->
+            // Not while the composer is borrowed for an edit: rewriting an
+            // old message calls no model, and the draft holding an `@ai`
+            // there is the message being fixed rather than a question.
+            editing == null &&
+                AssistantConsent.isRequired(
+                    chatKind = chatEntity?.kind,
+                    body = draft,
+                    processor = settingsState.assistantProcessor,
+                    agreedAt = settingsState.assistantConsentAt,
+                )
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
+     * Whether this draft would reach an assistant this server refuses to
+     * name — in which case it goes nowhere, and the composer says why.
+     */
+    val assistantIsUnnamed: StateFlow<Boolean> =
+        combine(chat, draftText, settings.state, _editTarget) {
+                chatEntity, draft, settingsState, editing ->
+            editing == null &&
+                AssistantConsent.isWithheldFromAnUnnamedAssistant(
+                    chatKind = chatEntity?.kind,
+                    body = draft,
+                    hasAssistant = settingsState.assistantUserId != null,
+                    processor = settingsState.assistantProcessor,
+                )
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
+     * Answer the assistant question, and send what was waiting.
+     *
+     * The stamp is the SERVER's: agreeing twice keeps the first one, and a
+     * client that invented a date would show one the server would not.
+     * [send] is called again afterwards because the draft is still in the
+     * box — agreeing finishes the send the person already asked for.
+     */
+    fun agreeToTheAssistant() {
+        viewModelScope.launch {
+            _assistantConsentAsked.value = false
+            if (familyRepository.setAssistantConsent(true)) {
+                // The draft never left the box, so this finishes the send
+                // the person already asked for.
+                send()
+            }
+        }
+    }
+
+    /** "Not Now": the screen closes and the draft stays where it is. */
+    fun dismissAssistantConsent() {
+        _assistantConsentAsked.value = false
+    }
+
+    /**
+     * Whether the consent screen is up, because a send would have reached
+     * the model (docs/protocol.md, "Consenting to the assistant").
+     */
+    private val _assistantConsentAsked = MutableStateFlow(false)
+
+    /**
+     * What the consent screen must say, or null while it is not up.
+     *
+     * One value rather than three, because the screen's promises depend on
+     * the family's own switches: with `ai_history` off a mention takes
+     * nothing but itself, and a screen claiming the last 30 days would be
+     * asking permission for something that does not happen — and hiding
+     * what does.
+     */
+    val assistantConsentAsk: StateFlow<AssistantConsentAsk?> =
+        combine(_assistantConsentAsked, settings.state) { asked, settingsState ->
+            val processor = settingsState.assistantProcessor
+            if (!asked || processor.isNullOrBlank()) {
+                null
+            } else {
+                AssistantConsentAsk(
+                    processor = processor,
+                    familyHistory = settingsState.familyAiHistory,
+                    familyVision = settingsState.familyAiVision,
+                )
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** What the consent screen is drawn from. */
+    data class AssistantConsentAsk(
+        val processor: String,
+        val familyHistory: Boolean,
+        val familyVision: Boolean,
+    )
+
     /** Screen calls this from a LifecycleResumeEffect. */
     fun setResumed(isResumed: Boolean) {
         resumed.value = isResumed
@@ -1092,6 +1201,17 @@ class ChatViewModel @Inject constructor(
 
     fun send() {
         val body = inputState.text.toString()
+        // NOTHING REACHES THE MODEL UNASKED. Before the staged list is
+        // taken, so a refused send consumes nothing: the server refuses
+        // this with `assistant_consent_required` anyway, and asking here
+        // is what turns that refusal into a question with the message
+        // still in hand (docs/protocol.md, "Consenting to the assistant").
+        if (assistantConsentNeeded.value) {
+            _assistantConsentAsked.value = true
+            return
+        }
+        // And a server that will not say WHO answers gets nothing at all.
+        if (assistantIsUnnamed.value) return
         // An attachment can travel with no words at all — that is how a
         // photo is normally sent — so a blank draft only stops the send
         // when there is nothing staged either.

@@ -157,6 +157,7 @@ public sealed partial class ChatsView : UserControl
 
         ChatList.SelectionChanged += OnChatPicked;
         SendButton.Click += (_, _) => Send();
+        ConsentReview.Click += (_, _) => _ = ReviewAssistantConsentAsync();
         AttachButton.Click += (_, _) => ShowAttachMenu();
         AskAssistantButton.Content = "✨";
         AskPictureButton.Content = "🎨";
@@ -3112,6 +3113,13 @@ public sealed partial class ChatsView : UserControl
     private bool IsFamily(ConversationModel chat) => connection.Chats.Chat(chat.ChatId)?.Chat.Kind == "family";
 
     /// <summary>
+    /// What KIND of chat this is, in the protocol's own words — "family", "direct", "ai" — or
+    /// null while the list has not caught up with it. The assistant's rules are written against
+    /// it (docs/protocol.md, "Consenting to the assistant").
+    /// </summary>
+    private string? Kind(ConversationModel chat) => connection.Chats.Chat(chat.ChatId)?.Chat.Kind;
+
+    /// <summary>
     /// The strip over the composer: the names a half-typed @ could mean, in the family chat alone. The arrows walk
     /// it, Enter or Tab takes the highlighted name, and a click takes that one.
     /// </summary>
@@ -3592,6 +3600,25 @@ public sealed partial class ChatsView : UserControl
         {
             return;
         }
+        // NOTHING REACHES THE MODEL UNASKED. The server refuses this with
+        // `assistant_consent_required` anyway; asking here is what turns that refusal into a
+        // question with the message still in the box (docs/protocol.md, "Consenting to the
+        // assistant").
+        var session = connection.Session.State;
+        var chatKind = Kind(chat);
+        if (AssistantConsent.IsRequired(
+            chatKind, ComposerBox.Text, session.Assistant?.Processor, session.AssistantConsentAt))
+        {
+            _ = ReviewAssistantConsentAsync();
+            return;
+        }
+        // And a server that will not say WHO answers gets nothing at all: there is no honest way
+        // to ask, so there is nothing to send. The strip above the box says so.
+        if (AssistantConsent.IsWithheldFromAnUnnamedAssistant(
+            chatKind, ComposerBox.Text, session.Assistant is not null, session.Assistant?.Processor))
+        {
+            return;
+        }
         if (strip.Preparing)
         {
             ShowProblem(services.Say.Get("Wait until the current attachment is done."));
@@ -3876,6 +3903,79 @@ public sealed partial class ChatsView : UserControl
         }
         PictureNoticeText.Text = said ?? string.Empty;
         PictureNoticeText.Visibility = said is null ? Visibility.Collapsed : Visibility.Visible;
+        DrawConsentBar();
+    }
+
+    /// <summary>
+    /// The line above the box while the assistant question is unanswered — and the line where it
+    /// cannot be asked at all, because this server named nobody (docs/protocol.md, "Consenting to
+    /// the assistant").
+    /// </summary>
+    /// <remarks>
+    /// Drawn from the same place the picture notice is, and for the same reason: it has to be
+    /// there on the keystroke that makes the draft one which would travel — in the assistant's
+    /// own chat from the first character, in the family chat the moment <c>@ai</c> is typed.
+    /// </remarks>
+    private void DrawConsentBar()
+    {
+        var say = services.Say;
+        var state = connection.Session.State;
+        var kind = open is { } chat ? Kind(chat) : null;
+        var processor = state.Assistant?.Processor;
+        var needed = editing is null && AssistantConsent.IsRequired(
+            kind, ComposerBox.Text, processor, state.AssistantConsentAt);
+        var unnamed = editing is null && AssistantConsent.IsWithheldFromAnUnnamedAssistant(
+            kind, ComposerBox.Text, state.Assistant is not null, processor);
+        if (needed && processor is { } named)
+        {
+            ConsentText.Text = say.Format("This goes to %@. You haven't agreed to that yet.", named);
+            ConsentReview.Content = say.Get("Review…");
+            ConsentReview.Visibility = Visibility.Visible;
+            ConsentBar.Visibility = Visibility.Visible;
+        }
+        else if (unnamed)
+        {
+            ConsentText.Text = say.Get("This server hasn't said which service answers, so nothing can be sent to the assistant here.");
+            ConsentReview.Visibility = Visibility.Collapsed;
+            ConsentBar.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            ConsentBar.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    /// <summary>
+    /// Ask the assistant question, and finish the send it interrupted. The draft never left the
+    /// box, so agreeing completes what the person already asked for; "Not Now" leaves it there.
+    /// </summary>
+    private async Task ReviewAssistantConsentAsync()
+    {
+        var state = connection.Session.State;
+        if (state.Assistant?.Processor is not { } processor || string.IsNullOrWhiteSpace(processor))
+        {
+            return;
+        }
+        var agreed = await Dialogs.AssistantConsentAsync(
+            XamlRoot, services.Say, processor,
+            state.Family?.AiHistory == true, state.Family?.AiVision == true);
+        if (!agreed)
+        {
+            return;
+        }
+        var answer = await connection.Api.SetAssistantConsent(true);
+        if (answer.Ok)
+        {
+            // The session is the state: `/me` is what the composer reads, so it is re-read rather
+            // than patched here, and the strip and the send follow from what the server says.
+            await connection.Session.RefreshAsync();
+            DrawConsentBar();
+            Send();
+        }
+        else
+        {
+            ShowProblem(services.Say.Get("Couldn't save your answer. Try again."));
+        }
     }
 
     /// <summary>

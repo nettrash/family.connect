@@ -8,12 +8,13 @@ use std::collections::HashSet;
 
 use fc_text::assistant_pictures::{self, Candidate, MentionNotice, Switches};
 use fc_text::i18n::{t, t1};
-use fc_text::{assistant, composer, media, mentions};
+use fc_text::{assistant, assistant_consent, composer, media, mentions};
 use web_sys::{File, HtmlTextAreaElement};
 use yew::prelude::*;
 
 use crate::model::{Assistant, Member, Mention};
 use crate::store::Draft;
+use crate::views::consent::AssistantConsentBar;
 
 /// The most members one message may name — the server refuses more with
 /// `validation`, and neither app caps, so theirs would fail. Here the
@@ -91,6 +92,17 @@ pub struct ComposerProps {
     pub members: Vec<Member>,
     pub blocked: HashSet<i64>,
     pub assistant: Option<Assistant>,
+    /// Whether this member has agreed that their words may go to the model
+    /// (docs/protocol.md, "Consenting to the assistant"). While they have
+    /// not, a draft that would travel is not sent: the strip above the box
+    /// says where it would go, and Send raises the screen that asks.
+    #[prop_or_default]
+    pub agreed_to_assistant: bool,
+    /// Open that screen. Emitted instead of sending, with the draft left
+    /// exactly as typed — pressing Send again once the answer is recorded
+    /// sends it.
+    #[prop_or_default]
+    pub on_review_consent: Callback<()>,
     pub replying: Option<Replying>,
     pub editing: Option<Editing>,
     /// What was being typed here when the reader last left.
@@ -345,6 +357,20 @@ pub fn composer(props: &ComposerProps) -> Html {
 
     let staged = props.staged;
     let busy = props.busy;
+    // Which of the assistant's surfaces this composer is on, in the words
+    // the shared rule uses (fc_text::assistant_consent, and `model_surface`
+    // on the server).
+    let chat_kind = if props.is_ai_chat {
+        "ai"
+    } else if props.is_family_chat {
+        "family"
+    } else {
+        "direct"
+    };
+    let processor = props
+        .assistant
+        .as_ref()
+        .and_then(|assistant| assistant.processor.clone());
     let send = {
         let text = text.clone();
         let notice = notice.clone();
@@ -354,6 +380,10 @@ pub fn composer(props: &ComposerProps) -> Html {
         let members = props.members.clone();
         let is_family = props.is_family_chat;
         let editing = editing.clone();
+        let on_review_consent = props.on_review_consent.clone();
+        let agreed = props.agreed_to_assistant;
+        let has_assistant = props.assistant.is_some();
+        let processor = processor.clone();
         Callback::from(move |_: ()| {
             if busy {
                 return;
@@ -373,6 +403,29 @@ pub fn composer(props: &ComposerProps) -> Html {
                 } else {
                     on_save_edit.emit((edit.message_id, body));
                 }
+                return;
+            }
+            // Nothing reaches the model unasked. The server refuses this
+            // with `assistant_consent_required` anyway; asking here is what
+            // turns that refusal into a question with the message still in
+            // the box (docs/protocol.md, "Consenting to the assistant").
+            if editing.is_none()
+                && assistant_consent::is_required(chat_kind, &body, processor.as_deref(), agreed)
+            {
+                on_review_consent.emit(());
+                return;
+            }
+            // And a server that will not say WHO answers gets nothing at
+            // all: there is no honest way to ask, so there is nothing to
+            // send. The strip above the box says so.
+            if editing.is_none()
+                && assistant_consent::is_withheld_from_an_unnamed_assistant(
+                    chat_kind,
+                    &body,
+                    has_assistant,
+                    processor.as_deref(),
+                )
+            {
                 return;
             }
             let mentioned = resolve_mentions(&body, &members, is_family);
@@ -533,6 +586,20 @@ pub fn composer(props: &ComposerProps) -> Html {
             if let Some(sentence) = props.pictures.notice(&text, props.is_ai_chat, props.is_family_chat).filter(|_| editing.is_none()) {
                 <p class="picture-notice" role="note"><span aria-hidden="true">{ "👁 " }</span>{ sentence }</p>
             }
+            if editing.is_none() && assistant_consent::is_required(chat_kind, &text, processor.as_deref(), props.agreed_to_assistant) {
+                <AssistantConsentBar
+                    processor={processor.clone().unwrap_or_default()}
+                    on_review={props.on_review_consent.clone()}
+                />
+            } else if editing.is_none() && assistant_consent::is_withheld_from_an_unnamed_assistant(chat_kind, &text, props.assistant.is_some(), processor.as_deref()) {
+                // Nothing to agree TO on such a server, so there is no
+                // screen to raise — only this, and a send that does not
+                // happen.
+                <p class="consent-notice" role="note">
+                    <span aria-hidden="true">{ "✋ " }</span>
+                    { assistant_consent::unnamed_processor_notice() }
+                </p>
+            }
             if !suggestions.is_empty() {
                 <div class="suggestions" role="listbox" aria-label={t("Members")}>
                     { for suggestions.iter().enumerate().map(|(index, member)| {
@@ -667,6 +734,8 @@ mod tests {
             members: Vec::new(),
             blocked: HashSet::new(),
             assistant: None,
+            agreed_to_assistant: true,
+            on_review_consent: Callback::noop(),
             replying: None,
             editing: Some(Editing {
                 message_id: 5,
@@ -777,6 +846,119 @@ mod tests {
             .ends_with("Nothing else from this chat does."));
     }
 
+    /// **A message that would reach the model is not sent until this
+    /// member has agreed** (docs/protocol.md, "Consenting to the
+    /// assistant"). Send raises the screen that asks instead, and the
+    /// words stay in the box so agreeing can finish what was started.
+    ///
+    /// The server refuses it anyway with `assistant_consent_required`;
+    /// what this pins is that the person is ASKED rather than shown a
+    /// failed bubble.
+    #[wasm_bindgen_test]
+    async fn a_send_that_would_reach_the_model_asks_first() {
+        use std::cell::Cell;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use wasm_bindgen::JsCast;
+        use web_sys::HtmlElement;
+
+        // The assistant's own chat, where every word travels; and the
+        // family chat, where only an `@ai` does — the second is the one
+        // that must still send ordinary words.
+        for (is_ai, is_family, body, asks) in [
+            (true, false, "are you there?", true),
+            (false, true, "@ai when is dinner?", true),
+            (false, true, "dinner at 7?", false),
+        ] {
+            let sent = Rc::new(RefCell::new(Vec::new()));
+            let asked = Rc::new(Cell::new(0));
+            let props = ComposerProps {
+                chat_id: 42,
+                is_family_chat: is_family,
+                is_ai_chat: is_ai,
+                my_user_id: 7,
+                members: Vec::new(),
+                blocked: HashSet::new(),
+                assistant: Some(Assistant {
+                    user_id: 2,
+                    display_name: "Assistant".into(),
+                    mention: Some("@ai".into()),
+                    draw: Some("/draw".into()),
+                    vision: false,
+                    images: false,
+                    processor: Some("Microsoft — Azure OpenAI".into()),
+                }),
+                agreed_to_assistant: false,
+                on_review_consent: {
+                    let asked = asked.clone();
+                    Callback::from(move |_: ()| asked.set(asked.get() + 1))
+                },
+                replying: None,
+                editing: None,
+                initial: body.to_string(),
+                on_send: {
+                    let sent = sent.clone();
+                    Callback::from(move |draft: Draft| sent.borrow_mut().push(draft))
+                },
+                on_save_edit: Callback::noop(),
+                on_cancel: Callback::noop(),
+                on_typing: Callback::noop(),
+                on_draft: Callback::noop(),
+                in_thread: false,
+                focus: 0,
+                attach: Html::default(),
+                staged: 0,
+                busy: false,
+                append: (0, String::new()),
+                take: 0,
+                on_take: Callback::noop(),
+                on_files: Callback::noop(),
+                takes_files: true,
+                pictures: Pictures::default(),
+            };
+            let document = web_sys::window().unwrap().document().unwrap();
+            let root = document.create_element("div").unwrap();
+            document.body().unwrap().append_child(&root).unwrap();
+            let handle =
+                yew::Renderer::<Composer>::with_root_and_props(root.clone(), props).render();
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            // The strip says where the words would go, and only where they
+            // would go.
+            assert_eq!(
+                root.query_selector(".consent-notice").unwrap().is_some(),
+                asks,
+                "the strip, for {body:?}"
+            );
+            let buttons = root.query_selector_all(".composer button").unwrap();
+            buttons
+                .item(buttons.length() - 1)
+                .unwrap()
+                .dyn_into::<HtmlElement>()
+                .unwrap()
+                .click();
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            if asks {
+                assert_eq!(sent.borrow().len(), 0, "nothing was sent for {body:?}");
+                assert_eq!(asked.get(), 1, "and the screen was raised for {body:?}");
+                assert_eq!(
+                    root.query_selector("textarea")
+                        .unwrap()
+                        .unwrap()
+                        .dyn_into::<web_sys::HtmlTextAreaElement>()
+                        .unwrap()
+                        .value(),
+                    body,
+                    "the words stay in the box"
+                );
+            } else {
+                assert_eq!(sent.borrow().len(), 1, "an ordinary message still goes");
+                assert_eq!(asked.get(), 0);
+            }
+            handle.destroy();
+            root.remove();
+        }
+    }
+
     /// With something staged, Send goes with no words at all — a photo
     /// needs no caption — and without, an empty box sends nothing.
     #[wasm_bindgen_test]
@@ -796,6 +978,8 @@ mod tests {
                 members: Vec::new(),
                 blocked: HashSet::new(),
                 assistant: None,
+                agreed_to_assistant: true,
+                on_review_consent: Callback::noop(),
                 replying: None,
                 editing: None,
                 initial: String::new(),

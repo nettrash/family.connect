@@ -2839,6 +2839,14 @@ final class ChatSyncCoordinator {
         "validation", "message_empty", "message_too_long", "not_chat_member",
         "chat_not_found", "blocked", "invalid_poll", "invalid_attachment",
         "attachment_not_found", "attachment_already_used",
+        // Nobody agreed that this member's words may go to the model
+        // (protocol.md, "Consenting to the assistant"). Terminal like
+        // `blocked` is: the server read it and refused, and retrying
+        // changes nothing until the person answers the question. The
+        // composer asks before it ever gets here — this is the backstop
+        // for the paths that did not, and for a consent withdrawn from
+        // another device while a send was in the outbox.
+        "assistant_consent_required",
     ]
 
     private func recordSendFailure(localID: String, error: Error) {
@@ -3038,6 +3046,11 @@ final class ChatSyncCoordinator {
             AppSettings.assistantVision = mine.assistant?.vision ?? false
             AppSettings.assistantImages = mine.assistant?.images ?? false
             AppSettings.assistantDraw = mine.assistant?.draw
+            // WHO answers, for the consent screen to name verbatim. Nil
+            // turns the assistant off in this client entirely: a screen
+            // that cannot say where the words go cannot ask the question
+            // (protocol.md, "Consenting to the assistant").
+            AppSettings.assistantProcessor = mine.assistant?.processor
         }
 
         // 3. Chat list: server unread wins; direct chats the server

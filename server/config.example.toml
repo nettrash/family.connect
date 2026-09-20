@@ -359,12 +359,25 @@ ring_timeout_secs = 45
 # first.
 #
 # The whole section is OFF unless `enabled` is true AND `endpoint`,
-# `deployment` and `api_key` are all set. A half-filled section behaves as
-# "off" rather than failing every question at runtime, so it is safe to fill
-# in gradually. With it off, the assistant chat is simply never created.
+# `deployment`, `api_key` and `processor` are all set. A half-filled section
+# behaves as "off" rather than failing every question at runtime, so it is
+# safe to fill in gradually. With it off, the assistant chat is simply never
+# created.
 
 # [ai]
 # enabled = true
+#
+# # WHO ANSWERS, in your own words, shown to your family verbatim before
+# # anyone's message is sent to it — and REQUIRED, so an assistant nobody
+# # can name is one this server does not offer.
+# #
+# # Only you know whose model your endpoint belongs to, and the apps ask
+# # each member's permission before their words leave your server
+# # (docs/protocol.md, "Consenting to the assistant"). A permission screen
+# # that cannot say who the words go to is not one worth asking, which is
+# # why the section is off without this. Say a name, not a URL.
+# #
+# processor = "Microsoft — Azure OpenAI (Sweden Central)"
 #
 # # The Azure OpenAI resource endpoint. No trailing slash needed.
 # #

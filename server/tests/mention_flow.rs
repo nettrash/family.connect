@@ -348,6 +348,7 @@ async fn a_deleted_account_and_the_assistant_thread_are_both_validation() {
         cfg.ai.endpoint = "https://example.invalid".to_string();
         cfg.ai.deployment = "test-deployment".to_string();
         cfg.ai.api_key = "test-key".to_string();
+        cfg.ai.processor = "Microsoft — Azure OpenAI".to_string();
         cfg.ai.title = "Assistant".to_string();
     })
     .await;

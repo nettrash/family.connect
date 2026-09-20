@@ -18,12 +18,13 @@ use yew::prelude::*;
 
 use crate::actions::{Action, LeaveContext};
 use crate::api::ApiError;
-use crate::model::{Family, Me, MemberStats, Stats};
+use crate::model::{Assistant, Family, Me, MemberStats, Stats};
 use crate::notify;
 use crate::prep;
 use crate::time;
 use crate::views::avatar::Avatar;
 use crate::views::birthday::BirthdayDialog;
+use crate::views::consent::AssistantConsentDialog;
 use crate::views::dialog::{Confirm, Modal};
 use crate::views::password::ChangePasswordDialog;
 
@@ -34,6 +35,12 @@ pub const SUPPORT_URL: &str = "https://nettrash.me/appstore/familyconnect/suppor
 pub struct SettingsProps {
     pub account: Me,
     pub family: Option<Family>,
+    /// The server's assistant, for the one thing this screen needs from
+    /// it: WHO answers, so the consent row can name them (docs/protocol.md,
+    /// "Consenting to the assistant"). None — or one that names nobody —
+    /// means no such row at all.
+    #[prop_or_default]
+    pub assistant: Option<Assistant>,
     /// Bumped by every frame that changes who is in the family or owns it.
     pub roster_changes: u64,
     pub on_action: Callback<Action>,
@@ -49,6 +56,9 @@ enum Open {
     Password,
     Statistics,
     Delete,
+    /// The screen that asks whether this member's words may go to the
+    /// model — reached from the row below, not only from a blocked send.
+    AssistantConsent,
 }
 
 #[derive(Clone, PartialEq)]
@@ -185,6 +195,16 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
     let close_open = {
         let open = open.clone();
         Callback::from(move |_: ()| open.set(Open::Nothing))
+    };
+
+    // Stopping is one press and no dialog: agreeing has a screen to read
+    // first, and stopping has nothing to say beyond what it cannot undo,
+    // which the footnote already says.
+    let withdraw_assistant_consent = {
+        let on_action = props.on_action.clone();
+        Callback::from(move |_: MouseEvent| {
+            on_action.emit(Action::SetAssistantConsent { granted: false })
+        })
     };
 
     let pick_picture = {
@@ -327,6 +347,30 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
                 on_close={close_open.clone()}
             />
         },
+        Open::AssistantConsent => {
+            let processor = props
+                .assistant
+                .as_ref()
+                .and_then(|assistant| assistant.processor.clone())
+                .unwrap_or_default();
+            let on_agree = {
+                let on_action = props.on_action.clone();
+                let close_open = close_open.clone();
+                Callback::from(move |_: ()| {
+                    close_open.emit(());
+                    on_action.emit(Action::SetAssistantConsent { granted: true });
+                })
+            };
+            html! {
+                <AssistantConsentDialog
+                    {processor}
+                    family_history={props.family.as_ref().is_some_and(|family| family.ai_history)}
+                    family_vision={props.family.as_ref().is_some_and(|family| family.ai_vision)}
+                    {on_agree}
+                    on_cancel={close_open.clone()}
+                />
+            }
+        }
     };
 
     html! {
@@ -435,6 +479,40 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
                         }
                     </p>
                 </section>
+
+                if let Some(processor) = props
+                    .assistant
+                    .as_ref()
+                    .and_then(|assistant| assistant.processor.clone())
+                    .filter(|processor| !processor.trim().is_empty())
+                {
+                    <section class="group" aria-labelledby="settings-assistant">
+                        <h3 id="settings-assistant">{ t("Assistant") }</h3>
+                        if let Some(agreed) = account.assistant_consent_at.clone() {
+                            <div class="setting-row">
+                                <span>{ t("Agreed") }</span>
+                                <span class="meta">{ time::stamp(&agreed) }</span>
+                            </div>
+                            <div class="setting-row">
+                                <button class="link danger" onclick={withdraw_assistant_consent.clone()}>
+                                    { t("Stop Sending My Messages") }
+                                </button>
+                            </div>
+                            <p class="footnote">
+                                { t1("What you write to the assistant is sent to %@. Stopping takes effect at once; what has already been sent cannot be taken back.", &processor) }
+                            </p>
+                        } else {
+                            <div class="setting-row">
+                                <button class="link" onclick={show(Open::AssistantConsent)}>
+                                    { t("Review and Agree…") }
+                                </button>
+                            </div>
+                            <p class="footnote">
+                                { t1("Until you agree, nothing you write is sent to %@ and the assistant does not answer you.", &processor) }
+                            </p>
+                        }
+                    </section>
+                }
 
                 <section class="group" aria-labelledby="settings-privacy">
                     <h3 id="settings-privacy">{ t("Privacy") }</h3>

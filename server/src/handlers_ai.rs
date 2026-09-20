@@ -80,6 +80,55 @@ pub async fn assistant_user_id(state: &AppState) -> Result<Option<i64>> {
     Ok(id)
 }
 
+/// Whether this member has agreed that their words may go to the model
+/// (docs/protocol.md, "Consenting to the assistant").
+///
+/// Asked of the SENDER on every path that would call the model, and of every
+/// SENDER whose message the family history would carry — the second is the
+/// half that protects somebody who declined from having their words sent by
+/// a member who did not.
+pub async fn has_assistant_consent(state: &AppState, user_id: i64) -> Result<bool> {
+    let at: Option<Option<OffsetDateTime>> =
+        sqlx::query_scalar("SELECT assistant_consent_at FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    Ok(matches!(at, Some(Some(_))))
+}
+
+/// When this member agreed, or `None`. Read by `GET /me` so a client knows
+/// before it draws an `ai` chat whether the next thing to show is the
+/// consent screen.
+pub async fn assistant_consent_at(
+    state: &AppState,
+    user_id: i64,
+) -> Result<Option<OffsetDateTime>> {
+    let at: Option<Option<OffsetDateTime>> =
+        sqlx::query_scalar("SELECT assistant_consent_at FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    Ok(at.flatten())
+}
+
+/// The stamp as the WIRE carries it: an RFC3339 string, or null.
+///
+/// Spelled out rather than handed to `serde_json::to_value`, which renders
+/// an `OffsetDateTime` as `time`'s own component array — `[2026,262,19,…]`,
+/// a shape no client parses and one that costs nothing until it reaches a
+/// device. Every other timestamp in this protocol goes out through a
+/// `#[serde(with = "…rfc3339")]` field; these two are built inside a
+/// `json!`, so they need this.
+pub fn consent_stamp(at: Option<OffsetDateTime>) -> serde_json::Value {
+    at.and_then(|stamp| {
+        stamp
+            .format(&time::format_description::well_known::Rfc3339)
+            .ok()
+    })
+    .map(serde_json::Value::String)
+    .unwrap_or(serde_json::Value::Null)
+}
+
 /// Make sure this member has their assistant chat, and answer with its id.
 ///
 /// Created on demand rather than at registration: a server that turns the
@@ -1378,6 +1427,15 @@ async fn load_history(
          WHERE m.chat_id = $1
            AND m.id < $2
            AND m.created_at >= now() - ($3::int * INTERVAL '1 day')
+           -- ONLY THE WORDS OF MEMBERS WHO AGREED -- protocol.md, under
+           -- Consenting to the assistant. This is the half that is easy to
+           -- miss: a member who declined still writes in the family chat,
+           -- and somebody else's mention would otherwise send their words
+           -- to the model. Declining has to protect them wherever they
+           -- wrote, not only when they are the one asking. The assistant's
+           -- own rows stay: its account has no consent to give, and its
+           -- answers are already the model's.
+           AND (u.assistant_consent_at IS NOT NULL OR m.sender_id = $5)
          ORDER BY m.id DESC
          LIMIT $4",
     )
@@ -1385,6 +1443,7 @@ async fn load_history(
     .bind(before_message_id)
     .bind(HISTORY_WINDOW_DAYS)
     .bind(HISTORY_MAX_MESSAGES as i64)
+    .bind(assistant_id)
     .fetch_all(&state.pool)
     .await?;
 

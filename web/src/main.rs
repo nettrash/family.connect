@@ -510,6 +510,7 @@ fn app() -> Html {
             <SettingsPane
                 {account}
                 {family}
+                assistant={store.assistant.clone()}
                 roster_changes={store.roster_changes}
                 on_action={on_action.clone()}
                 on_close={close_panel.clone()}
@@ -635,6 +636,7 @@ fn app() -> Html {
                         staged={store.staged.get(&item.chat.id).cloned().unwrap_or_default()}
                         family={store.family.clone()}
                         support_contact={store.support_contact.clone()}
+                        agreed_to_assistant={store.assistant_consent_at().is_some()}
                         on_action={on_action.clone()}
                         now_ms={now}
                         item={item.clone()}

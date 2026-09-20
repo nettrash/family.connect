@@ -503,6 +503,35 @@ fn validate_poll_options(state: &AppState, options: &[String]) -> Result<Vec<Str
     Ok(trimmed)
 }
 
+/// Which of the assistant's two surfaces a message is on, if either.
+///
+/// THE ONE PREDICATE behind both halves of `create_message`'s dealings with
+/// the model: the consent refusal near the top, and the trigger that spawns
+/// the reply at the bottom. They must agree exactly — a surface that answers
+/// without being here would send somebody's words having asked nothing, and
+/// one that refuses without being here would hold a message hostage over a
+/// question nobody needed to answer. Written once so they cannot drift, and
+/// the reason `/draw` needs no arm of its own: in the family chat it is
+/// `@ai /draw`, a mention, and in the member's own chat it is that chat.
+enum ModelSurface {
+    /// The member's own `ai` chat: everything sent here goes to the model.
+    Private,
+    /// The family chat, where only an `@ai` does (protocol.md, "Mentioning
+    /// the assistant in the family chat"). Family only, deliberately: a
+    /// direct chat is two people who each already have a private
+    /// assistant, and an assistant answering inside someone's one-to-one
+    /// is a third party in a conversation that had two.
+    Mention,
+}
+
+fn model_surface(chat_kind: &str, body: &str) -> Option<ModelSurface> {
+    match chat_kind {
+        "ai" => Some(ModelSurface::Private),
+        "family" if crate::mentions::mentions_assistant(body) => Some(ModelSurface::Mention),
+        _ => None,
+    }
+}
+
 /// Insert a message, idempotently.
 ///
 /// Returns `(message, created)`: `created == false` means the
@@ -545,6 +574,24 @@ pub async fn create_message(
         .fetch_optional(&state.pool)
         .await?
         .unwrap_or_default();
+
+    // NOTHING REACHES THE MODEL WITHOUT THIS MEMBER'S OWN PERMISSION
+    // (protocol.md, "Consenting to the assistant"). Checked here, before a
+    // single row is written, because the protocol promises a REFUSAL and not
+    // a silent drop: a message that vanished would be a bug report, while a
+    // 403 lets the client show the consent screen and offer to send it
+    // again. Asked of exactly the surfaces that would call the model —
+    // `model_surface` is the same question the trigger at the bottom of
+    // this function asks.
+    if state.cfg.ai.is_usable()
+        && model_surface(&chat_kind, body).is_some()
+        && !crate::handlers_ai::has_assistant_consent(state, sender_id).await?
+    {
+        return Err(ApiError::forbidden(
+            codes::ASSISTANT_CONSENT_REQUIRED,
+            "you have not agreed that your messages may be sent to the assistant",
+        ));
+    }
 
     // Where a poll may live, checked before anything else about it: a poll
     // is a family deciding something together, and between two people it is
@@ -815,34 +862,28 @@ pub async fn create_message(
         // Spawned, so the sender's send returns at once: a reply takes
         // seconds, and holding the send open for it would make asking a
         // question feel like a failure.
+        //
+        // The same `model_surface` the consent check above asked, so the
+        // set of messages that are answered and the set that are refused
+        // without permission are one set. The family chat answers only
+        // when it is ASKED to: the mention is what makes an ordinary
+        // family conversation stay ordinary.
         if state.cfg.ai.is_usable() {
-            match chat_kind.as_str() {
-                "ai" => crate::handlers_ai::spawn_reply(
+            match model_surface(&chat_kind, body) {
+                Some(ModelSurface::Private) => crate::handlers_ai::spawn_reply(
                     state.clone(),
                     chat_id,
                     sender_id,
                     language.map(str::to_string),
                 ),
-                // The family chat answers only when it is ASKED to
-                // (protocol.md, "Mentioning the assistant in the family
-                // chat"). The mention is the consent: without it nothing
-                // about the message leaves the server, which is what keeps
-                // an ordinary family conversation ordinary.
-                //
-                // Family only, deliberately. A direct chat is two people
-                // who each already have a private assistant, and an
-                // assistant answering inside someone's one-to-one is a
-                // third party in a conversation that had two.
-                "family" if crate::mentions::mentions_assistant(body) => {
-                    crate::handlers_ai::spawn_mention_reply(
-                        state.clone(),
-                        chat_id,
-                        sender_id,
-                        message.id,
-                        language.map(str::to_string),
-                    )
-                }
-                _ => {}
+                Some(ModelSurface::Mention) => crate::handlers_ai::spawn_mention_reply(
+                    state.clone(),
+                    chat_id,
+                    sender_id,
+                    message.id,
+                    language.map(str::to_string),
+                ),
+                None => {}
             }
         }
         return Ok((message, true));

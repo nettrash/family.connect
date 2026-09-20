@@ -553,4 +553,23 @@
     <string name="s_draw_failed">Није могло да се нацрта.</string>
     <string name="s_tick_failed">Није могло да се означи.</string>
     <string name="s_no_calendar_app">Нема апликације календара за додавање.</string>
+    <string name="s_the_assistant">Асистент</string>
+    <string name="s_before_the_assistant_answers">Пре него што асистент одговори</string>
+    <string name="s_consent_words_leave_for_processor">Оно што напишеш асистенту напушта сервер ове породице и иде ка %1$s.</string>
+    <string name="s_consent_family_history_travels">У породичном разговору шаље се само порука у којој пише @ai — а с њом и последњих 30 дана тог разговора, до 200 порука, укључујући оно што су други написали, њихова имена и време.</string>
+    <string name="s_consent_family_mention_alone">У породичном разговору шаље се само порука у којој пише @ai, и ништа друго из тог разговора не иде с њом.</string>
+    <string name="s_consent_photo_only_when_attached">Фотографија се шаље само када је сам закачиш уз поруку за асистента, и само док твоја породица то дозвољава.</string>
+    <string name="s_consent_answer_lands_in_the_chat">Одговор стиже као порука у том разговору, где могу да га прочитају сви који су у њему.</string>
+    <string name="s_consent_can_stop_in_settings">Ово можеш да зауставиш било када у подешавањима. Оно што је већ послато не може да се врати.</string>
+    <string name="s_i_agree">Прихватам</string>
+    <string name="s_not_now">Не сада</string>
+    <string name="s_review_ellipsis">Прочитај…</string>
+    <string name="s_this_goes_to_processor_not_agreed">Ово иде ка %1$s. То још ниси прихватио.</string>
+    <string name="s_server_named_no_processor">Овај сервер није рекао која услуга одговара, па овде ништа не може да се пошаље асистенту.</string>
+    <string name="s_agreed">Прихваћено</string>
+    <string name="s_stop_sending_my_messages">Заустави слање мојих порука</string>
+    <string name="s_review_and_agree">Прочитај и прихвати…</string>
+    <string name="s_consent_until_you_agree_nothing_is_sent">Док не прихватиш, ништа што напишеш не иде ка %1$s и асистент ти не одговара.</string>
+    <string name="s_consent_stopping_takes_effect_at_once">Оно што напишеш асистенту иде ка %1$s. Заустављање важи одмах; оно што је већ послато не може да се врати.</string>
+    <string name="s_couldnt_save_your_answer">Твој одговор није сачуван. Покушај поново.</string>
 </resources>

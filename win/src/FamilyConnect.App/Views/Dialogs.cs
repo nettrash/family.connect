@@ -259,6 +259,46 @@ internal static class Dialogs
             : null;
     }
 
+    /// <summary>
+    /// The assistant question, asked once before anything a member writes goes to the model
+    /// (docs/protocol.md, "Consenting to the assistant"). Answers whether they agreed.
+    /// </summary>
+    /// <remarks>
+    /// Everything they need is ON THIS DIALOG and not only behind the policy link: who receives
+    /// the words, what travels with them, where the answer lands, and that stopping later cannot
+    /// recall what has already gone. The two family-chat lines follow the owner's own switches,
+    /// because a screen promising the wrong one would be asking permission for something that
+    /// does not happen.
+    /// </remarks>
+    public static async Task<bool> AssistantConsentAsync(
+        XamlRoot root, IStringCatalog say, string processor, bool familyHistory, bool familyVision)
+    {
+        var content = Column(new TextBlock
+        {
+            Text = say.Get("Before the assistant answers"),
+            Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"],
+            TextWrapping = TextWrapping.Wrap,
+        });
+        foreach (var line in AssistantConsent.Disclosure(processor, familyHistory, familyVision, say))
+        {
+            content.Children.Add(Text(line));
+        }
+
+        // The policy is still linked, because the guideline asks for both: the disclosure where
+        // the answer is given, and a policy that holds the same promises.
+        var policy = new HyperlinkButton
+        {
+            Content = say.Get("Privacy Policy"),
+            NavigateUri = new Uri("https://nettrash.me/appstore/familyconnect/privacy.html"),
+        };
+        content.Children.Add(policy);
+        var dialog = Create(root, say.Get("The Assistant"), content);
+        dialog.PrimaryButtonText = say.Get("I Agree");
+        dialog.CloseButtonText = say.Get("Not Now");
+        dialog.DefaultButton = ContentDialogButton.Close;
+        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+    }
+
     public static StackPanel Column(params UIElement[] children)
     {
         var column = new StackPanel { Spacing = 12, MinWidth = 320 };

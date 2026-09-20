@@ -26,6 +26,7 @@ import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.dto.ApproveResponse
+import me.nettrash.familyconnect.data.net.dto.AssistantConsentResponse
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentResponse
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
@@ -195,6 +196,7 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         displayName: String?,
         vision: Boolean,
         images: Boolean,
+        processor: String?,
     ) {
         _state.value = _state.value.copy(
             assistantUserId = userId,
@@ -203,7 +205,12 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
             // assistant has no capabilities to remember.
             assistantVision = userId != null && vision,
             assistantImages = userId != null && images,
+            assistantProcessor = if (userId != null) processor?.ifBlank { null } else null,
         )
+    }
+
+    override suspend fun setAssistantConsentAt(at: String?) {
+        _state.value = _state.value.copy(assistantConsentAt = at?.ifBlank { null })
     }
 
     override suspend fun setFamilyAiVision(enabled: Boolean) {
@@ -351,6 +358,18 @@ class FakeAuthApi : AuthApi {
     /** Every password handed to POST /me/delete, in call order. */
     val accountDeletions = mutableListOf<String>()
     var deleteAccountResult: ApiResult<Unit> = ApiResult.Ok(Unit)
+
+    /** Every answer handed to POST /me/assistant-consent, in call order. */
+    val assistantConsentAnswers = mutableListOf<Boolean>()
+    var assistantConsentResult: ApiResult<AssistantConsentResponse> =
+        ApiResult.Ok(AssistantConsentResponse(assistantConsentAt = "2026-09-19T19:34:43Z"))
+
+    override suspend fun setAssistantConsent(
+        granted: Boolean,
+    ): ApiResult<AssistantConsentResponse> {
+        assistantConsentAnswers += granted
+        return assistantConsentResult
+    }
 
     override suspend fun deleteAccount(password: String): ApiResult<Unit> {
         accountDeletions += password

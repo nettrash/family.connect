@@ -150,6 +150,15 @@ final class AppSession {
     /// the report screen: it is the escalation path for when the family's
     /// own moderator is the problem.
     private(set) var supportContact: String?
+    /// When this member agreed that their words may go to the model, nil
+    /// until they have (docs/protocol.md, "Consenting to the assistant").
+    ///
+    /// The SERVER's answer and not this device's: it is what actually
+    /// calls the model, a reinstall must not quietly re-ask and re-send,
+    /// and somebody who agreed on their phone has agreed rather than
+    /// agreed-on-that-phone. Replaced on every `/me`, which is step 1 of
+    /// the resync, so a withdrawal from another device arrives here.
+    private(set) var assistantConsentAt: Date?
     /// Set when a pending join request silently disappeared from /me:
     /// FamilyGateView surfaces "your request was declined" once.
     var joinDeclined = false
@@ -384,6 +393,7 @@ final class AppSession {
         videoCallsEnabled = me.videoCallsEnabled
         maxFamilyMembers = me.maxFamilyMembers
         supportContact = me.supportContact
+        assistantConsentAt = me.assistantConsentAt
         familyRegistrationEnabled = me.familyRegistrationEnabled
         familylessAccountTTLDays = me.familylessAccountTTLDays
         // The operator's half of the daily greeting. Stored rather than held
@@ -419,6 +429,18 @@ final class AppSession {
             if wasActive { purge(.kicked) }
             phase = .needsFamily
         }
+    }
+
+    /// Answer the assistant question, and hold what the server answers
+    /// back (docs/protocol.md, "Consenting to the assistant").
+    ///
+    /// Here rather than in each screen because the state is one fact about
+    /// this member and three surfaces read it — the phone's composer and
+    /// settings, and the Mac's. The server's own stamp is stored rather
+    /// than `Date.now`: granting twice keeps the first one, and a client
+    /// that invented its own would show a date the server would not.
+    func setAssistantConsent(_ granted: Bool) async throws {
+        assistantConsentAt = try await api.setAssistantConsent(granted)
     }
 
     // MARK: - Transitions
@@ -607,6 +629,7 @@ final class AppSession {
         videoCallsEnabled = false
         maxFamilyMembers = nil
         supportContact = nil
+        assistantConsentAt = nil
         familyRegistrationEnabled = true
         familylessAccountTTLDays = 0
         phase = .needsAuth

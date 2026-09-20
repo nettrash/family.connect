@@ -553,4 +553,23 @@
     <string name="s_draw_failed">No se pudo dibujar.</string>
     <string name="s_tick_failed">No se pudo marcar.</string>
     <string name="s_no_calendar_app">No hay app de calendario donde añadirlo.</string>
+    <string name="s_the_assistant">El asistente</string>
+    <string name="s_before_the_assistant_answers">Antes de que el asistente responda</string>
+    <string name="s_consent_words_leave_for_processor">Lo que escribes al asistente sale del servidor de esta familia y se envía a %1$s.</string>
+    <string name="s_consent_family_history_travels">En el chat familiar solo se envía un mensaje que diga @ai, y con él los últimos 30 días de ese chat, hasta 200 mensajes, incluido lo que escribieron otras personas, sus nombres y las horas.</string>
+    <string name="s_consent_family_mention_alone">En el chat familiar solo se envía un mensaje que diga @ai, y nada más de ese chat va con él.</string>
+    <string name="s_consent_photo_only_when_attached">Una foto solo se envía cuando la adjuntas a un mensaje para el asistente, y solo mientras tu familia lo permita.</string>
+    <string name="s_consent_answer_lands_in_the_chat">La respuesta vuelve como un mensaje en ese chat, donde todos los del chat pueden leerla.</string>
+    <string name="s_consent_can_stop_in_settings">Puedes detenerlo cuando quieras en Ajustes. Lo que ya se envió no se puede recuperar.</string>
+    <string name="s_i_agree">Acepto</string>
+    <string name="s_not_now">Ahora no</string>
+    <string name="s_review_ellipsis">Leer…</string>
+    <string name="s_this_goes_to_processor_not_agreed">Esto se envía a %1$s. Todavía no lo has aceptado.</string>
+    <string name="s_server_named_no_processor">Este servidor no ha dicho qué servicio responde, así que aquí no se puede enviar nada al asistente.</string>
+    <string name="s_agreed">Aceptado</string>
+    <string name="s_stop_sending_my_messages">Dejar de enviar mis mensajes</string>
+    <string name="s_review_and_agree">Leer y aceptar…</string>
+    <string name="s_consent_until_you_agree_nothing_is_sent">Hasta que aceptes, nada de lo que escribas se envía a %1$s y el asistente no te responde.</string>
+    <string name="s_consent_stopping_takes_effect_at_once">Lo que escribes al asistente se envía a %1$s. Detenerlo surte efecto de inmediato; lo ya enviado no se puede recuperar.</string>
+    <string name="s_couldnt_save_your_answer">No se pudo guardar tu respuesta. Inténtalo de nuevo.</string>
 </resources>

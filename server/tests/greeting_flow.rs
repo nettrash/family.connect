@@ -114,6 +114,7 @@ async fn server_with_greetings_tweaked(
         cfg.ai.endpoint = format!("http://{addr}");
         cfg.ai.deployment = "test-gpt".to_string();
         cfg.ai.api_key = "test-key".to_string();
+        cfg.ai.processor = "Microsoft — Azure OpenAI".to_string();
         cfg.ai.title = "Assistant".to_string();
         cfg.greetings.enabled = true;
         cfg.greetings.hour_utc = 0;
@@ -258,6 +259,47 @@ async fn both_switches_on_posts_exactly_one_greeting_however_often_the_job_runs(
         mock.bodies().len(),
         1,
         "the model was called again after the greeting already existed"
+    );
+}
+
+/// **The greeting needs nobody's consent, and a family of people who all
+/// declined the assistant still gets one** (protocol.md, "Consenting to the
+/// assistant").
+///
+/// It is the one thing this assistant sends that is not made of anybody's
+/// words: the prompt is a fixed instruction plus the star signs of stored
+/// birthdays, with no name, no message and nothing anybody wrote. Gating it
+/// on consent would be a promise about privacy that costs a family their
+/// morning line for nothing — and the test pins the other half too, that
+/// what reaches the model is still only the sign.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_family_that_declined_the_assistant_is_still_greeted() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let server = server_with_greetings(addr).await;
+    let (owner, chat_id) = family(&server).await;
+    set_language(&server, &owner, "en").await;
+    set_greeting(&server, &owner, true).await;
+
+    // Every member says no to the assistant. Their own `ai` chat is shut
+    // and an `@ai` of theirs would be refused; the greeting is neither.
+    let response = server
+        .post(&owner, "/me/assistant-consent", json!({"granted": false}))
+        .await;
+    assert_eq!(response.status(), 200, "withdrawing consent");
+
+    assert_eq!(run(&server).await, 1, "the family is greeted all the same");
+    let bodies = bodies_in(&server, &owner, chat_id).await;
+    assert_eq!(bodies.len(), 1, "holds: {bodies:?}");
+    assert!(bodies[0].starts_with("Good morning."));
+
+    let sent = mock.bodies();
+    assert_eq!(sent.len(), 1, "exactly one call, for the greeting");
+    let raw = serde_json::to_string(&sent[0]).expect("the request serialises");
+    assert!(raw.contains("Leo"), "the sign travels: {raw}");
+    assert!(
+        !raw.contains("Olive"),
+        "and the person still does not: {raw}"
     );
 }
 

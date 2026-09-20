@@ -225,6 +225,38 @@
                     </Grid>
                 </Border>
 
+                <!-- The assistant question: who the words go to, whether this member has agreed, and the -->
+                <!-- way back out of it (docs/protocol.md, "Consenting to the assistant"). The whole group -->
+                <!-- is collapsed where this server named no processor: there is nothing to have agreed to. -->
+                <TextBlock x:Name="AssistantHeading" Style="{StaticResource Section}" Visibility="Collapsed" />
+                <StackPanel x:Name="AssistantPanel" Spacing="4" Visibility="Collapsed">
+                    <Border Style="{StaticResource Card}">
+                        <Grid Style="{StaticResource Row}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <FontIcon Style="{StaticResource RowIcon}" Glyph="&#xE72E;" />
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                                <TextBlock x:Name="AssistantConsentTitle" TextWrapping="Wrap" />
+                                <TextBlock x:Name="AssistantConsentFootnote" Style="{StaticResource Footnote}" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                    <Button x:Name="AssistantConsentButton" Style="{StaticResource LinkRow}">
+                        <Grid ColumnSpacing="16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <FontIcon Style="{StaticResource RowIcon}" Glyph="&#xE734;" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                            <TextBlock x:Name="AssistantConsentAction" Grid.Column="1" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                            <FontIcon Grid.Column="2" Style="{StaticResource Chevron}" Glyph="&#xE8A7;" />
+                        </Grid>
+                    </Button>
+                </StackPanel>
+
                 <TextBlock x:Name="PrivacyHeading" Style="{StaticResource Section}" />
                 <StackPanel Spacing="4">
                     <!-- The one switch that changes who this app talks to, so it says so plainly. -->

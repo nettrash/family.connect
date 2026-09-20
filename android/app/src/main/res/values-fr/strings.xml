@@ -553,4 +553,23 @@
     <string name="s_draw_failed">Impossible de dessiner cela.</string>
     <string name="s_tick_failed">Impossible de cocher cette tâche.</string>
     <string name="s_no_calendar_app">Aucune app de calendrier pour l\'ajouter.</string>
+    <string name="s_the_assistant">L’assistant</string>
+    <string name="s_before_the_assistant_answers">Avant que l’assistant réponde</string>
+    <string name="s_consent_words_leave_for_processor">Ce que vous écrivez à l’assistant quitte le serveur de cette famille et part vers %1$s.</string>
+    <string name="s_consent_family_history_travels">Dans la discussion familiale, seul un message contenant @ai part — et avec lui les 30 derniers jours de cette discussion, jusqu’à 200 messages, y compris ce qu’ont écrit les autres, leurs noms et les heures.</string>
+    <string name="s_consent_family_mention_alone">Dans la discussion familiale, seul un message contenant @ai part, et rien d’autre de cette discussion ne l’accompagne.</string>
+    <string name="s_consent_photo_only_when_attached">Une photo n’est envoyée que si vous la joignez à un message pour l’assistant, et seulement tant que votre famille l’autorise.</string>
+    <string name="s_consent_answer_lands_in_the_chat">La réponse revient sous forme de message dans cette discussion, où tous ses participants peuvent la lire.</string>
+    <string name="s_consent_can_stop_in_settings">Vous pouvez arrêter à tout moment dans les Réglages. Ce qui est déjà parti ne peut pas être repris.</string>
+    <string name="s_i_agree">J’accepte</string>
+    <string name="s_not_now">Pas maintenant</string>
+    <string name="s_review_ellipsis">Lire…</string>
+    <string name="s_this_goes_to_processor_not_agreed">Ceci part vers %1$s. Vous ne l’avez pas encore accepté.</string>
+    <string name="s_server_named_no_processor">Ce serveur n’a pas dit quel service répond ; rien ne peut donc être envoyé à l’assistant ici.</string>
+    <string name="s_agreed">Accepté</string>
+    <string name="s_stop_sending_my_messages">Ne plus envoyer mes messages</string>
+    <string name="s_review_and_agree">Lire et accepter…</string>
+    <string name="s_consent_until_you_agree_nothing_is_sent">Tant que vous n’avez pas accepté, rien de ce que vous écrivez n’est envoyé à %1$s et l’assistant ne vous répond pas.</string>
+    <string name="s_consent_stopping_takes_effect_at_once">Ce que vous écrivez à l’assistant est envoyé à %1$s. L’arrêt prend effet immédiatement ; ce qui est déjà parti ne peut pas être repris.</string>
+    <string name="s_couldnt_save_your_answer">Impossible d’enregistrer votre réponse. Réessayez.</string>
 </resources>

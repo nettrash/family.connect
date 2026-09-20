@@ -42,6 +42,7 @@
 
 pub mod account;
 pub mod assistant;
+pub mod assistant_consent;
 pub mod assistant_pictures;
 pub mod avatar;
 pub mod board;

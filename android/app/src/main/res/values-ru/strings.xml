@@ -573,4 +573,23 @@
     <string name="s_draw_failed">Не удалось нарисовать.</string>
     <string name="s_tick_failed">Не удалось отметить.</string>
     <string name="s_no_calendar_app">Нет приложения календаря, куда добавить.</string>
+    <string name="s_the_assistant">Ассистент</string>
+    <string name="s_before_the_assistant_answers">Прежде чем ассистент ответит</string>
+    <string name="s_consent_words_leave_for_processor">То, что вы пишете ассистенту, покидает сервер этой семьи и уходит в %1$s.</string>
+    <string name="s_consent_family_history_travels">В семейном чате уходит только сообщение, где написано @ai, — а вместе с ним последние 30 дней этого чата, до 200 сообщений, включая написанное другими, их имена и время.</string>
+    <string name="s_consent_family_mention_alone">В семейном чате уходит только сообщение, где написано @ai, и больше ничего из этого чата с ним не идёт.</string>
+    <string name="s_consent_photo_only_when_attached">Фотография уходит, только если вы сами прикрепите её к сообщению для ассистента, и только пока ваша семья это разрешает.</string>
+    <string name="s_consent_answer_lands_in_the_chat">Ответ приходит сообщением в этот чат, и его видят все, кто в нём есть.</string>
+    <string name="s_consent_can_stop_in_settings">Вы можете остановить это в любой момент в настройках. Уже отправленное вернуть нельзя.</string>
+    <string name="s_i_agree">Я согласен</string>
+    <string name="s_not_now">Не сейчас</string>
+    <string name="s_review_ellipsis">Прочитать…</string>
+    <string name="s_this_goes_to_processor_not_agreed">Это уйдёт в %1$s. Вы пока не давали на это согласия.</string>
+    <string name="s_server_named_no_processor">Этот сервер не сообщил, какой сервис отвечает, поэтому отправить что-либо ассистенту здесь нельзя.</string>
+    <string name="s_agreed">Согласие дано</string>
+    <string name="s_stop_sending_my_messages">Больше не отправлять мои сообщения</string>
+    <string name="s_review_and_agree">Прочитать и согласиться…</string>
+    <string name="s_consent_until_you_agree_nothing_is_sent">Пока вы не согласитесь, ничего написанного вами не уходит в %1$s, и ассистент вам не отвечает.</string>
+    <string name="s_consent_stopping_takes_effect_at_once">То, что вы пишете ассистенту, уходит в %1$s. Остановка действует сразу; уже отправленное вернуть нельзя.</string>
+    <string name="s_couldnt_save_your_answer">Не удалось сохранить ваш ответ. Попробуйте ещё раз.</string>
 </resources>

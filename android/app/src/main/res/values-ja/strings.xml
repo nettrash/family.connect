@@ -534,4 +534,23 @@
     <string name="s_draw_failed">描けませんでした。</string>
     <string name="s_tick_failed">チェックできませんでした。</string>
     <string name="s_no_calendar_app">追加できるカレンダーアプリがありません。</string>
+    <string name="s_the_assistant">アシスタント</string>
+    <string name="s_before_the_assistant_answers">アシスタントが答える前に</string>
+    <string name="s_consent_words_leave_for_processor">アシスタントに書いた内容は、このファミリーのサーバーを離れて %1$s に送られます。</string>
+    <string name="s_consent_family_history_travels">ファミリーチャットでは @ai と書いたメッセージだけが送られます。そのとき、直近30日・最大200件のやり取りも一緒に送られ、そこには他の人が書いた内容・名前・時刻が含まれます。</string>
+    <string name="s_consent_family_mention_alone">ファミリーチャットでは @ai と書いたメッセージだけが送られ、その会話の他の内容は一緒に送られません。</string>
+    <string name="s_consent_photo_only_when_attached">写真は、アシスタント宛てのメッセージに自分で添付したときだけ、しかもファミリーが許可している間だけ送られます。</string>
+    <string name="s_consent_answer_lands_in_the_chat">答えはその会話にメッセージとして返り、会話にいる全員が読めます。</string>
+    <string name="s_consent_can_stop_in_settings">いつでも設定で止められます。すでに送られたものは取り消せません。</string>
+    <string name="s_i_agree">同意する</string>
+    <string name="s_not_now">今はしない</string>
+    <string name="s_review_ellipsis">確認…</string>
+    <string name="s_this_goes_to_processor_not_agreed">これは %1$s に送られます。まだ同意していません。</string>
+    <string name="s_server_named_no_processor">このサーバーはどのサービスが答えるかを示していないため、ここではアシスタントに何も送れません。</string>
+    <string name="s_agreed">同意日</string>
+    <string name="s_stop_sending_my_messages">メッセージの送信をやめる</string>
+    <string name="s_review_and_agree">内容を読んで同意…</string>
+    <string name="s_consent_until_you_agree_nothing_is_sent">同意するまで、あなたが書いた内容が %1$s に送られることはなく、アシスタントも答えません。</string>
+    <string name="s_consent_stopping_takes_effect_at_once">アシスタントに書いた内容は %1$s に送られます。停止はすぐ反映されますが、すでに送られたものは取り消せません。</string>
+    <string name="s_couldnt_save_your_answer">回答を保存できませんでした。もう一度お試しください。</string>
 </resources>

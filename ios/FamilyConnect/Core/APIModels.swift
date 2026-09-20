@@ -1110,6 +1110,12 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
     /// and saw nothing all week could not tell a server that never posts from
     /// a switch that did not save.
     var greetingsEnabled: Bool = false
+    /// When this caller agreed that their words may go to the model, or
+    /// nil if they have not — and nil on a server with no assistant, which
+    /// a client never has to tell apart because such a server offers no
+    /// `ai` chat (protocol.md, "Consenting to the assistant"). Read at
+    /// step 1 of the resync, so the composer knows before it is drawn.
+    var assistantConsentAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case user
@@ -1124,6 +1130,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         case familyRegistrationEnabled = "family_registration_enabled"
         case familylessAccountTTLDays = "familyless_account_ttl_days"
         case greetingsEnabled = "greetings_enabled"
+        case assistantConsentAt = "assistant_consent_at"
     }
 
     init(
@@ -1138,7 +1145,8 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         supportContact: String? = nil,
         familyRegistrationEnabled: Bool = true,
         familylessAccountTTLDays: Int = 0,
-        greetingsEnabled: Bool = false
+        greetingsEnabled: Bool = false,
+        assistantConsentAt: Date? = nil
     ) {
         self.user = user
         self.family = family
@@ -1152,6 +1160,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         self.familyRegistrationEnabled = familyRegistrationEnabled
         self.familylessAccountTTLDays = familylessAccountTTLDays
         self.greetingsEnabled = greetingsEnabled
+        self.assistantConsentAt = assistantConsentAt
     }
 
     /// Hand-written for the reason every other defaulted field on this
@@ -1174,6 +1183,10 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         familylessAccountTTLDays = try container.decodeIfPresent(Int.self, forKey: .familylessAccountTTLDays) ?? 0
         // Absent on a server from before the greeting, which posts none.
         greetingsEnabled = try container.decodeIfPresent(Bool.self, forKey: .greetingsEnabled) ?? false
+        // Absent on a server from before the assistant was asked about,
+        // and null for anybody who has not answered — both of which mean
+        // "has not agreed", which is what nil says here.
+        assistantConsentAt = try container.decodeIfPresent(Date.self, forKey: .assistantConsentAt)
     }
 }
 
@@ -1235,6 +1248,15 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
     /// `/draw` already produces, so nothing is offered or drawn differently
     /// for it (protocol.md, "Drawing without being told to").
     let images: Bool
+    /// WHO ANSWERS, in the operator's own words — "Microsoft — Azure
+    /// OpenAI (Sweden Central)", or whoever their deployment belongs to.
+    /// Shown VERBATIM on the consent screen, because a person cannot weigh
+    /// "some third party" (protocol.md, "Consenting to the assistant").
+    ///
+    /// Absent on a server that predates the field. A client that cannot
+    /// name the recipient cannot ask the question honestly, so it offers
+    /// no assistant at all there — see `AssistantConsent.isAvailable`.
+    let processor: String?
 
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
@@ -1243,6 +1265,7 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         case draw
         case vision
         case images
+        case processor
     }
 
     init(
@@ -1251,7 +1274,8 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         mention: String,
         draw: String? = nil,
         vision: Bool = false,
-        images: Bool = false
+        images: Bool = false,
+        processor: String? = nil
     ) {
         self.userID = userID
         self.displayName = displayName
@@ -1259,6 +1283,7 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         self.draw = draw
         self.vision = vision
         self.images = images
+        self.processor = processor
     }
 
     /// Hand-written for the reason `UserDTO`'s is: a property default is
@@ -1275,6 +1300,7 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         draw = try container.decodeIfPresent(String.self, forKey: .draw)
         vision = try container.decodeIfPresent(Bool.self, forKey: .vision) ?? false
         images = try container.decodeIfPresent(Bool.self, forKey: .images) ?? false
+        processor = try container.decodeIfPresent(String.self, forKey: .processor)
     }
 }
 

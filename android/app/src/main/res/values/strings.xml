@@ -601,4 +601,23 @@
     <string name="s_draw_failed">Couldn\'t draw that.</string>
     <string name="s_tick_failed">Couldn\'t tick that off.</string>
     <string name="s_no_calendar_app">No calendar app to add it to.</string>
+    <string name="s_the_assistant">The assistant</string>
+    <string name="s_before_the_assistant_answers">Before the assistant answers</string>
+    <string name="s_consent_words_leave_for_processor">What you write to the assistant leaves this family\'s server and is sent to %1$s.</string>
+    <string name="s_consent_family_history_travels">In the family chat only a message that says @ai is sent — and with it the last 30 days of that chat, up to 200 messages, including what other people wrote, their names and the times.</string>
+    <string name="s_consent_family_mention_alone">In the family chat only a message that says @ai is sent, and nothing else from that chat goes with it.</string>
+    <string name="s_consent_photo_only_when_attached">A photo is sent only when you attach one to a message for the assistant, and only while your family allows it.</string>
+    <string name="s_consent_answer_lands_in_the_chat">The answer comes back as a message in that chat, where everyone in the chat can read it.</string>
+    <string name="s_consent_can_stop_in_settings">You can stop this at any time in Settings. What has already been sent cannot be taken back.</string>
+    <string name="s_i_agree">I agree</string>
+    <string name="s_not_now">Not now</string>
+    <string name="s_review_ellipsis">Review…</string>
+    <string name="s_this_goes_to_processor_not_agreed">This goes to %1$s. You haven\'t agreed to that yet.</string>
+    <string name="s_server_named_no_processor">This server hasn\'t said which service answers, so nothing can be sent to the assistant here.</string>
+    <string name="s_agreed">Agreed</string>
+    <string name="s_stop_sending_my_messages">Stop sending my messages</string>
+    <string name="s_review_and_agree">Review and agree…</string>
+    <string name="s_consent_until_you_agree_nothing_is_sent">Until you agree, nothing you write is sent to %1$s and the assistant does not answer you.</string>
+    <string name="s_consent_stopping_takes_effect_at_once">What you write to the assistant is sent to %1$s. Stopping takes effect at once; what has already been sent cannot be taken back.</string>
+    <string name="s_couldnt_save_your_answer">Couldn\'t save your answer. Try again.</string>
 </resources>

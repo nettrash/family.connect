@@ -534,4 +534,23 @@
     <string name="s_draw_failed">无法绘制。</string>
     <string name="s_tick_failed">无法勾选。</string>
     <string name="s_no_calendar_app">没有可添加的日历应用。</string>
+    <string name="s_the_assistant">助手</string>
+    <string name="s_before_the_assistant_answers">在助手回答之前</string>
+    <string name="s_consent_words_leave_for_processor">你写给助手的内容会离开这个家庭的服务器，发给 %1$s。</string>
+    <string name="s_consent_family_history_travels">在家庭对话里，只有写了 @ai 的消息才会发出——并且会带上这个对话最近 30 天、最多 200 条的内容，包括别人写的话、他们的名字和时间。</string>
+    <string name="s_consent_family_mention_alone">在家庭对话里，只有写了 @ai 的消息才会发出，这个对话里的其他内容不会跟着发。</string>
+    <string name="s_consent_photo_only_when_attached">只有当你把照片附在给助手的消息上时才会发送，而且只在你的家庭允许时。</string>
+    <string name="s_consent_answer_lands_in_the_chat">回答会作为一条消息回到那个对话里，对话里的每个人都能看到。</string>
+    <string name="s_consent_can_stop_in_settings">你随时可以在设置里停止。已经发出去的收不回来。</string>
+    <string name="s_i_agree">我同意</string>
+    <string name="s_not_now">暂不</string>
+    <string name="s_review_ellipsis">查看…</string>
+    <string name="s_this_goes_to_processor_not_agreed">这会发给 %1$s。你还没有同意。</string>
+    <string name="s_server_named_no_processor">这台服务器没有说明由哪个服务来回答，所以这里无法向助手发送任何内容。</string>
+    <string name="s_agreed">已同意</string>
+    <string name="s_stop_sending_my_messages">停止发送我的消息</string>
+    <string name="s_review_and_agree">查看并同意…</string>
+    <string name="s_consent_until_you_agree_nothing_is_sent">在你同意之前，你写的内容不会发给 %1$s，助手也不会回答你。</string>
+    <string name="s_consent_stopping_takes_effect_at_once">你写给助手的内容会发给 %1$s。停止后立即生效；已经发出去的收不回来。</string>
+    <string name="s_couldnt_save_your_answer">没能保存你的选择。请再试一次。</string>
 </resources>

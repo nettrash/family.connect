@@ -118,6 +118,7 @@ async fn server_with_assistant() -> TestServer {
         cfg.ai.endpoint = "https://example.invalid".to_string();
         cfg.ai.deployment = "test-deployment".to_string();
         cfg.ai.api_key = "test-key".to_string();
+        cfg.ai.processor = "Microsoft — Azure OpenAI".to_string();
         cfg.ai.title = "Assistant".to_string();
     })
     .await

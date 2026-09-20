@@ -105,28 +105,30 @@ chat,messenger,private,self-hosted,server,calls,video,voice,photos,relatives,gra
 
 *("family" and "connect" are left out on purpose — the app name is meant to carry them. Confirm the App Store Connect name first: the icon and the app itself are called "Family", and if the store listing is named that too, "connect" is indexed nowhere and should take "group"'s place here; the five free characters are held for exactly that. "kids" is dropped deliberately — a keyword implying a child audience invites a Guideline 1.3 and age-rating question this app cannot answer.)*
 
-## Notes for App Review (paste verbatim — 3990/4000 chars)
+## Notes for App Review (paste verbatim — 3988/4000 chars)
 
-DEMO SERVER: https://fc.nettrash.me — compiled into this build, so there is nothing to configure.
+DEMO SERVER: https://fc.nettrash.me — compiled in, so there is nothing to configure.
 
 DEMO ACCOUNTS.
-- Owner: [DEMO_USER] / [DEMO_PASS]. Owns the reviewer family; history seeded: photos, a video, a voice note, an open poll, a location, board notes, a thread, one 1:1 chat.
-- Second account: [DEMO_USER_2] / [DEMO_PASS_2], same family — sign in on a second device for typing indicators, read receipts and a call.
-- Invite code [INVITE_CODE]. Support: [SUPPORT_EMAIL].
+- Owner: [DEMO_USER] / [DEMO_PASS]. Owns the reviewer family; history seeded: photos, video, voice note, open poll, location, board notes, a thread, a 1:1 chat.
+- Second: [DEMO_USER_2] / [DEMO_PASS_2], same family — sign in on a second device for typing indicators, read receipts and a call.
+- Invite code [INVITE_CODE]. Support [SUPPORT_EMAIL].
 
-NEW IN 1.1, WHERE TO FIND IT. Threads: "N replies" under an answered message opens the chain. Mentions: type @ in the composer. Open polls: the chart icon in the family chat's toolbar. The board holds an event (date, place, who is going, add to calendar) and a task list anyone may tick. The seeded family has each.
+NEW IN 1.1, WHERE TO FIND IT. Threads: "N replies" under an answered message opens the chain. Mentions: type @ in the composer. Open polls: the chart icon in the family chat's toolbar. The board holds an event (date, place, who is going, add to calendar) and a task list anyone may tick.
 
-WHAT IT IS. A client for a small open-source (MIT, Rust) chat server. There is no vendor cloud: each installation talks to one server, and a family's messages live in its database and on the family's devices. On the device the app is named Family; the App Store record is Family Connect. Two modes: (1) the default server above, which we keep online for the whole review period — launch and the sign-in screen appears; (2) "Change server…" there points the app at a self-hosted one. Review needs mode 1 only. These notes describe the iOS build.
+WHAT IT IS. A client for a small open-source (MIT, Rust) chat server. No vendor cloud: each installation talks to one server, and a family's messages live in its database and on the family's devices. On the device the app is named Family; the store record is Family Connect. Two modes: (1) the default server above, online for the whole review — launch and sign in; (2) "Change server…" points the app at a self-hosted one. Review needs mode 1. These notes are for iOS.
 
-CONTACT IS CONTAINED (guideline 1.2). There is no public feed, no discovery, no user directory and no user search — nothing is posted to a public surface. Registration is open (username, display name, password; no email, no phone), but an account in no family can start nothing: opening a one-to-one chat, reporting and blocking are all refused server-side unless both people are in the same family, and calls exist only inside a one-to-one chat that had to be created that way. The only ways into a family are creating your own or presenting an 8-character invite code, and a new family defaults to "Need approval", so the owner admits each member, and may rotate the code, cap membership, close joining, or remove anyone.
+CONTACT IS CONTAINED (guideline 1.2). No public feed, no discovery, no directory, no user search — nothing is posted publicly. Registration is open (username, display name, password; no email, no phone), but an account in no family can start nothing: one-to-one chats, reports, blocks and calls are refused server-side unless both share a family. The only ways in are creating a family or presenting an 8-character invite code; a new family defaults to "Need approval", so the owner admits each member, may rotate the code, cap it, close joining, or remove anyone.
 
-REPORT AND BLOCK. Long-press a message → "Safety" → "Report…" or "Block". A person can also be reported or blocked from Manage Family by long-pressing their member row → "Safety". Four fixed reasons. The moderator is the family owner: reports arrive in chat list → Settings (gear) → Family → Manage Family → Reports, and push the owner. A report naming the owner is never listed to them; that sheet shows the server's support contact instead — [SUPPORT_EMAIL] here, monitored by us, and we can act on the account on that server.
+REPORT AND BLOCK. Long-press a message → "Safety" → "Report…" or "Block"; a person can also be reported or blocked from their Manage Family row the same way. Four fixed reasons. The moderator is the family owner: reports arrive in Settings → Family → Manage Family → Reports, and push them. A report naming the owner is never listed to them; that sheet shows the server's support contact instead — [SUPPORT_EMAIL], monitored by us.
 
-DELETE ACCOUNT (5.1.1(v)). Chat list → Settings (gear) → last section, beside Log Out. It asks for the account password (a live session is not proof) and a second confirmation, then runs immediately and irreversibly — no grace period. It erases the username (freeing it), display name, password, avatar, birthday, and every session and push token. One-to-one chats are deleted for both people; family-chat messages, board notes and reactions stay, re-attributed to "Deleted account". Ownership passes to the longest-standing member; a last member takes the family with them. It works on the demo accounts too — we re-provision them.
+DELETE ACCOUNT (5.1.1(v)). Settings → last section, beside Log Out. It asks for the account password (a live session is not proof) and a second confirmation, then runs at once, irreversibly. It erases the username (freeing it), display name, password, avatar, birthday, sessions and push tokens. One-to-one chats go for both people; family-chat messages, notes and reactions stay as "Deleted account". Ownership passes to the longest-standing member. It works on the demo accounts.
 
-NOT END-TO-END ENCRYPTED, and the app does not claim to be. Message text, photos, files and locations are stored readable in the chosen server's database and filesystem; on the default server the developer is that operator. Call media (WebRTC, DTLS-SRTP) travels directly between the two devices wherever the network allows; where it cannot, the call connects only if a relay is configured on our server, and a relay forwards the encrypted stream without being able to read it.
+NOT END-TO-END ENCRYPTED, and the app does not claim to be. Message text, photos, files and locations are stored readable in the chosen server's database and filesystem; on the default server the developer is the operator. Call media (WebRTC, DTLS-SRTP) is peer to peer, or goes via a relay that forwards the encrypted stream without reading it.
 
-LOCAL NETWORK PROMPT. With both devices on one Wi-Fi, iOS asks for Local Network permission as a call connects — please allow it, or a same-network call cannot connect. Please test calls on two real devices: the Simulator has no APNs to wake a backgrounded phone, and no camera.
+AI ASSISTANT — CONSENT (5.1.1(i), 5.1.2(i)). The optional assistant is the only feature sending anything to a third party: [AI_PROCESSOR]. Before a member's first message reaches it, a screen names that recipient and all that travels — the message; in the family chat only an @ai message, with the last 30 days / 200 messages (others' words, names, times) while history is on; a photo only when attached and allowed; the reply appears in that chat. Nothing is sent until "I Agree", the server refuses (403) until then, and Settings → Assistant withdraws it. [DEMO_USER] has NOT agreed, so the screen appears on its first message; [DEMO_USER_2] has. Policy: nettrash.me/appstore/familyconnect/privacy.html
+
+LOCAL NETWORK PROMPT. With both devices on one Wi-Fi, iOS asks for Local Network permission as a call connects — please allow it, or a same-network call cannot connect. Please test calls on two real devices: the Simulator has no APNs, no camera.
 
 ## Reviewer walkthrough (supporting detail — not pasted into App Store Connect)
 
@@ -215,6 +217,49 @@ first one-to-one chat, a report, a block — still requires a shared family.
     app's Recents — and each call writes a record into the chat. A call's kind is fixed when it is
     placed; the camera toggles, the kind does not.
 
+### The assistant, and the consent it asks for (guidelines 5.1.1(i), 5.1.2(i))
+
+Build 119 was rejected on 2026-09-19 for exactly one thing: the app sent what a member wrote to a
+third party without disclosing it and without asking. The answer is not a policy paragraph — it is
+a screen, and a server that refuses without it.
+
+**What a reviewer sees.** Sign in as `[DEMO_USER]`, who has deliberately NOT answered the
+question, and open the assistant's chat (the one named after the server's assistant, at the top of
+the chat list). Above the composer sits one line: "This goes to `[AI_PROCESSOR]`. You haven't
+agreed to that yet." — with **Review…** on it. Tapping Send does the same thing as tapping
+Review…: it raises **The Assistant** screen rather than sending anything. That screen names the
+recipient verbatim and lists, in plain sentences, everything that travels: the message itself; in
+the family chat only a message saying `@ai`, and with it the last 30 days / 200 messages including
+other members' words, their display names and the times, while the owner has history switched on;
+a photograph only when one is attached and the family allows pictures; and that the answer comes
+back as a message in that chat, where everyone in it can read it. It ends with the two facts a
+person needs to decide: this can be stopped at any time in Settings, and what has already been
+sent cannot be taken back. **Not Now** closes it with the typed message still in the composer.
+**I Agree** records the answer and then sends that same message — nothing is retyped.
+
+`[DEMO_USER_2]` has already agreed, which is the other half worth seeing: no bar, no screen, the
+assistant simply answers.
+
+**Where it is stored, and how it is withdrawn.** The answer is on the SERVER, not the device:
+`GET /me` carries `assistant_consent_at` and `POST /me/assistant-consent` sets it. That is what
+makes the refusal real — the server is what calls the model, so a client that forgot to ask still
+gets `403 assistant_consent_required` and the message is never sent. It also means a reinstall
+does not quietly re-ask and re-send, and agreeing on an iPhone means agreeing, not agreeing on
+that iPhone. Withdrawal is Settings → Assistant → **Stop Sending My Messages**: it takes effect
+immediately, the existing assistant chat and its history stay exactly where they are, and
+agreeing again resumes from there.
+
+**Whose permission it is.** The member's, and never the owner's. The family owner has two
+switches — `ai_history` and `ai_vision` — over what the family chat exposes, and neither is
+permission from the people whose words that history is made of. The endpoint takes no user id for
+that reason: there is no request shape in which one person agrees for another. The same rule runs
+one level deeper, where it is easiest to miss: the history an `@ai` carries is filtered per
+sender, so a member who declined keeps their words out of somebody else's question too, and the
+model is told nothing about what was withheld.
+
+**The one thing consent is not asked for** is the daily greeting, which is a fixed instruction
+plus the star signs of stored birthdays — no name, no message, nothing anybody wrote.
+
 ### Safety and moderation, in more detail (guideline 1.2)
 
 The closed model above is the first line: content is confined to a family whose owner controls
@@ -285,9 +330,12 @@ STUN server used to set up a call, which discloses the device's public address t
 it, and a TURN relay where one is configured. The server also has an **optional assistant**, which
 exists only if its operator turns it on; where it is on, an `@ai` mention sends recent family-chat
 context — up to 30 days / 200 messages / 40,000 characters, with display names and timestamps — to
-Azure OpenAI, and each member additionally gets a private assistant chat. Whether it is enabled on
-`fc.nettrash.me` is on the checklist below, and the notes and App Privacy answers must match
-whichever it is.
+the processor the operator named, and each member additionally gets a private assistant chat.
+**Nothing reaches it before that member has agreed**, once, on a screen that names the recipient
+and everything that travels — see "The assistant, and the consent it asks for" above; the server
+refuses with `403 assistant_consent_required` until they have, and the agreement is withdrawable
+in Settings. Whether the assistant is enabled on `fc.nettrash.me` is on the checklist below, and
+the notes and App Privacy answers must match whichever it is.
 
 ### Background, push and network / ATS
 
@@ -472,6 +520,9 @@ Each item is tagged **[code]** (a change in this repository) or **[nettrash]** (
 
 ### Only nettrash can do these
 
+- [ ] **[nettrash]** Set `[ai] processor` in the live server config to the operator's own words for who answers — e.g. "Microsoft — Azure OpenAI (Sweden Central)". It is REQUIRED for the assistant to exist at all on a 1.1 server: a section with an endpoint, a deployment and a key but no `processor` behaves exactly like one that is switched off, the `assistant` object disappears from `GET /families/mine`, and every client stops offering the feature. Deploying the new server without it turns the assistant off for the whole family, silently.
+- [ ] **[nettrash]** Replace `[AI_PROCESSOR]` in the notes above with that exact string, and check it is what the app actually shows on the consent screen — the app prints `assistant.processor` verbatim, so the two cannot be allowed to differ.
+- [ ] **[nettrash]** Leave `[DEMO_USER]` UN-consented and grant consent on `[DEMO_USER_2]`, so the reviewer sees both halves: `UPDATE users SET assistant_consent_at = NULL WHERE username = '[DEMO_USER]';`, or Settings → Assistant → Stop Sending My Messages on the demo phone, which is the same thing through the door a person uses.
 - [ ] **[nettrash]** Provision the reviewer family and two demo accounts on fc.nettrash.me by hand, seed the family chat and one 1:1 chat with history, and fill `[DEMO_USER]`, `[DEMO_PASS]`, `[DEMO_USER_2]`, `[DEMO_PASS_2]` and `[INVITE_CODE]`. The seeding scripts in the repo (`server/scripts/seed-{store-screenshots,album-uitest,scroll-uitest}.sh`) all build a local `127.0.0.1:8091` fixture for screenshots and UI tests; none of them touches the review server.
 - [ ] **[nettrash]** Set `[server] support_contact` in the live config and fill `[SUPPORT_EMAIL]`. It ships commented out at `config.example.toml:24` and is therefore unset by default, and it is the only escalation path the app draws for a report about the family owner — which is the answer Apple will want when it asks who moderates the moderator. Note that the app surfaces it in exactly one place, the report sheet, so if it is unset that sheet has no escalation line at all.
 - [ ] **[nettrash]** Read the live server's `config.toml` and write the answers into the review notes rather than assuming defaults. Six values matter and none of them is in this repo: is `[ai]` enabled (and `ai_history` left at its default true) — the one that gates three other answers; are `[calls] enabled` and `video_enabled` on, without which the reviewer never sees a call button; what is `retention_days` actually set to (the shipped default of 100 permanently deletes messages and their media server-side); is `stun_urls` still Google's public STUN (`config.example.toml:214`); do `turn_urls` and `turn_secret` actually point at the coturn 4.6.1 already deployed alongside the server, since an unconfigured `turn_urls` is empty by default and calls that cannot connect directly then simply fail; is `[push] include_message_body` still true (`:135`), which puts plaintext message bodies on lock screens via APNs and FCM. Confirm too that APNs credentials are installed, or push silently logs and never arrives.
@@ -784,28 +835,30 @@ chat,messenger,private,self-hosted,server,calls,video,voice,photos,relatives,gra
 
 ## macOS — Notes for App Review (paste verbatim — 3999/4000 chars)
 
-DEMO SERVER: [DEMO_SERVER_URL] — compiled into this build, so there is nothing to configure.
+DEMO SERVER: [DEMO_SERVER_URL] — compiled in; nothing to configure.
 
 DEMO ACCOUNTS.
-- Owner: [DEMO_USER] / [DEMO_PASS]. Owns the reviewer family, seeded with history: photos, video, a voice note, polls, a location, board notes, a 1:1 chat.
-- Second account: [DEMO_USER_2] / [DEMO_PASS_2], same family — on a second Mac for typing indicators, read receipts and a call.
-- Invite code [INVITE_CODE]. Support: [SUPPORT_EMAIL].
+- Owner: [DEMO_USER] / [DEMO_PASS]. Owns the reviewer family, seeded: photos, video, voice note, polls, location, board notes, a 1:1 chat.
+- Second: [DEMO_USER_2] / [DEMO_PASS_2], same family — on a second Mac for typing, read receipts and a call.
+- Invite code [INVITE_CODE]. Support [SUPPORT_EMAIL].
 
-NEW IN 1.1, WHERE TO FIND IT. Threads: "N replies" under an answered message opens the chain in a sheet. Mentions: type @ in the composer. Open polls: the chart button in a chat's toolbar. The Board holds an event (date, place, who is going, Add to Calendar) and a task list anyone may tick. The reviewer family has each.
+NEW IN 1.1, WHERE TO FIND IT. Threads: "N replies" under an answered message. Mentions: @ in the composer. Open polls: the chart button in a chat's toolbar. Events and task lists: the Board.
 
-WHAT IT IS. The macOS build of Family Connect (named Family on the Mac): a native Mac app, macOS 14+, not Catalyst, the same app and bundle id as iOS. It is a client for a small open-source chat server; each installation talks to one server and there is no vendor cloud. We keep that server online throughout the review; "Change server…" on the sign-in screen is for families who self-host. Navigation is in the window toolbar: Board, Family, Settings; Settings is a window, also on the App menu and Command-comma.
+WHAT IT IS. The macOS build of Family Connect (named Family on the Mac): native, macOS 14+, not Catalyst, same app and bundle id as iOS. A client for a small open-source chat server; each installation talks to one server, no vendor cloud. We keep that server online throughout the review; "Change server…" is for self-hosting families. Navigation: the window toolbar — Board, Family, Settings (a window, also on the App menu and Command-comma).
 
-CONTACT IS CONTAINED (guideline 1.2). There is no public feed, no discovery, no user directory and no user search. Registration is open (username, display name, password; no email, no phone), but an account in no family can start nothing: a one-to-one chat, reporting, blocking and calls are all refused server-side unless both people are in one family. The only ways into a family are creating your own or presenting an 8-character invite code, and a new family defaults to "Need approval", so the owner admits each member, and may rotate the code, cap membership, close joining, or remove anyone.
+CONTACT IS CONTAINED (guideline 1.2). No public feed, no discovery, no directory, no user search. Registration is open (username, display name, password; no email, no phone), but an account in no family can start nothing: one-to-one chats, reports, blocks and calls are refused server-side unless both share a family. The only ways in are creating a family or an 8-character invite code; a new family defaults to "Need approval", so the owner admits each member, may rotate the code, cap it, close joining, or remove anyone.
 
-REPORT AND BLOCK. Right-click a message → "Safety", or the "Safety" button on a member’s row in the Family sheet. Four fixed reasons. The moderator is the family owner: reports arrive in that same sheet, under Reports, and push the owner. A report naming the owner is never listed to them: the sheet shows the support contact, [SUPPORT_EMAIL], which we monitor and can act on.
+REPORT AND BLOCK. Right-click a message → "Safety", or "Safety" on a member's row in the Family sheet. Four fixed reasons. The moderator is the family owner: reports arrive in that sheet, under Reports, and push them. A report naming the owner is never listed to them: the sheet shows [SUPPORT_EMAIL], which we monitor.
 
-DELETE ACCOUNT (5.1.1(v)). Settings in the window toolbar → last section, beside Log Out. It asks for the account password (a live session is not proof) and a second confirmation, then runs immediately and irreversibly — no grace period. It erases the username (freeing it), display name, password, avatar, birthday and every token. One-to-one chats are deleted for both people; family-chat messages, board notes and reactions stay, re-attributed to "Deleted account". It works on the demo accounts — we re-provision them.
+DELETE ACCOUNT (5.1.1(v)). Settings in the toolbar → last section, beside Log Out. It asks for the account password (a live session is not proof) and a second confirmation, then runs at once, irreversibly, erasing the username (freeing it), display name, password, avatar, birthday and every token. One-to-one chats go for both people; family-chat messages, notes and reactions stay as "Deleted account".
 
-NOT END-TO-END ENCRYPTED, and the app does not claim to be. Message text, photos, files and locations are stored readable on the chosen server; on the default server the developer is that operator. Call media (WebRTC, DTLS-SRTP) goes directly between the two devices; where the network blocks that, the call connects only through a relay on our server, which forwards the encrypted stream without reading it.
+NOT END-TO-END ENCRYPTED, and the app does not claim to be. Message text, photos, files and locations are stored readable on the chosen server; on the default server the developer is the operator. Call media (WebRTC, DTLS-SRTP) is peer to peer, or goes via a relay on our server that forwards the encrypted stream without reading it.
 
-com.apple.security.network.server. Calls are peer to peer: the WebRTC connection binds UDP sockets, and the far side’s ICE checks and media arrive on them — inbound traffic, which the sandbox counts as serving, so network.client alone leaves calls unconnected. Nothing else uses it: no listening port, no embedded server, no Bonjour.
+com.apple.security.network.server. Calls are peer to peer: the WebRTC connection binds UDP sockets and the far side's ICE checks and media arrive on them — inbound traffic the sandbox counts as serving, so network.client alone leaves calls unconnected. Nothing else uses it: no listening port, no embedded server, no Bonjour.
 
-PLEASE LEAVE THE APP OPEN. The Mac notifies and rings only while it is running: banners come from its own live connection, and an incoming call arrives as a Notification Center alert with Answer and Decline. A quit Mac is never woken, for a message or a call — deliberate design, not a defect — so please test calls with both apps open. On one Wi-Fi network macOS asks for Local Network permission as the call connects: please allow it, or the call cannot connect.
+AI ASSISTANT — CONSENT (5.1.1(i), 5.1.2(i)). The optional assistant is the only feature sending anything to a third party: [AI_PROCESSOR]. Before a member's first message reaches it, a screen names that recipient and all that travels — the message; in the family chat only an @ai message, with the last 30 days / 200 messages (others' words, names, times) while history is on; a photo only when attached and allowed; the reply appears in that chat. Nothing is sent until "I Agree", the server refuses (403) until then, and Settings → Assistant withdraws it. [DEMO_USER] has NOT agreed, so it appears on its first message. Policy: nettrash.me/appstore/familyconnect/privacy.html
+
+PLEASE LEAVE THE APP OPEN. The Mac notifies and rings only while running: banners come from its own live connection, and a call arrives as a Notification Center alert with Answer and Decline. A quit Mac is never woken — deliberate, not a defect, so test calls with both apps open. On one Wi-Fi network macOS asks for Local Network permission as the call connects: please allow it.
 
 ## macOS — Reviewer walkthrough (supporting detail — not pasted into App Store Connect)
 
@@ -910,6 +963,20 @@ birthday, password reset, remove from family and the Reports inbox are all secti
     Calendar** — and a **task list** anyone may tick, and photos can be pinned; all three were
     iPhone-only in 1.0 (#69). The seeded reviewer family carries one of each, so none of this
     needs setting up first.
+
+### The assistant's consent screen on the Mac (guidelines 5.1.1(i), 5.1.2(i))
+
+The same screen, the same server-side refusal and the same withdrawal as on iOS — read "The
+assistant, and the consent it asks for" above for what it says and why the server holds the
+answer. Only the doors differ. The bar sits above the composer in the conversation window, with
+**Review…** on it; pressing Return or clicking Send raises the sheet instead of sending, and
+the typed message stays in the field either way. The sheet is a fixed-size Mac sheet, because a
+Mac sheet cannot be resized by the person reading it. Withdrawal is Settings (toolbar, or ⌘,)
+→ **Assistant** → **Stop Sending My Messages**, beside the date they agreed.
+
+Both apps share one account, so the answer follows the person and not the machine: agreeing on
+the iPhone means the Mac stops asking, and withdrawing on the Mac stops the iPhone at its next
+`/me` — which is step 1 of every resync, so within seconds rather than at the next launch.
 
 ### Safety and moderation on the Mac (guideline 1.2)
 
