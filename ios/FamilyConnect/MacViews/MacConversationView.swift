@@ -130,6 +130,12 @@ struct MacConversationView: View {
     /// True while the poll form is up. A sheet, sized in the view itself:
     /// a macOS sheet cannot be resized by the person using it.
     @State private var showPollComposer = false
+    /// The consent screen, and the send it interrupted (protocol.md,
+    /// "Consenting to the assistant"). The draft is left as typed while it
+    /// is up, so agreeing finishes the send rather than asking for it
+    /// again — the phone's arrangement.
+    @State private var showAssistantConsent = false
+    @State private var afterAssistantConsent: (() -> Void)?
     /// Owned by the window rather than by a row, which scrolls away.
     @State private var reportTarget: ReportTarget?
     /// The assistant reply being reported, if any — its own target, because
@@ -520,6 +526,23 @@ struct MacConversationView: View {
                     }
                 },
                 onCancel: { reportTarget = nil })
+        }
+        .sheet(isPresented: $showAssistantConsent) {
+            AssistantConsentSheet(
+                processor: AppSettings.assistantProcessor ?? "",
+                familyHistory: session.family?.aiHistory == true,
+                familyVision: session.family?.aiVision == true,
+                onAgree: {
+                    try await session.setAssistantConsent(true)
+                    showAssistantConsent = false
+                    let resume = afterAssistantConsent
+                    afterAssistantConsent = nil
+                    resume?()
+                },
+                onDecline: {
+                    showAssistantConsent = false
+                    afterAssistantConsent = nil
+                })
         }
         .sheet(isPresented: $showPollComposer) {
             PollComposerView(
@@ -1494,6 +1517,26 @@ struct MacConversationView: View {
                 .foregroundStyle(.secondary)
                 .accessibilityElement(children: .combine)
             }
+            // Nothing goes to the model until this member has said so
+            // (protocol.md, "Consenting to the assistant").
+            if assistantConsentNeeded, let processor = AppSettings.assistantProcessor {
+                AssistantConsentBar(processor: processor) {
+                    afterAssistantConsent = { send() }
+                    showAssistantConsent = true
+                }
+            } else if assistantIsUnnamed {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "hand.raised")
+                    Text(AssistantConsent.unnamedProcessorNotice)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+                .accessibilityElement(children: .combine)
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
                     // The Mac's answer to the phone's photo picker: its own
@@ -1763,6 +1806,32 @@ struct MacConversationView: View {
     /// (docs/protocol.md, "Mentioning the assistant in the family chat").
     private var showsAssistantMention: Bool {
         chat?.kind == "family" && AppSettings.assistantUserID != nil
+            // And a server that names nobody offers no assistant here
+            // either: a consent screen with a hole where the recipient
+            // goes is not consent (protocol.md, "Consenting to the
+            // assistant").
+            && AssistantConsent.isAvailable(processor: AppSettings.assistantProcessor)
+    }
+
+    /// Would this draft reach an assistant this server refuses to name?
+    private var assistantIsUnnamed: Bool {
+        guard editTarget == nil else { return false }
+        return AssistantConsent.isWithheldFromAnUnnamedAssistant(
+            chatKind: chat?.kind,
+            body: draft,
+            hasAssistant: AppSettings.assistantUserID != nil,
+            processor: AppSettings.assistantProcessor)
+    }
+
+    /// Would this draft go to the model with nobody having agreed yet?
+    private var assistantConsentNeeded: Bool {
+        // Not while the composer is borrowed for an edit — see the phone.
+        guard editTarget == nil else { return false }
+        return AssistantConsent.isRequired(
+            chatKind: chat?.kind,
+            body: draft,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt)
     }
 
     /// The assistant's own chat: two participants, so a message that is
@@ -1960,6 +2029,24 @@ struct MacConversationView: View {
     private func send() {
         let body = draft.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // Ask before anything reaches the model. The server refuses it
+        // with `assistant_consent_required` regardless; asking here is
+        // what keeps the message in hand while the question is answered
+        // (protocol.md, "Consenting to the assistant").
+        if editTarget == nil,
+            AssistantConsent.isRequired(
+                chatKind: chat?.kind,
+                body: body,
+                processor: AppSettings.assistantProcessor,
+                agreedAt: session.assistantConsentAt)
+        {
+            afterAssistantConsent = { send() }
+            showAssistantConsent = true
+            return
+        }
+        // A server that will not say who answers gets nothing at all.
+        if editTarget == nil, assistantIsUnnamed { return }
+
         // Edit mode borrows the composer. The field clears only once the
         // server takes it — a refused edit leaves the text there to fix,
         // which is the phone's rule too.
@@ -2012,6 +2099,18 @@ struct MacConversationView: View {
     /// coming would spend itself on somebody else's next message — the
     /// case `restoreComposer` exists for.
     private func sendPoll(question: String, options: [String]) {
+        // A poll's QUESTION is the body, so an `@ai` in it asks the
+        // assistant exactly as a typed message does.
+        if AssistantConsent.isRequired(
+            chatKind: chat?.kind,
+            body: question,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt)
+        {
+            afterAssistantConsent = { sendPoll(question: question, options: options) }
+            showAssistantConsent = true
+            return
+        }
         let quote = replyDraft
         guard coordinator.sendPoll(
             question: question, options: options, in: chatID, replyTo: quote,

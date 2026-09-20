@@ -147,6 +147,14 @@ pub struct Me {
     /// none.
     #[serde(default)]
     pub greetings_enabled: bool,
+    /// When this member agreed that their words may go to the model, or
+    /// none if they have not — and none on a server with no assistant,
+    /// which a client never has to tell apart because such a server offers
+    /// no `ai` chat (docs/protocol.md, "Consenting to the assistant").
+    /// Read at step 1 of the resync, so the composer knows before it is
+    /// drawn.
+    #[serde(default)]
+    pub assistant_consent_at: Option<String>,
 }
 
 impl Me {
@@ -199,6 +207,13 @@ pub struct Assistant {
     /// Whether this SERVER can make one.
     #[serde(default)]
     pub images: bool,
+    /// WHO ANSWERS, in the operator's own words, shown VERBATIM on the
+    /// consent screen — a person cannot weigh "some third party"
+    /// (docs/protocol.md, "Consenting to the assistant"). Absent on a
+    /// server that predates the field, and a client that cannot name the
+    /// recipient offers no assistant at all.
+    #[serde(default)]
+    pub processor: Option<String>,
 }
 
 /// `GET /families/mine`, trimmed to what this client draws.

@@ -136,6 +136,7 @@ import androidx.compose.material.icons.automirrored.filled.CallReceived
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -296,6 +297,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import androidx.core.content.FileProvider
 import java.io.File
+import me.nettrash.familyconnect.ui.components.AssistantConsentDialog
 import me.nettrash.familyconnect.ui.components.AttachmentAlbum
 import me.nettrash.familyconnect.ui.components.AttachmentGroup
 import me.nettrash.familyconnect.ui.components.Avatar
@@ -378,6 +380,12 @@ fun ChatScreen(
     // What the composer must say out loud about what is staged, right now.
     val assistantPictureNotice by viewModel.assistantPictureNotice.collectAsStateWithLifecycle()
     val mentionPictureNotice by viewModel.mentionPictureNotice.collectAsStateWithLifecycle()
+    // Nothing reaches the model before this member has agreed
+    // (docs/protocol.md, "Consenting to the assistant").
+    val assistantProcessor by viewModel.assistantProcessor.collectAsStateWithLifecycle()
+    val assistantConsentNeeded by viewModel.assistantConsentNeeded.collectAsStateWithLifecycle()
+    val assistantIsUnnamed by viewModel.assistantIsUnnamed.collectAsStateWithLifecycle()
+    val assistantConsentAsk by viewModel.assistantConsentAsk.collectAsStateWithLifecycle()
     // Null when the server has no assistant configured, which is what
     // decides whether the composer offers `@ai` at all.
     val assistantUserId by viewModel.assistantUserId.collectAsStateWithLifecycle()
@@ -1415,6 +1423,10 @@ fun ChatScreen(
                 onAskForPicture = viewModel::insertDrawToken,
                 pictureNotice = assistantPictureNotice,
                 mentionPictureNotice = mentionPictureNotice,
+                assistantProcessor = assistantProcessor,
+                assistantConsentNeeded = assistantConsentNeeded,
+                assistantIsUnnamed = assistantIsUnnamed,
+                onReviewAssistantConsent = viewModel::send,
             )
         }
     }
@@ -1600,6 +1612,19 @@ fun ChatScreen(
             onRemoveOption = viewModel::removePollOption,
             onSend = viewModel::sendPoll,
             onDismiss = viewModel::cancelPoll,
+        )
+    }
+
+    // The consent screen, raised by a send that would reach the model
+    // (docs/protocol.md, "Consenting to the assistant"). Everything the
+    // person needs is on it, not only behind the policy link.
+    assistantConsentAsk?.let { ask ->
+        AssistantConsentDialog(
+            processor = ask.processor,
+            familyHistory = ask.familyHistory,
+            familyVision = ask.familyVision,
+            onAgree = viewModel::agreeToTheAssistant,
+            onDismiss = viewModel::dismissAssistantConsent,
         )
     }
 
@@ -4584,6 +4609,50 @@ private fun AssistantPictureStrip(notice: AiPictureNotice) {
  * be somebody else's recent picture (docs/protocol.md, "Recent photos
  * from the family chat").
  */
+/**
+ * The line a composer shows while the assistant question is unanswered —
+ * and the line it shows where the question cannot be asked at all
+ * (docs/protocol.md, "Consenting to the assistant").
+ *
+ * One composable for both because they are the same shape and the same
+ * courtesy the picture strips pay: say what would happen, at the moment it
+ * would happen, in the place where the person can act on it. A null
+ * [processor] is the second case — this server named nobody — and then
+ * there is no door, because there is nothing to open.
+ */
+@Composable
+private fun AssistantConsentStrip(processor: String?, onReview: (() -> Unit)?) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Info,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = if (processor != null) {
+                    stringResource(R.string.s_this_goes_to_processor_not_agreed, processor)
+                } else {
+                    stringResource(R.string.s_server_named_no_processor)
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (onReview != null) {
+                TextButton(onClick = onReview, contentPadding = PaddingValues(0.dp)) {
+                    Text(stringResource(R.string.s_review_ellipsis))
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun MentionPictureStrip(notice: MentionPictureNotice) {
     Row(
@@ -4989,6 +5058,25 @@ private fun InputBar(
      * draft may carry the chat's recent photos and the strip says so.
      */
     mentionPictureNotice: MentionPictureNotice?,
+    /**
+     * WHO would receive what is typed, verbatim as the operator named
+     * them. Null on a server that named nobody (docs/protocol.md,
+     * "Consenting to the assistant").
+     */
+    assistantProcessor: String?,
+    /**
+     * This draft would go to the model and nobody has agreed to that yet:
+     * the strip says where it would go, with the door to the screen that
+     * asks on it.
+     */
+    assistantConsentNeeded: Boolean,
+    /**
+     * This draft would reach an assistant the server refuses to name, so
+     * it goes nowhere at all — there is no honest way to ask.
+     */
+    assistantIsUnnamed: Boolean,
+    /** Opens the consent screen, which is what Send does here too. */
+    onReviewAssistantConsent: () -> Unit,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -5028,6 +5116,23 @@ private fun InputBar(
             // one the family chat.
             if (mentionPictureNotice != null) {
                 MentionPictureStrip(notice = mentionPictureNotice)
+            }
+            // Before any of those: nothing goes to the model until this
+            // member has said so, and the strip appears as the draft
+            // becomes one that would travel — in the assistant's own chat
+            // from the first character, in the family chat the moment
+            // `@ai` is typed (docs/protocol.md, "Consenting to the
+            // assistant").
+            if (assistantConsentNeeded && assistantProcessor != null) {
+                AssistantConsentStrip(
+                    processor = assistantProcessor,
+                    onReview = onReviewAssistantConsent,
+                )
+            } else if (assistantIsUnnamed) {
+                // Nothing to agree TO on such a server, so there is no
+                // screen to raise — only this, and a send that does not
+                // happen.
+                AssistantConsentStrip(processor = null, onReview = null)
             }
             if (staged.isNotEmpty()) {
                 StagedAttachmentRow(staged = staged, onDiscard = onDiscardStaged)

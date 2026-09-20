@@ -835,6 +835,12 @@ pub async fn my_family(
             // affordance that silently does nothing is worse than one that
             // is not there — which is the whole reason this object exists.
             "draw": crate::mentions::DRAW,
+            // WHO ANSWERS, in the operator's own words, and the reason a
+            // client can ask permission at all: an app that cannot say
+            // where a message goes must not send it (protocol.md,
+            // "Consenting to the assistant"). `is_usable()` already
+            // requires it, so this is never empty when the object exists.
+            "processor": state.cfg.ai.processor,
             "vision": state.cfg.ai.vision_usable(),
             "images": state.cfg.ai.images_usable(),
         });

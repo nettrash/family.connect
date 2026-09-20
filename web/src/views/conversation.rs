@@ -28,6 +28,7 @@ use crate::views::attach::{
 };
 use crate::views::bubble::Bubble;
 use crate::views::composer::{resolve_mentions, Composer, Editing, Pictures, Replying};
+use crate::views::consent::AssistantConsentDialog;
 use crate::views::poll::PollComposer;
 use crate::views::report::{AssistantReportDialog, ReportDialog, ReportTarget};
 use fc_text::assistant_pictures::{self, Candidate};
@@ -82,6 +83,10 @@ pub struct ConversationProps {
     #[prop_or_default]
     pub family: Option<Family>,
     pub support_contact: Option<String>,
+    /// Whether this member has agreed that their words may go to the model
+    /// (docs/protocol.md, "Consenting to the assistant").
+    #[prop_or_default]
+    pub agreed_to_assistant: bool,
     pub on_action: Callback<Action>,
     /// Wall-clock now, for the day pills.
     pub now_ms: f64,
@@ -166,6 +171,12 @@ pub fn conversation(props: &ConversationProps) -> Html {
     // because it goes to its own endpoint and its own reader
     // (docs/protocol.md, "Reporting the assistant").
     let assistant_report = use_state(|| Option::<i64>::None);
+    // The consent screen, raised by a send that would reach the model
+    // before this member has agreed (docs/protocol.md, "Consenting to the
+    // assistant"). The draft stays in the box either way: agreeing leaves
+    // it there to send, and "Not Now" is "not this one", never "lose what
+    // I typed".
+    let consent_open = use_state(|| false);
     let poll_open = use_state(|| false);
     let highlight = use_state(|| Option::<i64>::None);
     let at_newest = use_state(|| true);
@@ -997,6 +1008,39 @@ pub fn conversation(props: &ConversationProps) -> Html {
         }
     });
 
+    let consent_dialog = consent_open
+        .then(|| {
+            props
+                .assistant
+                .as_ref()
+                .and_then(|assistant| assistant.processor.clone())
+        })
+        .flatten()
+        .map(|processor| {
+            let on_agree = {
+                let on_action = props.on_action.clone();
+                let consent_open = consent_open.clone();
+                Callback::from(move |_: ()| {
+                    consent_open.set(false);
+                    on_action.emit(Action::SetAssistantConsent { granted: true });
+                })
+            };
+            let on_cancel = {
+                let consent_open = consent_open.clone();
+                Callback::from(move |_: ()| consent_open.set(false))
+            };
+            let family = props.family.as_ref();
+            html! {
+                <AssistantConsentDialog
+                    {processor}
+                    family_history={family.is_some_and(|family| family.ai_history)}
+                    family_vision={family.is_some_and(|family| family.ai_vision)}
+                    {on_agree}
+                    {on_cancel}
+                />
+            }
+        });
+
     let report_dialog = (*report).clone().map(|target| {
         let on_submit = {
             let on_action = props.on_action.clone();
@@ -1185,6 +1229,11 @@ pub fn conversation(props: &ConversationProps) -> Html {
                 members={props.members.clone()}
                 blocked={props.blocked.clone()}
                 assistant={props.assistant.clone()}
+                agreed_to_assistant={props.agreed_to_assistant}
+                on_review_consent={{
+                    let consent_open = consent_open.clone();
+                    Callback::from(move |_: ()| consent_open.set(true))
+                }}
                 replying={replying_to}
                 editing={edit_banner}
                 initial={props.draft.clone()}
@@ -1213,6 +1262,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
             { poll_dialog.unwrap_or_default() }
             { report_dialog.unwrap_or_default() }
             { assistant_report_dialog.unwrap_or_default() }
+            { consent_dialog.unwrap_or_default() }
         </section>
     }
 }

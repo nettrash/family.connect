@@ -50,6 +50,21 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
     public Task<ApiResult<MeResponse>> Me(CancellationToken ct = default) =>
         Send<MeResponse>(HttpMethod.Get, "/me", ct: ct);
 
+    /// <summary>
+    /// This member's own permission for their words to go to the model, and nobody else's
+    /// (docs/protocol.md, "Consenting to the assistant"). Answers with the stamp the server now
+    /// holds: a date when granted, null when withdrawn.
+    /// </summary>
+    /// <remarks>
+    /// Idempotent both ways — granting twice keeps the FIRST date, because when somebody agreed
+    /// is a fact and not a counter. A server with no assistant answers <c>404</c> rather than
+    /// admitting there is nothing to consent to.
+    /// </remarks>
+    public Task<ApiResult<AssistantConsentResponse>> SetAssistantConsent(
+        bool granted, CancellationToken ct = default) =>
+        Send<AssistantConsentResponse>(
+            HttpMethod.Post, "/me/assistant-consent", new { granted }, ct: ct);
+
     public Task<ApiResult<FamilyResponse>> Family(CancellationToken ct = default) =>
         Send<FamilyResponse>(HttpMethod.Get, "/families/mine", ct: ct);
 

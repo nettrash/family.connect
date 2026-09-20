@@ -547,4 +547,23 @@
     <string name="s_draw_failed">Konnte nicht gezeichnet werden.</string>
     <string name="s_tick_failed">Konnte nicht abgehakt werden.</string>
     <string name="s_no_calendar_app">Keine Kalender-App zum Hinzufügen.</string>
+    <string name="s_the_assistant">Der Assistent</string>
+    <string name="s_before_the_assistant_answers">Bevor der Assistent antwortet</string>
+    <string name="s_consent_words_leave_for_processor">Was du dem Assistenten schreibst, verlässt den Server dieser Familie und geht an %1$s.</string>
+    <string name="s_consent_family_history_travels">Im Familienchat geht nur eine Nachricht raus, in der @ai steht – und mit ihr die letzten 30 Tage dieses Chats, bis zu 200 Nachrichten, samt dem, was andere geschrieben haben, ihren Namen und den Uhrzeiten.</string>
+    <string name="s_consent_family_mention_alone">Im Familienchat geht nur eine Nachricht raus, in der @ai steht – sonst nichts aus diesem Chat.</string>
+    <string name="s_consent_photo_only_when_attached">Ein Foto geht nur mit, wenn du es an eine Nachricht für den Assistenten anhängst – und nur, solange deine Familie das erlaubt.</string>
+    <string name="s_consent_answer_lands_in_the_chat">Die Antwort kommt als Nachricht in diesem Chat zurück, wo alle im Chat sie lesen können.</string>
+    <string name="s_consent_can_stop_in_settings">Du kannst das jederzeit in den Einstellungen stoppen. Was schon gesendet wurde, lässt sich nicht zurückholen.</string>
+    <string name="s_i_agree">Ich stimme zu</string>
+    <string name="s_not_now">Jetzt nicht</string>
+    <string name="s_review_ellipsis">Lesen…</string>
+    <string name="s_this_goes_to_processor_not_agreed">Das geht an %1$s. Dem hast du noch nicht zugestimmt.</string>
+    <string name="s_server_named_no_processor">Dieser Server hat nicht gesagt, welcher Dienst antwortet – hier kann nichts an den Assistenten gehen.</string>
+    <string name="s_agreed">Zugestimmt</string>
+    <string name="s_stop_sending_my_messages">Meine Nachrichten nicht mehr senden</string>
+    <string name="s_review_and_agree">Lesen und zustimmen…</string>
+    <string name="s_consent_until_you_agree_nothing_is_sent">Bis du zustimmst, geht nichts von dem, was du schreibst, an %1$s, und der Assistent antwortet dir nicht.</string>
+    <string name="s_consent_stopping_takes_effect_at_once">Was du dem Assistenten schreibst, geht an %1$s. Ein Stopp wirkt sofort; was schon gesendet wurde, lässt sich nicht zurückholen.</string>
+    <string name="s_couldnt_save_your_answer">Deine Antwort konnte nicht gespeichert werden. Versuch es erneut.</string>
 </resources>

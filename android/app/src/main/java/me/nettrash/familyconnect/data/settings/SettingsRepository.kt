@@ -150,6 +150,26 @@ data class SettingsState(
      */
     val assistantImages: Boolean = false,
     /**
+     * WHO ANSWERS, as the server named them (`assistant.processor`,
+     * docs/protocol.md, "Consenting to the assistant"). Held because the
+     * consent screen says it VERBATIM and may be drawn before any call
+     * has been made on this launch.
+     *
+     * Null means this client offers no assistant at all: a screen that
+     * cannot say where the words go cannot ask the question.
+     */
+    val assistantProcessor: String? = null,
+    /**
+     * When this member agreed that their words may go to the model
+     * (`GET /me` → `assistant_consent_at`), or null until they have.
+     *
+     * The SERVER's answer and not this device's: the server is what calls
+     * the model, so a client that forgot to ask is still refused; a
+     * reinstall must not quietly re-ask and re-send; and somebody who
+     * agreed on their phone has agreed, not agreed-on-that-phone.
+     */
+    val assistantConsentAt: String? = null,
+    /**
      * Whether the family's OWNER has allowed a photograph a member points
      * the assistant at to be shown to the model (`Family.ai_vision`) — in
      * their own assistant chat, and since #56 on an `@ai` message in the
@@ -274,7 +294,16 @@ interface SettingsRepository {
         displayName: String?,
         vision: Boolean = false,
         images: Boolean = false,
+        processor: String? = null,
     )
+
+    /**
+     * Record what `GET /me` — or this member's own answer — said about
+     * the assistant question (docs/protocol.md, "Consenting to the
+     * assistant"). Unconditional, null included: a withdrawal from
+     * another device has to reach this one.
+     */
+    suspend fun setAssistantConsentAt(at: String?)
 
     /**
      * Record the family's own picture switch, from `GET /families/mine`
@@ -382,6 +411,8 @@ class DataStoreSettingsRepository @Inject constructor(
         val ASSISTANT_NAME = stringPreferencesKey("assistant_name")
         val ASSISTANT_VISION = booleanPreferencesKey("assistant_vision")
         val ASSISTANT_IMAGES = booleanPreferencesKey("assistant_images")
+        val ASSISTANT_PROCESSOR = stringPreferencesKey("assistant_processor")
+        val ASSISTANT_CONSENT_AT = stringPreferencesKey("assistant_consent_at")
         // Stored PLAIN, not inverted like the two preview keys above: this
         // one's default is already `false`, so a missing key and an
         // explicit `false` say the same thing and neither can be read as
@@ -433,6 +464,8 @@ class DataStoreSettingsRepository @Inject constructor(
             assistantName = prefs[Keys.ASSISTANT_NAME],
             assistantVision = prefs[Keys.ASSISTANT_VISION] == true,
             assistantImages = prefs[Keys.ASSISTANT_IMAGES] == true,
+            assistantProcessor = prefs[Keys.ASSISTANT_PROCESSOR],
+            assistantConsentAt = prefs[Keys.ASSISTANT_CONSENT_AT],
             familyAiVision = prefs[Keys.FAMILY_AI_VISION] == true,
             familyAiHistory = prefs[Keys.FAMILY_AI_HISTORY] ?: true,
             familyAiHistoryPhotos = prefs[Keys.FAMILY_AI_HISTORY_PHOTOS] == true,
@@ -522,6 +555,7 @@ class DataStoreSettingsRepository @Inject constructor(
         displayName: String?,
         vision: Boolean,
         images: Boolean,
+        processor: String?,
     ) {
         dataStore.edit { prefs ->
             if (userId != null && displayName != null) {
@@ -529,6 +563,13 @@ class DataStoreSettingsRepository @Inject constructor(
                 prefs[Keys.ASSISTANT_NAME] = displayName
                 prefs[Keys.ASSISTANT_VISION] = vision
                 prefs[Keys.ASSISTANT_IMAGES] = images
+                // A server that named nobody leaves this cleared, which
+                // is what turns the assistant off in this client.
+                if (processor.isNullOrBlank()) {
+                    prefs.remove(Keys.ASSISTANT_PROCESSOR)
+                } else {
+                    prefs[Keys.ASSISTANT_PROCESSOR] = processor
+                }
             } else {
                 // Cleared rather than left stale: a server that turned the
                 // assistant off must stop offering `@ai` on the next resync.
@@ -539,6 +580,17 @@ class DataStoreSettingsRepository @Inject constructor(
                 prefs.remove(Keys.ASSISTANT_NAME)
                 prefs.remove(Keys.ASSISTANT_VISION)
                 prefs.remove(Keys.ASSISTANT_IMAGES)
+                prefs.remove(Keys.ASSISTANT_PROCESSOR)
+            }
+        }
+    }
+
+    override suspend fun setAssistantConsentAt(at: String?) {
+        dataStore.edit { prefs ->
+            if (at.isNullOrBlank()) {
+                prefs.remove(Keys.ASSISTANT_CONSENT_AT)
+            } else {
+                prefs[Keys.ASSISTANT_CONSENT_AT] = at
             }
         }
     }

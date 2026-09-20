@@ -553,4 +553,23 @@
     <string name="s_draw_failed">Nije moglo da se nacrta.</string>
     <string name="s_tick_failed">Nije moglo da se označi.</string>
     <string name="s_no_calendar_app">Nema aplikacije kalendara za dodavanje.</string>
+    <string name="s_the_assistant">Asistent</string>
+    <string name="s_before_the_assistant_answers">Pre nego što asistent odgovori</string>
+    <string name="s_consent_words_leave_for_processor">Ono što napišeš asistentu napušta server ove porodice i ide ka %1$s.</string>
+    <string name="s_consent_family_history_travels">U porodičnom razgovoru šalje se samo poruka u kojoj piše @ai — a s njom i poslednjih 30 dana tog razgovora, do 200 poruka, uključujući ono što su drugi napisali, njihova imena i vreme.</string>
+    <string name="s_consent_family_mention_alone">U porodičnom razgovoru šalje se samo poruka u kojoj piše @ai, i ništa drugo iz tog razgovora ne ide s njom.</string>
+    <string name="s_consent_photo_only_when_attached">Fotografija se šalje samo kada je sam zakačiš uz poruku za asistenta, i samo dok tvoja porodica to dozvoljava.</string>
+    <string name="s_consent_answer_lands_in_the_chat">Odgovor stiže kao poruka u tom razgovoru, gde mogu da ga pročitaju svi koji su u njemu.</string>
+    <string name="s_consent_can_stop_in_settings">Ovo možeš da zaustaviš bilo kada u podešavanjima. Ono što je već poslato ne može da se vrati.</string>
+    <string name="s_i_agree">Prihvatam</string>
+    <string name="s_not_now">Ne sada</string>
+    <string name="s_review_ellipsis">Pročitaj…</string>
+    <string name="s_this_goes_to_processor_not_agreed">Ovo ide ka %1$s. To još nisi prihvatio.</string>
+    <string name="s_server_named_no_processor">Ovaj server nije rekao koja usluga odgovara, pa ovde ništa ne može da se pošalje asistentu.</string>
+    <string name="s_agreed">Prihvaćeno</string>
+    <string name="s_stop_sending_my_messages">Zaustavi slanje mojih poruka</string>
+    <string name="s_review_and_agree">Pročitaj i prihvati…</string>
+    <string name="s_consent_until_you_agree_nothing_is_sent">Dok ne prihvatiš, ništa što napišeš ne ide ka %1$s i asistent ti ne odgovara.</string>
+    <string name="s_consent_stopping_takes_effect_at_once">Ono što napišeš asistentu ide ka %1$s. Zaustavljanje važi odmah; ono što je već poslato ne može da se vrati.</string>
+    <string name="s_couldnt_save_your_answer">Tvoj odgovor nije sačuvan. Pokušaj ponovo.</string>
 </resources>

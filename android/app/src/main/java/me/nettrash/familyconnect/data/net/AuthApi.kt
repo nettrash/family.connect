@@ -11,6 +11,8 @@
 
 package me.nettrash.familyconnect.data.net
 
+import me.nettrash.familyconnect.data.net.dto.AssistantConsentRequest
+import me.nettrash.familyconnect.data.net.dto.AssistantConsentResponse
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
 import me.nettrash.familyconnect.data.net.dto.BirthdayRequest
 import me.nettrash.familyconnect.data.net.dto.BirthdayResponse
@@ -66,6 +68,20 @@ interface AuthApi {
     suspend fun me(): ApiResult<MeResponse>
 
     /**
+     * `POST /me/assistant-consent` — this member's own permission for
+     * their words to go to the model, and nobody else's: there is no
+     * shape of this request that names another member (docs/protocol.md,
+     * "Consenting to the assistant").
+     *
+     * Answers with the stamp the server now holds: a date when granted,
+     * null when withdrawn. Idempotent both ways — granting twice keeps
+     * the FIRST date, because when somebody agreed is a fact and not a
+     * counter. A server with no assistant answers 404 rather than
+     * admitting there is nothing to consent to.
+     */
+    suspend fun setAssistantConsent(granted: Boolean): ApiResult<AssistantConsentResponse>
+
+    /**
      * Server-setup probe: unauthenticated GET /me against a *candidate*
      * URL (not yet saved). A live Family Connect server answers 401 with
      * the protocol error body — that 401 is the success signal.
@@ -117,6 +133,11 @@ class DefaultAuthApi @Inject constructor(
 
     override suspend fun me(): ApiResult<MeResponse> =
         client.get("/me")
+
+    override suspend fun setAssistantConsent(
+        granted: Boolean,
+    ): ApiResult<AssistantConsentResponse> =
+        client.post("/me/assistant-consent", AssistantConsentRequest(granted))
 
     override suspend fun probe(candidateServerUrl: String): ApiResult<MeResponse> =
         client.get(

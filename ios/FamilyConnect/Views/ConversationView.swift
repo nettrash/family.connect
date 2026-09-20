@@ -226,6 +226,12 @@ struct ConversationView: View {
     /// they stage in the order picked, which is the order sent.
     @State private var pickedMedia: [PhotosPickerItem] = []
     @State private var showPhotoPicker = false
+    /// The consent screen, and the send it interrupted (protocol.md,
+    /// "Consenting to the assistant"). The draft is left exactly as typed
+    /// while it is up, so agreeing finishes the send the person already
+    /// asked for rather than making them type it again.
+    @State private var showAssistantConsent = false
+    @State private var afterAssistantConsent: (() -> Void)?
     @State private var showCamera = false
     @State private var recorder = AudioRecorder()
     @State private var showFilePicker = false
@@ -864,6 +870,25 @@ struct ConversationView: View {
                 },
                 onCancel: { assistantReportTarget = nil })
         }
+        .sheet(isPresented: $showAssistantConsent) {
+            AssistantConsentSheet(
+                processor: AppSettings.assistantProcessor ?? "",
+                familyHistory: session.family?.aiHistory == true,
+                familyVision: session.family?.aiVision == true,
+                onAgree: {
+                    try await session.setAssistantConsent(true)
+                    showAssistantConsent = false
+                    let resume = afterAssistantConsent
+                    afterAssistantConsent = nil
+                    resume?()
+                },
+                onDecline: {
+                    showAssistantConsent = false
+                    // The draft stays where it is. Declining is "not this
+                    // one", not "lose what I typed".
+                    afterAssistantConsent = nil
+                })
+        }
         .sheet(item: $shareText) { share in
             ShareSheet(text: share.text)
         }
@@ -1471,6 +1496,23 @@ struct ConversationView: View {
                         model.draft = MemberMentions.accept(draft: model.draft, name: name)
                     }
                 }
+            }
+            // Before any of that: nothing goes to the model until this
+            // member has said so (protocol.md, "Consenting to the
+            // assistant"). Shown rather than a silent refusal, and shown
+            // as the draft becomes one that would travel — in the
+            // assistant's own chat that is from the first character, and
+            // in the family chat it is the moment `@ai` is typed.
+            if assistantConsentNeeded, let processor = AppSettings.assistantProcessor {
+                AssistantConsentBar(processor: processor) {
+                    afterAssistantConsent = { send() }
+                    showAssistantConsent = true
+                }
+            } else if assistantIsUnnamed {
+                // Nothing to agree TO on such a server, so there is no
+                // screen to raise — only this, and a send that does not
+                // happen (protocol.md, "Consenting to the assistant").
+                assistantPictureNotice(AssistantConsent.unnamedProcessorNotice)
             }
             HStack(alignment: .bottom, spacing: 8) {
                 // A Menu rather than two buttons: the composer is narrow,
@@ -2684,6 +2726,24 @@ struct ConversationView: View {
 
     private func send() {
         let body = model.draft
+        // Nothing reaches the model unasked. The server refuses this with
+        // `assistant_consent_required` anyway; asking here is what turns
+        // that refusal into a question with the message still in hand
+        // (protocol.md, "Consenting to the assistant").
+        if editTarget == nil,
+            AssistantConsent.isRequired(
+                chatKind: chat?.kind,
+                body: body,
+                processor: AppSettings.assistantProcessor,
+                agreedAt: session.assistantConsentAt)
+        {
+            afterAssistantConsent = { send() }
+            showAssistantConsent = true
+            return
+        }
+        // And a server that will not say who answers gets nothing at all:
+        // there is no honest way to ask, so there is nothing to send.
+        if editTarget == nil, assistantIsUnnamed { return }
         // An attachment can travel with no words at all — that is how a
         // photo is normally sent — so an empty draft is only a reason to
         // stop when there is nothing staged either.
@@ -2728,6 +2788,19 @@ struct ConversationView: View {
     /// touched — the question came from the sheet, and anything typed in
     /// the composer is still going somewhere else.
     private func sendPoll(question: String, options: [String]) {
+        // The poll's QUESTION is the message body, so an `@ai` in it asks
+        // the assistant exactly as a typed one does — and the draft this
+        // screen holds has nothing to do with it.
+        if AssistantConsent.isRequired(
+            chatKind: chat?.kind,
+            body: question,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt)
+        {
+            afterAssistantConsent = { sendPoll(question: question, options: options) }
+            showAssistantConsent = true
+            return
+        }
         let quote = replyDraft
         coordinator.sendPoll(
             question: question, options: options, in: chatID, replyTo: quote,
@@ -2933,6 +3006,36 @@ struct ConversationView: View {
     /// characters than a button that types them.
     private var showsAssistantMention: Bool {
         chat?.kind == "family" && AppSettings.assistantUserID != nil
+            // A server that names nobody is one whose assistant this
+            // client does not offer: the consent screen would have a hole
+            // exactly where the person needs to read (protocol.md,
+            // "Consenting to the assistant").
+            && AssistantConsent.isAvailable(processor: AppSettings.assistantProcessor)
+    }
+
+    /// Would this draft reach an assistant this server refuses to name?
+    /// Then it goes nowhere, and the composer says why.
+    private var assistantIsUnnamed: Bool {
+        guard editTarget == nil else { return false }
+        return AssistantConsent.isWithheldFromAnUnnamedAssistant(
+            chatKind: chat?.kind,
+            body: model.draft,
+            hasAssistant: AppSettings.assistantUserID != nil,
+            processor: AppSettings.assistantProcessor)
+    }
+
+    /// Would this draft go to the model, with nobody having agreed to that
+    /// yet? The composer says so above the field and the send waits.
+    private var assistantConsentNeeded: Bool {
+        // Not while the composer is borrowed for an edit: rewriting an old
+        // message calls no model, and the draft holding an `@ai` there is
+        // the message being fixed rather than a question being asked.
+        guard editTarget == nil else { return false }
+        return AssistantConsent.isRequired(
+            chatKind: chat?.kind,
+            body: model.draft,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt)
     }
 
     /// Both locks, and only in the assistant's own chat.

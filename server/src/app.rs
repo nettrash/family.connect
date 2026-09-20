@@ -35,6 +35,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(handlers_auth::login))
         .route("/api/v1/auth/logout", post(handlers_auth::logout))
         .route("/api/v1/me", get(handlers_auth::me))
+        .route(
+            // The member's own permission for their words to reach the
+            // model (docs/protocol.md, "Consenting to the assistant").
+            "/api/v1/me/assistant-consent",
+            post(handlers_auth::set_assistant_consent),
+        )
         .route("/api/v1/me/password", post(handlers_auth::change_password))
         // A POST rather than a DELETE /me: the request carries a body, and
         // RFC 9110 gives content on a DELETE no defined semantics

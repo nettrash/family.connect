@@ -678,6 +678,7 @@ mod tests {
             endpoint: "https://example.openai.azure.com/".to_string(),
             deployment: "my-deployment".to_string(),
             model: "gpt-oss-120b".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "secret".to_string(),
             api_version: "2024-10-21".to_string(),
             ..Default::default()
@@ -695,6 +696,7 @@ mod tests {
     fn an_endpoint_that_is_already_a_full_url_is_used_verbatim() {
         let base = AiConfig {
             enabled: true,
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "secret".to_string(),
             api_version: "2024-10-21".to_string(),
             ..Default::default()
@@ -742,6 +744,7 @@ mod tests {
             endpoint: "https://nettrash-openai.openai.azure.com/openai/v1".to_string(),
             deployment: "nettrash-gpt-oss-120b".to_string(),
             model: "nettrash-gpt-oss-120b".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "secret".to_string(),
             api_version: "2024-10-21".to_string(),
             ..Default::default()
@@ -1176,6 +1179,15 @@ mod tests {
         cfg.deployment = "d".to_string();
         assert!(!cfg.is_usable());
         cfg.api_key = "k".to_string();
+        // Still not enough, and this one is a privacy rule rather than a
+        // configuration one: an assistant nobody can NAME is one no client
+        // may ask permission for, so it does not exist (protocol.md,
+        // "Consenting to the assistant").
+        assert!(
+            !cfg.is_usable(),
+            "a deployment with no processor named must behave as off"
+        );
+        cfg.processor = "Microsoft — Azure OpenAI".to_string();
         assert!(cfg.is_usable());
         cfg.enabled = false;
         assert!(!cfg.is_usable());

@@ -191,6 +191,33 @@ actor APIClient {
         try await request("GET", "/me")
     }
 
+    /// `POST /me/assistant-consent` — this member's own permission for
+    /// their words to go to the model, and nobody else's (protocol.md,
+    /// "Consenting to the assistant"). Answers with the stamp the server
+    /// now holds: a date when granted, nil when withdrawn.
+    ///
+    /// Idempotent both ways. Granting twice keeps the FIRST date, because
+    /// when somebody agreed is a fact and not a counter; withdrawing twice
+    /// is a second nil. A server with no assistant answers 404 rather than
+    /// admitting there is nothing to consent to.
+    func setAssistantConsent(_ granted: Bool) async throws -> Date? {
+        let response: AssistantConsentResponse = try await request(
+            "POST", "/me/assistant-consent", body: AssistantConsentRequest(granted: granted))
+        return response.assistantConsentAt
+    }
+
+    private struct AssistantConsentRequest: Encodable {
+        let granted: Bool
+    }
+
+    private struct AssistantConsentResponse: Decodable {
+        let assistantConsentAt: Date?
+
+        enum CodingKeys: String, CodingKey {
+            case assistantConsentAt = "assistant_consent_at"
+        }
+    }
+
     // MARK: - Profile picture
 
     /// `PUT /me/avatar` — the one endpoint that carries bytes rather than

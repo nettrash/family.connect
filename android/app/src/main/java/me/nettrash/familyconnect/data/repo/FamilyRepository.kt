@@ -197,6 +197,28 @@ class FamilyRepository @Inject constructor(
         note: String?,
     ): ApiResult<AssistantReportResponse> = familyApi.reportAssistant(messageId, reason, note)
 
+    /**
+     * This member's own answer to the assistant question, and nobody
+     * else's (docs/protocol.md, "Consenting to the assistant").
+     *
+     * Here beside [reportAssistant] for that call's reason: neither is the
+     * family's business, but this is where the client's assistant state is
+     * kept and where the composer reads it from. The stamp the server
+     * answers with is written straight into settings, so the composer
+     * stops asking — or starts again — without waiting for the next `/me`.
+     *
+     * Answers whether it was recorded: false leaves the composer asking,
+     * which is the safe direction, and the caller says so.
+     */
+    suspend fun setAssistantConsent(granted: Boolean): Boolean =
+        when (val result = authApi.setAssistantConsent(granted)) {
+            is ApiResult.Ok -> {
+                settings.setAssistantConsentAt(result.value.assistantConsentAt)
+                true
+            }
+            else -> false
+        }
+
     suspend fun unblock(userId: Long): ApiResult<Unit> =
         familyApi.unblockMember(userId).also {
             if (it is ApiResult.Ok) applyBlockLocally(userId, blocked = false)
@@ -282,6 +304,12 @@ class FamilyRepository @Inject constructor(
                 // have neither deployment (docs/protocol.md, "Pictures").
                 vision = result.value.assistant?.vision == true,
                 images = result.value.assistant?.images == true,
+                // WHO answers, for the consent screen to name verbatim.
+                // Null turns the assistant off in this client entirely: a
+                // screen that cannot say where the words go cannot ask
+                // the question (protocol.md, "Consenting to the
+                // assistant").
+                processor = result.value.assistant?.processor,
             )
             // …and what this FAMILY allows, which is a different question
             // with a different answer and its own owner-only switch —

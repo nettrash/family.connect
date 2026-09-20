@@ -49,6 +49,57 @@ struct MacSettingsView: View {
     /// holds its own copy and writes through on change.
     @State private var mapPreviewsEnabled = AppSettings.mapPreviewsEnabled
     @State private var linkPreviewsEnabled = AppSettings.linkPreviewsEnabled
+    /// The assistant question, and what went wrong answering it — the
+    /// phone's two fields (protocol.md, "Consenting to the assistant").
+    @State private var reviewingAssistant = false
+    @State private var assistantConsentError: String?
+
+    /// The answer to the assistant question, and the way back out of it
+    /// — the phone's section, in the Mac's window (protocol.md,
+    /// "Consenting to the assistant"). Absent when this server has no
+    /// assistant: there is nothing to have agreed to.
+    @ViewBuilder
+    private var assistantConsentSection: some View {
+        if AssistantConsent.isAvailable(processor: AppSettings.assistantProcessor),
+            let processor = AppSettings.assistantProcessor
+        {
+            Section {
+                if let agreed = session.assistantConsentAt {
+                    LabeledContent(
+                        String(localized: "Agreed"),
+                        value: agreed.formatted(date: .abbreviated, time: .shortened))
+                    Button("Stop Sending My Messages", role: .destructive) {
+                        Task { await setAssistantConsent(false) }
+                    }
+                } else {
+                    Button("Review and Agree…") { reviewingAssistant = true }
+                }
+                if let assistantConsentError {
+                    Label(assistantConsentError, systemImage: "xmark.circle")
+                        .foregroundStyle(.red)
+                }
+            } header: {
+                Text("Assistant")
+            } footer: {
+                if session.assistantConsentAt == nil {
+                    Text("Until you agree, nothing you write is sent to \(processor) and the assistant does not answer you.")
+                } else {
+                    Text("What you write to the assistant is sent to \(processor). Stopping takes effect at once; what has already been sent cannot be taken back.")
+                }
+            }
+        }
+    }
+
+    /// Write the answer through the session, which holds the server's own
+    /// timestamp; a failure is shown rather than swallowed.
+    private func setAssistantConsent(_ granted: Bool) async {
+        do {
+            try await session.setAssistantConsent(granted)
+            assistantConsentError = nil
+        } catch {
+            assistantConsentError = String(localized: "Couldn't save your answer. Try again.")
+        }
+    }
 
     /// Who you are, at the top, with a face — the rows underneath are then
     /// only the things you can DO, which is what a settings sheet is for.
@@ -127,6 +178,7 @@ struct MacSettingsView: View {
                 Section {
                     Button("Statistics…") { showingStatistics = true }
                 }
+                assistantConsentSection
                 // The Mac's only setting that changes who the app talks
                 // to, so it says so plainly. Link previews are not drawn
                 // here at all, so there is nothing to switch for them; a
@@ -275,6 +327,18 @@ struct MacSettingsView: View {
         }
         .sheet(isPresented: $deletingAccount) {
             DeleteAccountView()
+        }
+        .sheet(isPresented: $reviewingAssistant) {
+            AssistantConsentSheet(
+                processor: AppSettings.assistantProcessor ?? "",
+                familyHistory: session.family?.aiHistory == true,
+                familyVision: session.family?.aiVision == true,
+                onAgree: {
+                    try await session.setAssistantConsent(true)
+                    assistantConsentError = nil
+                    reviewingAssistant = false
+                },
+                onDecline: { reviewingAssistant = false })
         }
         .confirmationDialog(
             "Leave the family?",

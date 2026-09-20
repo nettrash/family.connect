@@ -1226,6 +1226,17 @@ data class MeResponse(
      * not save.
      */
     @SerialName("greetings_enabled") val greetingsEnabled: Boolean = false,
+    /**
+     * When this caller agreed that their words may go to the model, or
+     * null if they have not — and null on a server with no assistant,
+     * which a client never has to tell apart because such a server offers
+     * no `ai` chat (docs/protocol.md, "Consenting to the assistant").
+     *
+     * Read at step 1 of the resync, so the composer knows before it is
+     * drawn whether the next thing to show is the consent screen rather
+     * than a send.
+     */
+    @SerialName("assistant_consent_at") val assistantConsentAt: String? = null,
 )
 
 @Serializable
@@ -1353,6 +1364,32 @@ data class AssistantDto(
      * (docs/protocol.md, "Drawing without being told to").
      */
     val images: Boolean = false,
+    /**
+     * WHO ANSWERS, in the operator's own words — "Microsoft — Azure
+     * OpenAI (Sweden Central)", or whoever their deployment belongs to.
+     * Shown VERBATIM on the consent screen, because a person cannot weigh
+     * "some third party" (docs/protocol.md, "Consenting to the
+     * assistant").
+     *
+     * Absent on a server that predates the field. A client that cannot
+     * name the recipient cannot ask the question honestly, so it offers
+     * no assistant there at all.
+     */
+    val processor: String? = null,
+)
+
+/**
+ * `POST /me/assistant-consent` — this member's own answer to the assistant
+ * question (docs/protocol.md, "Consenting to the assistant"). No user id,
+ * deliberately: nobody may answer for anybody else.
+ */
+@Serializable
+data class AssistantConsentRequest(val granted: Boolean)
+
+/** What the server now holds: a stamp when granted, null when withdrawn. */
+@Serializable
+data class AssistantConsentResponse(
+    @SerialName("assistant_consent_at") val assistantConsentAt: String? = null,
 )
 
 @Serializable

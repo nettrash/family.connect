@@ -75,6 +75,13 @@ nonisolated enum AppSettings {
         /// can be certain the server means the same five characters by it
         /// before offering an affordance built on its own copy.
         static let assistantDraw = "v1.assistant.draw"
+        /// WHO ANSWERS, as the operator named them and the server last
+        /// reported (protocol.md, "Consenting to the assistant"). Held
+        /// because the consent screen must say it verbatim and may be
+        /// drawn before any call has been made on this launch; a missing
+        /// key means no assistant is offered at all, which is the honest
+        /// answer for a server that names nobody.
+        static let assistantProcessor = "v1.assistant.processor"
         /// Pre-push installs stored a "registered once, token null"
         /// boolean under this key; superseded by the pair above and only
         /// referenced by wipe() so upgraded installs shed it.
@@ -340,6 +347,21 @@ nonisolated enum AppSettings {
         set { defaults.set(newValue, forKey: Key.assistantImages) }
     }
 
+    /// Who the words go to, or nil when this server named nobody — which
+    /// is a server whose assistant this client must not offer, because a
+    /// consent screen that cannot say the recipient is not consent
+    /// (protocol.md, "Consenting to the assistant").
+    static var assistantProcessor: String? {
+        get { defaults.string(forKey: Key.assistantProcessor) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.assistantProcessor)
+            } else {
+                defaults.removeObject(forKey: Key.assistantProcessor)
+            }
+        }
+    }
+
     /// The picture token the server named, or nil when it named none.
     static var assistantDraw: String? {
         get { defaults.string(forKey: Key.assistantDraw) }
@@ -377,6 +399,7 @@ nonisolated enum AppSettings {
         // The operator's half of the daily greeting is a fact about THIS
         // server, like the three above; a different server must not inherit it.
         defaults.removeObject(forKey: Key.greetingsEnabled)
+        defaults.removeObject(forKey: Key.assistantProcessor)
         defaults.removeObject(forKey: Key.joinPending)
         defaults.removeObject(forKey: Key.pushToken)
         defaults.removeObject(forKey: Key.pushDeviceID)

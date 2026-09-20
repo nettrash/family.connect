@@ -333,6 +333,7 @@ fn props_with(
         unanswered_polls: 0,
         draft: String::new(),
         support_contact: None,
+        agreed_to_assistant: true,
         on_action,
         now_ms: 0.0,
     }
@@ -786,6 +787,7 @@ async fn the_assistant_photo_door_is_there_only_when_all_three_allow_it() {
                 draw: Some("/draw".into()),
                 vision,
                 images: false,
+                processor: Some("Microsoft — Azure OpenAI".into()),
             });
             asked.family = Some(Family {
                 id: 3,
@@ -908,6 +910,7 @@ async fn a_threads_box_says_what_goes_to_the_assistant() {
             draw: Some("/draw".into()),
             vision: true,
             images: false,
+            processor: Some("Microsoft — Azure OpenAI".into()),
         }),
         blocked: Default::default(),
         revealed: Default::default(),

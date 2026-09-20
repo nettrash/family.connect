@@ -8,6 +8,7 @@ pub mod bubble;
 pub mod call;
 pub mod chat_list;
 pub mod composer;
+pub mod consent;
 pub mod conversation;
 pub mod dialog;
 pub mod family;

@@ -301,6 +301,14 @@ pub struct AssistantReport {
     pub created_at: OffsetDateTime,
 }
 
+/// `POST /me/assistant-consent`. No user id, deliberately: consent is the
+/// caller's own and there is no shape of this request that grants it for
+/// somebody else (docs/protocol.md, "Consenting to the assistant").
+#[derive(Debug, Deserialize)]
+pub struct AssistantConsentRequest {
+    pub granted: bool,
+}
+
 /// `POST /reports/assistant`.
 #[derive(Debug, Deserialize)]
 pub struct CreateAssistantReportRequest {

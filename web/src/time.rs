@@ -64,6 +64,23 @@ fn options(pairs: &[(&str, &str)]) -> JsValue {
     object.into()
 }
 
+/// A day and a time in the reader's own language, for a stamp a person
+/// reads once rather than scans — "19 Sep 2026, 20:14". Empty when the
+/// string is not a date this browser can parse, which is the same answer
+/// every other reader here gives.
+pub fn stamp(rfc3339: &str) -> String {
+    let Some(date) = date_of(rfc3339) else {
+        return String::new();
+    };
+    let day: String = date
+        .to_locale_date_string(
+            &locale(),
+            &options(&[("year", "numeric"), ("month", "short"), ("day", "numeric")]),
+        )
+        .into();
+    format!("{day}, {}", clock(rfc3339))
+}
+
 /// An event's date as a CALENDAR BLOCK: the day's number and its short
 /// month, both in the reader's own language (docs/protocol.md, "Board").
 ///

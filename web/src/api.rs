@@ -1333,7 +1333,39 @@ pub async fn report_assistant(
         reason,
         note,
     };
-    empty(Request::post(&path("/reports/assistant")), token, Some(&body)).await
+    empty(
+        Request::post(&path("/reports/assistant")),
+        token,
+        Some(&body),
+    )
+    .await
+}
+
+/// `POST /me/assistant-consent` — this member's own permission for their
+/// words to go to the model, and nobody else's (docs/protocol.md,
+/// "Consenting to the assistant").
+///
+/// Answers with the stamp the server now holds: a date when granted, none
+/// when withdrawn. Idempotent both ways — granting twice keeps the FIRST
+/// date, because when somebody agreed is a fact and not a counter. A
+/// server with no assistant answers 404 rather than admitting there is
+/// nothing to consent to.
+pub async fn set_assistant_consent(token: &str, granted: bool) -> Result<Option<String>, ApiError> {
+    let body = AssistantConsentRequest { granted };
+    let answer: AssistantConsentResponse =
+        with_body(Request::post(&path("/me/assistant-consent")), token, &body).await?;
+    Ok(answer.assistant_consent_at)
+}
+
+#[derive(Debug, Serialize)]
+struct AssistantConsentRequest {
+    granted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct AssistantConsentResponse {
+    #[serde(default)]
+    assistant_consent_at: Option<String>,
 }
 
 /// `PUT` / `DELETE /families/members/{id}/block`.

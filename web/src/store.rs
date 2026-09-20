@@ -457,6 +457,24 @@ impl Store {
         chats
     }
 
+    /// When this member agreed that their words may go to the model, or
+    /// none if they have not (docs/protocol.md, "Consenting to the
+    /// assistant"). Held on the account the last `/me` brought, which is
+    /// where the server's own answer lives.
+    pub fn assistant_consent_at(&self) -> Option<&str> {
+        self.account
+            .as_ref()
+            .and_then(|me| me.assistant_consent_at.as_deref())
+    }
+
+    /// Record the answer the server just gave, so the composer stops
+    /// asking — or starts again — without waiting for the next `/me`.
+    pub fn set_assistant_consent(&mut self, at: Option<String>) {
+        if let Some(account) = self.account.as_mut() {
+            account.assistant_consent_at = at;
+        }
+    }
+
     /// `GET /me`: who this is, and the block list — REPLACED, never merged.
     /// Answers whether the account's family changed, which the app answers
     /// by putting away whatever pane was open on the old one.

@@ -64,6 +64,13 @@ public sealed record SessionState(
     bool FamilyRegistrationEnabled = true,
     int FamilylessAccountTtlDays = 0,
     bool GreetingsEnabled = false,
+    /// <summary>
+    /// When this member agreed that their words may go to the model, or null until they have
+    /// (docs/protocol.md, "Consenting to the assistant"). The SERVER's answer and not this
+    /// PC's: the server is what calls the model, a reinstall must not quietly re-ask and
+    /// re-send, and somebody who agreed on their phone has agreed.
+    /// </summary>
+    string? AssistantConsentAt = null,
     bool JoinDeclined = false)
 {
     /// <summary>Whether the socket may connect at all: signed in, and in a family.</summary>
@@ -195,6 +202,7 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
             FamilyRegistrationEnabled: answered.FamilyRegistrationEnabled,
             FamilylessAccountTtlDays: answered.FamilylessAccountTtlDays,
             GreetingsEnabled: answered.GreetingsEnabled,
+            AssistantConsentAt: answered.AssistantConsentAt,
             JoinDeclined: declined));
 
         // Two departures nothing else announces. `GET /me` is where a client finds out, because

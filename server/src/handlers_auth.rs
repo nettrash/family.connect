@@ -10,14 +10,14 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::{PgConnection, Row};
 use time::OffsetDateTime;
 
 use crate::auth::{self, AuthUser};
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
-use crate::models::{Family, PendingJoinRequest, User};
+use crate::models::{AssistantConsentRequest, Family, PendingJoinRequest, User};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -1029,6 +1029,21 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             // honest escalation path for when the family's moderator is
             // the problem (protocol.md, "Reporting a member").
             "support_contact": state.cfg.server.support_contact,
+            // WHEN THIS CALLER AGREED that their words may go to the
+            // model (protocol.md, "Consenting to the assistant"). ALWAYS
+            // present; null both when they have not agreed and when this
+            // server has no assistant to agree to, which a client never
+            // has to tell apart — without an assistant there is no `ai`
+            // chat to draw. Read at step 1 of the resync, so a client
+            // knows before it draws that chat whether the next thing to
+            // show is the consent screen rather than a composer.
+            "assistant_consent_at": if state.cfg.ai.is_usable() {
+                crate::handlers_ai::consent_stamp(
+                    crate::handlers_ai::assistant_consent_at(&state, auth.user_id).await?,
+                )
+            } else {
+                Value::Null
+            },
             // Whether this server posts the assistant's daily greeting at
             // all. ALWAYS present, for exactly `calls_enabled`'s reason: the
             // family's own `ai_greeting` switch is one half of a two-key
@@ -1069,6 +1084,63 @@ fn validate_username(username: &str) -> Result<(), ApiError> {
         return Err(ApiError::validation("that username is reserved"));
     }
     Ok(())
+}
+
+/// `POST /me/assistant-consent` — the caller's own permission for their words
+/// to go to the model (docs/protocol.md, "Consenting to the assistant").
+///
+/// THE MEMBER'S AND NOBODY ELSE'S. `ai_history` and `ai_vision` are the
+/// owner's switches over what the family's chat exposes; neither is
+/// permission from the people whose words that history is made of, and this
+/// endpoint takes no user id for exactly that reason — there is no shape of
+/// request in which one person grants it for another.
+///
+/// Granting twice keeps the FIRST timestamp: when somebody agreed is a fact,
+/// not a counter, and an operator asked when a member consented should not
+/// be answered with the date they last reinstalled. Withdrawing sets it back
+/// to null and deletes nothing — the `ai` chat and its history stay, because
+/// consent going away is not a request to lose a conversation.
+pub async fn set_assistant_consent(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    AppJson(req): AppJson<AssistantConsentRequest>,
+) -> Result<Response, ApiError> {
+    // No assistant, nothing to consent to — and answering anything else
+    // would let this endpoint report whether one is configured.
+    if !state.cfg.ai.is_usable() {
+        return Err(ApiError::not_found(codes::NOT_FOUND, "no such endpoint"));
+    }
+    let at: Option<OffsetDateTime> = if req.granted {
+        sqlx::query_scalar(
+            "UPDATE users
+                SET assistant_consent_at = coalesce(assistant_consent_at, now())
+              WHERE id = $1
+              RETURNING assistant_consent_at",
+        )
+        .bind(auth.user_id)
+        .fetch_one(&state.pool)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            "UPDATE users SET assistant_consent_at = NULL WHERE id = $1
+              RETURNING assistant_consent_at",
+        )
+        .bind(auth.user_id)
+        .fetch_one(&state.pool)
+        .await?
+    };
+    tracing::info!(
+        user_id = auth.user_id,
+        granted = req.granted,
+        "assistant consent set"
+    );
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "assistant_consent_at": crate::handlers_ai::consent_stamp(at),
+        })),
+    )
+        .into_response())
 }
 
 /// Names the server itself uses and nobody may register.

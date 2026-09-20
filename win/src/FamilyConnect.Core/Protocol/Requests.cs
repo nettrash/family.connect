@@ -171,7 +171,17 @@ public sealed record MeResponse(
     [property: JsonPropertyName("support_contact")] string? SupportContact = null,
     [property: JsonPropertyName("family_registration_enabled")] bool FamilyRegistrationEnabled = true,
     [property: JsonPropertyName("familyless_account_ttl_days")] int FamilylessAccountTtlDays = 0,
-    [property: JsonPropertyName("greetings_enabled")] bool GreetingsEnabled = false)
+    [property: JsonPropertyName("greetings_enabled")] bool GreetingsEnabled = false,
+    /// <summary>
+    /// When this caller agreed that their words may go to the model, or null until they have —
+    /// and null on a server with no assistant, which a client never has to tell apart because
+    /// such a server offers no <c>ai</c> chat (docs/protocol.md, "Consenting to the assistant").
+    /// </summary>
+    /// <remarks>
+    /// Read at step 1 of the resync, so the composer knows before it is drawn whether the next
+    /// thing to show is the consent screen rather than a send.
+    /// </remarks>
+    [property: JsonPropertyName("assistant_consent_at")] string? AssistantConsentAt = null)
 {
     public bool IsOwner => Role == "owner";
 }
@@ -242,7 +252,25 @@ public sealed record AssistantDto(
     string Mention,
     string? Draw = null,
     bool Vision = false,
-    bool Images = false);
+    bool Images = false,
+    /// <summary>
+    /// WHO ANSWERS, in the operator's own words — shown VERBATIM on the consent screen, because
+    /// a person cannot weigh "some third party" (docs/protocol.md, "Consenting to the
+    /// assistant"). Absent on a server that predates the field, and a client that cannot name
+    /// the recipient offers no assistant there at all.
+    /// </summary>
+    string? Processor = null);
+
+/// <summary>
+/// <c>POST /me/assistant-consent</c> — this member's own answer to the assistant question, and
+/// nobody else's: there is no shape of this request that names another member (docs/protocol.md,
+/// "Consenting to the assistant").
+/// </summary>
+public sealed record AssistantConsentRequest(bool Granted);
+
+/// <summary>What the server now holds: a stamp when granted, null when withdrawn.</summary>
+public sealed record AssistantConsentResponse(
+    [property: JsonPropertyName("assistant_consent_at")] string? AssistantConsentAt = null);
 
 // ---- the family's own console --------------------------------------------
 

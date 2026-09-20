@@ -95,6 +95,12 @@ pub enum Action {
         reason: String,
         note: Option<String>,
     },
+    /// This member's own answer to the assistant question — and nobody
+    /// else's; there is no shape of this action that names a user
+    /// (docs/protocol.md, "Consenting to the assistant").
+    SetAssistantConsent {
+        granted: bool,
+    },
     Block {
         user_id: i64,
         blocked: bool,
@@ -724,6 +730,23 @@ impl Actions {
                             session,
                             &error,
                             t("Couldn't send the report. Try again."),
+                        ),
+                    }
+                });
+            }
+            Action::SetAssistantConsent { granted } => {
+                let live = live.clone();
+                spawn_local(async move {
+                    match api::set_assistant_consent(&token, granted).await {
+                        // The SERVER's stamp, not this client's clock:
+                        // agreeing twice keeps the first one, and a client
+                        // that invented a date would show one the server
+                        // would not.
+                        Ok(at) => live.now(move |state| state.store.set_assistant_consent(at)),
+                        Err(error) => this.fail_saying(
+                            session,
+                            &error,
+                            t("Couldn't save your answer. Try again."),
                         ),
                     }
                 });

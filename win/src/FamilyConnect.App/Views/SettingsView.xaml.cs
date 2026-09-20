@@ -48,6 +48,7 @@ public sealed partial class SettingsView : UserControl
     private bool pictureBusy;
     private bool leaving;
     private bool drawingSwitch;
+    private bool consentBusy;
     private string pictureShown = string.Empty;
 
     internal SettingsView(AppServices services, Connection connection, Action close)
@@ -110,6 +111,7 @@ public sealed partial class SettingsView : UserControl
         PasswordButton.Click += (_, _) => _ = ChangePasswordAsync();
         LeaveButton.Click += (_, _) => _ = LeaveAsync();
         StatisticsButton.Click += (_, _) => _ = StatisticsAsync();
+        AssistantConsentButton.Click += (_, _) => _ = AssistantConsentAsync();
         NotifySwitch.Toggled += (_, _) =>
         {
             if (!drawingSwitch && Toasts.Available)
@@ -182,8 +184,90 @@ public sealed partial class SettingsView : UserControl
             ? say.Get("While this window is not in front, a notification says who wrote — never what they wrote.")
             : say.Get("Windows is not showing notifications for Family Connect. Allow them in Windows Settings, under Notifications.");
 
+        DrawAssistantConsent(state);
+
         Picture.DisplayName = me.DisplayName;
         _ = ShowPictureAsync(me);
+    }
+
+    /// <summary>
+    /// The assistant question, as this screen shows it (docs/protocol.md, "Consenting to the
+    /// assistant"): when they agreed and the way to stop, or what has not been agreed to yet and
+    /// the screen that asks.
+    /// </summary>
+    /// <remarks>
+    /// The whole group is COLLAPSED where this server named no processor — there is nothing to
+    /// have agreed to, and a row about it would be a setting for a feature that does not exist
+    /// here. Stopping is one press and no dialog: agreeing has a screen to read first, and
+    /// stopping has nothing to say beyond what it cannot undo, which the footnote already says.
+    /// </remarks>
+    private void DrawAssistantConsent(SessionState state)
+    {
+        var say = services.Say;
+        var processor = state.Assistant?.Processor;
+        if (!AssistantConsent.IsAvailable(processor) || processor is null)
+        {
+            AssistantHeading.Visibility = Visibility.Collapsed;
+            AssistantPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+        AssistantHeading.Text = say.Get("Assistant");
+        AssistantHeading.Visibility = Visibility.Visible;
+        AssistantPanel.Visibility = Visibility.Visible;
+        var agreed = !string.IsNullOrWhiteSpace(state.AssistantConsentAt);
+        if (agreed)
+        {
+            AssistantConsentTitle.Text = say.Get("Agreed");
+            AssistantConsentFootnote.Text = say.Format(
+                "What you write to the assistant is sent to %@. Stopping takes effect at once; what has already been sent cannot be taken back.",
+                processor);
+            AssistantConsentAction.Text = say.Get("Stop Sending My Messages");
+        }
+        else
+        {
+            AssistantConsentTitle.Text = say.Get("The Assistant");
+            AssistantConsentFootnote.Text = say.Format(
+                "Until you agree, nothing you write is sent to %@ and the assistant does not answer you.",
+                processor);
+            AssistantConsentAction.Text = say.Get("Review and Agree…");
+        }
+        AutomationProperties.SetName(AssistantConsentButton, AssistantConsentAction.Text);
+        AssistantConsentButton.IsEnabled = !consentBusy;
+    }
+
+    /// <summary>
+    /// Answer the question, or take the answer back. The session is the state: the write is
+    /// followed by a <c>GET /me</c>, and the screen redraws from what the server then says.
+    /// </summary>
+    private async Task AssistantConsentAsync()
+    {
+        var state = connection.Session.State;
+        if (state.Assistant?.Processor is not { } processor || string.IsNullOrWhiteSpace(processor))
+        {
+            return;
+        }
+        var agreed = !string.IsNullOrWhiteSpace(state.AssistantConsentAt);
+        if (!agreed && !await Dialogs.AssistantConsentAsync(
+            XamlRoot, services.Say, processor,
+            state.Family?.AiHistory == true, state.Family?.AiVision == true))
+        {
+            return;
+        }
+        consentBusy = true;
+        Draw();
+        var answer = await connection.Api.SetAssistantConsent(!agreed);
+        consentBusy = false;
+        if (answer.Ok)
+        {
+            await connection.Session.RefreshAsync();
+        }
+        Draw();
+        if (!answer.Ok)
+        {
+            await Dialogs.ConfirmAsync(
+                XamlRoot, services.Say, services.Say.Get("Couldn't save your answer. Try again."),
+                null, services.Say.Get("OK"));
+        }
     }
 
     // ---- the picture ---------------------------------------------------------------------------

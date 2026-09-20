@@ -356,8 +356,34 @@ impl TestServer {
             .expect("request sends")
     }
 
-    /// Register a user; returns `(token, user_id)`.
+    /// Register a user who has ALSO agreed that their words may go to the
+    /// assistant's provider; returns `(token, user_id)`.
+    ///
+    /// The agreement is part of registering here because the server
+    /// refuses to send anything to the provider without it
+    /// (docs/protocol.md, "Consenting to the assistant") and nearly every
+    /// test that reaches the assistant is about something else. It is
+    /// written straight to the row rather than posted, so it costs one
+    /// query and works the same on a server with no assistant configured,
+    /// where the endpoint answers 404. The endpoint itself, the refusal it
+    /// lifts and the withdrawal are exercised in
+    /// `assistant_consent_flow.rs`; a member who has NOT agreed comes from
+    /// [`TestServer::register_without_assistant_consent`].
     pub async fn register(&self, username: &str, display_name: &str) -> (String, i64) {
+        let (token, user_id) = self
+            .register_without_assistant_consent(username, display_name)
+            .await;
+        self.agree_to_the_assistant(user_id).await;
+        (token, user_id)
+    }
+
+    /// Register a user and leave the assistant question unanswered — what
+    /// a newly installed client's owner actually is until they are asked.
+    pub async fn register_without_assistant_consent(
+        &self,
+        username: &str,
+        display_name: &str,
+    ) -> (String, i64) {
         let response = self
             .post_unauth(
                 "/auth/register",
@@ -374,6 +400,16 @@ impl TestServer {
             body["token"].as_str().expect("token present").to_string(),
             body["user"]["id"].as_i64().expect("user id present"),
         )
+    }
+
+    /// Record the agreement for one member, without going through the
+    /// endpoint.
+    pub async fn agree_to_the_assistant(&self, user_id: i64) {
+        sqlx::query("UPDATE users SET assistant_consent_at = now() WHERE id = $1")
+            .bind(user_id)
+            .execute(&self.state.pool)
+            .await
+            .expect("recording the assistant agreement");
     }
 
     /// Log in as an existing user; returns the new session's token.

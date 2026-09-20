@@ -36,6 +36,7 @@ async fn server_with_assistant() -> TestServer {
         cfg.ai.endpoint = "https://example.invalid".to_string();
         cfg.ai.deployment = "test-deployment".to_string();
         cfg.ai.api_key = "test-key".to_string();
+        cfg.ai.processor = "Microsoft — Azure OpenAI".to_string();
         cfg.ai.title = "Assistant".to_string();
     })
     .await
@@ -1109,6 +1110,7 @@ async fn the_transcript_calls_the_assistant_by_the_name_the_family_sees() {
         cfg.ai.endpoint = "https://example.invalid".to_string();
         cfg.ai.deployment = "test-deployment".to_string();
         cfg.ai.api_key = "test-key".to_string();
+        cfg.ai.processor = "Microsoft — Azure OpenAI".to_string();
         // NOT "Assistant", which is the name in the users table — the two
         // have to be told apart for this test to mean anything.
         cfg.ai.title = "Ася".to_string();
@@ -1418,6 +1420,7 @@ async fn server_with_pictures_tweaked(
         cfg.ai.endpoint = format!("http://{addr}");
         cfg.ai.deployment = TEXT_DEPLOYMENT.to_string();
         cfg.ai.api_key = "test-key".to_string();
+        cfg.ai.processor = "Microsoft — Azure OpenAI".to_string();
         cfg.ai.title = "Assistant".to_string();
         cfg.ai.vision.deployment = VISION_DEPLOYMENT.to_string();
         cfg.ai.images.deployment.deployment = IMAGES_DEPLOYMENT.to_string();
@@ -1435,6 +1438,7 @@ async fn server_with_text_only(addr: SocketAddr) -> TestServer {
         cfg.ai.endpoint = format!("http://{addr}");
         cfg.ai.deployment = TEXT_DEPLOYMENT.to_string();
         cfg.ai.api_key = "test-key".to_string();
+        cfg.ai.processor = "Microsoft — Azure OpenAI".to_string();
         cfg.ai.title = "Assistant".to_string();
     })
     .await
@@ -3394,6 +3398,10 @@ async fn the_assistant_object_says_what_this_server_can_do() {
     assert_eq!(assistant["draw"], "/draw");
     assert_eq!(assistant["vision"], true);
     assert_eq!(assistant["images"], true);
+    // WHO ANSWERS, verbatim as the operator wrote it — the one field a
+    // client cannot invent and cannot ask consent without (protocol.md,
+    // "Consenting to the assistant").
+    assert_eq!(assistant["processor"], "Microsoft — Azure OpenAI", "{body}");
 
     // A server with only the text deployment configured says so, and a
     // client that reads it offers neither affordance.
@@ -3867,6 +3875,7 @@ async fn a_flux_deployment_sends_the_request_its_own_portal_documents() {
         // The GPT deployments stay where they are, on the other host.
         endpoint: format!("http://{addr}"),
         deployment: "nettrash-gpt-oss-120b".to_string(),
+        processor: "Microsoft — Azure OpenAI".to_string(),
         api_key: "AZURE_API_KEY".to_string(),
         ..Default::default()
     };
@@ -3937,6 +3946,7 @@ async fn a_gpt_style_images_deployment_sends_exactly_what_it_always_did() {
         enabled: true,
         endpoint: format!("http://{addr}"),
         deployment: "nettrash-gpt-oss-120b".to_string(),
+        processor: "Microsoft — Azure OpenAI".to_string(),
         api_key: "AZURE_API_KEY".to_string(),
         ..Default::default()
     };
