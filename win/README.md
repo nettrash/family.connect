@@ -37,11 +37,13 @@ win/
                 Family — the door, the owner's console, and the numbers everybody may see
                 Notifications — when this client speaks up, and what it says when it does
                 Avatars — what a picture must be before it is sent, and a cache keyed by VERSION
+                StartupSetting — what the "start when I sign in" row shows, and who may change it
   src/FamilyConnect.App/               the WinUI 3 window: structure + code-behind, no decisions
                 Services/ Connection (one server, wired), LockerTokenStore (the credential
                           locker), AppServices, AppFolders, the settings files, Toasts and
-                          Attention, TrayIcon, ShareInbox, WindowPlacement, WebViewCallMedia,
-                          VoiceRecorder, MediaPreparing, LocationFinder
+                          Attention, TrayIcon, StartupLaunch (the manifest's startup task),
+                          ShareInbox, WindowPlacement, WebViewCallMedia, VoiceRecorder,
+                          MediaPreparing, LocationFinder
                 Views/    ServerView, SignInView, DoorView, PendingView, OfflineView, ChatsView,
                           BoardView + NoteSheet, FamilyView, SettingsView, CallCardView, and the
                           sheets and cards they open (polls, emoji, dialogs)
@@ -131,6 +133,19 @@ stays in the Dock — and an icon in the notification area opens it again or qui
 hidden window of its own rather than WinUI's, re-added when Explorer restarts). "Keep running when the
 window is closed" in Settings turns that off, and without an icon to come back from a close is always
 a quit.
+
+**AND IT CAN START BEFORE ITS WINDOW DOES.** The manifest declares a `windows.startupTask`
+(`uap5:Extension`, TaskId `FamilyConnectStartup`, `Enabled="false"`), and "Start when I sign in" in
+Settings asks Windows to switch it on. A launch Windows made that way builds `MainWindow` — which is
+where the connection, the call engine and the notification area icon come from — and does NOT
+`Activate()` it: the app is listening from the notification area, and the icon or a notification
+brings the window up (`ExtendedActivationKind.StartupTask`, read in `App.OnLaunched`; the rule is
+`StartupSetting.StartsHidden`, which refuses to hide a window when there is no icon to come back
+from). Three of the five `StartupTaskState`s are not the app's to change — **`DisabledByUser` is the
+one that matters**: the person switched it off in Task Manager, `RequestEnableAsync` answers with
+that same state and changes nothing, so the row disables its switch and says where the real one is
+rather than springing back and looking broken. Every branch of that is a unit test in
+`StartupSettingTests`, off Windows; `StartupLaunch` is the thin edge that only fetches and maps.
 
 **A profile picture is cached by (user, VERSION).** No frame carries a picture — only the number —
 so a cache keyed on the user alone shows a face the family replaced weeks ago. It is the board
@@ -343,6 +358,11 @@ Major.Minor out of that file and stamps `Major.Minor.<run number>.0` into
 stays `1.1.0.0` and a build made here is visibly not a Store build — Settings says "1.1" for an
 unstamped one and "1.1 (437)" for a stamped one (`AppVersionText`, with the reasons).
 
+`store/build-store-packages.ps1` stamps the same field the same way, from `git rev-list --count HEAD`
+(or `-Build <n>`), and puts the manifest back when it finishes, so a Store package always carries a
+number that only rises while the working tree stays clean. The two counters are separate streams and
+that is fine: CI's packages are only ever tested, and the Store only ever sees this script's.
+
 Three constraints shaped that, and each has cost somebody a rejection somewhere:
 
 - **The fourth part is the Store's.** Partner Center reserves the revision and refuses a package
@@ -366,6 +386,7 @@ Things chosen for the window that nettrash has not decided yet, and where they l
 - **Calls through WebView2** — the browser engine's own WebRTC in a page of the app's
   (`Assets/Call/call.html`), driven by `CallEngine`; the engine starts on the first call and is kept.
 - **Closing to the notification area**, on by default.
+- **Starting at sign-in**, off until somebody asks for it in Settings.
 - **Maps from OpenStreetMap's tiles**, behind Map Previews, on by default.
 
 ## The oracle

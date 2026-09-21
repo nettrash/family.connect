@@ -49,6 +49,7 @@ public sealed partial class SettingsView : UserControl
     private bool leaving;
     private bool drawingSwitch;
     private bool consentBusy;
+    private StartupState? startupState;
     private string pictureShown = string.Empty;
 
     internal SettingsView(AppServices services, Connection connection, Action close)
@@ -72,6 +73,8 @@ public sealed partial class SettingsView : UserControl
         NotificationsHeading.Text = say.Get("Notifications");
         NotifyTitle.Text = say.Get("Tell me when a message arrives");
         KeepRunningFootnote.Text = say.Get("Family Connect stays in the notification area, so messages and calls still reach you. Quit it from its icon there.");
+        StartupTitle.Text = say.Get("Start when I sign in");
+        AutomationProperties.SetName(StartupSwitch, StartupTitle.Text);
         PrivacyHeading.Text = say.Get("Privacy");
         ServerHeading.Text = say.Get("Server");
         ServerAddressLabel.Text = say.Get("Address");
@@ -133,6 +136,13 @@ public sealed partial class SettingsView : UserControl
                 KeepRunningSetting.Enabled = KeepRunningSwitch.IsOn;
             }
         };
+        StartupSwitch.Toggled += (_, _) =>
+        {
+            if (!drawingSwitch)
+            {
+                _ = SetStartupAsync(StartupSwitch.IsOn);
+            }
+        };
         MapPreviewSwitch.Toggled += (_, _) =>
         {
             if (!drawingSwitch)
@@ -147,6 +157,9 @@ public sealed partial class SettingsView : UserControl
         connection.Session.Changed += onSession;
         Unloaded += (_, _) => connection.Session.Changed -= onSession;
         Draw();
+        // Windows owns this answer and reading it is asynchronous, so the row
+        // stays collapsed until it arrives — not drawn wrongly and corrected.
+        _ = LoadStartupAsync();
     }
 
     private void Draw()
@@ -185,9 +198,70 @@ public sealed partial class SettingsView : UserControl
             : say.Get("Windows is not showing notifications for Family Connect. Allow them in Windows Settings, under Notifications.");
 
         DrawAssistantConsent(state);
+        DrawStartup();
 
         Picture.DisplayName = me.DisplayName;
         _ = ShowPictureAsync(me);
+    }
+
+    /// <summary>
+    /// The "start when I sign in" row, from whatever Windows last said the
+    /// startup task's state is. Nothing yet said means nothing drawn.
+    /// </summary>
+    /// <remarks>
+    /// Three of the five states are not ours to change — the person's own
+    /// choice in Task Manager, or policy — so the switch is disabled and the
+    /// footnote says where the real switch is, rather than springing back and
+    /// looking broken (<see cref="StartupSetting"/> holds that rule, and its
+    /// tests). No startup task at all means an unpackaged run: the row is
+    /// collapsed rather than drawn dead.
+    /// </remarks>
+    private void DrawStartup()
+    {
+        if (startupState is not { } state || !StartupSetting.IsOffered(state))
+        {
+            StartupCard.Visibility = Visibility.Collapsed;
+            return;
+        }
+        var say = services.Say;
+        StartupCard.Visibility = Visibility.Visible;
+        StartupFootnote.Text = StartupSetting.NoteFor(state) switch
+        {
+            StartupSetting.Note.BlockedByTaskManager =>
+                say.Get("Windows is keeping this off. Turn it back on in Task Manager, under Startup apps."),
+            StartupSetting.Note.DecidedByPolicy =>
+                say.Get("Your organisation decides whether Family Connect starts when you sign in."),
+            _ => say.Get("Family Connect opens in the notification area when you sign in to Windows, so a message or a call reaches you without opening it first."),
+        };
+        // Drawn, not chosen: writing IsOn raises Toggled, and the handler
+        // would ask Windows for the state it has just reported.
+        drawingSwitch = true;
+        StartupSwitch.IsOn = StartupSetting.IsOn(state);
+        StartupSwitch.IsEnabled = StartupSetting.IsChangeable(state);
+        drawingSwitch = false;
+    }
+
+    private async Task LoadStartupAsync()
+    {
+        startupState = await StartupLaunch.StateAsync();
+        DrawStartup();
+    }
+
+    /// <summary>
+    /// Ask Windows to change it, then draw what Windows actually did. A
+    /// request can be refused — see <see cref="StartupSetting.RequestSucceeded"/>
+    /// — and a switch left sitting on "on" after a refusal is the whole
+    /// reason this redraws from the answer instead of from the toggle.
+    /// </summary>
+    private async Task SetStartupAsync(bool wanted)
+    {
+        StartupSwitch.IsEnabled = false;
+        startupState = await StartupLaunch.SetAsync(wanted);
+        if (wanted && !StartupSetting.RequestSucceeded(startupState.Value))
+        {
+            Diagnostics.Write($"the startup task stayed {startupState} after a request to enable it");
+        }
+        DrawStartup();
     }
 
     /// <summary>

@@ -31,7 +31,7 @@ A private messenger for one family and nobody else: chats, photos, voice notes, 
 
 Family Connect is a private messenger for one family and nobody else — no feed, no discovery, no directory of users. The only people who can reach you are the ones your family's owner let in.
 
-On Windows it is a Windows app, not a phone screen made wide: your chats in a list beside the conversation you are reading, a family board, the family's own settings for its owner, and a call in the corner of whatever you are doing. Close the window and it keeps running in the notification area, so a message or a call still reaches you.
+On Windows it is a Windows app, not a phone screen made wide: your chats in a list beside the conversation you are reading, a family board, the family's own settings for its owner, and a call in the corner of whatever you are doing. Close the window and it keeps running in the notification area, so a message or a call still reaches you, and it can start with Windows so that it is already listening when you sign in.
 
 It works out of the box: install, pick a username — no email address, no phone number — then create your family, and you become its owner, or join one with an invite code. The owner decides whether that code admits people instantly, needs approval, or admits nobody, and can rotate it, cap the membership, or remove someone.
 
@@ -56,7 +56,7 @@ An optional assistant can answer questions in the family chat when the person ru
 
 What it does not have: ads, analytics, tracking, crash reporting, or the attribution SDKs that usually arrive with a free messenger.
 
-And the honest limits. Windows notifies you only while Family Connect is running — in its window or in the notification area. A quit app is not notified and does not ring, so leave it running if you want to be reachable on this PC. There is no camera capture inside a chat and no message search yet. This is not end-to-end encryption and we will not imply that it is: messages and attachments travel encrypted to the server your family chose — plain http only for a server on your own network — and are stored there in readable form, so whoever runs it can read them. Calls are different: picture and sound go straight between the two devices wherever the network allows; where it does not, the call connects only if your server's operator runs a relay, which forwards the stream encrypted and cannot read it. Some things necessarily reach past your server, and each is switchable in Settings or named here: the map under a shared location, drawn from OpenStreetMap; previews under links, fetched from the linked site; and a public STUN server asked for your address when you place a call. How long old messages are kept is a setting for whoever runs the server.
+And the honest limits. Windows notifies you only while Family Connect is running — in its window or in the notification area. A quit app is not notified and does not ring, so leave it running if you want to be reachable on this PC — Settings can start it when you sign in, so that is one thing less to remember. There is no camera capture inside a chat and no message search yet. This is not end-to-end encryption and we will not imply that it is: messages and attachments travel encrypted to the server your family chose — plain http only for a server on your own network — and are stored there in readable form, so whoever runs it can read them. Calls are different: picture and sound go straight between the two devices wherever the network allows; where it does not, the call connects only if your server's operator runs a relay, which forwards the stream encrypted and cannot read it. Some things necessarily reach past your server, and each is switchable in Settings or named here: the map under a shared location, drawn from OpenStreetMap; previews under links, fetched from the linked site; and a public STUN server asked for your address when you place a call. How long old messages are kept is a setting for whoever runs the server.
 
 If you want your family's conversations off big-tech servers — and, when you are ready, on hardware you own — this is what Family Connect is for.
 
@@ -78,10 +78,21 @@ If you want your family's conversations off big-tech servers — and, when you a
 14. No ads, no analytics, no tracking
 15. Username and password only — no email address or phone number
 16. Nine languages
+17. Starts when you sign in to Windows, waiting in the notification area
 
-## What's new in this version
+## What's new in this version (≤ 1500)
 
-*Leave blank for the first submission (Partner Center's own instruction).*
+Everything the other Family Connect apps gained in 1.1 has caught up with the Windows app, and one thing is only here.
+
+- Start when you sign in. Family Connect can open in the notification area as you sign in to Windows, so a message or a call reaches you without opening it first. Settings, under Notifications.
+- The assistant asks first. Where a server runs one, nothing you write is sent to it until you have agreed — including what you say in the family chat while somebody else is asking it something — and Settings takes that agreement back.
+- Report a reply. Any answer the assistant wrote can be reported from the message itself, to the people who run your family's server.
+- Files keep their names. An attachment saved or shared out of a chat arrives with its own name and kind.
+
+*The first Windows package in the Store was built on 15 September; the three entries after the first one went in
+afterwards (assistant reports on the 18th, assistant consent on the 20th, attachment names on the 17th). If the
+package that was finally published already carried one of them — a submission in certification can have its package
+replaced without a new version — delete that line before pasting: release notes are for what this build adds.*
 
 ## Additional system requirements
 
@@ -127,26 +138,27 @@ or its Windows port `win/store/seed-store-screenshots.ps1` — never from a real
 
 Social. (Subcategory: none.)
 
-## Notes for certification
+## Notes for certification (≤ 2000)
 
 *Partner Center → Submission options → Notes for certification. Fill the placeholders from the live server first.*
 
 DEMO SERVER: https://fc.nettrash.me — built into this package, so the app opens on the sign-in screen with nothing to configure.
 
-DEMO ACCOUNTS: owner [DEMO_USER] / [DEMO_PASS]; second member [DEMO_USER_2] / [DEMO_PASS_2] in the same family, for typing, read receipts and a call from a second PC. Invite code [INVITE_CODE].
+DEMO ACCOUNTS: owner [DEMO_USER] / [DEMO_PASS]; second member [DEMO_USER_2] / [DEMO_PASS_2], same family, for typing, read receipts and a call from a second PC. Invite code [INVITE_CODE]. Their family holds chats, photos, a voice note, a location, polls and a board.
 
-WHAT IT IS: a client for a small open-source (MIT, Rust) chat server. Each installation talks to one server; a family's messages live in that server's database and on the family's devices. There is no public feed, no user directory and no search for people — an account in no family can reach nobody, and the only ways into a family are creating one or an invite code the owner controls.
+WHAT IT IS: a client for a small open-source (MIT, Rust) chat server; each installation talks to one. No public feed, no user directory, no search for people: an account in no family can reach nobody, and the only ways in are creating a family or an invite code its owner controls.
 
 REPORT AND BLOCK: right-click a message → Safety → Report… or Block; or Family → a member's Safety menu. Reports reach the family owner under Family → Reports.
 
 DELETE ACCOUNT: Settings → Delete Account… (password, then a confirmation). Immediate and irreversible.
 
-GENERATIVE AI (policy 11.16), and the answer to the 2026-09-18 certification comment. The product has an assistant: a member can ask it questions in a private chat of their own, and can address it in the family chat by writing @ai. Both halves of what 11.16 asks are now in place.
-- REPORTING WHAT THE AI GENERATED: right-click any assistant reply → Safety → "Report this reply…". It offers the same four reasons the rest of the product uses and a free-text box, and it is on both surfaces the assistant speaks on. The report goes to the people who run the server — NOT to the family owner, deliberately: a private assistant thread belongs to its member alone, and the owner can neither read it nor change what a model said. The sheet says so before anything is sent. (Server: `POST /api/v1/reports/assistant`; the reply is frozen into the row so it survives retention. docs/protocol.md, "Reporting the assistant".)
-- THE DECLARATION: Properties → Product Declarations → "This product incorporates generative AI features…" is ticked for this submission.
-- The assistant is also the operator's switch: a server run by somebody else can have it off entirely, in which case the app shows no assistant chat and no @ai.
+GENERATIVE AI (policy 11.16). Where a server's operator turns one on, the product has an assistant: a member asks it in a private chat, or writes @ai in the family chat. The declaration under Properties → Product Declarations is ticked.
+- CONSENT: nothing a member writes reaches the model until they agree, and the first message that would asks. Settings takes it back. The demo owner has not agreed, so the sheet is there to see; the second account has.
+- REPORTING WHAT THE AI WROTE: right-click any assistant reply → Safety → "Report this reply…", on both surfaces it speaks on. It reaches whoever runs the server, not the family owner, who can neither read that thread nor change what a model said.
 
-RUNFULLTRUST: a WinUI 3 desktop app packaged as MSIX; full trust is the Windows App SDK's standard model, not a special use.
+RUNFULLTRUST: a WinUI 3 desktop app packaged as MSIX — the Windows App SDK's standard model, not a special use.
+
+STARTS WITH WINDOWS: Settings → "Start when I sign in" uses the manifest's startupTask, off until asked.
 
 NOT END-TO-END ENCRYPTED, and the app does not claim to be. Calls are peer to peer; please test them between two PCs.
 
@@ -178,21 +190,32 @@ so add, in its own words:
 
 ## Submission checklist
 
+*1.1.0.0 went through this and is published, so the one-off rows stay ticked. What a LATER submission needs is the
+second list.*
+
 - [x] **Reserve the name** — reserved as "FamilyConnect".
 - [x] **Copy the identity** — `nttrsh.FamilyConnect`, `CN=28EC49E1-8A19-45EF-A576-FF596547E069`, `nttrsh`. From Partner Center → Product identity: **Package/Identity/Name**, **Publisher** and
       **PublisherDisplayName** from Product identity into `Package.appxmanifest` (`<Identity Name=… Publisher=…>` and
-      `<PublisherDisplayName>`). Keep `Version` hand-written.
+      `<PublisherDisplayName>`).
+- [x] **Update the privacy policy page** as above, then fill the URL.
+- [x] **Pricing and availability:** free; markets as for the other stores.
+- [x] **Properties:** category Social; privacy policy URL; system requirements — Windows 11, version 21H2 (22000) or later,
+      which is the package's `MinVersion`.
+- [x] **Age ratings:** the IARC questionnaire, as above.
+- [x] **Store listing (en-US):** the texts, captions and images in this file.
+
+### Every submission, including this one
+
 - [ ] **Build the Store packages**, pointed at the default server, unsigned (the Store signs them):
       `powershell -NoProfile -ExecutionPolicy Bypass -File win/store/build-store-packages.ps1` — it writes
       `FamilyConnect.App_<version>_x64.msixupload` and `…_arm64.msixupload` under `win/AppPackages/`. Upload **both** to
       the one submission (Packages step); the Store gives each PC its own architecture, so there is nothing to bundle.
-      The `_Test` folders beside them are sideload copies, not for the Store. Raise `Version` in `Package.appxmanifest`
-      before every later submission — the Store refuses a version it has already seen.
+      The `_Test` folders beside them are sideload copies, not for the Store. **The version is stamped, not
+      hand-written**: `Major.Minor` from `win/Directory.Build.props`, the build number from the commit count (or
+      `-Build <n>`), and the manifest is put back afterwards — the Store refuses a version it has already seen, and
+      1.1.0.0 is taken.
 - [ ] **Run the Windows App Certification Kit** on the package before uploading.
-- [ ] **Update the privacy policy page** as above, then fill the URL.
-- [ ] **Provision the demo accounts** on fc.nettrash.me and fill the certification notes.
-- [ ] **Pricing and availability:** free; markets as for the other stores.
-- [ ] **Properties:** category Social; privacy policy URL; system requirements — Windows 11, version 21H2 (22000) or later,
-      which is the package's `MinVersion`.
-- [ ] **Age ratings:** the IARC questionnaire, as above.
-- [ ] **Store listing (en-US):** the texts, captions and images in this file.
+- [ ] **Check the demo family** on fc.nettrash.me — `server/scripts/check-review-family.py`, the same 23 checks the App
+      Store submission uses — and fill the placeholders in the certification notes from it.
+- [ ] **Paste "What's new in this version"** from this file, after deleting anything the published package already had.
+- [ ] **Re-measure the copy** if it changed: `powershell -NoProfile -File win/store/count.ps1` must exit 0.

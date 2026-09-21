@@ -25,7 +25,8 @@
   xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap rescap">
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  IgnorableNamespaces="uap uap5 rescap">
   <Identity
     Name="nttrsh.FamilyConnect"
     Publisher="CN=28EC49E1-8A19-45EF-A576-FF596547E069"
@@ -94,6 +95,17 @@
             </com:ExeServer>
           </com:ComServer>
         </com:Extension>
+        <!--
+          Start when the person signs in, so calls and messages reach them without opening the app
+          first (Settings ▸ "Start when I sign in"). Enabled="false" is deliberate and required
+          reading: a startup task is DECLARED here and turned on only by the person, through
+          StartupTask.RequestEnableAsync, and Windows lets them countermand it in Task Manager ▸
+          Startup apps — after which the app cannot turn it back on (StartupSetting.RequestSucceeded).
+          Launched this way the app goes straight to the notification area and shows no window (App.xaml.cs).
+        -->
+        <uap5:Extension Category="windows.startupTask" Executable="FamilyConnect.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap5:StartupTask TaskId="FamilyConnectStartup" Enabled="false" DisplayName="Family Connect" />
+        </uap5:Extension>
       </Extensions>
     </Application>
   </Applications>
