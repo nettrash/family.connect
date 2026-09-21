@@ -63,6 +63,63 @@ public class AppSessionTests : IDisposable
         Assert.Equal([Gate.Owner], screens);
     }
 
+    /// <summary>
+    /// A `GET /me` REFRESH KEEPS THE FAMILY'S ASSISTANT. Only `GET /families/mine` carries it, so
+    /// a refresh that rebuilt the snapshot without it left the app with no assistant at all —
+    /// no Assistant card in Settings, and no consent line over the composer, which is the one
+    /// place a member can agree that their words may go to the model (docs/protocol.md,
+    /// "Consenting to the assistant"). It is worst right after they agree, because agreeing is
+    /// followed by exactly this refresh.
+    /// </summary>
+    [Fact]
+    public async Task ARefreshKeepsTheAssistantItWasNotToldAbout()
+    {
+        var server = new Server()
+            .On("/auth/login", Token)
+            .On("/me", Me(InFamily))
+            .On("/families/mine", """
+                {"family": {"id": 3, "name": "The Smiths", "ai_history": true},
+                 "members": [{"user_id": 7, "username": "anna", "display_name": "Anna", "role": "owner"}],
+                 "assistant": {"user_id": 99, "display_name": "Assistant", "mention": "@ai",
+                               "processor": "Microsoft \u2014 Azure OpenAI (Sweden Central)"}}
+                """);
+        var (session, _, _) = Build(server);
+        Assert.Null(await session.SignInAsync("anna", "hunter2"));
+        Assert.Null(await session.RefreshFamilyAsync());
+        Assert.Equal("Microsoft \u2014 Azure OpenAI (Sweden Central)", session.State.Assistant!.Processor);
+
+        // The refresh that follows agreeing, changing a name, or a reconnect.
+        Assert.Null(await session.RefreshAsync());
+
+        Assert.Equal("Microsoft \u2014 Azure OpenAI (Sweden Central)", session.State.Assistant!.Processor);
+        Assert.True(AssistantConsent.IsAvailable(session.State.Assistant!.Processor));
+    }
+
+    /// <summary>But it goes with the family: an assistant belongs to one.</summary>
+    [Fact]
+    public async Task TheAssistantGoesWhenTheFamilyDoes()
+    {
+        var server = new Server()
+            .On("/auth/login", Token)
+            // In the family when they sign in, out of it by the next refresh.
+            .Then("/me", (HttpStatusCode.OK, Me(InFamily)), (HttpStatusCode.OK, Me()))
+            .On("/families/mine", """
+                {"family": {"id": 3, "name": "The Smiths"},
+                 "members": [{"user_id": 7, "username": "anna", "display_name": "Anna", "role": "owner"}],
+                 "assistant": {"user_id": 99, "display_name": "Assistant", "mention": "@ai", "processor": "Azure OpenAI"}}
+                """);
+        var (session, _, _) = Build(server);
+        Assert.Null(await session.SignInAsync("anna", "hunter2"));
+        Assert.Null(await session.RefreshFamilyAsync());
+        Assert.NotNull(session.State.Assistant);
+
+        // Removed from the family: the next /me says so, and the assistant is not theirs to keep.
+        Assert.Null(await session.RefreshAsync());
+
+        Assert.Equal(Gate.NoFamily, session.State.Gate);
+        Assert.Null(session.State.Assistant);
+    }
+
     [Fact]
     public async Task AMemberIsNotAnOwnerAndAnAccountWithNoFamilyIsAtTheGate()
     {

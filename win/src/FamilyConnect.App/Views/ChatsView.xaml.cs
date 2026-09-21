@@ -594,13 +594,13 @@ public sealed partial class ChatsView : UserControl
             {
                 CornerRadius = new CornerRadius(8),
                 Padding = new Thickness(6, 0, 6, 1),
-                Background = AccentSurface(),
+                Background = Palette.Surface(ActualTheme),
                 Child = new TextBlock
                 {
                     Text = "@",
                     FontSize = 11,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = AccentSurfaceInk(),
+                    Foreground = Palette.Ink(),
                 },
             };
             AutomationProperties.SetName(named, services.Say.Get("Mentions you"));
@@ -1053,10 +1053,10 @@ public sealed partial class ChatsView : UserControl
         }
         else if (!bare)
         {
-            balloon.Background = mine ? AccentSurface() : (Brush)resources["CardBackgroundFillColorDefaultBrush"];
+            balloon.Background = mine ? Palette.Surface(ActualTheme) : (Brush)resources["CardBackgroundFillColorDefaultBrush"];
             if (mine)
             {
-                words.Foreground = AccentSurfaceInk();
+                words.Foreground = Palette.Ink();
             }
             else
             {
@@ -1188,8 +1188,8 @@ public sealed partial class ChatsView : UserControl
         // the first version used the accent's own secondary shade, which on an accent balloon is
         // the balloon. So: white over the accent, the accent over a card, and an inset panel
         // rather than a bare rule, which is what says "this is the message I am answering".
-        var accent = AccentInk();
-        var onAccent = AccentSurfaceInk();
+        var accent = Palette.ThemeAccent();
+        var onAccent = Palette.Ink();
         // White over an own balloon, because that balloon is one blue in both themes (OwnBalloon)
         // and its words are white — so the overlay that makes the quote read as INSET is white too.
         Brush Ink(byte alpha) => new SolidColorBrush(Windows.UI.Color.FromArgb(alpha, 0xFF, 0xFF, 0xFF));
@@ -1272,70 +1272,6 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>
-    /// The accent as a COLOUR, for the tints the theme has no brush for.
-    /// </summary>
-    /// <remarks>
-    /// Defended, and every resource this view reads from CODE is: a key that is not there would
-    /// throw where nobody can see it — inside a click, which the App's own handler marks handled —
-    /// and this app has already lost a whole screen to one unguarded XAML failure. A tint is not
-    /// worth a second one.
-    /// </remarks>
-    private static Windows.UI.Color Accent() =>
-        Application.Current.Resources.TryGetValue("SystemAccentColor", out var value)
-            && value is Windows.UI.Color color
-            ? color
-            : Windows.UI.Color.FromArgb(0xFF, 0x1E, 0x5B, 0xC6);
-
-    /// <summary>
-    /// The accent as THIS THEME draws it, which is not the same colour: WinUI's accent fill reads
-    /// the dark shades in the light theme and the light ones in the dark theme. A tint has to come
-    /// from here and not from <see cref="Accent()"/> — the base blue is darker than the card it
-    /// would tint in the dark theme, and a tint nobody can see is the whole bug this styling fixes.
-    /// </summary>
-    /// <summary>
-    /// The app's own accent surfaces — the reader's own balloon above all, and the chips the app
-    /// fills with the accent — with WHITE words on them in BOTH themes, as the Apple clients draw
-    /// them (ios <c>MessageBubbleView</c>).
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <b>DELIBERATELY NOT <c>AccentFillColorDefaultBrush</c>.</b> WinUI's accent fill is the deep
-    /// shade in the light theme and the PALE one in the dark theme, where the ink it pairs with
-    /// (<c>TextOnAccentFillColorPrimary</c>) is BLACK. That is right for an accent button and
-    /// wrong for a chat: it turned the reader's own words black in the dark theme while everybody
-    /// else's stayed white, and it made this client disagree with the Mac about the same message.
-    /// </para>
-    /// <para>
-    /// So the ink is white and the ground is chosen to carry it: the DEEP shade in the light theme
-    /// (#0D47A1, white at 8.5:1 — the blue this client has always drawn there) and the accent
-    /// itself in the dark one (#1E5BC6, 6.2:1), which still reads as blue against a dark window
-    /// where the deep shade would go muddy. The pale #4D7DFC the platform would have used is
-    /// 3.7:1 with white, which is exactly why the platform flips to black instead.
-    /// </para>
-    /// <para>
-    /// Resolved when a bubble is built, like every other brush this view reads from code, so a
-    /// theme changed mid-session is drawn on the next redraw and not before.
-    /// </para>
-    /// </remarks>
-    private Brush AccentSurface() => new SolidColorBrush(
-        ActualTheme == ElementTheme.Dark ? Accent() : Shade("SystemAccentColorDark1", 0x0D, 0x47, 0xA1));
-
-    /// <summary>One of the accent shades the app sets for itself (App.ApplyAccent), or its own value.</summary>
-    private static Windows.UI.Color Shade(string key, byte red, byte green, byte blue) =>
-        Application.Current.Resources.TryGetValue(key, out var value) && value is Windows.UI.Color color
-            ? color
-            : Windows.UI.Color.FromArgb(0xFF, red, green, blue);
-
-    /// <summary>The ink on one of those surfaces: white, in both themes.</summary>
-    private static Brush AccentSurfaceInk() => new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF));
-
-    private static Windows.UI.Color AccentInk() =>
-        Application.Current.Resources.TryGetValue("AccentFillColorDefaultBrush", out var value)
-            && value is SolidColorBrush brush
-            ? brush.Color
-            : Accent();
-
-    /// <summary>
     /// The colour a balloon wears for the moment after a quote's click lands on it — one per
     /// ground, because a pale wash that reads on a card is invisible on the accent balloon. There,
     /// the accent itself is lifted towards white, and kept opaque so the white words stay readable.
@@ -1353,7 +1289,7 @@ public sealed partial class ChatsView : UserControl
         // lift measures 3.2:1, under the 4.5:1 that ordinary text needs — while deepening it keeps
         // the words past 9:1 and is just as plainly a change of colour. Deepened from whichever
         // ground this theme draws, so it follows the balloon rather than assuming one blue.
-        var ground = ((SolidColorBrush)AccentSurface()).Color;
+        var ground = Palette.SurfaceColour(ActualTheme);
         static byte Deepen(byte channel) => (byte)(channel * 0.72);
         return new SolidColorBrush(
             Windows.UI.Color.FromArgb(0xFF, Deepen(ground.R), Deepen(ground.G), Deepen(ground.B)));
@@ -1762,7 +1698,7 @@ public sealed partial class ChatsView : UserControl
             {
                 Text = row.Body,
                 TextWrapping = TextWrapping.Wrap,
-                Foreground = AccentSurfaceInk(),
+                Foreground = Palette.Ink(),
             });
         }
         // What it carries, counted: the files are this device's own until they land, and a number
@@ -1773,7 +1709,7 @@ public sealed partial class ChatsView : UserControl
             stack.Children.Add(new TextBlock
             {
                 Text = $"📎 {carried.ToString(services.Culture)}",
-                Foreground = AccentSurfaceInk(),
+                Foreground = Palette.Ink(),
             });
         }
         if (row.Failed)
@@ -1810,7 +1746,7 @@ public sealed partial class ChatsView : UserControl
                 FontSize = 11,
                 Opacity = 0.7,
                 HorizontalAlignment = HorizontalAlignment.Right,
-                Foreground = AccentSurfaceInk(),
+                Foreground = Palette.Ink(),
             });
         }
         return new Border
@@ -1821,7 +1757,7 @@ public sealed partial class ChatsView : UserControl
             MaxWidth = 600,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(72, 8, 0, 0),
-            Background = AccentSurface(),
+            Background = Palette.Surface(ActualTheme),
             Opacity = row.Failed ? 0.9 : 0.6,
         };
     }
@@ -2252,7 +2188,7 @@ public sealed partial class ChatsView : UserControl
     {
         var say = services.Say;
         var resources = Application.Current.Resources;
-        var ink = mine ? AccentSurfaceInk() : (Brush)resources["TextFillColorPrimaryBrush"];
+        var ink = mine ? Palette.Ink() : (Brush)resources["TextFillColorPrimaryBrush"];
         var label = CallRecordText.Label(call.Outcome, call.DurationSecs, call.Video, mine, say);
         // A camera or a phone, in Segoe Fluent Icons.
         var glyph = new FontIcon
@@ -2713,11 +2649,11 @@ public sealed partial class ChatsView : UserControl
         var resources = Application.Current.Resources;
         var total = VoiceNotes.TotalSeconds(attachment.DurationMs);
         // An own balloon is filled with the accent, so nothing in it may be drawn in the accent too.
-        var ink = mine ? AccentSurfaceInk() : (Brush)resources["AccentFillColorDefaultBrush"];
+        var ink = mine ? Palette.Ink() : (Brush)resources["AccentFillColorDefaultBrush"];
         var glyph = new FontIcon
         {
             FontSize = 14,
-            Foreground = mine ? AccentSurface() : (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
+            Foreground = mine ? Palette.Surface(ActualTheme) : (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
         };
         var disc = new Grid { Width = 32, Height = 32 };
         disc.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse { Fill = ink });
@@ -2991,7 +2927,7 @@ public sealed partial class ChatsView : UserControl
             : ((double Latitude, double Longitude)?)null;
         var line = place is { } known ? MediaText.LocationLine(known.Latitude, known.Longitude, attachment.AccuracyM) : string.Empty;
         // An own balloon is filled with the accent, so nothing in it may be drawn in the accent too.
-        var ink = mine ? AccentSurfaceInk() : (Brush)resources["AccentFillColorDefaultBrush"];
+        var ink = mine ? Palette.Ink() : (Brush)resources["AccentFillColorDefaultBrush"];
         var disc = new Grid { Width = 36, Height = 36, VerticalAlignment = VerticalAlignment.Center };
         disc.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse { Fill = ink });
         // A map pin, in Segoe Fluent Icons.
@@ -2999,7 +2935,7 @@ public sealed partial class ChatsView : UserControl
         {
             Glyph = ((char)0xE707).ToString(),
             FontSize = 16,
-            Foreground = mine ? AccentSurface() : (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
+            Foreground = mine ? Palette.Surface(ActualTheme) : (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
         });
         var title = new TextBlock { Text = name, FontSize = 14, TextTrimming = TextTrimming.CharacterEllipsis };
         var lines = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
@@ -3475,7 +3411,7 @@ public sealed partial class ChatsView : UserControl
             FillRuns(words, only, mine);
             return null;
         }
-        var ink = mine ? AccentSurfaceInk() : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
+        var ink = mine ? Palette.Ink() : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
         var panel = new StackPanel { Spacing = 6 };
         foreach (var block in blocks)
         {
@@ -3500,7 +3436,7 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     private void FillRuns(TextBlock words, IReadOnlyList<BodyRun> runs, bool mine)
     {
-        var ink = mine ? AccentSurfaceInk() : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
+        var ink = mine ? Palette.Ink() : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
         words.Text = string.Empty;
         words.Inlines.Clear();
         foreach (var run in runs)
