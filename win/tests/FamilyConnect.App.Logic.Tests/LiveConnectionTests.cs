@@ -168,6 +168,44 @@ public class LiveConnectionTests : IDisposable
     }
 
     /// <summary>
+    /// A PASS PUTS THE FAMILY'S ASSISTANT IN THE SESSION. `GET /families/mine` is the only read
+    /// that names it, and this pass is the only thing that runs that read on a connect — so a
+    /// client that left it in the report had NO assistant in its state until somebody opened the
+    /// Family screen, and with no assistant there is no consent card in Settings and no consent
+    /// line over the composer: no way at all to agree that your words may go to the model
+    /// (docs/protocol.md, "Consenting to the assistant").
+    /// </summary>
+    [Fact]
+    public async Task APassGivesTheSessionTheFamilysAssistant()
+    {
+        var server = new Server()
+            .On("/auth/login", Token)
+            .On("/me", Me)
+            .On("/families/mine", """
+                {"family": {"id": 3, "name": "The Smiths", "ai_history": true},
+                 "members": [{"id": 7, "username": "anna", "display_name": "Anna", "role": "owner"}],
+                 "blocked_user_ids": [],
+                 "assistant": {"user_id": 99, "display_name": "Assistant", "mention": "@ai",
+                               "processor": "Azure OpenAI (Sweden Central)"}}
+                """)
+            .On("/chats", """{"chats": []}""");
+        var rig = Build(server);
+        await rig.Session.SignInAsync("anna", "hunter2");
+        Assert.Null(rig.Session.State.Assistant);
+
+        rig.Live.Start();
+        var report = await NextPass(rig.Live, rig.Wire.Comes);
+
+        Assert.True(report.Complete);
+        Assert.Equal("Azure OpenAI (Sweden Central)", report.Assistant?.Processor);
+        // And in the state the screens read, without the Family screen ever being opened.
+        Assert.Equal("Azure OpenAI (Sweden Central)", rig.Session.State.Assistant?.Processor);
+        Assert.True(AssistantConsent.IsRequired(
+            "ai", body: null, rig.Session.State.Assistant?.Processor, rig.Session.State.AssistantConsentAt));
+        await rig.Live.DisposeAsync();
+    }
+
+    /// <summary>
     /// THE SOCKET RUNS ONLY WHILE THERE IS SOMETHING TO LISTEN TO: an account at the family gate
     /// has no chats, and a loop reconnecting on its behalf is a client hammering a door with no
     /// room behind it.

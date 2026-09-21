@@ -254,6 +254,14 @@ public sealed class LiveConnection : IAsyncDisposable
                 {
                     ResyncFailed?.Invoke(error);
                 }
+                if (report.HasFamily)
+                {
+                    // The one read that names the assistant is this pass's. Without this the
+                    // session had none until somebody opened the Family screen, which is where
+                    // the only other read of that document lives — and with no assistant there
+                    // is no consent card in Settings and no consent line over the composer.
+                    session.ApplyAssistant(report.Assistant);
+                }
                 Resynced?.Invoke(report);
             }
             catch (OperationCanceledException)

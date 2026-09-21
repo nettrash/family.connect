@@ -254,6 +254,24 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
     }
 
     /// <summary>
+    /// The family's assistant, as a pass over the wire found it — <see cref="Resync"/> reads the
+    /// family's own document on every (re)connect, and this is what puts what it found where the
+    /// window can see it.
+    /// </summary>
+    /// <remarks>
+    /// Published only while there is a family to have one, and only when it CHANGES, because
+    /// every publish redraws every screen bound to this state.
+    /// </remarks>
+    public void ApplyAssistant(AssistantDto? assistant)
+    {
+        if (!state.CanChat || state.Assistant == assistant)
+        {
+            return;
+        }
+        Publish(state with { Assistant = assistant });
+    }
+
+    /// <summary>
     /// Sign out. The server is TOLD — which is what stops this device's notifications — but
     /// being unable to tell it changes nothing here: the token is this device's to forget.
     /// </summary>
