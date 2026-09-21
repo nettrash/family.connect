@@ -99,6 +99,16 @@
       "sr-Latn": "Otvori Family Connect",
       "zh-Hans": "打开 Family Connect"
     },
+    "Opens the message this answers": {
+      "de": "Öffnet die Nachricht, auf die geantwortet wird",
+      "es": "Abre el mensaje al que responde",
+      "fr": "Ouvre le message auquel il répond",
+      "ja": "返信元のメッセージを開きます",
+      "ru": "Открывает сообщение, на которое отвечают",
+      "sr": "Отвара поруку на коју је одговорено",
+      "sr-Latn": "Otvara poruku na koju je odgovoreno",
+      "zh-Hans": "打开被回复的那条消息"
+    },
     "Pick when it ends, or turn the end off.": {},
     "Pick when it starts.": {},
     "Pinning…": {},
@@ -137,6 +147,26 @@
       "zh-Hans": "登录时启动"
     },
     "Tell me when a message arrives": {},
+    "That message is not here any more.": {
+      "de": "Diese Nachricht ist nicht mehr da.",
+      "es": "Ese mensaje ya no está aquí.",
+      "fr": "Ce message n'est plus là.",
+      "ja": "そのメッセージはもうありません。",
+      "ru": "Этого сообщения больше нет.",
+      "sr": "Та порука више није овде.",
+      "sr-Latn": "Ta poruka više nije ovde.",
+      "zh-Hans": "那条消息已经不在了。"
+    },
+    "That message is not loaded yet. Scroll up to read further back.": {
+      "de": "Diese Nachricht ist noch nicht geladen. Scrolle nach oben, um weiter zurückzulesen.",
+      "es": "Ese mensaje todavía no está cargado. Desplázate hacia arriba para leer más atrás.",
+      "fr": "Ce message n'est pas encore chargé. Fais défiler vers le haut pour lire plus loin en arrière.",
+      "ja": "そのメッセージはまだ読み込まれていません。上にスクロールして、さかのぼって読んでください。",
+      "ru": "Это сообщение ещё не загружено. Прокрути вверх, чтобы прочитать дальше назад.",
+      "sr": "Та порука још није учитана. Скролуј нагоре да прочиташ старије поруке.",
+      "sr-Latn": "Ta poruka još nije učitana. Skroluj nagore da pročitaš starije poruke.",
+      "zh-Hans": "那条消息还没加载。向上滚动可以往前看。"
+    },
     "That note has been taken down.": {},
     "That's more things than one list holds.": {},
     "The assistant is answering": {},

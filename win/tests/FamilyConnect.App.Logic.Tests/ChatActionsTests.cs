@@ -215,15 +215,84 @@ public class ChatActionsTests : IDisposable
     {
         MessageDto ReplyTo(long sender) =>
             new(2, Chat, 11, null, "yes", Sent, ReplyTo: new ReplyToDto(1, sender, "Dinner at 7?"));
+        Quote One(string name) => new(new QuoteLine(1, name, "Dinner at 7?", false), null);
 
         Assert.Null(Quotes.Of(new MessageDto(3, Chat, 11, null, "plain", Sent), chats, Say));
-        Assert.Equal(new Quote("You", "Dinner at 7?", false), Quotes.Of(ReplyTo(Me), chats, Say));
-        Assert.Equal(new Quote("Carl", "Dinner at 7?", false), Quotes.Of(ReplyTo(12), chats, Say));
-        Assert.Equal(new Quote("Deleted account", "Dinner at 7?", false), Quotes.Of(ReplyTo(14), chats, Say));
-        Assert.Equal(new Quote("Someone", "Dinner at 7?", false), Quotes.Of(ReplyTo(40), chats, Say));
-        Assert.Equal(new Quote(string.Empty, "Replying to a hidden message", true), Quotes.Of(ReplyTo(13), chats, Say));
+        Assert.Equal(One("You"), Quotes.Of(ReplyTo(Me), chats, Say));
+        Assert.Equal(One("Carl"), Quotes.Of(ReplyTo(12), chats, Say));
+        Assert.Equal(One("Deleted account"), Quotes.Of(ReplyTo(14), chats, Say));
+        Assert.Equal(One("Someone"), Quotes.Of(ReplyTo(40), chats, Say));
+        Assert.Equal(
+            new Quote(new QuoteLine(1, string.Empty, "Replying to a hidden message", true), null),
+            Quotes.Of(ReplyTo(13), chats, Say));
 
         Assert.Equal("Replying to Carl", Quotes.Banner(new MessageDto(4, Chat, 12, null, "hi", Sent), chats, Say));
         Assert.Equal("Replying to a hidden message", Quotes.Banner(new MessageDto(5, Chat, 13, null, "hi", Sent), chats, Say));
+    }
+
+    /// <summary>
+    /// THE ID IS DRAWN WITH THE QUOTE, both levels of it: it is what a click on the quote follows
+    /// back to the message, and the second level is the server's own (docs/protocol.md, "Replies").
+    /// </summary>
+    [Fact]
+    public void AQuoteCarriesBothLevelsAndTheIdOfEach()
+    {
+        var quote = Quotes.Of(
+            new MessageDto(3, Chat, 11, null, "at eight then", Sent,
+                ReplyTo: new ReplyToDto(2, 12, "make it eight", new QuoteParentDto(1, Me, "Dinner at 7?"))),
+            chats, Say);
+
+        Assert.Equal(new QuoteLine(2, "Carl", "make it eight", false), quote!.Reply);
+        Assert.Equal(new QuoteLine(1, "You", "Dinner at 7?", false), quote.Parent);
+    }
+
+    /// <summary>
+    /// Each level is hidden on its own account and revealed on its own — the one-tap rule, per
+    /// level (docs/protocol.md, "Blocking a member"). The excerpt of a hidden level is never
+    /// drawn: the server sends it unchanged, and 120 characters of a blocked member is exactly
+    /// what the rule exists to keep out of somebody else's bubble.
+    /// </summary>
+    [Fact]
+    public void EachLevelOfAQuoteHidesAndRevealsOnItsOwn()
+    {
+        var message = new MessageDto(3, Chat, 11, null, "ok", Sent,
+            ReplyTo: new ReplyToDto(2, 13, "blocked words", new QuoteParentDto(1, 13, "blocked too")));
+
+        var hidden = Quotes.Of(message, chats, Say)!;
+        Assert.Equal(new QuoteLine(2, string.Empty, "Replying to a hidden message", true), hidden.Reply);
+        Assert.Equal(new QuoteLine(1, string.Empty, "which replied to a hidden message", true), hidden.Parent);
+
+        var outer = Quotes.Of(message, chats, Say, level => level == QuoteLevel.Reply)!;
+        Assert.Equal(new QuoteLine(2, "Dora", "blocked words", false), outer.Reply);
+        Assert.True(outer.Parent!.Hidden);
+
+        var both = Quotes.Of(message, chats, Say, _ => true)!;
+        Assert.Equal("blocked words", both.Reply.Excerpt);
+        Assert.Equal(new QuoteLine(1, "Dora", "blocked too", false), both.Parent);
+    }
+
+    /// <summary>
+    /// WHAT A CLICK ON A QUOTE DOES, and in which order. A masked level is shown before anything
+    /// moves — outermost first — so a click never carries the reader to a bubble whose words they
+    /// chose not to see; with nothing masked left it goes to the message
+    /// (docs/protocol.md, "Blocking a member").
+    /// </summary>
+    [Fact]
+    public void AClickOnAQuoteRevealsWhatIsMaskedBeforeItGoesAnywhere()
+    {
+        var doubled = new MessageDto(3, Chat, 11, null, "ok", Sent,
+            ReplyTo: new ReplyToDto(2, 13, "blocked words", new QuoteParentDto(1, 13, "blocked too")));
+
+        Assert.Equal(QuoteClick.RevealReply, Quotes.ClickOn(Quotes.Of(doubled, chats, Say)!));
+        Assert.Equal(
+            QuoteClick.RevealParent,
+            Quotes.ClickOn(Quotes.Of(doubled, chats, Say, level => level == QuoteLevel.Reply)!));
+        Assert.Equal(QuoteClick.GoToMessage, Quotes.ClickOn(Quotes.Of(doubled, chats, Say, _ => true)!));
+
+        // The ordinary case: one level, nobody blocked, one click and it goes.
+        var plain = new MessageDto(4, Chat, 11, null, "yes", Sent, ReplyTo: new ReplyToDto(1, 12, "Dinner at 7?"));
+        Assert.Equal(QuoteClick.GoToMessage, Quotes.ClickOn(Quotes.Of(plain, chats, Say)!));
+        // And it goes to the message the reply answers, which is the id the quote carries.
+        Assert.Equal(1, Quotes.Of(plain, chats, Say)!.Reply.MessageId);
     }
 }

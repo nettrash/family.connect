@@ -842,11 +842,11 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         command.CommandText =
             """
             INSERT INTO messages (message_id, chat_id, sender_id, client_msg_id, body, created_at,
-                                  edited_at, edit_seq, reply_to_id, thread_root_id, reply_count,
+                                  edited_at, edit_seq, reply_to_id, reply_to_json, thread_root_id, reply_count,
                                   reaction_seq, reactions_json, attachments_json, mentions_json,
                                   poll_json, call_json, sequenced)
             VALUES ($id, $chat, $sender, $client, $body, $created,
-                    $edited, $editSeq, $reply, $root, $replies,
+                    $edited, $editSeq, $reply, $quote, $root, $replies,
                     $reactionSeq, $reactions, $attachments, $mentions, $poll, $call, $sequenced)
             ON CONFLICT(message_id) DO UPDATE SET
                 body = excluded.body, edited_at = excluded.edited_at, edit_seq = excluded.edit_seq,
@@ -861,7 +861,12 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
                 poll_json = COALESCE(excluded.poll_json, messages.poll_json),
                 reaction_seq = MAX(COALESCE(excluded.reaction_seq, 0),
                                    COALESCE(messages.reaction_seq, 0)),
-                mentions_json = COALESCE(excluded.mentions_json, messages.mentions_json)
+                mentions_json = COALESCE(excluded.mentions_json, messages.mentions_json),
+                -- The server RECOMPUTES a quote on every read, so a newer copy is the truer one
+                -- (an edit of the quoted message changes its excerpt) — and an answer that carries
+                -- NO quote is a chat-list preview, which knows nothing about one, not a reply that
+                -- has lost it. Absent is not empty here, exactly as above.
+                reply_to_json = COALESCE(excluded.reply_to_json, messages.reply_to_json)
             """;
         command.Parameters.AddWithValue("$id", message.Id);
         command.Parameters.AddWithValue("$chat", message.ChatId);
@@ -874,6 +879,10 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         command.Parameters.AddWithValue("$editSeq", message.EditSeq ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$reply",
             message.ReplyTo?.MessageId ?? (object)DBNull.Value);
+        // Both levels, as the wire wrote them: an excerpt this device does not keep is a reply
+        // drawn as "Someone" with nothing under it, which is what a quote exists to prevent.
+        command.Parameters.AddWithValue("$quote",
+            message.ReplyTo is { } quote ? Wire.Encode(quote) : (object)DBNull.Value);
         command.Parameters.AddWithValue("$root", message.ThreadRootId ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$replies", message.ReplyCount ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$reactionSeq",
@@ -990,11 +999,14 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
                 ? Wire.Decode<ReactionDto[]>(reactions)
                 : null,
             ReactionSeq: Number("reaction_seq"),
-            // The quote is a SNAPSHOT and not a reference; only its id survives here, and the
-            // excerpt comes back with the message from the server.
-            ReplyTo: Number("reply_to_id") is { } replyTo
-                ? new ReplyToDto(replyTo, 0, string.Empty)
-                : null,
+            // The quote as it was delivered, both levels. A row cached before the snapshot was
+            // kept (schema step 3) has only the id: it is drawn as a quote with no author and no
+            // words until a page redelivers it, which is better than a reply that answers nothing.
+            ReplyTo: Text("reply_to_json") is { } quote
+                ? Wire.Decode<ReplyToDto>(quote)
+                : Number("reply_to_id") is { } replyTo
+                    ? new ReplyToDto(replyTo, 0, string.Empty)
+                    : null,
             ThreadRootId: Number("thread_root_id"),
             ReplyCount: Number("reply_count") is { } replies ? (int)replies : null,
             Mentions: Text("mentions_json") is { } mentions

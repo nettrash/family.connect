@@ -250,6 +250,7 @@
   "Open polls": "Отворене анкете",
   "Open polls stay here until they're closed. There are none right now.": "Отворене анкете остају овде док се не затворе. Тренутно их нема.",
   "Opens the link": "Отвара линк",
+  "Opens the message this answers": "Отвара поруку на коју је одговорено",
   "Opens the thread": "Отвара нит",
   "Option": "Одговор",
   "Options": "Одговори",
@@ -350,6 +351,8 @@
   "That family is full right now. Ask them to make room, then try the code again.": "Та породица је тренутно попуњена. Замолите их да ослободе место па поново покушајте са кодом.",
   "That file is over the 100 MB limit.": "Та датотека прелази ограничење од 100 MB.",
   "That file isn't a photo we can use.": "Та датотека није фотографија коју можемо да користимо.",
+  "That message is not here any more.": "Та порука више није овде.",
+  "That message is not loaded yet. Scroll up to read further back.": "Та порука још није учитана. Скролуј нагоре да прочиташ старије поруке.",
   "That password is not right.": "Та лозинка није тачна.",
   "That photo is too large for this server.": "Та фотографија је превелика за овај сервер.",
   "That photo is too large to pin.": "Та фотографија је превелика да би се закачила.",
@@ -467,5 +470,6 @@
   "Your other devices have been signed out.": "Остали твоји уређаји су одјављени.",
   "Your other devices will be signed out. This one stays signed in.": "Остали твоји уређаји биће одјављени. Овај остаје пријављен.",
   "Your request to join was declined. You can ask for a new invite code and try again.": "Твој захтев за приступ је одбијен. Можеш да затражиш нови позивни код и покушаш поново.",
-  "edited": "измењено"
+  "edited": "измењено",
+  "which replied to a hidden message": "који је одговорио на сакривену поруку"
 }
