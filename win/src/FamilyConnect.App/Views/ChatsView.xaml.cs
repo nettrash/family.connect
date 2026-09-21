@@ -594,13 +594,13 @@ public sealed partial class ChatsView : UserControl
             {
                 CornerRadius = new CornerRadius(8),
                 Padding = new Thickness(6, 0, 6, 1),
-                Background = (Brush)resources["AccentFillColorDefaultBrush"],
+                Background = AccentSurface(),
                 Child = new TextBlock
                 {
                     Text = "@",
                     FontSize = 11,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
+                    Foreground = AccentSurfaceInk(),
                 },
             };
             AutomationProperties.SetName(named, services.Say.Get("Mentions you"));
@@ -1053,10 +1053,10 @@ public sealed partial class ChatsView : UserControl
         }
         else if (!bare)
         {
-            balloon.Background = (Brush)resources[mine ? "AccentFillColorDefaultBrush" : "CardBackgroundFillColorDefaultBrush"];
+            balloon.Background = mine ? AccentSurface() : (Brush)resources["CardBackgroundFillColorDefaultBrush"];
             if (mine)
             {
-                words.Foreground = (Brush)resources["TextOnAccentFillColorPrimaryBrush"];
+                words.Foreground = AccentSurfaceInk();
             }
             else
             {
@@ -1179,7 +1179,7 @@ public sealed partial class ChatsView : UserControl
     /// only a mouse can use is not one this product ships (the apps paid for that lesson on
     /// their own quote — a bare tap gesture publishes no accessibility action at all).
     /// </remarks>
-    private static FrameworkElement QuoteElement(Quote quote, bool mine, IStringCatalog say, Action clicked)
+    private FrameworkElement QuoteElement(Quote quote, bool mine, IStringCatalog say, Action clicked)
     {
         var resources = Application.Current.Resources;
         // TINTED FROM THE BALLOON IT SITS ON, because there are two very different grounds: the
@@ -1189,14 +1189,10 @@ public sealed partial class ChatsView : UserControl
         // the balloon. So: white over the accent, the accent over a card, and an inset panel
         // rather than a bare rule, which is what says "this is the message I am answering".
         var accent = AccentInk();
-        var onAccent = (Brush)resources["TextOnAccentFillColorPrimaryBrush"];
-        // NOT WHITE — the ink the theme puts ON the accent. In the dark theme WinUI's accent fill is
-        // the LIGHT shade and the words on it are BLACK, so a white overlay there would wash out a
-        // pale balloon and a white stripe would vanish. Taken from the brush, it is white over the
-        // light theme's deep blue and black over the dark theme's pale one, and reads as an inset
-        // panel either way.
-        var ink = InkOnAccent();
-        Brush Ink(byte alpha) => new SolidColorBrush(Windows.UI.Color.FromArgb(alpha, ink.R, ink.G, ink.B));
+        var onAccent = AccentSurfaceInk();
+        // White over an own balloon, because that balloon is one blue in both themes (OwnBalloon)
+        // and its words are white — so the overlay that makes the quote read as INSET is white too.
+        Brush Ink(byte alpha) => new SolidColorBrush(Windows.UI.Color.FromArgb(alpha, 0xFF, 0xFF, 0xFF));
         Brush Tinted(byte alpha) => new SolidColorBrush(Windows.UI.Color.FromArgb(alpha, accent.R, accent.G, accent.B));
         var fill = mine ? Ink(0x2A) : Tinted(0x20);
         var lifted = mine ? Ink(0x40) : Tinted(0x38);
@@ -1213,9 +1209,7 @@ public sealed partial class ChatsView : UserControl
             Background = fill,
             // The stripe carries the colour: white on the accent balloon, the accent on a card.
             BorderThickness = new Thickness(3, 0, 0, 0),
-            // A white stripe wants to be bright; a BLACK one at the same weight reads as a scar on
-            // a pale balloon, so the dark ink gets a softer one.
-            BorderBrush = mine ? Ink((byte)(ink.R + ink.G + ink.B > 380 ? 0xD8 : 0xAA)) : (Brush)resources["AccentFillColorDefaultBrush"],
+            BorderBrush = mine ? Ink(0xD8) : (Brush)resources["AccentFillColorDefaultBrush"],
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(9, 5, 9, 5),
             Margin = new Thickness(0, 0, 0, 2),
@@ -1299,14 +1293,41 @@ public sealed partial class ChatsView : UserControl
     /// would tint in the dark theme, and a tint nobody can see is the whole bug this styling fixes.
     /// </summary>
     /// <summary>
-    /// What the theme writes ON the accent: white in the light theme, BLACK in the dark one, where
-    /// the accent fill is the pale shade. Every tint over the reader's own balloon comes from here.
+    /// The app's own accent surfaces — the reader's own balloon above all, and the chips the app
+    /// fills with the accent — with WHITE words on them in BOTH themes, as the Apple clients draw
+    /// them (ios <c>MessageBubbleView</c>).
     /// </summary>
-    private static Windows.UI.Color InkOnAccent() =>
-        Application.Current.Resources.TryGetValue("TextOnAccentFillColorPrimaryBrush", out var value)
-            && value is SolidColorBrush brush
-            ? brush.Color
-            : Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF);
+    /// <remarks>
+    /// <para>
+    /// <b>DELIBERATELY NOT <c>AccentFillColorDefaultBrush</c>.</b> WinUI's accent fill is the deep
+    /// shade in the light theme and the PALE one in the dark theme, where the ink it pairs with
+    /// (<c>TextOnAccentFillColorPrimary</c>) is BLACK. That is right for an accent button and
+    /// wrong for a chat: it turned the reader's own words black in the dark theme while everybody
+    /// else's stayed white, and it made this client disagree with the Mac about the same message.
+    /// </para>
+    /// <para>
+    /// So the ink is white and the ground is chosen to carry it: the DEEP shade in the light theme
+    /// (#0D47A1, white at 8.5:1 — the blue this client has always drawn there) and the accent
+    /// itself in the dark one (#1E5BC6, 6.2:1), which still reads as blue against a dark window
+    /// where the deep shade would go muddy. The pale #4D7DFC the platform would have used is
+    /// 3.7:1 with white, which is exactly why the platform flips to black instead.
+    /// </para>
+    /// <para>
+    /// Resolved when a bubble is built, like every other brush this view reads from code, so a
+    /// theme changed mid-session is drawn on the next redraw and not before.
+    /// </para>
+    /// </remarks>
+    private Brush AccentSurface() => new SolidColorBrush(
+        ActualTheme == ElementTheme.Dark ? Accent() : Shade("SystemAccentColorDark1", 0x0D, 0x47, 0xA1));
+
+    /// <summary>One of the accent shades the app sets for itself (App.ApplyAccent), or its own value.</summary>
+    private static Windows.UI.Color Shade(string key, byte red, byte green, byte blue) =>
+        Application.Current.Resources.TryGetValue(key, out var value) && value is Windows.UI.Color color
+            ? color
+            : Windows.UI.Color.FromArgb(0xFF, red, green, blue);
+
+    /// <summary>The ink on one of those surfaces: white, in both themes.</summary>
+    private static Brush AccentSurfaceInk() => new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF));
 
     private static Windows.UI.Color AccentInk() =>
         Application.Current.Resources.TryGetValue("AccentFillColorDefaultBrush", out var value)
@@ -1319,7 +1340,7 @@ public sealed partial class ChatsView : UserControl
     /// ground, because a pale wash that reads on a card is invisible on the accent balloon. There,
     /// the accent itself is lifted towards white, and kept opaque so the white words stay readable.
     /// </summary>
-    private static Brush FlashFor(bool mine)
+    private Brush FlashFor(bool mine)
     {
         if (!mine)
         {
@@ -1328,10 +1349,14 @@ public sealed partial class ChatsView : UserControl
                 ? brush
                 : new SolidColorBrush(Windows.UI.Color.FromArgb(0x30, 0x1E, 0x5B, 0xC6));
         }
-        var accent = AccentInk();
-        static byte Lift(byte channel) => (byte)(channel + (255 - channel) * 0.38);
+        // DEEPER, not brighter. Lifting the blue towards white takes white text with it — a 38%
+        // lift measures 3.2:1, under the 4.5:1 that ordinary text needs — while deepening it keeps
+        // the words past 9:1 and is just as plainly a change of colour. Deepened from whichever
+        // ground this theme draws, so it follows the balloon rather than assuming one blue.
+        var ground = ((SolidColorBrush)AccentSurface()).Color;
+        static byte Deepen(byte channel) => (byte)(channel * 0.72);
         return new SolidColorBrush(
-            Windows.UI.Color.FromArgb(0xFF, Lift(accent.R), Lift(accent.G), Lift(accent.B)));
+            Windows.UI.Color.FromArgb(0xFF, Deepen(ground.R), Deepen(ground.G), Deepen(ground.B)));
     }
 
     /// <summary>
@@ -1737,7 +1762,7 @@ public sealed partial class ChatsView : UserControl
             {
                 Text = row.Body,
                 TextWrapping = TextWrapping.Wrap,
-                Foreground = (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
+                Foreground = AccentSurfaceInk(),
             });
         }
         // What it carries, counted: the files are this device's own until they land, and a number
@@ -1748,7 +1773,7 @@ public sealed partial class ChatsView : UserControl
             stack.Children.Add(new TextBlock
             {
                 Text = $"📎 {carried.ToString(services.Culture)}",
-                Foreground = (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
+                Foreground = AccentSurfaceInk(),
             });
         }
         if (row.Failed)
@@ -1785,7 +1810,7 @@ public sealed partial class ChatsView : UserControl
                 FontSize = 11,
                 Opacity = 0.7,
                 HorizontalAlignment = HorizontalAlignment.Right,
-                Foreground = (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
+                Foreground = AccentSurfaceInk(),
             });
         }
         return new Border
@@ -1796,7 +1821,7 @@ public sealed partial class ChatsView : UserControl
             MaxWidth = 600,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(72, 8, 0, 0),
-            Background = (Brush)resources["AccentFillColorDefaultBrush"],
+            Background = AccentSurface(),
             Opacity = row.Failed ? 0.9 : 0.6,
         };
     }
@@ -2227,7 +2252,7 @@ public sealed partial class ChatsView : UserControl
     {
         var say = services.Say;
         var resources = Application.Current.Resources;
-        var ink = (Brush)resources[mine ? "TextOnAccentFillColorPrimaryBrush" : "TextFillColorPrimaryBrush"];
+        var ink = mine ? AccentSurfaceInk() : (Brush)resources["TextFillColorPrimaryBrush"];
         var label = CallRecordText.Label(call.Outcome, call.DurationSecs, call.Video, mine, say);
         // A camera or a phone, in Segoe Fluent Icons.
         var glyph = new FontIcon
@@ -2688,11 +2713,11 @@ public sealed partial class ChatsView : UserControl
         var resources = Application.Current.Resources;
         var total = VoiceNotes.TotalSeconds(attachment.DurationMs);
         // An own balloon is filled with the accent, so nothing in it may be drawn in the accent too.
-        var ink = (Brush)resources[mine ? "TextOnAccentFillColorPrimaryBrush" : "AccentFillColorDefaultBrush"];
+        var ink = mine ? AccentSurfaceInk() : (Brush)resources["AccentFillColorDefaultBrush"];
         var glyph = new FontIcon
         {
             FontSize = 14,
-            Foreground = (Brush)resources[mine ? "AccentFillColorDefaultBrush" : "TextOnAccentFillColorPrimaryBrush"],
+            Foreground = mine ? AccentSurface() : (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
         };
         var disc = new Grid { Width = 32, Height = 32 };
         disc.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse { Fill = ink });
@@ -2966,7 +2991,7 @@ public sealed partial class ChatsView : UserControl
             : ((double Latitude, double Longitude)?)null;
         var line = place is { } known ? MediaText.LocationLine(known.Latitude, known.Longitude, attachment.AccuracyM) : string.Empty;
         // An own balloon is filled with the accent, so nothing in it may be drawn in the accent too.
-        var ink = (Brush)resources[mine ? "TextOnAccentFillColorPrimaryBrush" : "AccentFillColorDefaultBrush"];
+        var ink = mine ? AccentSurfaceInk() : (Brush)resources["AccentFillColorDefaultBrush"];
         var disc = new Grid { Width = 36, Height = 36, VerticalAlignment = VerticalAlignment.Center };
         disc.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse { Fill = ink });
         // A map pin, in Segoe Fluent Icons.
@@ -2974,7 +2999,7 @@ public sealed partial class ChatsView : UserControl
         {
             Glyph = ((char)0xE707).ToString(),
             FontSize = 16,
-            Foreground = (Brush)resources[mine ? "AccentFillColorDefaultBrush" : "TextOnAccentFillColorPrimaryBrush"],
+            Foreground = mine ? AccentSurface() : (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
         });
         var title = new TextBlock { Text = name, FontSize = 14, TextTrimming = TextTrimming.CharacterEllipsis };
         var lines = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
@@ -3450,7 +3475,7 @@ public sealed partial class ChatsView : UserControl
             FillRuns(words, only, mine);
             return null;
         }
-        var ink = (Brush)Application.Current.Resources[mine ? "TextOnAccentFillColorPrimaryBrush" : "TextFillColorPrimaryBrush"];
+        var ink = mine ? AccentSurfaceInk() : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
         var panel = new StackPanel { Spacing = 6 };
         foreach (var block in blocks)
         {
@@ -3475,7 +3500,7 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     private void FillRuns(TextBlock words, IReadOnlyList<BodyRun> runs, bool mine)
     {
-        var ink = (Brush)Application.Current.Resources[mine ? "TextOnAccentFillColorPrimaryBrush" : "TextFillColorPrimaryBrush"];
+        var ink = mine ? AccentSurfaceInk() : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
         words.Text = string.Empty;
         words.Inlines.Clear();
         foreach (var run in runs)
