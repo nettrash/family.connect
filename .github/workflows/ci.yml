@@ -790,6 +790,57 @@ jobs:
 
       - uses: microsoft/setup-msbuild@v2
 
+      # The build number, and the only place one is ever stamped. Major and minor are read out of
+      # Directory.Build.props rather than written here, so a 1.2 needs no CI edit; the third part
+      # is this run, and the fourth stays 0 because Partner Center RESERVES the revision and
+      # refuses a package that sets it. Every part is a 16-bit number, which is also why the
+      # number cannot be a date.
+      #
+      # Stamped into the working copy, never committed: the checked-in manifest stays at
+      # `1.1.0.0`, so a local build is visibly unstamped (Settings then says "1.1", not
+      # "1.1 (0)" — AppVersionText) and can never be mistaken for a Store build.
+      - name: Stamp the build number
+        id: version
+        shell: pwsh
+        run: |
+          $props = 'win/Directory.Build.props'
+          # Selected, counted, and only then read. `.Project.PropertyGroup.Version` silently
+          # answers nothing once a second PropertyGroup exists, and this step would then stamp
+          # "..437.0" and carry on — tested, and exactly the silent shift worth a guard.
+          $xml = [xml](Get-Content $props)
+          $found = @($xml.SelectNodes('//PropertyGroup/Version') |
+            ForEach-Object { $_.InnerText.Trim() } | Where-Object { $_ })
+          if ($found.Count -ne 1) { throw "expected one <Version> in $props, found $($found.Count)" }
+          $marketing = $found[0]
+          if ($marketing -notmatch '^(\d+)\.(\d+)') { throw "no Major.Minor in $props : '$marketing'" }
+          $major, $minor = $Matches[1], $Matches[2]
+          $build = ${env:GITHUB_RUN_NUMBER}
+          if ([int]$build -gt 65535) { throw "run number $build is past the 16-bit MSIX limit" }
+          $packageVersion = "$major.$minor.$build.0"
+
+          # A targeted rewrite of Identity/@Version, not an XML round-trip: the manifest carries
+          # comments that say why its identity is what it is, and reformatting them is not this
+          # step's business.
+          $manifest = 'win/src/FamilyConnect.App/Package.appxmanifest'
+          # `[^>]` keeps the match inside the single <Identity …> tag and `\bVersion` keeps it off
+          # the tail of MinVersion — a looser `(?s).*?Version="` rewrote TargetDeviceFamily's
+          # MinVersion to "1.1.439.0" when the Identity's own attribute was missing, which is a
+          # green build shipping a manifest that claims to install on Windows 1.1. Tested.
+          $pattern = '(<Identity\b[^>]*?\bVersion=")[^"]+(")'
+          $text = Get-Content $manifest -Raw
+          # Asked before writing, and checked after. "Nothing changed" is NOT the test for a
+          # missing attribute — a re-run stamps the value already there — so absence is one
+          # question and the write is another.
+          if ($text -notmatch $pattern) { throw "Identity/@Version was not found in $manifest" }
+          Set-Content $manifest -NoNewline -Value ([regex]::Replace(
+            $text, $pattern, "`${1}$packageVersion`${2}", 1))
+          if ((Get-Content $manifest -Raw) -notmatch [regex]::Escape("Version=`"$packageVersion`"")) {
+            throw "$manifest does not carry $packageVersion after patching"
+          }
+          "package=$packageVersion" >> $env:GITHUB_OUTPUT
+          "assembly=$major.$minor.$build" >> $env:GITHUB_OUTPUT
+          Write-Host "stamped $packageVersion"
+
       - name: Restore
         run: >
           msbuild win/src/FamilyConnect.App/FamilyConnect.App.csproj -t:Restore
@@ -807,6 +858,7 @@ jobs:
           -p:AppxBundle=Never
           -p:AppxPackageDir=${{ github.workspace }}\AppPackages\
           -p:EnableWinAppRunSupport=false
+          -p:Version=${{ steps.version.outputs.assembly }}
           -v:minimal
 
       # The packaging bug a green build hides: Content only reaches the payload when it carries
@@ -827,6 +879,15 @@ jobs:
           $missing = $required | Where-Object { $names -notcontains $_ }
           if ($missing) { throw "MSIX payload is missing: $($missing -join ', ')" }
           Write-Host "MSIX payload OK: $($names.Count) entries."
+
+          # The stamp reached the package. A manifest patched after the build, or a cached
+          # AppxManifest, is a green run that uploads version 1.1.0.0 — which Partner Center
+          # then refuses as not newer than the last submission.
+          $expected = '${{ steps.version.outputs.package }}'
+          if ($msix.Name -notmatch [regex]::Escape($expected)) {
+            throw "the .msix is named $($msix.Name), which does not carry version $expected"
+          }
+          Write-Host "MSIX version OK: $expected."
 
       - name: Upload the MSIX
         uses: actions/upload-artifact@v4
