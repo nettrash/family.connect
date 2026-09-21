@@ -29,7 +29,14 @@ internal static class PollCard
         var poll = message.Poll!;
         var say = seen.Say;
         var resources = Application.Current.Resources;
-        var ink = (Brush)resources[mine ? "TextOnAccentFillColorPrimaryBrush" : "TextFillColorPrimaryBrush"];
+        // TWO BRUSHES, not one. The words take the ink of the ground they are on — white on the
+        // reader's own balloon (Palette), which is the app's blue in both themes, and the window's
+        // own text on a card, where the platform's on-accent ink would be BLACK in the dark theme.
+        // The bars take the ACCENT on a card, which is what makes a poll read as a poll rather
+        // than as grey rules; on an own balloon they stay white, because the accent on the accent
+        // is nothing at all.
+        var ink = mine ? Palette.Ink() : (Brush)resources["TextFillColorPrimaryBrush"];
+        var bar = mine ? Palette.Ink() : (Brush)resources["AccentFillColorDefaultBrush"];
         var votable = Polls.Votable(message);
         var held = Polls.MyOption(poll, seen.Reader);
         string Name(long user) => PollText.Name(user, seen.Reader, seen.Member, say);
@@ -38,7 +45,7 @@ internal static class PollCard
         foreach (var option in poll.Options)
         {
             var chosen = held == option.Id;
-            var body = OptionBody(option, chosen, Polls.Fraction(poll, option.Votes.Length), ink);
+            var body = OptionBody(option, chosen, Polls.Fraction(poll, option.Votes.Length), ink, bar);
             FrameworkElement row;
             if (votable)
             {
@@ -143,7 +150,8 @@ internal static class PollCard
     private static void Contain(UIElement control) => control.DoubleTapped += (_, e) => e.Handled = true;
 
     /// <summary>The mark, the words and the count on one line, and the bar under them.</summary>
-    private static StackPanel OptionBody(PollOptionDto option, bool chosen, double fraction, Brush ink)
+    private static StackPanel OptionBody(
+        PollOptionDto option, bool chosen, double fraction, Brush ink, Brush bar)
     {
         var line = new Grid { ColumnSpacing = 8 };
         line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -154,7 +162,7 @@ internal static class PollCard
         {
             Glyph = ((char)(chosen ? 0xECCB : 0xECCA)).ToString(),
             FontSize = 14,
-            Foreground = ink,
+            Foreground = chosen ? bar : ink,
             VerticalAlignment = VerticalAlignment.Center,
         };
         line.Children.Add(mark);
@@ -172,17 +180,19 @@ internal static class PollCard
         line.Children.Add(count);
 
         // Proportional by star columns, so the bar needs no width of its own to be measured against.
-        var bar = new Grid { Height = 6, Margin = new Thickness(22, 0, 0, 0) };
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(fraction, GridUnitType.Star) });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1 - fraction, GridUnitType.Star) });
+        var bars = new Grid { Height = 6, Margin = new Thickness(22, 0, 0, 0) };
+        bars.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(fraction, GridUnitType.Star) });
+        bars.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1 - fraction, GridUnitType.Star) });
         var track = new Border { Background = ink, Opacity = 0.15, CornerRadius = new CornerRadius(3) };
         Grid.SetColumnSpan(track, 2);
-        bar.Children.Add(track);
+        bars.Children.Add(track);
         if (fraction > 0)
         {
-            bar.Children.Add(new Border { Background = ink, Opacity = chosen ? 1 : 0.45, CornerRadius = new CornerRadius(3) });
+            // The reader's own answer at full strength, the rest a shade back: the shape of the
+            // vote is readable before a single number is.
+            bars.Children.Add(new Border { Background = bar, Opacity = chosen ? 1 : 0.55, CornerRadius = new CornerRadius(3) });
         }
-        return new StackPanel { Spacing = 4, Children = { line, bar } };
+        return new StackPanel { Spacing = 4, Children = { line, bars } };
     }
 
     private static void ShowVoters(FrameworkElement anchor, string optionText, IReadOnlyList<long> voters, Func<long, string> name)

@@ -194,6 +194,14 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
             gate,
             Me: answered.User,
             Family: answered.Family,
+            // CARRIED, NOT RE-READ. `GET /me` says nothing about the assistant — only
+            // `GET /families/mine` does — so a refresh that leaves this out publishes a state
+            // with no assistant in it, and this is a positional parameter with a null default,
+            // so leaving it out COMPILES. What hung off it: the Assistant card in Settings and
+            // the consent line over the composer, both of which vanished after any /me — which
+            // includes the refresh that runs right after somebody agrees. Cleared with the
+            // family, because an assistant belongs to one.
+            Assistant: gate is Gate.Member or Gate.Owner ? state.Assistant : null,
             PendingFamilyName: answered.PendingJoinRequest?.FamilyName,
             CallsEnabled: answered.CallsEnabled,
             VideoCallsEnabled: answered.VideoCallsEnabled,
