@@ -108,8 +108,8 @@ public sealed partial class ChatsView : UserControl
     /// The balloon drawn for each message, on each surface: what a click on a quote scrolls to.
     /// Rebuilt with the rows, because that is when the elements are.
     /// </summary>
-    private readonly Dictionary<long, Border> balloons = [];
-    private readonly Dictionary<long, Border> threadBalloons = [];
+    private readonly Dictionary<long, (Border Balloon, Brush Flash)> balloons = [];
+    private readonly Dictionary<long, (Border Balloon, Brush Flash)> threadBalloons = [];
 
     /// <summary>Guards the tint's own timer, so a second jump does not clear the first one's.</summary>
     private int tintToken;
@@ -951,7 +951,7 @@ public sealed partial class ChatsView : UserControl
             : chat.QuoteRevealed(message.Id, level);
         if (bubble.Reads && Quotes.Of(message, connection.Chats, say, Revealed) is { } quote)
         {
-            stack.Children.Add(QuoteElement(quote, say, () => QuoteClicked(chat, inThread, message.Id, quote)));
+            stack.Children.Add(QuoteElement(quote, mine, say, () => QuoteClicked(chat, inThread, message.Id, quote)));
         }
         if (bubble.Reads && message.Media.Count > 0)
         {
@@ -1039,7 +1039,7 @@ public sealed partial class ChatsView : UserControl
             CornerRadius = BalloonCorners(mine, row.RunStart, row.RunEnd),
             HorizontalAlignment = mine ? HorizontalAlignment.Right : HorizontalAlignment.Left,
         };
-        (inThread is not null ? threadBalloons : balloons)[message.Id] = balloon;
+        (inThread is not null ? threadBalloons : balloons)[message.Id] = (balloon, FlashFor(mine));
         if (!bubble.Reads)
         {
             // The collapsed stand-in: the words on a quiet ground, and a click shows it.
@@ -1179,22 +1179,46 @@ public sealed partial class ChatsView : UserControl
     /// only a mouse can use is not one this product ships (the apps paid for that lesson on
     /// their own quote — a bare tap gesture publishes no accessibility action at all).
     /// </remarks>
-    private static FrameworkElement QuoteElement(Quote quote, IStringCatalog say, Action clicked)
+    private static FrameworkElement QuoteElement(Quote quote, bool mine, IStringCatalog say, Action clicked)
     {
+        var resources = Application.Current.Resources;
+        // TINTED FROM THE BALLOON IT SITS ON, because there are two very different grounds: the
+        // reader's own balloon is the accent colour with white words on it, everybody else's is a
+        // card with the window's own text. One brush for both is how a quote ends up invisible —
+        // the first version used the accent's own secondary shade, which on an accent balloon is
+        // the balloon. So: white over the accent, the accent over a card, and an inset panel
+        // rather than a bare rule, which is what says "this is the message I am answering".
+        var accent = AccentInk();
+        var onAccent = (Brush)resources["TextOnAccentFillColorPrimaryBrush"];
+        // NOT WHITE — the ink the theme puts ON the accent. In the dark theme WinUI's accent fill is
+        // the LIGHT shade and the words on it are BLACK, so a white overlay there would wash out a
+        // pale balloon and a white stripe would vanish. Taken from the brush, it is white over the
+        // light theme's deep blue and black over the dark theme's pale one, and reads as an inset
+        // panel either way.
+        var ink = InkOnAccent();
+        Brush Ink(byte alpha) => new SolidColorBrush(Windows.UI.Color.FromArgb(alpha, ink.R, ink.G, ink.B));
+        Brush Tinted(byte alpha) => new SolidColorBrush(Windows.UI.Color.FromArgb(alpha, accent.R, accent.G, accent.B));
+        var fill = mine ? Ink(0x2A) : Tinted(0x20);
+        var lifted = mine ? Ink(0x40) : Tinted(0x38);
         var lines = new StackPanel { Spacing = 0 };
         // The parent goes ABOVE: read downwards it is the older half of the exchange.
         if (quote.Parent is { } parent)
         {
-            Draw(parent, 0.75);
+            Draw(parent, 0.8);
         }
         Draw(quote.Reply, 1);
         var frame = new Border
         {
             Child = lines,
+            Background = fill,
+            // The stripe carries the colour: white on the accent balloon, the accent on a card.
             BorderThickness = new Thickness(3, 0, 0, 0),
-            BorderBrush = (Brush)Application.Current.Resources["AccentFillColorSecondaryBrush"],
-            Padding = new Thickness(8, 2, 0, 2),
-            Opacity = 0.85,
+            // A white stripe wants to be bright; a BLACK one at the same weight reads as a scar on
+            // a pale balloon, so the dark ink gets a softer one.
+            BorderBrush = mine ? Ink((byte)(ink.R + ink.G + ink.B > 380 ? 0xD8 : 0xAA)) : (Brush)resources["AccentFillColorDefaultBrush"],
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(9, 5, 9, 5),
+            Margin = new Thickness(0, 0, 0, 2),
         };
         var button = new Button
         {
@@ -1207,6 +1231,10 @@ public sealed partial class ChatsView : UserControl
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Left,
         };
+        // The panel answers the pointer itself: a Button's own hover lands on the content presenter
+        // BEHIND this frame, so without it the one clickable thing in a bubble looks inert.
+        button.PointerEntered += (_, _) => frame.Background = lifted;
+        button.PointerExited += (_, _) => frame.Background = fill;
         // What it does when clicked, which is not the same thing twice: a hidden level is shown
         // first, and only a quote with nothing left to reveal goes to the message.
         ToolTipService.SetToolTip(button, Quotes.ClickOn(quote) != QuoteClick.GoToMessage
@@ -1225,7 +1253,15 @@ public sealed partial class ChatsView : UserControl
             var row = new StackPanel { Spacing = 0, Opacity = opacity };
             if (!line.Hidden)
             {
-                row.Children.Add(new TextBlock { Text = line.Name, FontSize = 12, FontWeight = FontWeights.SemiBold });
+                row.Children.Add(new TextBlock
+                {
+                    Text = line.Name,
+                    FontSize = 12,
+                    FontWeight = FontWeights.SemiBold,
+                    // The name is the coloured half of the quote: the accent where there is a
+                    // card behind it, white where the accent itself is.
+                    Foreground = mine ? onAccent : (Brush)resources["AccentTextFillColorPrimaryBrush"],
+                });
             }
             row.Children.Add(new TextBlock
             {
@@ -1235,9 +1271,67 @@ public sealed partial class ChatsView : UserControl
                 TextWrapping = TextWrapping.Wrap,
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 FontStyle = line.Hidden ? Windows.UI.Text.FontStyle.Italic : Windows.UI.Text.FontStyle.Normal,
+                Foreground = mine ? Ink(0xC8) : (Brush)resources["TextFillColorSecondaryBrush"],
             });
             lines.Children.Add(row);
         }
+    }
+
+    /// <summary>
+    /// The accent as a COLOUR, for the tints the theme has no brush for.
+    /// </summary>
+    /// <remarks>
+    /// Defended, and every resource this view reads from CODE is: a key that is not there would
+    /// throw where nobody can see it — inside a click, which the App's own handler marks handled —
+    /// and this app has already lost a whole screen to one unguarded XAML failure. A tint is not
+    /// worth a second one.
+    /// </remarks>
+    private static Windows.UI.Color Accent() =>
+        Application.Current.Resources.TryGetValue("SystemAccentColor", out var value)
+            && value is Windows.UI.Color color
+            ? color
+            : Windows.UI.Color.FromArgb(0xFF, 0x1E, 0x5B, 0xC6);
+
+    /// <summary>
+    /// The accent as THIS THEME draws it, which is not the same colour: WinUI's accent fill reads
+    /// the dark shades in the light theme and the light ones in the dark theme. A tint has to come
+    /// from here and not from <see cref="Accent()"/> — the base blue is darker than the card it
+    /// would tint in the dark theme, and a tint nobody can see is the whole bug this styling fixes.
+    /// </summary>
+    /// <summary>
+    /// What the theme writes ON the accent: white in the light theme, BLACK in the dark one, where
+    /// the accent fill is the pale shade. Every tint over the reader's own balloon comes from here.
+    /// </summary>
+    private static Windows.UI.Color InkOnAccent() =>
+        Application.Current.Resources.TryGetValue("TextOnAccentFillColorPrimaryBrush", out var value)
+            && value is SolidColorBrush brush
+            ? brush.Color
+            : Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF);
+
+    private static Windows.UI.Color AccentInk() =>
+        Application.Current.Resources.TryGetValue("AccentFillColorDefaultBrush", out var value)
+            && value is SolidColorBrush brush
+            ? brush.Color
+            : Accent();
+
+    /// <summary>
+    /// The colour a balloon wears for the moment after a quote's click lands on it — one per
+    /// ground, because a pale wash that reads on a card is invisible on the accent balloon. There,
+    /// the accent itself is lifted towards white, and kept opaque so the white words stay readable.
+    /// </summary>
+    private static Brush FlashFor(bool mine)
+    {
+        if (!mine)
+        {
+            return Application.Current.Resources.TryGetValue("SystemFillColorAttentionBackgroundBrush", out var themed)
+                && themed is Brush brush
+                ? brush
+                : new SolidColorBrush(Windows.UI.Color.FromArgb(0x30, 0x1E, 0x5B, 0xC6));
+        }
+        var accent = AccentInk();
+        static byte Lift(byte channel) => (byte)(channel + (255 - channel) * 0.38);
+        return new SolidColorBrush(
+            Windows.UI.Color.FromArgb(0xFF, Lift(accent.R), Lift(accent.G), Lift(accent.B)));
     }
 
     /// <summary>
@@ -1309,7 +1403,7 @@ public sealed partial class ChatsView : UserControl
         // Widening the window draws rows above the reader: this redraw is what puts the element
         // being scrolled to in the tree at all.
         DrawConversation(keepFromBottom: DistanceFromBottom);
-        if (!balloons.TryGetValue(messageId, out var balloon))
+        if (!balloons.TryGetValue(messageId, out var drawn))
         {
             ShowProblem(say.Get("That message is not here any more."));
             return;
@@ -1317,7 +1411,7 @@ public sealed partial class ChatsView : UserControl
         ComposerError.Visibility = Visibility.Collapsed;
         // From the offset asked for, not from the scroller: ChangeView has not happened yet when
         // it returns, and the divider's own scroll reads it the same way for the same reason.
-        var top = ScrollTo(MessageScroller, MessageStack, balloon);
+        var top = ScrollTo(MessageScroller, MessageStack, drawn);
         atNewest = MessageScroller.ScrollableHeight - top <= 24;
         ShowJump();
     }
@@ -1325,14 +1419,14 @@ public sealed partial class ChatsView : UserControl
     /// <summary>
     /// Scroll one surface to a balloon it drew, tint it briefly, and answer the offset asked for.
     /// </summary>
-    private double ScrollTo(ScrollViewer scroller, FrameworkElement stack, Border balloon)
+    private double ScrollTo(ScrollViewer scroller, FrameworkElement stack, (Border Balloon, Brush Flash) drawn)
     {
         scroller.UpdateLayout();
         var top = Math.Max(
             0,
-            balloon.TransformToVisual(stack).TransformPoint(new Windows.Foundation.Point(0, 0)).Y - 12);
+            drawn.Balloon.TransformToVisual(stack).TransformPoint(new Windows.Foundation.Point(0, 0)).Y - 12);
         scroller.ChangeView(null, top, null, disableAnimation: false);
-        Tint(balloon);
+        Tint(drawn);
         return top;
     }
 
@@ -1341,10 +1435,11 @@ public sealed partial class ChatsView : UserControl
     /// means a second jump before the first fades does not put back a background that has since
     /// been replaced.
     /// </summary>
-    private void Tint(Border balloon)
+    private void Tint((Border Balloon, Brush Flash) drawn)
     {
+        var balloon = drawn.Balloon;
         var was = balloon.Background;
-        balloon.Background = (Brush)Application.Current.Resources["AccentFillColorSecondaryBrush"];
+        balloon.Background = drawn.Flash;
         var token = ++tintToken;
         var timer = DispatcherQueue.CreateTimer();
         timer.Interval = TimeSpan.FromMilliseconds(1200);
