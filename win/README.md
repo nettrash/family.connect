@@ -363,6 +363,13 @@ unstamped one and "1.1 (437)" for a stamped one (`AppVersionText`, with the reas
 number that only rises while the working tree stays clean. The two counters are separate streams and
 that is fine: CI's packages are only ever tested, and the Store only ever sees this script's.
 
+**The floor is what is published**, and it is not guessable from the repo: the Store has
+`1.1.115.0` (read it back with `Get-AppxPackage nttrsh.FamilyConnect` on a machine that installed
+it from the Store — `SignatureKind` says `Store` there, which is also how you tell a Store install
+from a sideload, since both share one package family name and one `LocalCache` folder). A package
+whose version the Store has already seen is refused at upload, so the counter has to pass 115; the
+commit count is past 230.
+
 Three constraints shaped that, and each has cost somebody a rejection somewhere:
 
 - **The fourth part is the Store's.** Partner Center reserves the revision and refuses a package

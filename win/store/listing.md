@@ -82,20 +82,20 @@ If you want your family's conversations off big-tech servers — and, when you a
 
 ## What's new in this version (≤ 1500)
 
-The Windows app has caught up with everything the other Family Connect apps gained in 1.1, and two of these are only here.
+This one fixes a bad bug, and brings the Windows app up to two things the other Family Connect apps already had.
 
+- Settings opens again. On the released 1.1 it could not be opened at all — clicking Settings did nothing — which put the privacy switches, the assistant's consent screen, Change Password, Log Out and Delete Account out of reach. That is fixed.
 - Start when you sign in. Family Connect can open in the notification area as you sign in to Windows, so a message or a call reaches you without opening it first. Settings, under Notifications.
 - Replies say what they answer again. A reply shows the name and the words it is answering — and the message under that one, where the exchange went two deep — and clicking the quote goes to that message in the conversation. Every reply used to read "Someone", with nothing under the name.
-- The assistant asks first. Where a server runs one, nothing you write is sent to it until you have agreed — including what you say in the family chat while somebody else is asking it something — and Settings takes that agreement back.
-- Report a reply. Any answer the assistant wrote can be reported from the message itself, to the people who run your family's server.
-- Files keep their names. An attachment saved or shared out of a chat arrives with its own name and kind.
 
-*TWO THINGS BEFORE PASTING THIS. The first Windows package in the Store was built on 15 September, and the last three
-entries went in after it (attachment names on the 17th, assistant reports on the 18th, assistant consent on the 20th);
-a submission in certification can have its package replaced without a new version, so if the one that was finally
-published already carried any of them, delete that line — release notes are for what THIS build adds. And the reply
-fix keeps the quote in the cache for the first time, which means this build re-reads some history the first time it
-opens a chat: nothing to announce, but it is why the app is briefly busier than usual after the update.*
+*THE PROVENANCE QUESTION IS SETTLED, and badly: the Settings screen of the PUBLISHED package is the one that cannot
+open, so that package was built on or after 20 September and already carries the assistant's consent screen, the
+assistant report and the attachment-name fix. None of those is new here, so none of them is listed — the three entries
+above are the whole of what this build adds. Two consequences worth holding on to: the live app's Delete Account and
+consent screen are unreachable, which the certification notes send a reviewer to, so this submission is a FIX release
+and not a feature release; and the reply fix keeps the quote in the cache for the first time, so this build re-reads
+some history the first time it opens a chat — nothing to announce, but it is why the app is briefly busier after the
+update.*
 
 ## Additional system requirements
 
@@ -215,8 +215,10 @@ second list.*
       the one submission (Packages step); the Store gives each PC its own architecture, so there is nothing to bundle.
       The `_Test` folders beside them are sideload copies, not for the Store. **The version is stamped, not
       hand-written**: `Major.Minor` from `win/Directory.Build.props`, the build number from the commit count (or
-      `-Build <n>`), and the manifest is put back afterwards — the Store refuses a version it has already seen, and
-      1.1.0.0 is taken.
+      `-Build <n>`), and the manifest is put back afterwards. **The Store refuses a version it has already seen, and
+      the PUBLISHED package is `1.1.115.0`** (`Get-AppxPackage nttrsh.FamilyConnect` on a machine that installed it
+      from the Store), so the next one must be higher: the commit count is past 230 and only rises, which is why it
+      is the default.
 - [ ] **Run the Windows App Certification Kit** on the package before uploading.
 - [ ] **Check the demo family** on fc.nettrash.me — `server/scripts/check-review-family.py`, the same 23 checks the App
       Store submission uses — and fill the placeholders in the certification notes from it.
