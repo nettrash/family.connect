@@ -232,71 +232,55 @@ public sealed partial class MainWindow : Window
     /// Settings, over the chats: they go on listening underneath, and Done puts them back — unless
     /// the gate moved meanwhile (a family left, an account deleted), which has already replaced both.
     /// </summary>
-    private void ShowSettings()
-    {
-        if (connection is not { } current || chats is null)
+    private void ShowSettings() => OpenOverChats(
+        "settings",
+        current => new SettingsView(services, current, close: () =>
         {
-            return;
-        }
-        Screen.Content = new SettingsView(services, current, close: () =>
-        {
-            if (connection == current && chats is { } open && shown is Gate.Member or Gate.Owner)
+            if (connection == current)
             {
-                Select(chatsItem);
-                Screen.Content = open;
+                BackToChats();
             }
-        });
-    }
+        }));
 
     /// <summary>
     /// The family, over the chats as Settings is. "Message" on a member puts the chats back and opens
     /// that conversation in them.
     /// </summary>
-    private void ShowFamily()
+    private void ShowFamily() => OpenOverChats("the family", current =>
     {
-        if (connection is not { } current || chats is null)
-        {
-            return;
-        }
         void Back()
         {
-            if (connection == current && chats is { } open && shown is Gate.Member or Gate.Owner)
+            if (connection == current)
             {
-                Select(chatsItem);
-                Screen.Content = open;
+                BackToChats();
             }
         }
-        Screen.Content = new FamilyView(services, current, close: Back, openChat: chatId =>
+        return new FamilyView(services, current, close: Back, openChat: chatId =>
         {
             Back();
             chats?.OpenChat(chatId);
         });
-    }
+    });
 
     /// <summary>
     /// The wall, over the chats as Settings is. Drawn, it moves the board's marks, and the badge follows. A name in an
     /// opened note puts the chats back and opens that conversation, as "Message" in the family does.
     /// </summary>
-    private void ShowBoard()
+    private void ShowBoard() => OpenOverChats("the board", current =>
     {
-        if (connection is not { } current || chats is null)
-        {
-            return;
-        }
         void Back()
         {
-            if (connection == current && chats is { } open && shown is Gate.Member or Gate.Owner)
+            if (connection == current)
             {
-                Select(chatsItem);
-                Screen.Content = open;
+                BackToChats();
             }
         }
-        Screen.Content = new BoardView(services, current, close: Back, shown: RefreshAttention, openChat: chatId =>
+        return new BoardView(services, current, close: Back, shown: RefreshAttention, openChat: chatId =>
         {
             Back();
             chats?.OpenChat(chatId);
         });
-    }
+    });
 
     /// <summary>
     /// The rail: the chats, the board, the family, and settings at its foot — each drawn with its Segoe Fluent glyph
@@ -385,12 +369,49 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>Back to the chats, which went on listening while another place was in front.</summary>
-    private void ShowChats()
+    private void ShowChats() => BackToChats();
+
+    /// <summary>
+    /// The chats, and the rail's selection with them. The way back from every screen that opens
+    /// over them, and where a screen that could not open leaves the reader.
+    /// </summary>
+    private void BackToChats()
     {
         if (connection is not null && chats is { } open && shown is Gate.Member or Gate.Owner)
         {
             Select(chatsItem);
             Screen.Content = open;
+        }
+    }
+
+    /// <summary>
+    /// Open one of the rail's screens over the chats, or leave the reader where they can try again.
+    /// </summary>
+    /// <remarks>
+    /// <b>A CLICK THAT DOES NOTHING MUST NOT BE THE END OF IT.</b> The rail has already moved to
+    /// the item by the time this runs, and <c>NavigationView</c> raises nothing for a click on the
+    /// item that is already selected — so a screen that refuses to open, or whose constructor
+    /// throws (caught by the App's own handler, which marks it handled), leaves the old content on
+    /// screen and every later click on that item doing NOTHING AT ALL. That reads as a dead menu
+    /// and cannot be retried. So: the reason is written down, and the selection goes back to the
+    /// chats, where the same click can be made again.
+    /// </remarks>
+    private void OpenOverChats(string what, Func<Connection, UIElement> build)
+    {
+        if (connection is not { } current || chats is null)
+        {
+            Diagnostics.Write($"opening {what}: no connection or no chats to open it over");
+            BackToChats();
+            return;
+        }
+        try
+        {
+            Screen.Content = build(current);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"opening {what}: {e.GetType().FullName} 0x{e.HResult:X8} {e.StackTrace}");
+            BackToChats();
         }
     }
 

@@ -48,6 +48,7 @@ sealed class XamlLint(TypeIndex types, SourceIndex sources, Options options, Log
     const string FrameworkElement = "Microsoft.UI.Xaml.FrameworkElement";
 
     static readonly Regex XBind = new(@"\{\s*x:Bind\b", RegexOptions.Compiled);
+    static readonly Regex StaticResource = new(@"^\{\s*StaticResource\s+([^}\s]+)\s*\}$", RegexOptions.Compiled);
     static readonly Regex Identifier = new(@"^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
     static readonly Regex QualifiedIdentifier = new(@"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$", RegexOptions.Compiled);
 
@@ -81,6 +82,11 @@ sealed class XamlLint(TypeIndex types, SourceIndex sources, Options options, Log
     IReadOnlyList<SourceIndex.SourceFile> _codeBehind = [];
     IReadOnlyList<SourceIndex.SourceFile> _handlerScope = [];
 
+    // The styles this file declares, and everything it applies one to. Collected while walking and
+    // checked at the end, because a resource is declared at the top and used all the way down.
+    Dictionary<string, XamlType?> _styles = [];
+    List<(string Key, XamlType? Applied, int Line, string What)> _styled = [];
+
     public LintResult Run()
     {
         var files = Directory.EnumerateFiles(options.AppDir, "*.xaml", SearchOption.AllDirectories)
@@ -102,6 +108,8 @@ sealed class XamlLint(TypeIndex types, SourceIndex sources, Options options, Log
         _names = [];
         _codeBehind = [];
         _handlerScope = [];
+        _styles = [];
+        _styled = [];
 
         XDocument doc;
         try { doc = XDocument.Load(path, LoadOptions.SetLineInfo); }
@@ -121,6 +129,40 @@ sealed class XamlLint(TypeIndex types, SourceIndex sources, Options options, Log
             CheckCodeBehind(root);
         }
         Visit(root, isRoot: true, inTemplate: false);
+        CheckStyleTargets();
+    }
+
+    /// <summary>
+    /// Every <c>Style="{StaticResource K}"</c> against the <c>TargetType</c> of the K this file
+    /// declares: the element has to BE that type or derive from it.
+    /// </summary>
+    /// <remarks>
+    /// <b>THE ONE XAML MISTAKE THAT COMPILES AND THEN TAKES A WHOLE PAGE DOWN AT RUNTIME.</b>
+    /// A style reached through a resource key is not type-checked by the XAML compiler, so
+    /// <c>&lt;Button Style="{StaticResource LinkRow}"/&gt;</c> where LinkRow is
+    /// <c>TargetType="HyperlinkButton"</c> builds green, packages green, and then the parser
+    /// throws <c>XamlParseException</c> (0x802B000A) out of <c>InitializeComponent()</c> — the
+    /// page never loads, and in this app that was a Settings screen that could not be opened at
+    /// all. It shipped, because nothing off Windows could see it: the build cannot, and CI never
+    /// runs the app.
+    /// <para>
+    /// Only keys declared in the SAME file are checked. A key from App.xaml or from WinUI's own
+    /// dictionaries is not in hand here, and guessing at one would cost false errors — which is
+    /// the one thing a check like this may not do.
+    /// </para>
+    /// </remarks>
+    void CheckStyleTargets()
+    {
+        foreach (var (key, applied, line, what) in _styled)
+        {
+            if (!_styles.TryGetValue(key, out var target)) continue;
+            if (target?.Metadata is not { } wants || applied?.Metadata is not { } has) continue;
+            if (has.FullName == wants.FullName || types.DerivesFrom(has, wants.FullName!)) continue;
+            Error(_file, line,
+                $"{what} Style=\"{{StaticResource {key}}}\", but that style is TargetType=\"{wants.Name}\" " +
+                $"and '{has.FullName}' does not derive from '{wants.FullName}': the XAML compiler allows this " +
+                "and the parser throws XamlParseException at runtime, so the whole page fails to load");
+        }
     }
 
     void CheckCodeBehind(XElement root)
@@ -169,6 +211,19 @@ sealed class XamlLint(TypeIndex types, SourceIndex sources, Options options, Log
 
         var type = ResolveType(ns, local, e, line);
         if (isRoot && _class is not null) _class.BaseTypeFullName = type?.FullName;
+        if (ns == Presentation && local == "Style" && e.Attribute(X + "Key")?.Value is { } styleKey)
+        {
+            _styles[styleKey] = e.Attribute("TargetType")?.Value is { } wanted
+                ? ResolveTypeName(wanted, e, line, $"in TargetType of style '{styleKey}'")
+                : null;
+            // A style BasedOn another is held to the same rule, and for the same reason.
+            if (StyleKey(e.Attribute("BasedOn")?.Value) is { } basedOn)
+                _styled.Add((basedOn, _styles[styleKey], line, $"style '{styleKey}' is BasedOn"));
+        }
+        else if (StyleKey(e.Attribute("Style")?.Value) is { } applied)
+        {
+            _styled.Add((applied, type, line, $"<{local}>"));
+        }
         // Names inside a DataTemplate / ControlTemplate / ItemsPanelTemplate are template-scoped: no fields.
         var childInTemplate = inTemplate || (type?.Metadata is { } mt && types.DerivesFrom(mt, FrameworkTemplate));
 
@@ -305,6 +360,27 @@ sealed class XamlLint(TypeIndex types, SourceIndex sources, Options options, Log
         if (_reportedNamespaces.Add(ns.NamespaceName))
             Error(_file, line, $"unsupported xmlns '{ns}': WinUI 3 XAML maps CLR namespaces with xmlns:p=\"using:Namespace\"");
         return null;
+    }
+
+    /// <summary>The key in <c>{StaticResource Key}</c>, or null when this is anything else.</summary>
+    static string? StyleKey(string? value) =>
+        value is not null && StaticResource.Match(value.Trim()) is { Success: true } hit ? hit.Groups[1].Value : null;
+
+    /// <summary>
+    /// A type named in an attribute value rather than by an element — <c>TargetType="Border"</c>,
+    /// or <c>TargetType="local:Thing"</c>, whose prefix is resolved where it is written.
+    /// </summary>
+    XamlType? ResolveTypeName(string name, XElement at, int line, string role)
+    {
+        var colon = name.IndexOf(':');
+        if (colon < 0) return ResolveType(Presentation, name, at, line, role);
+        var ns = at.GetNamespaceOfPrefix(name[..colon]);
+        if (ns is null)
+        {
+            Error(_file, line, $"unknown xmlns prefix '{name[..colon]}' {role}");
+            return null;
+        }
+        return ResolveType(ns, name[(colon + 1)..], at, line, role);
     }
 
     static string Prefix(XElement at, XNamespace ns) => at.GetPrefixOfNamespace(ns) is { Length: > 0 } p ? p + ":" : "";

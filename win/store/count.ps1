@@ -23,10 +23,48 @@ function Get-ListingSection([string]$Heading) {
     return $m.Groups[1].Value
 }
 
-# A section's listing text, without the editor's notes: italic lines (*…*) are not copy.
+# A section's listing text, without the editor's notes: an italic block (*…*) is not copy, and it
+# may run over several lines.
+#
+# ONE LINE AT A TIME WAS NOT ENOUGH, and it cost real copy: a note wrapped across four lines had
+# only its first and last line look italic, so the middle counted as listing text and the field
+# measured 200 characters longer than what Partner Center would ever see - which is how you come
+# to trim a sentence a reader wants to make room for a note nobody but us reads.
+#
+# A block opens on a line beginning with a single `*` and closes on the first line ending with one
+# (the same line, or a later one within reach). A line that opens nothing it can close is left
+# alone: `*Minimum hardware* - leave empty. *Recommended hardware* ...` is a heading with italics
+# in it, and swallowing the numbered items under it would measure them as nothing.
 function Get-ListingCopy([string]$Body) {
-    $lines = $Body -split "`n" | Where-Object { $_ -notmatch '^\s*\*.*\*\s*$' }
-    return ($lines -join "`n").Trim()
+    $lines = @($Body -split "`n")
+    $kept = New-Object System.Collections.Generic.List[string]
+    $at = 0
+    while ($at -lt $lines.Count) {
+        $line = $lines[$at].Trim()
+        $opens = $line.StartsWith('*') -and -not $line.StartsWith('**')
+        if (-not $opens) {
+            $kept.Add($lines[$at])
+            $at++
+            continue
+        }
+        # How far the note runs, if it runs at all: at most eight lines, which is longer than any
+        # note in this file and short enough that a stray asterisk cannot eat a section.
+        $closes = -1
+        for ($ahead = $at; $ahead -lt [Math]::Min($lines.Count, $at + 8); $ahead++) {
+            $candidate = $lines[$ahead].Trim()
+            if ($candidate.EndsWith('*') -and -not $candidate.EndsWith('**')) {
+                $closes = $ahead
+                break
+            }
+        }
+        if ($closes -lt 0) {
+            $kept.Add($lines[$at])
+            $at++
+            continue
+        }
+        $at = $closes + 1
+    }
+    return ($kept -join "`n").Trim()
 }
 
 function Get-NumberedItems([string]$Body) {

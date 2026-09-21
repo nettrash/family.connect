@@ -30,6 +30,14 @@ dotnet run --project tools/xamlcheck -- <repo-root> [options]   # the same witho
    each event handler is a method *declared* in the code-behind (any partial of the class, or an
    app-declared base class — the compiler wires `this.Handler`), each `x:Class` has a
    `partial class` in a `.cs`, and no `{x:Bind}` is used. Reported as `file:line: error: message`.
+   It also checks every `Style="{StaticResource K}"` — and every `BasedOn` — against the
+   `TargetType` of the `K` that file declares: the element has to be that type or derive from it.
+   **That is the one XAML mistake that compiles, packages, and then takes a whole page down at
+   runtime**: `<Button Style="{StaticResource LinkRow}"/>` where `LinkRow` is
+   `TargetType="HyperlinkButton"` throws `XamlParseException` (0x802B000A) out of
+   `InitializeComponent()`, so the page never loads — it shipped once here, as a Settings screen
+   that could not be opened at all, because the build cannot see it and CI never runs the app.
+   Keys from another file (App.xaml, WinUI's own dictionaries) are not in hand and are left alone.
 3. **Stubs.** Writes `Xaml.Stubs.g.cs` into the shadow directory: for every `x:Class` the partial the
    XAML compiler would generate, reduced to one field per `x:Name` (typed as resolved, template-scoped
    names excluded) and an empty `InitializeComponent()`.
@@ -43,8 +51,8 @@ pinned package versions, every XAML element, property, event and handler resolve
 halves agree on the `x:Name` fields.
 
 Does not prove: anything only the XAML compiler checks (attribute value conversion, markup-extension
-syntax, `{x:Bind}` code generation, `StaticResource`/`ThemeResource` lookups, styles and templates
-against their `TargetType`), the *signature* of an event handler (the name is matched textually:
+syntax, `{x:Bind}` code generation, `StaticResource`/`ThemeResource` lookups other than the style
+targets above, templates against their `TargetType`), the *signature* of an event handler (the name is matched textually:
 comments and string literals are blanked first, and a call such as `=> Handler()` or
 `return Handler()` does not count as a declaration, but parameter types and the return type are
 not compared with the event's delegate), anything the linker or MSIX packaging checks, and runtime

@@ -262,7 +262,7 @@
                             </StackPanel>
                         </Grid>
                     </Border>
-                    <Button x:Name="AssistantConsentButton" Style="{StaticResource LinkRow}">
+                    <Button x:Name="AssistantConsentButton" Style="{StaticResource ActionRow}">
                         <Grid ColumnSpacing="16">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
