@@ -82,20 +82,18 @@ If you want your family's conversations off big-tech servers — and, when you a
 
 ## What's new in this version (≤ 1500)
 
-This one fixes a bad bug, and brings the Windows app up to two things the other Family Connect apps already had.
+This one fixes two bad bugs, adds something only the Windows app has, and makes a conversation easier to read.
 
-- Settings opens again. On the released 1.1 it could not be opened at all — clicking Settings did nothing — which put the privacy switches, the assistant's consent screen, Change Password, Log Out and Delete Account out of reach. That is fixed.
+- Settings opens again. On the released 1.1 it could not be opened at all — clicking Settings did nothing — which put the privacy switches, Change Password, Log Out and Delete Account out of reach. That is fixed.
+- The assistant asks, and you can answer. Where a server runs an assistant, nothing you write is sent to it until you have agreed — but on the released 1.1 the question never appeared, so there was no way to agree or to change your mind. It is now over the message box where it applies, and in Settings, which says who answers and takes your answer back whenever you want.
 - Start when you sign in. Family Connect can open in the notification area as you sign in to Windows, so a message or a call reaches you without opening it first. Settings, under Notifications.
 - Replies say what they answer again. A reply shows the name and the words it is answering — and the message under that one, where the exchange went two deep — and clicking the quote goes to that message in the conversation. Every reply used to read "Someone", with nothing under the name.
+- Your own words stay white, and a poll reads at a glance. In the dark theme your own messages were drawn in black on the blue; a poll's bars now carry the accent colour, with the option you chose at full strength.
 
-*THE PROVENANCE QUESTION IS SETTLED, and badly: the Settings screen of the PUBLISHED package is the one that cannot
-open, so that package was built on or after 20 September and already carries the assistant's consent screen, the
-assistant report and the attachment-name fix. None of those is new here, so none of them is listed — the three entries
-above are the whole of what this build adds. Two consequences worth holding on to: the live app's Delete Account and
-consent screen are unreachable, which the certification notes send a reviewer to, so this submission is a FIX release
-and not a feature release; and the reply fix keeps the quote in the cache for the first time, so this build re-reads
-some history the first time it opens a chat — nothing to announce, but it is why the app is briefly busier after the
-update.*
+*The published package (1.1.115.0) already carries the assistant's report, the attachment-name fix and the consent
+screen's code — it is only the consent screen nobody could reach — so none of those is listed as new here. One
+behaviour worth knowing and not worth announcing: the reply fix keeps each quote in the cache for the first time, so
+this build re-reads some history when it first opens a chat, which is why it is briefly busier after the update.*
 
 ## Additional system requirements
 
