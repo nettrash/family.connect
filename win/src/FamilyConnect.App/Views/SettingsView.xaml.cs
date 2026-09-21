@@ -690,16 +690,28 @@ public sealed partial class SettingsView : UserControl
     }
 
     /// <summary>The package's version, or the assembly's when the app runs unpackaged.</summary>
+    /// <summary>
+    /// "1.1 (437)", or "1.1" for a build nobody stamped — the shape and the rule live in
+    /// <see cref="AppVersionText"/>, with the reasons and the tests.
+    /// </summary>
+    /// <remarks>
+    /// The package's own identity first, because that is what Windows installed and what Partner
+    /// Center shows; the assembly version is the fallback for an unpackaged run, where
+    /// <c>Package.Current</c> throws.
+    /// </remarks>
     private static string AppVersion()
     {
         try
         {
             var version = Windows.ApplicationModel.Package.Current.Id.Version;
-            return string.Create(CultureInfo.InvariantCulture, $"{version.Major}.{version.Minor}.{version.Build}");
+            return AppVersionText.For(version.Major, version.Minor, version.Build);
         }
         catch (Exception)
         {
-            return typeof(SettingsView).Assembly.GetName().Version?.ToString(3) ?? "1.1.0";
+            var assembly = typeof(SettingsView).Assembly.GetName().Version;
+            return assembly is null
+                ? "1.1"
+                : AppVersionText.For(assembly.Major, assembly.Minor, assembly.Build);
         }
     }
 }

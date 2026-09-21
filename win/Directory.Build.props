@@ -17,6 +17,12 @@
     <Company>nettrash</Company>
     <Product>Family Connect</Product>
     <Copyright>© 2026 nettrash</Copyright>
+    <!--
+      The MARKETING version, and the one place it is written. CI reads Major.Minor out of here to
+      stamp `Major.Minor.<run>.0` into the MSIX manifest and to pass `-p:Version=Major.Minor.<run>`
+      for the assembly, so a release bump is this line and nothing else. Keep it a single
+      <Version> element: the stamp step refuses to guess when it finds none or several.
+    -->
     <Version>1.1.0</Version>
     <NeutralLanguage>en</NeutralLanguage>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>

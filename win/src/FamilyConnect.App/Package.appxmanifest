@@ -10,7 +10,14 @@
   Changing the identity makes a different app to Windows: a build under a new identity installs beside
   the old one, with its own credential locker, cache and settings.
 
-  Version is written by hand and never by a build.
+  VERSION: MAJOR AND MINOR ARE WRITTEN HERE BY HAND; THE BUILD NUMBER IS NOT. The third part is
+  stamped by CI (the `win-app` job, from `Directory.Build.props` plus the run number) into a
+  working copy and never committed, so what is checked in stays `<major>.<minor>.0.0` and a local
+  build is visibly unstamped — Settings then says "1.1", not "1.1 (0)" (AppVersionText).
+
+  The fourth part stays 0 and is not ours to set: Partner Center RESERVES the revision and refuses
+  a package that fills it in. Every part is a 16-bit number (0-65535), which is why the build
+  number cannot be a date.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"

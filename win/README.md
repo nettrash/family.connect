@@ -333,6 +333,31 @@ start on its own: a packaged app's Deployment Manager needs its identity and fai
 - **An async click handler that throws ends the process** unless the XAML handler marks it handled,
   which `App` does once it has written the exception down.
 
+## Version and build numbers
+
+`Directory.Build.props` holds the marketing version (`<Version>1.1.0</Version>`) and is the only
+place to bump it. The build number is **not** written by hand: the `win-app` CI job reads
+Major.Minor out of that file and stamps `Major.Minor.<run number>.0` into
+`Package.appxmanifest`'s `Identity/@Version`, in the working copy it just checked out, and passes
+`-p:Version=Major.Minor.<run number>` for the assembly. Nothing is committed, so the file in git
+stays `1.1.0.0` and a build made here is visibly not a Store build — Settings says "1.1" for an
+unstamped one and "1.1 (437)" for a stamped one (`AppVersionText`, with the reasons).
+
+Three constraints shaped that, and each has cost somebody a rejection somewhere:
+
+- **The fourth part is the Store's.** Partner Center reserves the revision and refuses a package
+  that sets it, so the counter goes in the third part and the fourth stays `0`.
+- **Every part is 16-bit** (0–65535), so the counter cannot be a date; the step fails loudly
+  rather than wrapping.
+- **Each submission must be strictly newer** than the last, which a run number gives for free and
+  a hand-edited file does not.
+
+The step is defended against the two ways it could corrupt a manifest quietly, both of which were
+reproduced against the real file before it was written: it refuses to guess when
+`Directory.Build.props` has no single `<Version>`, and its pattern is scoped to the `<Identity …>`
+tag with a word boundary before `Version=` — a looser one rewrote `TargetDeviceFamily`'s
+`MinVersion` to `1.1.439.0` and built a green package claiming to install on Windows 1.1.
+
 Things chosen for the window that nettrash has not decided yet, and where they live:
 
 - **Windows 11 (22000) as the minimum** — `TargetPlatformMinVersion` and the manifest, md.win's floor.
