@@ -91,6 +91,16 @@ public sealed class Resync(
         int Edits = 0,
         int Polls = 0,
         int Notes = 0,
+        /// <summary>
+        /// The assistant this family advertises, or null where it has none. Carried OUT of the
+        /// pass because `/families/mine` is the only read that names it and this is the only
+        /// thing that runs that read on a reconnect — a client that dropped it here had no
+        /// assistant in its session state at all, and so no way to offer the consent the
+        /// protocol requires before a word goes to a model (docs/protocol.md, "Consenting to
+        /// the assistant"). The store keeps the roster; the SESSION keeps this, so it leaves
+        /// here rather than being applied.
+        /// </summary>
+        AssistantDto? Assistant = null,
         ApiError? Stopped = null)
     {
         /// <summary>Whether every read finished. A flush that ran anyway is not a failure.</summary>
@@ -177,6 +187,7 @@ public sealed class Resync(
                 chats.ReplaceBlocked(blocked);
             }
             boardMark = family.Value.MaxBoardSeq;
+            report = report with { Assistant = family.Value.Assistant };
         }
 
         // 2. The list: previews, the authoritative unread counts, and the caller's own marker.
