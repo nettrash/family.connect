@@ -250,6 +250,7 @@
   "Open polls": "Открытые опросы",
   "Open polls stay here until they're closed. There are none right now.": "Открытые опросы остаются здесь, пока их не закроют. Сейчас их нет.",
   "Opens the link": "Открывает ссылку",
+  "Opens the message this answers": "Открывает сообщение, на которое отвечают",
   "Opens the thread": "Открывает ветку",
   "Option": "Вариант",
   "Options": "Варианты",
@@ -350,6 +351,8 @@
   "That family is full right now. Ask them to make room, then try the code again.": "Эта семья сейчас заполнена. Попросите освободить место и попробуйте код ещё раз.",
   "That file is over the 100 MB limit.": "Этот файл больше 100 МБ.",
   "That file isn't a photo we can use.": "Этот файл не подходит как фото.",
+  "That message is not here any more.": "Этого сообщения больше нет.",
+  "That message is not loaded yet. Scroll up to read further back.": "Это сообщение ещё не загружено. Прокрути вверх, чтобы прочитать дальше назад.",
   "That password is not right.": "Пароль неверный.",
   "That photo is too large for this server.": "Это фото слишком большое для этого сервера.",
   "That photo is too large to pin.": "Это фото слишком большое, чтобы его прикрепить.",
@@ -467,5 +470,6 @@
   "Your other devices have been signed out.": "На других твоих устройствах сессия завершена.",
   "Your other devices will be signed out. This one stays signed in.": "На других твоих устройствах сессия завершится. Это останется в системе.",
   "Your request to join was declined. You can ask for a new invite code and try again.": "Заявку отклонили. Можешь попросить новый код приглашения и попробовать снова.",
-  "edited": "изменено"
+  "edited": "изменено",
+  "which replied to a hidden message": "которое отвечало на скрытое сообщение"
 }

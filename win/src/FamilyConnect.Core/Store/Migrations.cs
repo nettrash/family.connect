@@ -198,8 +198,25 @@ public static class Migrations
     ];
 
     /// <summary>
+    /// Step 3: THE QUOTE OVER A REPLY, KEPT. Step 1 stored a reply's target id and nothing else,
+    /// so every reply read back from here was rebuilt with sender 0 and an empty excerpt — and
+    /// since the window draws what the cache holds and never the answer straight off the wire,
+    /// EVERY reply on this client was drawn as "Someone" with no words under it. The snapshot is
+    /// the server's own JSON, both levels of it, stored the way the reactions and the attachments
+    /// are; `reply_to_id` stays, for the rows written before this step and for the thread queries.
+    /// The cached messages are read again rather than left half-drawn: the cache is derived data,
+    /// and the outbox — the one table holding what the server has never seen — is untouched, which
+    /// is the same trade step 2 made.
+    /// </summary>
+    private static readonly string[] Three =
+    [
+        "ALTER TABLE messages ADD COLUMN reply_to_json TEXT",
+        "DELETE FROM messages",
+    ];
+
+    /// <summary>
     /// Every step, in order. The index is the version it upgrades FROM, so
     /// <c>All.Count</c> is the schema this build expects.
     /// </summary>
-    public static readonly IReadOnlyList<string[]> All = [One, Two];
+    public static readonly IReadOnlyList<string[]> All = [One, Two, Three];
 }

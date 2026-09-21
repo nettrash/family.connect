@@ -250,6 +250,7 @@
   "Open polls": "Sondages en cours",
   "Open polls stay here until they're closed. There are none right now.": "Les sondages en cours restent ici jusqu’à leur clôture. Il n’y en a aucun pour l’instant.",
   "Opens the link": "Ouvre le lien",
+  "Opens the message this answers": "Ouvre le message auquel il répond",
   "Opens the thread": "Ouvre le fil",
   "Option": "Réponse",
   "Options": "Réponses",
@@ -350,6 +351,8 @@
   "That family is full right now. Ask them to make room, then try the code again.": "Cette famille est complète pour le moment. Demandez-leur de faire de la place, puis réessayez le code.",
   "That file is over the 100 MB limit.": "Ce fichier dépasse la limite de 100 Mo.",
   "That file isn't a photo we can use.": "Ce fichier n’est pas une photo utilisable.",
+  "That message is not here any more.": "Ce message n'est plus là.",
+  "That message is not loaded yet. Scroll up to read further back.": "Ce message n'est pas encore chargé. Fais défiler vers le haut pour lire plus loin en arrière.",
   "That password is not right.": "Ce mot de passe n’est pas le bon.",
   "That photo is too large for this server.": "Cette photo est trop lourde pour ce serveur.",
   "That photo is too large to pin.": "Cette photo est trop grande pour être épinglée.",
@@ -467,5 +470,6 @@
   "Your other devices have been signed out.": "Tes autres appareils ont été déconnectés.",
   "Your other devices will be signed out. This one stays signed in.": "Tes autres appareils seront déconnectés. Celui-ci reste connecté.",
   "Your request to join was declined. You can ask for a new invite code and try again.": "Ta demande a été refusée. Tu peux demander un nouveau code d’invitation et réessayer.",
-  "edited": "modifié"
+  "edited": "modifié",
+  "which replied to a hidden message": "qui répondait à un message masqué"
 }

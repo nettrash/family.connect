@@ -250,6 +250,7 @@
   "Open polls": "進行中の投票",
   "Open polls stay here until they're closed. There are none right now.": "進行中の投票は、閉じられるまでここに残ります。今はひとつもありません。",
   "Opens the link": "リンクを開く",
+  "Opens the message this answers": "返信元のメッセージを開きます",
   "Opens the thread": "スレッドを開きます",
   "Option": "選択肢",
   "Options": "選択肢",
@@ -350,6 +351,8 @@
   "That family is full right now. Ask them to make room, then try the code again.": "その家族は現在満員です。空きを作ってもらってから、もう一度コードをお試しください。",
   "That file is over the 100 MB limit.": "このファイルは100MBの上限を超えています。",
   "That file isn't a photo we can use.": "そのファイルは使える写真ではありません。",
+  "That message is not here any more.": "そのメッセージはもうありません。",
+  "That message is not loaded yet. Scroll up to read further back.": "そのメッセージはまだ読み込まれていません。上にスクロールして、さかのぼって読んでください。",
   "That password is not right.": "パスワードが違います。",
   "That photo is too large for this server.": "その写真はこのサーバには大きすぎます。",
   "That photo is too large to pin.": "その写真は大きすぎて貼れません。",
@@ -467,5 +470,6 @@
   "Your other devices have been signed out.": "他の端末はサインアウトされました。",
   "Your other devices will be signed out. This one stays signed in.": "他の端末はサインアウトされます。この端末はサインインしたままです。",
   "Your request to join was declined. You can ask for a new invite code and try again.": "参加リクエストは拒否されました。新しい招待コードをもらって、もう一度お試しください。",
-  "edited": "編集済み"
+  "edited": "編集済み",
+  "which replied to a hidden message": "非表示のメッセージに返信したもの"
 }

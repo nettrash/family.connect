@@ -250,6 +250,7 @@
   "Open polls": "进行中的投票",
   "Open polls stay here until they're closed. There are none right now.": "进行中的投票会留在这里，直到被关闭。目前一个也没有。",
   "Opens the link": "打开链接",
+  "Opens the message this answers": "打开被回复的那条消息",
   "Opens the thread": "打开话题",
   "Option": "选项",
   "Options": "选项",
@@ -350,6 +351,8 @@
   "That family is full right now. Ask them to make room, then try the code again.": "该家庭目前已满。请让他们腾出名额后再试一次邀请码。",
   "That file is over the 100 MB limit.": "该文件超过了 100 MB 的限制。",
   "That file isn't a photo we can use.": "该文件不是可用的照片。",
+  "That message is not here any more.": "那条消息已经不在了。",
+  "That message is not loaded yet. Scroll up to read further back.": "那条消息还没加载。向上滚动可以往前看。",
   "That password is not right.": "密码不正确。",
   "That photo is too large for this server.": "该照片对此服务器来说太大了。",
   "That photo is too large to pin.": "这张照片太大，无法钉上。",
@@ -467,5 +470,6 @@
   "Your other devices have been signed out.": "你的其他设备已退出登录。",
   "Your other devices will be signed out. This one stays signed in.": "你的其他设备会退出登录，本设备保持登录。",
   "Your request to join was declined. You can ask for a new invite code and try again.": "你的加入申请被拒绝了。你可以索取新的邀请码再试一次。",
-  "edited": "已编辑"
+  "edited": "已编辑",
+  "which replied to a hidden message": "该消息回复了一条隐藏消息"
 }

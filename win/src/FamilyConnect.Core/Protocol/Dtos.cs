@@ -111,7 +111,25 @@ public sealed record MentionDto(long UserId, string Name);
 
 public sealed record ReactionDto(long UserId, string Emoji);
 
-public sealed record ReplyToDto(long MessageId, long SenderId, string Excerpt);
+/// <summary>
+/// The level UNDER a quote: the quoted message's own quote, one deep and no deeper
+/// (docs/protocol.md, "Replies"). It has no <c>parent</c> of its own on purpose — the protocol's
+/// depth cap is structural, so a message four deep still shows exactly two levels and no page can
+/// drag a whole ancestry along.
+/// </summary>
+public sealed record QuoteParentDto(long MessageId, long SenderId, string Excerpt);
+
+/// <summary>
+/// The quote over a reply, as the server RECOMPUTES it on every read: who wrote the answered
+/// message, a cut of what it said, and one further level when it was itself a reply. It exists so
+/// that a client can draw the quote without holding the original, and the id is how a client that
+/// wants the whole message finds it (docs/protocol.md, "Replies").
+/// </summary>
+public sealed record ReplyToDto(
+    long MessageId,
+    long SenderId,
+    string Excerpt,
+    QuoteParentDto? Parent = null);
 
 public sealed record AttachmentDto(
     long Id,

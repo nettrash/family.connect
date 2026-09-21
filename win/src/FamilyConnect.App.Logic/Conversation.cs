@@ -65,6 +65,7 @@ public sealed class ConversationModel
     private readonly Func<DateTimeOffset> clock;
     private readonly OutboxStore? outbox;
     private readonly HashSet<long> revealed = [];
+    private readonly HashSet<(long Message, QuoteLevel Level)> quoteRevealed = [];
 
     private int window = Page;
     private DateTimeOffset? saidTyping;
@@ -241,6 +242,63 @@ public sealed class ConversationModel
 
     /// <summary>Hide it again.</summary>
     public void Hide(long messageId) => revealed.Remove(messageId);
+
+    /// <summary>
+    /// Show one hidden level of one quote after all — the same one-tap rule as a hidden bubble,
+    /// per level, because a quote of a blocked member is hidden at each level on its own
+    /// (docs/protocol.md, "Blocking a member").
+    /// </summary>
+    public void RevealQuote(long messageId, QuoteLevel level) => quoteRevealed.Add((messageId, level));
+
+    /// <summary>Whether that level has been asked for.</summary>
+    public bool QuoteRevealed(long messageId, QuoteLevel level) => quoteRevealed.Contains((messageId, level));
+
+    // ---- finding a message the reader asked for --------------------------------------------
+
+    /// <summary>How far back a jump may widen the window: ten pages, and then it says it cannot.</summary>
+    public const int JumpLimit = Page * 10;
+
+    /// <summary>Whether the window being drawn holds this message.</summary>
+    public bool Draws(long messageId) =>
+        chats.Messages(ChatId, limit: window).Any(message => message.Id == messageId);
+
+    /// <summary>
+    /// Widen the window until it draws <paramref name="messageId"/>, and answer whether it does.
+    /// </summary>
+    /// <remarks>
+    /// FROM THE CACHE ALONE. A click on a quote asks for a message this device was already told
+    /// about — the excerpt is there so the quote can be drawn without it — and a request per
+    /// click is not what that click is for. So: drawn already, or drawn by widening over rows
+    /// this device holds, or not drawn at all, which is what the reader is told. A quote can name
+    /// a message retention has swept, or one older than anything this install ever held, and
+    /// neither is an error (docs/protocol.md, "Replies").
+    /// </remarks>
+    public bool DrawTo(long messageId)
+    {
+        if (Draws(messageId))
+        {
+            return true;
+        }
+        if (chats.Message(messageId) is not { } held || held.ChatId != ChatId)
+        {
+            return false;
+        }
+        while (window < JumpLimit)
+        {
+            // A short read is the end of what the cache holds: widening again would draw the same
+            // rows and loop.
+            if (chats.Messages(ChatId, limit: window).Count < window)
+            {
+                return false;
+            }
+            window += Page;
+            if (Draws(messageId))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 
     // ---- what is still on its way ----------------------------------------------------------
 

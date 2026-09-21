@@ -170,6 +170,44 @@ public class ChatStoreTests : IDisposable
             Mentions: mentions,
             ThreadRootId: threadRoot);
 
+    /// <summary>
+    /// A QUOTE SURVIVES THE CACHE. `reply_to` is why a client can draw a reply without holding
+    /// the message it answers (docs/protocol.md, "Replies") — so dropping it on the way into the
+    /// cache leaves every reply drawn as "Someone" with no words, because everything this window
+    /// draws it reads back from here.
+    /// </summary>
+    [Fact]
+    public void AQuoteIsKeptWholeBothLevelsOfIt()
+    {
+        var store = Store();
+        store.Replace([Row()]);
+        var quote = new ReplyToDto(10, 7, "Dinner at 7?", new QuoteParentDto(9, 11, "What time?"));
+        store.Apply([Message(11) with { ReplyTo = quote }]);
+
+        Assert.Equal(quote, store.Message(11)!.ReplyTo);
+        Assert.Equal(quote, store.Messages(42, limit: 10).Single(held => held.Id == 11).ReplyTo);
+    }
+
+    /// <summary>
+    /// The server RECOMPUTES a quote on every read, so a newer answer's copy wins — and an answer
+    /// that carries no quote at all (a chat-list preview) leaves the held one alone, which is the
+    /// same rule the reactions and the attachments follow.
+    /// </summary>
+    [Fact]
+    public void ANewerQuoteWinsAndAPreviewWithoutOneChangesNothing()
+    {
+        var store = Store();
+        store.Replace([Row()]);
+        var reply = Message(11) with { ReplyTo = new ReplyToDto(10, 7, "Dinner at 7?") };
+        store.Apply([reply]);
+        // The quoted message was edited: the excerpt comes back different.
+        store.Apply([reply with { ReplyTo = new ReplyToDto(10, 7, "Dinner at 8?") }]);
+        Assert.Equal("Dinner at 8?", store.Message(11)!.ReplyTo!.Excerpt);
+
+        store.Replace([Row(last: Message(11) with { Body = "yes" })]);
+        Assert.Equal("Dinner at 8?", store.Message(11)!.ReplyTo!.Excerpt);
+    }
+
     [Fact]
     public void TheListIsWhatTheServerAnswered()
     {

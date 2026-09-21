@@ -250,6 +250,7 @@
   "Open polls": "Encuestas abiertas",
   "Open polls stay here until they're closed. There are none right now.": "Las encuestas abiertas se quedan aquí hasta que se cierran. Ahora mismo no hay ninguna.",
   "Opens the link": "Abre el enlace",
+  "Opens the message this answers": "Abre el mensaje al que responde",
   "Opens the thread": "Abre el hilo",
   "Option": "Respuesta",
   "Options": "Respuestas",
@@ -350,6 +351,8 @@
   "That family is full right now. Ask them to make room, then try the code again.": "Esa familia está llena ahora mismo. Pídeles que hagan sitio y vuelve a probar el código.",
   "That file is over the 100 MB limit.": "Ese archivo supera el límite de 100 MB.",
   "That file isn't a photo we can use.": "Ese archivo no es una foto que podamos usar.",
+  "That message is not here any more.": "Ese mensaje ya no está aquí.",
+  "That message is not loaded yet. Scroll up to read further back.": "Ese mensaje todavía no está cargado. Desplázate hacia arriba para leer más atrás.",
   "That password is not right.": "Esa contraseña no es correcta.",
   "That photo is too large for this server.": "Esa foto es demasiado grande para este servidor.",
   "That photo is too large to pin.": "Esa foto es demasiado grande para fijarla.",
@@ -467,5 +470,6 @@
   "Your other devices have been signed out.": "Se ha cerrado la sesión en tus otros dispositivos.",
   "Your other devices will be signed out. This one stays signed in.": "Se cerrará la sesión en tus otros dispositivos. En este seguirás conectado.",
   "Your request to join was declined. You can ask for a new invite code and try again.": "Tu solicitud fue rechazada. Puedes pedir un código nuevo e intentarlo otra vez.",
-  "edited": "editado"
+  "edited": "editado",
+  "which replied to a hidden message": "que respondía a un mensaje oculto"
 }

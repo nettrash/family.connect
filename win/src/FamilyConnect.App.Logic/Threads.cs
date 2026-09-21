@@ -33,6 +33,7 @@ public sealed class ThreadModel
     private readonly OutboxStore? outbox;
     private readonly long named;
     private readonly HashSet<long> revealed = [];
+    private readonly HashSet<(long Message, QuoteLevel Level)> quoteRevealed = [];
     private readonly Dictionary<long, MessageDto> read = [];
 
     public ThreadModel(long chatId, long messageId, ChatStore chats, ApiClient api, OutboxStore? outbox = null)
@@ -164,6 +165,18 @@ public sealed class ThreadModel
     public void Reveal(long messageId) => revealed.Add(messageId);
 
     public void Hide(long messageId) => revealed.Remove(messageId);
+
+    /// <summary>
+    /// Show one hidden level of one quote, on this panel — its own reveal, exactly as its hidden
+    /// bubbles are its own (docs/protocol.md, "Blocking a member").
+    /// </summary>
+    public void RevealQuote(long messageId, QuoteLevel level) => quoteRevealed.Add((messageId, level));
+
+    /// <summary>Whether that level has been asked for here.</summary>
+    public bool QuoteRevealed(long messageId, QuoteLevel level) => quoteRevealed.Contains((messageId, level));
+
+    /// <summary>Whether this chain draws that message at all — what a click on a quote needs to know.</summary>
+    public bool Draws(long messageId) => Bubbles().Any(bubble => bubble.Message.Id == messageId);
 
     /// <summary>
     /// React on a row of the chain, held by the cache or not: decided against the freshest copy, and the answer applied to

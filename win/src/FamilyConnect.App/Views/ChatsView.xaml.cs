@@ -104,6 +104,16 @@ public sealed partial class ChatsView : UserControl
     private ThreadModel? thread;
     private string threadDrawn = string.Empty;
 
+    /// <summary>
+    /// The balloon drawn for each message, on each surface: what a click on a quote scrolls to.
+    /// Rebuilt with the rows, because that is when the elements are.
+    /// </summary>
+    private readonly Dictionary<long, Border> balloons = [];
+    private readonly Dictionary<long, Border> threadBalloons = [];
+
+    /// <summary>Guards the tint's own timer, so a second jump does not clear the first one's.</summary>
+    private int tintToken;
+
     /// <summary>Whether a call is on — the window's to say — and where a call this chat asks for goes.</summary>
     private bool callBusy;
 
@@ -721,7 +731,8 @@ public sealed partial class ChatsView : UserControl
         var pending = chat.Pending();
         var drawn = string.Join(Row, bubbles.Select(bubble => string.Join(Field,
             bubble.Message.Id, bubble.Message.EditSeq, bubble.Message.ReactionSeq, bubble.Message.Poll?.PollSeq, bubble.Reads,
-            connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0))));
+            connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0),
+            connection.Chats.IsBlocked(bubble.Message.ReplyTo?.Parent?.SenderId ?? 0))));
         drawn += Row + string.Join(Row, pending.Select(row => string.Join(Field, row.ClientMsgId, row.Failed)));
         // A poll draws voters' names and "N of M voted": a block or a roster change redraws it.
         drawn = $"{chat.ChatId}{Field}{string.Join(',', connection.Chats.Blocked())}{Field}{connection.Chats.Members().Count}" +
@@ -738,6 +749,7 @@ public sealed partial class ChatsView : UserControl
         }
         conversationDrawn = drawn;
         MessageStack.Children.Clear();
+        balloons.Clear();
         if (bubbles.Count == 0 && pending.Count == 0)
         {
             MessageStack.Children.Add(new TextBlock
@@ -932,9 +944,14 @@ public sealed partial class ChatsView : UserControl
         }
 
         var stack = new StackPanel { Spacing = 4 };
-        if (bubble.Reads && Quotes.Of(message, connection.Chats, say) is { } quote)
+        // Which hidden levels of this bubble's quote the reader has asked to see, on THIS surface:
+        // the thread panel's reveals are its own, exactly as its hidden bubbles are.
+        bool Revealed(QuoteLevel level) => inThread is not null
+            ? inThread.QuoteRevealed(message.Id, level)
+            : chat.QuoteRevealed(message.Id, level);
+        if (bubble.Reads && Quotes.Of(message, connection.Chats, say, Revealed) is { } quote)
         {
-            stack.Children.Add(QuoteElement(quote));
+            stack.Children.Add(QuoteElement(quote, say, () => QuoteClicked(chat, inThread, message.Id, quote)));
         }
         if (bubble.Reads && message.Media.Count > 0)
         {
@@ -1022,6 +1039,7 @@ public sealed partial class ChatsView : UserControl
             CornerRadius = BalloonCorners(mine, row.RunStart, row.RunEnd),
             HorizontalAlignment = mine ? HorizontalAlignment.Right : HorizontalAlignment.Left,
         };
+        (inThread is not null ? threadBalloons : balloons)[message.Id] = balloon;
         if (!bubble.Reads)
         {
             // The collapsed stand-in: the words on a quiet ground, and a click shows it.
@@ -1151,23 +1169,26 @@ public sealed partial class ChatsView : UserControl
         return column;
     }
 
-    private static FrameworkElement QuoteElement(Quote quote)
+    /// <summary>
+    /// The quote over a reply: the level under it above, the message it answers below, and the
+    /// whole thing one control a click acts on (web <c>bubble.rs</c>, ios <c>MessageBubbleView</c>).
+    /// </summary>
+    /// <remarks>
+    /// A BUTTON AND NOT A BORDER WITH A TAP. Narrator has to announce it and the keyboard has to
+    /// reach it: a click here reveals a hidden level or goes to the message, and an affordance
+    /// only a mouse can use is not one this product ships (the apps paid for that lesson on
+    /// their own quote — a bare tap gesture publishes no accessibility action at all).
+    /// </remarks>
+    private static FrameworkElement QuoteElement(Quote quote, IStringCatalog say, Action clicked)
     {
         var lines = new StackPanel { Spacing = 0 };
-        if (!quote.Hidden)
+        // The parent goes ABOVE: read downwards it is the older half of the exchange.
+        if (quote.Parent is { } parent)
         {
-            lines.Children.Add(new TextBlock { Text = quote.Name, FontSize = 12, FontWeight = FontWeights.SemiBold });
+            Draw(parent, 0.75);
         }
-        lines.Children.Add(new TextBlock
-        {
-            Text = quote.Excerpt,
-            FontSize = 12,
-            MaxLines = 2,
-            TextWrapping = TextWrapping.Wrap,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            FontStyle = quote.Hidden ? Windows.UI.Text.FontStyle.Italic : Windows.UI.Text.FontStyle.Normal,
-        });
-        return new Border
+        Draw(quote.Reply, 1);
+        var frame = new Border
         {
             Child = lines,
             BorderThickness = new Thickness(3, 0, 0, 0),
@@ -1175,6 +1196,167 @@ public sealed partial class ChatsView : UserControl
             Padding = new Thickness(8, 2, 0, 2),
             Opacity = 0.85,
         };
+        var button = new Button
+        {
+            Content = frame,
+            Background = null,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0),
+            MinWidth = 0,
+            MinHeight = 0,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+        };
+        // What it does when clicked, which is not the same thing twice: a hidden level is shown
+        // first, and only a quote with nothing left to reveal goes to the message.
+        ToolTipService.SetToolTip(button, Quotes.ClickOn(quote) != QuoteClick.GoToMessage
+            ? say.Get("Hidden message from a blocked member. Click to show it.")
+            : say.Get("Opens the message this answers"));
+        AutomationProperties.SetName(button, string.Join(
+            ' ',
+            new[] { quote.Parent, quote.Reply }
+                .Where(line => line is not null)
+                .Select(line => $"{line!.Name} {line.Excerpt}".Trim())));
+        button.Click += (_, _) => clicked();
+        return button;
+
+        void Draw(QuoteLine line, double opacity)
+        {
+            var row = new StackPanel { Spacing = 0, Opacity = opacity };
+            if (!line.Hidden)
+            {
+                row.Children.Add(new TextBlock { Text = line.Name, FontSize = 12, FontWeight = FontWeights.SemiBold });
+            }
+            row.Children.Add(new TextBlock
+            {
+                Text = line.Excerpt,
+                FontSize = 12,
+                MaxLines = 2,
+                TextWrapping = TextWrapping.Wrap,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                FontStyle = line.Hidden ? Windows.UI.Text.FontStyle.Italic : Windows.UI.Text.FontStyle.Normal,
+            });
+            lines.Children.Add(row);
+        }
+    }
+
+    /// <summary>
+    /// A click on a quote. A hidden level is revealed first — outermost, then the one under it,
+    /// the same one-tap rule a hidden bubble follows (docs/protocol.md, "Blocking a member") —
+    /// and once there is nothing masked left, it goes to the message the reply answers.
+    /// </summary>
+    private void QuoteClicked(ConversationModel chat, ThreadModel? inThread, long messageId, Quote quote)
+    {
+        var asked = Quotes.ClickOn(quote);
+        if (asked != QuoteClick.GoToMessage)
+        {
+            var level = asked == QuoteClick.RevealReply ? QuoteLevel.Reply : QuoteLevel.Parent;
+            if (inThread is not null)
+            {
+                inThread.RevealQuote(messageId, level);
+                // Nothing the signature watches has changed — the bubble still reads the same —
+                // so the redraw has to be asked for outright.
+                threadDrawn = string.Empty;
+                DrawThread();
+            }
+            else
+            {
+                chat.RevealQuote(messageId, level);
+                conversationDrawn = string.Empty;
+                DrawConversation(keepFromBottom: DistanceFromBottom);
+            }
+            return;
+        }
+        GoToMessage(chat, inThread, quote.Reply.MessageId);
+    }
+
+    /// <summary>
+    /// Show the message a quote names: scrolled to, and tinted for a moment so the eye lands on
+    /// it (web <c>conversation.rs</c>, ios <c>jumpToMessage</c>).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// FROM WHAT THIS DEVICE HOLDS, WITHOUT A REQUEST. The window widens over rows the cache
+    /// already has (<see cref="ConversationModel.DrawTo"/>); a quote can also name a message
+    /// retention has swept or one older than anything this install held, and then the reader is
+    /// told rather than left clicking a control that does nothing.
+    /// </para>
+    /// <para>
+    /// From the THREAD PANEL, a message that is not in the chain is shown in the conversation
+    /// behind it: the panel closes rather than the click being refused, because the message is
+    /// there and going to it is what was asked for.
+    /// </para>
+    /// </remarks>
+    private void GoToMessage(ConversationModel chat, ThreadModel? inThread, long messageId)
+    {
+        var say = services.Say;
+        if (inThread is not null)
+        {
+            if (inThread.Draws(messageId) && threadBalloons.TryGetValue(messageId, out var inChain))
+            {
+                ScrollTo(ThreadScroller, ThreadStack, inChain);
+                return;
+            }
+            CloseThread();
+        }
+        if (!chat.DrawTo(messageId))
+        {
+            ShowProblem(chat.MayHaveOlder
+                ? say.Get("That message is not loaded yet. Scroll up to read further back.")
+                : say.Get("That message is not here any more."));
+            return;
+        }
+        // Widening the window draws rows above the reader: this redraw is what puts the element
+        // being scrolled to in the tree at all.
+        DrawConversation(keepFromBottom: DistanceFromBottom);
+        if (!balloons.TryGetValue(messageId, out var balloon))
+        {
+            ShowProblem(say.Get("That message is not here any more."));
+            return;
+        }
+        ComposerError.Visibility = Visibility.Collapsed;
+        // From the offset asked for, not from the scroller: ChangeView has not happened yet when
+        // it returns, and the divider's own scroll reads it the same way for the same reason.
+        var top = ScrollTo(MessageScroller, MessageStack, balloon);
+        atNewest = MessageScroller.ScrollableHeight - top <= 24;
+        ShowJump();
+    }
+
+    /// <summary>
+    /// Scroll one surface to a balloon it drew, tint it briefly, and answer the offset asked for.
+    /// </summary>
+    private double ScrollTo(ScrollViewer scroller, FrameworkElement stack, Border balloon)
+    {
+        scroller.UpdateLayout();
+        var top = Math.Max(
+            0,
+            balloon.TransformToVisual(stack).TransformPoint(new Windows.Foundation.Point(0, 0)).Y - 12);
+        scroller.ChangeView(null, top, null, disableAnimation: false);
+        Tint(balloon);
+        return top;
+    }
+
+    /// <summary>
+    /// The moment of colour that says the view moved. Restored by its own timer, and the token
+    /// means a second jump before the first fades does not put back a background that has since
+    /// been replaced.
+    /// </summary>
+    private void Tint(Border balloon)
+    {
+        var was = balloon.Background;
+        balloon.Background = (Brush)Application.Current.Resources["AccentFillColorSecondaryBrush"];
+        var token = ++tintToken;
+        var timer = DispatcherQueue.CreateTimer();
+        timer.Interval = TimeSpan.FromMilliseconds(1200);
+        timer.IsRepeating = false;
+        timer.Tick += (_, _) =>
+        {
+            if (token == tintToken)
+            {
+                balloon.Background = was;
+            }
+        };
+        timer.Start();
     }
 
     private FrameworkElement ChipsElement(ConversationModel chat, MessageDto message, ReactionDto[] reactions, ThreadModel? inThread)
@@ -2038,6 +2220,7 @@ public sealed partial class ChatsView : UserControl
         thread = null;
         threadDrawn = string.Empty;
         ThreadStack.Children.Clear();
+        threadBalloons.Clear();
         ThreadPanel.Visibility = Visibility.Collapsed;
     }
 
@@ -2056,7 +2239,8 @@ public sealed partial class ChatsView : UserControl
         var pending = chain.Pending();
         var drawn = string.Join(Row, bubbles.Select(bubble => string.Join(Field,
             bubble.Message.Id, bubble.Message.EditSeq, bubble.Message.ReactionSeq, bubble.Message.Poll?.PollSeq,
-            bubble.Message.ReplyCount, bubble.Reads, connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0))));
+            bubble.Message.ReplyCount, bubble.Reads, connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0),
+            connection.Chats.IsBlocked(bubble.Message.ReplyTo?.Parent?.SenderId ?? 0))));
         drawn = $"{chain.RootId}{Field}{chain.Loaded}{Field}{chain.Failure?.Code}{Field}{string.Join(',', connection.Chats.Blocked())}" +
             $"{Field}{connection.Chats.Members().Count}{Field}{connection.Answers.Version}{Field}{DateOnly.FromDateTime(DateTime.Now)}" +
             $"{Field}{PreviewMarks(bubbles)}{Field}{MapPreviewSetting.Enabled}" +
@@ -2068,6 +2252,7 @@ public sealed partial class ChatsView : UserControl
         threadDrawn = drawn;
         var atEnd = scrollToEnd || ThreadScroller.VerticalOffset >= ThreadScroller.ScrollableHeight - 4;
         ThreadStack.Children.Clear();
+        threadBalloons.Clear();
         var replies = chain.Replies(bubbles);
         ThreadReplies.Text = say.Plural("%lld replies", replies, replies);
         var hasRoot = bubbles.Any(bubble => bubble.Message.Id == chain.RootId);

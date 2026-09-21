@@ -203,6 +203,62 @@ public class ConversationModelTests : IDisposable
     /// keeps the maximum ever reported, so an older id buys a request and nothing else, and a
     /// report per redraw costs the family's server a request per redraw.
     /// </summary>
+    /// <summary>
+    /// A CLICK ON A QUOTE FINDS THE MESSAGE IT NAMES, from the cache and without a request: the
+    /// window widens over rows this device already holds until the message is drawn
+    /// (docs/protocol.md, "Replies" — the id is how a client that wants the whole message finds
+    /// it). A message this install never held is not found, and nothing is asked for it.
+    /// </summary>
+    [Fact]
+    public void AJumpWidensTheWindowOverWhatIsHeldAndAsksForNothing()
+    {
+        chats.Apply(Enumerable.Range(1, 130).Select(at => Message(at)).ToArray());
+        var rig = Build(new Server());
+
+        // A page is drawn: the newest 50, so 81 is not among them.
+        Assert.True(rig.Chat.Draws(130));
+        Assert.False(rig.Chat.Draws(80));
+
+        Assert.True(rig.Chat.DrawTo(80));
+        Assert.True(rig.Chat.Draws(80));
+        // Nothing older than the cache, and nothing from another chat.
+        Assert.False(rig.Chat.DrawTo(500));
+        Assert.Empty(rig.Handler.Asked);
+    }
+
+    /// <summary>
+    /// A quote can name a message retention has swept, or one older than anything this install
+    /// held: the window widens over what there is, stops, and says it cannot draw it — rather
+    /// than looping over the same short read.
+    /// </summary>
+    [Fact]
+    public void AJumpToAMessageTheCacheDoesNotHoldStops()
+    {
+        chats.Apply([Message(1), Message(2)]);
+        var rig = Build(new Server());
+
+        Assert.False(rig.Chat.DrawTo(99));
+        Assert.True(rig.Chat.DrawTo(1));
+        Assert.Empty(rig.Handler.Asked);
+    }
+
+    /// <summary>
+    /// A hidden quote reveals one level at a time, and the reveal belongs to the conversation, so
+    /// it outlives the redraw (docs/protocol.md, "Blocking a member").
+    /// </summary>
+    [Fact]
+    public void AQuotesRevealIsPerLevelAndOutlivesTheRedraw()
+    {
+        var rig = Build(new Server());
+
+        Assert.False(rig.Chat.QuoteRevealed(11, QuoteLevel.Reply));
+        rig.Chat.RevealQuote(11, QuoteLevel.Reply);
+        Assert.True(rig.Chat.QuoteRevealed(11, QuoteLevel.Reply));
+        // One level says nothing about the other, nor about another message's quote.
+        Assert.False(rig.Chat.QuoteRevealed(11, QuoteLevel.Parent));
+        Assert.False(rig.Chat.QuoteRevealed(12, QuoteLevel.Reply));
+    }
+
     [Fact]
     public async Task ReadingReportsTheNewestOnceAndNotAgain()
     {
