@@ -130,6 +130,14 @@ AI ASSISTANT — CONSENT (5.1.1(i), 5.1.2(i)). The optional assistant is the onl
 
 LOCAL NETWORK PROMPT. With both devices on one Wi-Fi, iOS asks for Local Network permission as a call connects — please allow it, or a same-network call cannot connect. Please test calls on two real devices: the Simulator has no APNs, no camera.
 
+*Before 1.1 is filed, rebuild the DEMO ACCOUNTS block above from master's copy. The 2.1(a)
+rejection of 1.0 build 121 (2026-09-21) was caused by demo DATA, not by a build: the member
+account had blocked the owner, which hides that pair's one-to-one chat from the blocker — and
+calls, read receipts and typing indicators live only there — while the family held test junk
+instead of the content these notes promised. master's block now says what each account is FOR,
+which one meets the consent screen, and that the one-to-one chat is where calls are placed.
+`server/scripts/seed-review-family.py` is what puts a live family into that state.*
+
 ## Reviewer walkthrough (supporting detail — not pasted into App Store Connect)
 
 These notes are for the reviewer's own use and for the developer's records. Do not paste this

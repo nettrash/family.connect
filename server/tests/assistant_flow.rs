@@ -1238,8 +1238,21 @@ impl MockProvider {
     }
 
     /// Wait until this deployment has been asked something.
+    ///
+    /// A DEADLINE rather than a count of sleeps, and a generous one: the
+    /// reply is spawned, so this waits on another task getting scheduled,
+    /// and CI runs all 83 of these at once on a runner with a couple of
+    /// cores. The old bound — 100 sleeps of 50 ms, five seconds — passed in
+    /// 0.8 s on a 16-core Mac and failed on GitHub (2026-09-20, 2026-09-21,
+    /// `a_picture_request_sends_the_words_after_the_token_and_nothing_else`,
+    /// "nothing was ever sent to test-flux"). Reproduced locally under
+    /// `taskpolicy -c background`, which is the only way to see it here.
+    ///
+    /// A long ceiling costs nothing when the machine is healthy: this
+    /// returns on the first poll that finds the call.
     async fn wait_for(&self, deployment: &str) -> ProviderCall {
-        for _ in 0..100 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while tokio::time::Instant::now() < deadline {
             if let Some(call) = self.to_deployment(deployment).into_iter().next() {
                 return call;
             }
@@ -3209,8 +3222,24 @@ async fn a_direct_chat_and_the_private_thread_are_unaffected_by_the_switch() {
     let photo = upload_marked_photo(&ts_on, &owner_on, 0xA1).await;
     say_with(&ts_on, &owner_on, direct_id, "just us", vec![photo]).await;
     say(&ts_on, &member_on, direct_id, "@ai what is that?").await;
+    // The two messages read back, waited FOR rather than slept past: a
+    // fixed 600 ms is a bet on the machine, and this suite lost it once
+    // under load (2026-09-21, starved). The negative assertion below is
+    // the point of the test and needs the window to have actually opened.
+    let written = {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let held = messages_in(&ts_on, &owner_on, direct_id).await;
+            if held.len() >= 2 || tokio::time::Instant::now() >= deadline {
+                break held;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    assert_eq!(written.len(), 2, "the two messages, and nothing the assistant added");
+    // And now that they are both stored, a provider call would have had to
+    // happen by now to be this test's failure.
     tokio::time::sleep(Duration::from_millis(600)).await;
-    assert_eq!(messages_in(&ts_on, &owner_on, direct_id).await.len(), 2);
     assert!(mock_on.calls().is_empty(), "no provider call at all");
     // …and a photo in the FAMILY chat does not reach a private thread
     // either: it is the family chat's, and the thread never reads it.
