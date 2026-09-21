@@ -224,6 +224,25 @@
                         <ToggleSwitch x:Name="KeepRunningSwitch" Grid.Column="2" MinWidth="0" VerticalAlignment="Center" />
                     </Grid>
                 </Border>
+                <!-- And whether it is running at all: started at sign-in it goes to the notification area with no -->
+                <!-- window, so the first call of the day does not need somebody to have opened the app. The row is -->
+                <!-- COLLAPSED where there is no startup task (an unpackaged run), and its switch is disabled where -->
+                <!-- Windows will not let this app decide — the person's own Task Manager choice, or policy. -->
+                <Border x:Name="StartupCard" Style="{StaticResource Card}" Margin="0,4,0,0" Visibility="Collapsed">
+                    <Grid Style="{StaticResource Row}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Style="{StaticResource RowIcon}" Glyph="&#xE7E8;" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                            <TextBlock x:Name="StartupTitle" TextWrapping="Wrap" />
+                            <TextBlock x:Name="StartupFootnote" Style="{StaticResource Footnote}" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="StartupSwitch" Grid.Column="2" MinWidth="0" VerticalAlignment="Center" />
+                    </Grid>
+                </Border>
 
                 <!-- The assistant question: who the words go to, whether this member has agreed, and the -->
                 <!-- way back out of it (docs/protocol.md, "Consenting to the assistant"). The whole group -->

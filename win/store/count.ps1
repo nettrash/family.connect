@@ -62,6 +62,10 @@ $hardware = Get-NumberedItems (Get-ListingSection 'Additional system requirement
 Write-Limit 'Recommended hardware (count)' $hardware.Count 11
 Write-Limit 'Recommended hardware (longest)' (($hardware | Measure-Object -Property Length -Maximum).Maximum) 200
 
+# Release notes. Blank is legitimate for a first submission, so this one has no minimum.
+$release = Get-ListingCopy (Get-ListingSection "What's new in this version")
+Write-Limit "What's new in this version" $release.Length 1500
+
 $copyright = Get-ListingCopy (Get-ListingSection 'Copyright and trademark info')
 Write-Limit 'Copyright and trademark info' $copyright.Length 200 1
 

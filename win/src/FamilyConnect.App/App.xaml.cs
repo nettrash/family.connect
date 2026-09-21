@@ -1,3 +1,4 @@
+using FamilyConnect.App.Logic;
 using FamilyConnect.App.Services;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
@@ -75,9 +76,40 @@ public partial class App : Application
         // A clicked notification opens its chat — including the click that launched the app.
         ToastActivation.Attach(arguments =>
             shown.DispatcherQueue.TryEnqueue(() => shown.OpenFromToast(arguments)));
-        shown.Activate();
-        Startup.Step("window shown");
+        // Windows started this at sign-in: the window is built and listening — the connection, the
+        // call engine and the notification-area icon all come from its constructor — but nobody
+        // asked to look at it, so it is not activated. The icon, or a notification, brings it up.
+        if (StartupSetting.StartsHidden(FromStartupTask(), shown.HasNotificationAreaIcon))
+        {
+            Startup.Step("started by Windows at sign-in: staying in the notification area");
+        }
+        else
+        {
+            shown.Activate();
+            Startup.Step("window shown");
+        }
         // Launched by a share, or one left from a launch that closed before choosing a chat.
         shown.ReceiveShared();
+    }
+
+    /// <summary>
+    /// Whether Windows started this app at sign-in rather than a person opening it — the
+    /// <c>windows.startupTask</c> extension in the manifest, switched on in Settings.
+    /// </summary>
+    /// <remarks>
+    /// In a try, and false when it cannot be read: an ordinary launch is the answer that always
+    /// leaves a window somebody can see.
+    /// </remarks>
+    private static bool FromStartupTask()
+    {
+        try
+        {
+            return AppInstance.GetCurrent().GetActivatedEventArgs().Kind == ExtendedActivationKind.StartupTask;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading what started this launch: {e.GetType().Name} 0x{e.HResult:X8}");
+            return false;
+        }
     }
 }

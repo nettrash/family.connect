@@ -467,6 +467,9 @@ public sealed partial class MainWindow : Window
 
     private static string CallTag(string callId) => $"call-{callId}";
 
+    /// <summary>Whether there is an icon in the notification area to reach this window from.</summary>
+    internal bool HasNotificationAreaIcon => tray is { Shown: true };
+
     /// <summary>To the front — out of the notification area first, when that is where the window went.</summary>
     internal void BringForward()
     {
