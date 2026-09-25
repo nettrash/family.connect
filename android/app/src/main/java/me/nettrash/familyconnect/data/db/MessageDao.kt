@@ -35,6 +35,51 @@ interface MessageDao {
     )
     fun observeMessages(chatId: Long, limit: Int): Flow<List<MessageEntity>>
 
+    /**
+     * Every poll row in the chat, with NO window.
+     *
+     * The open-polls badge has to count over the whole cached chat, not over
+     * the newest hundred rows the thread happens to be drawing: counted from
+     * [observeMessages]'s window it was bounded by scroll position — an open
+     * poll older than the window went uncounted until the reader paged back
+     * to it, the number changed as they scrolled, and iOS (which counts its
+     * whole store) showed a different figure for the same chat.
+     */
+    @Query("SELECT * FROM messages WHERE chatId = :chatId AND pollJson IS NOT NULL")
+    fun observePolls(chatId: Long): Flow<List<MessageEntity>>
+
+    /**
+     * The chain rooted at [rootId]: the root and every row that names it,
+     * oldest first — this device's own optimistic replies included, which
+     * carry the root from the quote they hold (docs/protocol.md,
+     * "Threads"). Over the whole cached chat, not the thread's window, for
+     * the reason [observePolls] gives.
+     */
+    @Query(
+        "SELECT * FROM messages WHERE serverId = :rootId OR threadRootId = :rootId " +
+            "ORDER BY createdAt ASC, serverId ASC",
+    )
+    fun observeThread(rootId: Long): Flow<List<MessageEntity>>
+
+    /** The server's word on the chain, on every copy of a message it sends. */
+    @Query(
+        "UPDATE messages SET threadRootId = :threadRootId, replyCount = :replyCount " +
+            "WHERE clientMsgId = :clientMsgId",
+    )
+    suspend fun setThread(clientMsgId: String, threadRootId: Long?, replyCount: Long)
+
+    /** A page delivered a row the thread read had fetched first: it is in the window now. */
+    @Query("UPDATE messages SET detached = 0 WHERE serverId = :serverId AND detached = 1")
+    suspend fun attach(serverId: Long)
+
+    /** The live half of the chain: one more reply under this root. */
+    @Query("UPDATE messages SET replyCount = replyCount + 1 WHERE serverId = :rootServerId")
+    suspend fun bumpReplyCount(rootServerId: Long): Int
+
+    /** The server's word on whom a message names, on the ack of a pending row. */
+    @Query("UPDATE messages SET mentionsJson = :mentionsJson WHERE clientMsgId = :clientMsgId")
+    suspend fun setMentions(clientMsgId: String, mentionsJson: String?)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(message: MessageEntity)
 
@@ -403,11 +448,11 @@ interface MessageDao {
     suspend fun setPollJson(serverId: Long, json: String?, expectedSeq: Long)
 
     /** Resync cursor: message ids are globally monotonic (protocol). */
-    @Query("SELECT MAX(serverId) FROM messages WHERE chatId = :chatId")
+    @Query("SELECT MAX(serverId) FROM messages WHERE chatId = :chatId AND detached = 0")
     suspend fun maxServerId(chatId: Long): Long?
 
     /** History-paging cursor. */
-    @Query("SELECT MIN(serverId) FROM messages WHERE chatId = :chatId")
+    @Query("SELECT MIN(serverId) FROM messages WHERE chatId = :chatId AND detached = 0")
     suspend fun oldestServerId(chatId: Long): Long?
 
     /**

@@ -1488,6 +1488,7 @@ async fn the_assistant_account_and_the_usage_it_recorded_are_untouched() {
         cfg.ai.endpoint = "https://example.invalid".to_string();
         cfg.ai.deployment = "test-deployment".to_string();
         cfg.ai.api_key = "test-key".to_string();
+        cfg.ai.processor = "Microsoft — Azure OpenAI".to_string();
         cfg.ai.title = "Assistant".to_string();
     })
     .await;

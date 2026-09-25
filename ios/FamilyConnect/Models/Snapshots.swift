@@ -25,6 +25,9 @@ nonisolated struct ChatSnapshot: Equatable, Sendable, Identifiable {
     let peerUserID: Int64?
     let unreadCount: Int
     let othersReadUpTo: Int64
+    /// An unread message here names this reader (docs/protocol.md,
+    /// "Mentioning a member").
+    var hasUnreadMention: Bool = false
 
     var isFamilyChat: Bool { kind == "family" }
 }
@@ -108,6 +111,13 @@ nonisolated struct MessageSnapshot: Equatable, Sendable, Identifiable {
     var reactions: [ReactionSnapshot] = []
     /// The quoted message when this one is a reply. nil otherwise.
     var replyTo: ReplyToSnapshot?
+    /// The chain (docs/protocol.md, "Threads"): the root this reply names,
+    /// and how many replies this message roots — 0 when none.
+    var threadRootID: Int64?
+    var replyCount: Int64 = 0
+    /// The members this message names (docs/protocol.md, "Mentioning a
+    /// member"); [] for none.
+    var mentions: [MentionDTO] = []
     /// True once the body has been edited — the bubble says so.
     var isEdited: Bool = false
     /// The FIRST attachment — kept because a dozen call sites (and the
@@ -197,6 +207,9 @@ extension MessageSnapshot {
             state: entity.state,
             reactions: entity.reactionList,
             replyTo: entity.replySnapshot,
+            threadRootID: entity.threadRootID,
+            replyCount: entity.replyCount,
+            mentions: entity.mentionList,
             isEdited: entity.editSeq > 0,
             attachment: entity.attachmentSnapshot,
             attachments: entity.attachmentList,
@@ -214,7 +227,8 @@ extension ChatSnapshot {
             title: entity.title,
             peerUserID: entity.peerUserID,
             unreadCount: entity.unreadCount,
-            othersReadUpTo: entity.othersReadUpTo
+            othersReadUpTo: entity.othersReadUpTo,
+            hasUnreadMention: entity.hasUnreadMention
         )
     }
 }

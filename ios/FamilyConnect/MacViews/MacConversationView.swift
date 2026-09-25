@@ -64,6 +64,10 @@ struct MacConversationView: View {
     @Query private var members: [MemberEntity]
 
     @State private var draft = ""
+    /// The open-polls surface, reached from this conversation's toolbar.
+    @State private var showsOpenPolls = false
+    /// The chain open on its own sheet (docs/protocol.md, "Threads").
+    @State private var threadTarget: ThreadTarget?
     @State private var isSending = false
     /// The one line this composer uses to say what it is doing or what
     /// went wrong.
@@ -126,8 +130,18 @@ struct MacConversationView: View {
     /// True while the poll form is up. A sheet, sized in the view itself:
     /// a macOS sheet cannot be resized by the person using it.
     @State private var showPollComposer = false
+    /// The consent screen, and the send it interrupted (protocol.md,
+    /// "Consenting to the assistant"). The draft is left as typed while it
+    /// is up, so agreeing finishes the send rather than asking for it
+    /// again — the phone's arrangement.
+    @State private var showAssistantConsent = false
+    @State private var afterAssistantConsent: (() -> Void)?
     /// Owned by the window rather than by a row, which scrolls away.
     @State private var reportTarget: ReportTarget?
+    /// The assistant reply being reported, if any — its own target, because
+    /// it goes to its own endpoint and its own reader (docs/protocol.md,
+    /// "Reporting the assistant").
+    @State private var assistantReportTarget: AssistantReportTarget?
     /// One fix, on demand — never a running location service.
     @State private var locationProvider = LocationProvider()
     /// A drag is over this window and would be accepted. Drawn, because a
@@ -279,6 +293,111 @@ struct MacConversationView: View {
     /// over N members and means nobody. See `MessagePresentation.isRead`.
     private var isFamilyChat: Bool { chat?.kind == "family" }
 
+
+    // MARK: - Member mentions (docs/protocol.md, "Mentioning a member")
+
+    /// Everybody a mention may name: the current roster, by the name the
+    /// app calls them.
+    private var mentionRoster: [MentionDTO] {
+        members.filter { !$0.hasLeft && !$0.accountDeleted }
+            .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) }
+    }
+
+    /// What the strip offers for the prefix being typed: never the reader
+    /// themself, never the blocked, and never the assistant — which is not
+    /// in the roster and has its own button.
+    #if DEBUG
+    /// The Mac App Store capture's one-screen-per-launch hook
+    /// (MacScreenshotRoute): the sheets over a conversation, which only this
+    /// view can raise. Does nothing without `-v1.showScreen`, which no
+    /// Release build can be given.
+    @MainActor
+    private func presentScreenshotRoute() async {
+        switch MacScreenshotRoute.requested {
+        case .polls:
+            showsOpenPolls = true
+        case .thread:
+            // WAITS for the chain, because this runs on a cold launch: the
+            // cache is empty until the first sync lands, and a chat with no
+            // rows yet has no answered message to open. Ten seconds is far
+            // longer than the fixture takes and still finite, so a capture
+            // against a server with no thread fails as an empty sheet
+            // rather than hanging.
+            for _ in 0..<20 {
+                // The NEWEST answered message, which is the chip a person
+                // would click.
+                let root = messages
+                    .filter { $0.chatID == chatID && $0.replyCount > 0 }
+                    .max { ($0.serverID ?? 0) < ($1.serverID ?? 0) }
+                if let rootID = root?.serverID {
+                    threadTarget = ThreadTarget(chatID: chatID, rootID: rootID)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        case .family, .board, .settings, .none:
+            break
+        }
+    }
+    #endif
+
+    private func mentionCandidates(matching query: String) -> [MentionDTO] {
+        MemberMentions.candidates(
+            in: mentionRoster, matching: query,
+            excluding: coordinator.blockedUserIDs.union([coordinator.currentUserID]))
+    }
+
+    /// The members the text names, resolved at send — family chat only,
+    /// nil when it names nobody so the wire stays as it was.
+    private func resolvedMentions(in body: String) -> [MentionDTO]? {
+        guard isFamilyChat else { return nil }
+        let found = MemberMentions.resolve(body: body, roster: mentionRoster)
+        return found.isEmpty ? nil : found
+    }
+
+    /// A tap on a name opens the one-to-one chat with that member — the
+    /// reader's own name, a member who has left and a deleted account are
+    /// highlighted and not tappable.
+    private func openMember(_ userID: Int64) {
+        guard userID != coordinator.currentUserID,
+              let member = members.first(where: { $0.userID == userID }),
+              !member.hasLeft, !member.accountDeleted
+        else { return }
+        Task {
+            if let chatID = try? await coordinator.openDirectChat(with: userID) {
+                session.pendingPushRoute = .chat(chatID)
+            }
+        }
+    }
+
+    /// The chain this message belongs to, on its own sheet: the root it
+    /// names when it is a reply, itself when it is the root.
+    private func openThread(of message: MessageSnapshot) {
+        guard let serverID = message.serverID else { return }
+        threadTarget = ThreadTarget(chatID: chatID, rootID: message.threadRootID ?? serverID)
+    }
+
+    /// Extracted from the `.sheet` closure for the reason `ConversationView`
+    /// records: these bodies are large, and a conditional builder inline in
+    /// one costs more type-checking than a named property.
+    @ViewBuilder
+    private var openPollsSheet: some View {
+        if let chatID = chat?.chatID {
+            OpenPollsView(chatID: chatID)
+        }
+    }
+
+    /// How many open polls in this chat this reader still has to answer.
+    /// Computed from what this window already holds rather than by asking the
+    /// server: the badge has to be right the moment the conversation opens.
+    private var openPollsToAnswer: Int {
+        // Hidden-by-block polls count toward nothing — see ConversationView.
+        let me = AppSettings.currentUserID ?? -1
+        let blocked = coordinator.blockedUserIDs
+        let visible = messages.filter { $0.senderID == me || !blocked.contains($0.senderID) }
+        return OpenPollsBadge.count(polls: visible.compactMap(\.poll), currentUserID: me)
+    }
+
     /// Whether there is somebody to ring from here (docs/protocol.md,
     /// "Voice calls"): a direct chat, on a server that has calls on.
     private var canCall: Bool {
@@ -380,6 +499,20 @@ struct MacConversationView: View {
         .onPasteCommand(of: ClipboardAttachment.pasteCommandTypes) { _ in
             pasteFromClipboard()
         }
+        .sheet(item: $assistantReportTarget) { target in
+            AssistantReportSheet(
+                target: target,
+                onSubmit: { reason, note in
+                    assistantReportTarget = nil
+                    Task {
+                        await coordinator.reportAssistant(
+                            messageID: target.messageID,
+                            reason: reason.rawValue,
+                            note: note)
+                    }
+                },
+                onCancel: { assistantReportTarget = nil })
+        }
         .sheet(item: $reportTarget) { target in
             ReportSheet(
                 target: target,
@@ -393,6 +526,23 @@ struct MacConversationView: View {
                     }
                 },
                 onCancel: { reportTarget = nil })
+        }
+        .sheet(isPresented: $showAssistantConsent) {
+            AssistantConsentSheet(
+                processor: AppSettings.assistantProcessor ?? "",
+                familyHistory: session.family?.aiHistory == true,
+                familyVision: session.family?.aiVision == true,
+                onAgree: {
+                    try await session.setAssistantConsent(true)
+                    showAssistantConsent = false
+                    let resume = afterAssistantConsent
+                    afterAssistantConsent = nil
+                    resume?()
+                },
+                onDecline: {
+                    showAssistantConsent = false
+                    afterAssistantConsent = nil
+                })
         }
         .sheet(isPresented: $showPollComposer) {
             PollComposerView(
@@ -432,6 +582,50 @@ struct MacConversationView: View {
                     }
                 }
             }
+            // The way back to a decision the family has scrolled past
+            // (docs/protocol.md, "Finding the open ones"). Family chat only,
+            // because polls exist nowhere else — which is also why this slot
+            // was empty here: `canCall` is false in the family chat, so it
+            // carried no item at all.
+            //
+            // The badge counts open polls THIS READER has not voted in
+            // (OpenPollsBadge, shared with the phone and mirrored on
+            // Android), not all open polls: a count that stays lit after you
+            // have answered everything, until somebody else closes them,
+            // stops meaning anything within a day.
+            if isFamilyChat {
+                ToolbarItem {
+                    Button {
+                        showsOpenPolls = true
+                    } label: {
+                        // Drawn by hand for the reason ConversationView
+                        // gives: `.badge` on a toolbar item is macOS 26+, and
+                        // this app deploys to 14.
+                        Label("Open polls", systemImage: "chart.bar.doc.horizontal")
+                            .overlay(alignment: .topTrailing) {
+                                if openPollsToAnswer > 0 {
+                                    Text("\(openPollsToAnswer)")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(.tint, in: Capsule())
+                                        .offset(x: 9, y: -8)
+                                }
+                            }
+                    }
+                    // ONE literal: a ternary of two string literals is inferred
+                    // as `String`, which `.help` takes verbatim and never
+                    // localizes — the count is on the capsule and, for
+                    // VoiceOver, in the value below.
+                    .help("Open polls")
+                    .accessibilityValue(openPollsToAnswer > 0 ? Text("\(openPollsToAnswer) to answer") : Text(""))
+                }
+            }
+        }
+        .sheet(isPresented: $showsOpenPolls) { openPollsSheet }
+        .sheet(item: $threadTarget) { target in
+            ThreadView(chatID: target.chatID, rootID: target.rootID)
         }
         // Presence is ONE value and a Mac can have several conversation
         // windows, so ownership has to be explicit: the frontmost window
@@ -667,6 +861,10 @@ struct MacConversationView: View {
                                     isFamilyChat: isFamilyChat),
                                 onReply: { beginReply(row.message) },
                                 onEdit: { beginEdit(row.message) },
+                                replyCount: row.message.replyCount,
+                                canViewThread: row.message.serverID != nil
+                                    && (row.message.threadRootID != nil || row.message.replyCount > 0),
+                                onOpenThread: { openThread(of: row.message) },
                                 onReport: {
                                     reportTarget = ReportTarget(
                                         senderID: row.message.senderID,
@@ -674,6 +872,14 @@ struct MacConversationView: View {
                                             ?? String(localized: "Someone"),
                                         messageID: row.message.serverID)
                                 },
+                                onReportAssistant: {
+                                    if let serverID = row.message.serverID {
+                                        assistantReportTarget = AssistantReportTarget(
+                                            messageID: serverID,
+                                            isPrivateThread: isAssistantChat)
+                                    }
+                                },
+                                isAssistantChat: isAssistantChat,
                                 isHiddenByBlock: row.isHiddenByBlock,
                                 isRevealed: revealedMessageIDs.contains(row.message.localID),
                                 onReveal: {
@@ -690,6 +896,7 @@ struct MacConversationView: View {
                                             : "\(row.message.localID)#parent")
                                 },
                                 onTapQuote: { jumpToMessage($0, proxy: proxy) },
+                                onTapMention: { openMember($0) },
                                 onOpenAttachment: { attachment in
                                     if attachment.isFile {
                                         openFile(attachment)
@@ -779,6 +986,9 @@ struct MacConversationView: View {
                 if draft.isEmpty, let parked = ComposerDrafts.take(for: chatID) {
                     draft = parked
                 }
+                #if DEBUG
+                await presentScreenshotRoute() // -v1.showScreen, DEBUG only
+                #endif
                 // Files shared into the app and addressed to THIS chat
                 // land in the composer, staged — the ordinary arrival,
                 // since the picker selects the chat and the sidebar's
@@ -1283,6 +1493,16 @@ struct MacConversationView: View {
             if !staged.isEmpty {
                 StagedAttachmentRow(items: staged) { discardStaged($0) }
             }
+            // The roster, while a member is being named (protocol.md,
+            // "Mentioning a member") — the phone's strip.
+            if isFamilyChat, let query = MemberMentions.query(in: draft) {
+                let candidates = mentionCandidates(matching: query)
+                if !candidates.isEmpty {
+                    MentionSuggestions(candidates: candidates) { name in
+                        draft = MemberMentions.accept(draft: draft, name: name)
+                    }
+                }
+            }
             // Two strips, never both — the phone's arrangement: the
             // assistant's own chat, and (#56) the family chat for a photo
             // an `@ai` draft is about to carry.
@@ -1295,6 +1515,26 @@ struct MacConversationView: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .accessibilityElement(children: .combine)
+            }
+            // Nothing goes to the model until this member has said so
+            // (protocol.md, "Consenting to the assistant").
+            if assistantConsentNeeded, let processor = AppSettings.assistantProcessor {
+                AssistantConsentBar(processor: processor) {
+                    afterAssistantConsent = { send() }
+                    showAssistantConsent = true
+                }
+            } else if assistantIsUnnamed {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "hand.raised")
+                    Text(AssistantConsent.unnamedProcessorNotice)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
                 .accessibilityElement(children: .combine)
             }
             HStack(alignment: .bottom, spacing: 8) {
@@ -1536,6 +1776,7 @@ struct MacConversationView: View {
                     label: nil,
                     caption: caption,
                     replyTo: quote,
+                    mentions: resolvedMentions(in: caption),
                     in: chatID)
                 if queued == nil {
                     // Through the guarded restore, like every other send
@@ -1565,6 +1806,32 @@ struct MacConversationView: View {
     /// (docs/protocol.md, "Mentioning the assistant in the family chat").
     private var showsAssistantMention: Bool {
         chat?.kind == "family" && AppSettings.assistantUserID != nil
+            // And a server that names nobody offers no assistant here
+            // either: a consent screen with a hole where the recipient
+            // goes is not consent (protocol.md, "Consenting to the
+            // assistant").
+            && AssistantConsent.isAvailable(processor: AppSettings.assistantProcessor)
+    }
+
+    /// Would this draft reach an assistant this server refuses to name?
+    private var assistantIsUnnamed: Bool {
+        guard editTarget == nil else { return false }
+        return AssistantConsent.isWithheldFromAnUnnamedAssistant(
+            chatKind: chat?.kind,
+            body: draft,
+            hasAssistant: AppSettings.assistantUserID != nil,
+            processor: AppSettings.assistantProcessor)
+    }
+
+    /// Would this draft go to the model with nobody having agreed yet?
+    private var assistantConsentNeeded: Bool {
+        // Not while the composer is borrowed for an edit — see the phone.
+        guard editTarget == nil else { return false }
+        return AssistantConsent.isRequired(
+            chatKind: chat?.kind,
+            body: draft,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt)
     }
 
     /// The assistant's own chat: two participants, so a message that is
@@ -1762,6 +2029,24 @@ struct MacConversationView: View {
     private func send() {
         let body = draft.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // Ask before anything reaches the model. The server refuses it
+        // with `assistant_consent_required` regardless; asking here is
+        // what keeps the message in hand while the question is answered
+        // (protocol.md, "Consenting to the assistant").
+        if editTarget == nil,
+            AssistantConsent.isRequired(
+                chatKind: chat?.kind,
+                body: body,
+                processor: AppSettings.assistantProcessor,
+                agreedAt: session.assistantConsentAt)
+        {
+            afterAssistantConsent = { send() }
+            showAssistantConsent = true
+            return
+        }
+        // A server that will not say who answers gets nothing at all.
+        if editTarget == nil, assistantIsUnnamed { return }
+
         // Edit mode borrows the composer. The field clears only once the
         // server takes it — a refused edit leaves the text there to fix,
         // which is the phone's rule too.
@@ -1795,7 +2080,7 @@ struct MacConversationView: View {
         // Declared before the row exists, because that is the only moment
         // this is knowable without guessing (see `owesSendPin`).
         owesSendPin = true
-        coordinator.send(body: body, in: chatID, replyTo: quote)
+        coordinator.send(body: body, in: chatID, replyTo: quote, mentions: resolvedMentions(in: body))
     }
 
     /// The poll door, and a send door like any other.
@@ -1814,9 +2099,22 @@ struct MacConversationView: View {
     /// coming would spend itself on somebody else's next message — the
     /// case `restoreComposer` exists for.
     private func sendPoll(question: String, options: [String]) {
+        // A poll's QUESTION is the body, so an `@ai` in it asks the
+        // assistant exactly as a typed message does.
+        if AssistantConsent.isRequired(
+            chatKind: chat?.kind,
+            body: question,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt)
+        {
+            afterAssistantConsent = { sendPoll(question: question, options: options) }
+            showAssistantConsent = true
+            return
+        }
         let quote = replyDraft
         guard coordinator.sendPoll(
-            question: question, options: options, in: chatID, replyTo: quote) != nil
+            question: question, options: options, in: chatID, replyTo: quote,
+            mentions: resolvedMentions(in: question)) != nil
         else { return }
         replyDraft = nil
         owesSendPin = true
@@ -2118,7 +2416,7 @@ struct MacConversationView: View {
     @discardableResult
     private func stage(_ prepared: MediaPrep.Prepared) -> Bool {
         guard StagedAttachment.canAdd(to: staged.count) else {
-            try? FileManager.default.removeItem(at: prepared.fileURL)
+            MediaPrep.discard(prepared)
             mediaNotice = .failed(String(
                 localized: "You can attach up to \(StagedAttachment.maxPerMessage) items."))
             return false
@@ -2129,13 +2427,15 @@ struct MacConversationView: View {
         return true
     }
 
-    /// Throw away ONE staged item and its temp file.
+    /// Throw away ONE staged item, and its temp file if it has one.
     ///
-    /// The file is ours: MediaPrep wrote it into a temp directory and
-    /// nothing else will clean it up, because the delete that normally
-    /// consumes it lives in `sendMedia` — which never ran.
+    /// Usually the file is ours — `MediaPrep` wrote it into a temp
+    /// directory, and nothing else will clean it up because the delete
+    /// that normally consumes it lives in `sendMedia`, which never ran. But
+    /// a video that already fits the ceiling is staged as the person's OWN
+    /// file, and `MediaPrep.discard` is what knows not to delete that.
     private func discardStaged(_ item: StagedAttachment) {
-        try? FileManager.default.removeItem(at: item.prepared.fileURL)
+        MediaPrep.discard(item.prepared)
         staged.removeAll { $0.id == item.id }
     }
 
@@ -2168,6 +2468,7 @@ struct MacConversationView: View {
             items.map(\.prepared),
             caption: caption,
             replyTo: quote,
+            mentions: resolvedMentions(in: caption),
             in: chatID) == nil
         {
             // Only when not one item could be staged.
@@ -2248,7 +2549,7 @@ private struct MacComposerBanner: View {
 
 /// "Today / Yesterday / Mon, Aug 17" between day sections — the same
 /// labels the phone uses.
-private struct MacDayPill: View {
+struct MacDayPill: View {
     let day: Date
 
     var body: some View {

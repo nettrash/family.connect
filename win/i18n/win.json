@@ -1,0 +1,210 @@
+{
+  "_comment": [
+    "The Windows client's OWN strings: the ones the apps' Localizable.xcstrings does not hold.",
+    "A key with an empty object is ENGLISH FOR NOW in every language — recorded here rather than",
+    "quietly drawn in English by nine catalogues that look complete. The web client keeps exactly",
+    "the same file for exactly the same reason (web/i18n/web.json), and these five are the same",
+    "five it is waiting on."
+  ],
+  "strings": {
+    "%@ GB": {},
+    "%@ KB": {},
+    "%@ MB": {},
+    "%@ — %@": {},
+    "%@ — %@ mentioned you": {},
+    "%lld attachments, %@": {
+      "en": {
+        "one": "%lld attachment, %@",
+        "other": "%lld attachments, %@"
+      }
+    },
+    "%lld byte": {},
+    "%lld bytes": {},
+    "%lld members now. Nobody new can join until somebody leaves; no one is removed.": {
+      "en": {
+        "one": "%lld member now. Nobody new can join until somebody leaves; no one is removed.",
+        "other": "%lld members now. Nobody new can join until somebody leaves; no one is removed."
+      }
+    },
+    "%lld pictures from the assistant": {
+      "en": {
+        "one": "%lld picture from the assistant",
+        "other": "%lld pictures from the assistant"
+      }
+    },
+    "%lld questions to the assistant": {
+      "en": {
+        "one": "%lld question to the assistant",
+        "other": "%lld questions to the assistant"
+      }
+    },
+    "+%lld": {},
+    "A photo is still being pinned. Add the next one when it is on the board.": {},
+    "Add Event": {},
+    "Call with %@": {},
+    "Caption": {},
+    "Chat": {},
+    "Couldn't move the note.": {},
+    "Couldn't send your answer.": {},
+    "Delete the family?": {},
+    "Event": {},
+    "Family Connect for Windows %@": {},
+    "Family Connect opens in the notification area when you sign in to Windows, so a message or a call reaches you without opening it first.": {
+      "de": "Family Connect öffnet sich beim Anmelden bei Windows im Infobereich, damit dich eine Nachricht oder ein Anruf erreicht, ohne dass du es erst öffnen musst.",
+      "es": "Family Connect se abre en el área de notificación cuando inicias sesión en Windows, para que un mensaje o una llamada te lleguen sin tener que abrirlo antes.",
+      "fr": "Family Connect s'ouvre dans la zone de notification quand tu ouvres ta session Windows, pour qu'un message ou un appel te parvienne sans que tu aies à l'ouvrir d'abord.",
+      "ja": "Windows にサインインすると Family Connect が通知領域で開くので、先に開かなくてもメッセージや通話が届きます。",
+      "ru": "Family Connect открывается в области уведомлений при входе в Windows, чтобы сообщение или звонок дошли до тебя, даже если ты его ещё не открыл.",
+      "sr": "Family Connect се отвара у пољу за обавештења када се пријавиш на Windows, па ти порука или позив стигну и пре него што га отвориш.",
+      "sr-Latn": "Family Connect se otvara u polju za obaveštenja kada se prijaviš na Windows, pa ti poruka ili poziv stignu i pre nego što ga otvoriš.",
+      "zh-Hans": "登录 Windows 后，Family Connect 会在通知区域打开，这样消息和来电不用先打开它就能找到你。"
+    },
+    "Family Connect stays in the notification area, so messages and calls still reach you. Quit it from its icon there.": {
+      "de": "Family Connect bleibt im Infobereich, damit dich Nachrichten und Anrufe weiterhin erreichen. Beenden kannst du es über sein Symbol dort.",
+      "es": "Family Connect se queda en el área de notificación para que los mensajes y las llamadas te sigan llegando. Puedes cerrarlo desde su icono allí.",
+      "fr": "Family Connect reste dans la zone de notification pour que les messages et les appels te parviennent toujours. Tu peux le quitter depuis son icône à cet endroit.",
+      "ja": "Family Connect は通知領域に残るので、メッセージや通話を引き続き受け取れます。終了するには、そこにあるアイコンを使ってください。",
+      "ru": "Family Connect остаётся в области уведомлений, чтобы сообщения и звонки продолжали до тебя доходить. Выйти можно через его значок там.",
+      "sr": "Family Connect остаје у пољу за обавештења, па ти поруке и позиви и даље стижу. Можеш да га затвориш преко његове иконе тамо.",
+      "sr-Latn": "Family Connect ostaje u polju za obaveštenja, pa ti poruke i pozivi i dalje stižu. Možeš da ga zatvoriš preko njegove ikone tamo.",
+      "zh-Hans": "Family Connect 会留在通知区域，让你继续收到消息和来电。可以通过那里的图标退出。"
+    },
+    "Finding your location…": {},
+    "Jump to the newest message": {},
+    "Keep": {},
+    "Keep running when the window is closed": {
+      "de": "Nach dem Schließen des Fensters weiterlaufen",
+      "es": "Seguir en ejecución al cerrar la ventana",
+      "fr": "Continuer à fonctionner après la fermeture de la fenêtre",
+      "ja": "ウィンドウを閉じても実行を続ける",
+      "ru": "Продолжать работу после закрытия окна",
+      "sr": "Настави да ради када се прозор затвори",
+      "sr-Latn": "Nastavi da radi kada se prozor zatvori",
+      "zh-Hans": "关闭窗口后继续运行"
+    },
+    "Leave and Delete": {},
+    "Locations": {},
+    "Message %@": {},
+    "More for %@": {},
+    "New note": {},
+    "Notifications": {},
+    "Only the person who wrote a note can change it.": {},
+    "Open Family Connect": {
+      "de": "Family Connect öffnen",
+      "es": "Abrir Family Connect",
+      "fr": "Ouvrir Family Connect",
+      "ja": "Family Connect を開く",
+      "ru": "Открыть Family Connect",
+      "sr": "Отвори Family Connect",
+      "sr-Latn": "Otvori Family Connect",
+      "zh-Hans": "打开 Family Connect"
+    },
+    "Opens the message this answers": {
+      "de": "Öffnet die Nachricht, auf die geantwortet wird",
+      "es": "Abre el mensaje al que responde",
+      "fr": "Ouvre le message auquel il répond",
+      "ja": "返信元のメッセージを開きます",
+      "ru": "Открывает сообщение, на которое отвечают",
+      "sr": "Отвара поруку на коју је одговорено",
+      "sr-Latn": "Otvara poruku na koju je odgovoreno",
+      "zh-Hans": "打开被回复的那条消息"
+    },
+    "Pick when it ends, or turn the end off.": {},
+    "Pick when it starts.": {},
+    "Pinning…": {},
+    "Position": {},
+    "Quit Family Connect": {
+      "de": "Family Connect beenden",
+      "es": "Salir de Family Connect",
+      "fr": "Quitter Family Connect",
+      "ja": "Family Connect を終了",
+      "ru": "Выйти из Family Connect",
+      "sr": "Затвори Family Connect",
+      "sr-Latn": "Zatvori Family Connect",
+      "zh-Hans": "退出 Family Connect"
+    },
+    "Recording %@": {},
+    "Report sent.": {},
+    "Safety for %@": {},
+    "Shows a map on a shared location. Drawing one asks OpenStreetMap for the map around that place, so OpenStreetMap sees a request from this device. With maps off, a shared location still shows its pin and opens in a map when you click it.": {
+      "de": "Zeigt bei einem geteilten Standort eine Karte. Dafür wird OpenStreetMap nach der Karte rund um diesen Ort gefragt, daher sieht OpenStreetMap eine Anfrage von diesem Gerät. Ohne Karten zeigt ein geteilter Standort weiterhin seine Markierung und öffnet sich beim Klicken in einer Karte.",
+      "es": "Muestra un mapa en una ubicación compartida. Para dibujarlo se pide a OpenStreetMap el mapa alrededor de ese lugar, así que OpenStreetMap ve una solicitud desde este dispositivo. Sin mapas, una ubicación compartida sigue mostrando su marcador y se abre en un mapa al hacer clic.",
+      "fr": "Affiche une carte sur une position partagée. Pour la dessiner, OpenStreetMap est interrogé sur la carte autour de ce lieu : OpenStreetMap voit donc une requête de cet appareil. Sans cartes, une position partagée affiche toujours son repère et s’ouvre dans une carte quand tu cliques dessus.",
+      "ja": "共有された位置に地図を表示します。地図を描くためにその場所の周辺の地図を OpenStreetMap に問い合わせるので、OpenStreetMap にはこのデバイスからのリクエストが見えます。地図をオフにしても、共有された位置にはピンが表示され、クリックすると地図で開きます。",
+      "ru": "Показывает карту для отправленного местоположения. Чтобы её нарисовать, у OpenStreetMap запрашивается карта вокруг этого места, поэтому OpenStreetMap видит запрос с этого устройства. Без карт отправленное местоположение по-прежнему показывает метку и открывается на карте по щелчку.",
+      "sr": "Приказује мапу уз подељену локацију. Да би се нацртала, од OpenStreetMap-а се тражи мапа око тог места, па OpenStreetMap види захтев са овог уређаја. Без мапа подељена локација и даље приказује своју ознаку и отвара се на мапи када кликнеш на њу.",
+      "sr-Latn": "Prikazuje mapu uz podeljenu lokaciju. Da bi se nacrtala, od OpenStreetMap-a se traži mapa oko tog mesta, pa OpenStreetMap vidi zahtev sa ovog uređaja. Bez mapa podeljena lokacija i dalje prikazuje svoju oznaku i otvara se na mapi kada klikneš na nju.",
+      "zh-Hans": "在共享的位置上显示地图。绘制地图需要向 OpenStreetMap 请求该地点周围的地图，因此 OpenStreetMap 会看到来自此设备的请求。关闭地图后，共享的位置仍会显示标记，点击即可在地图中打开。"
+    },
+    "Start when I sign in": {
+      "de": "Beim Anmelden starten",
+      "es": "Abrir al iniciar sesión",
+      "fr": "Démarrer à l'ouverture de session",
+      "ja": "サインイン時に起動",
+      "ru": "Запускать при входе в систему",
+      "sr": "Покрени при пријављивању",
+      "sr-Latn": "Pokreni pri prijavljivanju",
+      "zh-Hans": "登录时启动"
+    },
+    "Tell me when a message arrives": {},
+    "That message is not here any more.": {
+      "de": "Diese Nachricht ist nicht mehr da.",
+      "es": "Ese mensaje ya no está aquí.",
+      "fr": "Ce message n'est plus là.",
+      "ja": "そのメッセージはもうありません。",
+      "ru": "Этого сообщения больше нет.",
+      "sr": "Та порука више није овде.",
+      "sr-Latn": "Ta poruka više nije ovde.",
+      "zh-Hans": "那条消息已经不在了。"
+    },
+    "That message is not loaded yet. Scroll up to read further back.": {
+      "de": "Diese Nachricht ist noch nicht geladen. Scrolle nach oben, um weiter zurückzulesen.",
+      "es": "Ese mensaje todavía no está cargado. Desplázate hacia arriba para leer más atrás.",
+      "fr": "Ce message n'est pas encore chargé. Fais défiler vers le haut pour lire plus loin en arrière.",
+      "ja": "そのメッセージはまだ読み込まれていません。上にスクロールして、さかのぼって読んでください。",
+      "ru": "Это сообщение ещё не загружено. Прокрути вверх, чтобы прочитать дальше назад.",
+      "sr": "Та порука још није учитана. Скролуј нагоре да прочиташ старије поруке.",
+      "sr-Latn": "Ta poruka još nije učitana. Skroluj nagore da pročitaš starije poruke.",
+      "zh-Hans": "那条消息还没加载。向上滚动可以往前看。"
+    },
+    "That note has been taken down.": {},
+    "That's more things than one list holds.": {},
+    "The assistant is answering": {},
+    "The board pins one photo at a time — the first is on its way.": {},
+    "The end can't be before the start.": {},
+    "The photo took too long to pin. Try again.": {},
+    "The server is busy. Try again in a moment.": {},
+    "Title": {},
+    "View the photo": {},
+    "Voice message": {},
+    "What hasn't been sent yet is lost.": {},
+    "While this window is not in front, a notification says who wrote — never what they wrote.": {},
+    "Windows is keeping this off. Turn it back on in Task Manager, under Startup apps.": {
+      "de": "Windows lässt das derzeit nicht zu. Schalte es im Task-Manager unter „Autostart-Apps“ wieder ein.",
+      "es": "Windows lo mantiene desactivado. Vuelve a activarlo en el Administrador de tareas, en «Aplicaciones de inicio».",
+      "fr": "Windows le laisse désactivé. Réactive-le dans le Gestionnaire des tâches, sous « Applications de démarrage ».",
+      "ja": "Windows がこれをオフのままにしています。タスク マネージャーの「スタートアップ アプリ」でオンに戻してください。",
+      "ru": "Windows держит это выключенным. Включи обратно в диспетчере задач, в разделе «Автозагрузка приложений».",
+      "sr": "Windows ово држи искључено. Укључи га поново у Управљачу задатака, у одељку „Апликације при покретању“.",
+      "sr-Latn": "Windows ovo drži isključeno. Uključi ga ponovo u Upravljaču zadataka, u odeljku „Aplikacije pri pokretanju“.",
+      "zh-Hans": "Windows 让它保持关闭。可以在任务管理器的“启动应用”中重新开启。"
+    },
+    "Windows is not showing notifications for Family Connect. Allow them in Windows Settings, under Notifications.": {},
+    "You're not in a family, so there is no board.": {},
+    "You've blocked them.": {},
+    "Your organisation decides whether Family Connect starts when you sign in.": {
+      "de": "Deine Organisation entscheidet, ob Family Connect beim Anmelden startet.",
+      "es": "Tu organización decide si Family Connect se inicia al entrar en tu cuenta.",
+      "fr": "Ton organisation décide si Family Connect démarre à l'ouverture de session.",
+      "ja": "サインイン時に Family Connect を起動するかどうかは、組織が決めています。",
+      "ru": "Твоя организация решает, запускать ли Family Connect при входе в систему.",
+      "sr": "Твоја организација одлучује да ли се Family Connect покреће при пријављивању.",
+      "sr-Latn": "Tvoja organizacija odlučuje da li se Family Connect pokreće pri prijavljivanju.",
+      "zh-Hans": "是否在登录时启动 Family Connect，由你的组织决定。"
+    },
+    "Zero KB": {},
+    "Zoom in": {},
+    "Zoom out": {},
+    "a photo": {}
+  }
+}

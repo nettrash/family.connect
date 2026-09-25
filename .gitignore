@@ -1,6 +1,9 @@
 # macOS
 .DS_Store
 
+# Visual Studio
+.vs/
+
 # Rust (server/)
 server/target/
 server/target-linux/
@@ -45,3 +48,24 @@ __pycache__/
 .idea/
 .vscode/
 android/app/src/nettrash/google-services.json
+
+# Web (web/) — Trunk's output and the lock file this repo does not track for
+# an application, the same rule nettrash.me follows.
+web/dist/
+web/target/
+web/Cargo.lock
+
+# Windows client (win/) — the .NET build output, and the board oracle's own Cargo output.
+# `bin/` and `obj/` are per-project and there are several, so they are globbed; the lock file
+# follows the same rule the other two Rust trees here follow (an application, not a library).
+win/**/bin/
+win/**/obj/
+# The Microsoft Store packages win/store/build-store-packages.ps1 writes: ~80 MB each, rebuilt from source.
+win/AppPackages/
+win/tools/board-oracle/target/
+win/tools/board-oracle/Cargo.lock
+
+# Mutation-run scratch output. `mut-threads.out` and `mut-viewer.out` reached
+# the release branch in #64 holding nothing but a "can't open file" error and an
+# absolute developer path: a harness writes one per run and none is a fixture.
+mut-*.out

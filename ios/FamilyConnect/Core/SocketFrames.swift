@@ -39,7 +39,11 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         /// one-element spelling of the same thing and this client no
         /// longer sends it; the server accepts the array.
         attachmentIDs: [Int64]?,
-        pollOptions: [String]?)
+        pollOptions: [String]?,
+        /// The members this message names, family chat only — encoded as
+        /// `mentions`, absent when nil (docs/protocol.md, "Mentioning a
+        /// member").
+        mentions: [MentionDTO]?)
     case read(chatID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64)
     case ping
@@ -68,6 +72,7 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         case attachmentIDs = "attachment_ids"
         case lastReadMessageID = "last_read_message_id"
         case poll
+        case mentions
         case callID = "call_id"
         case sdp
         case candidate
@@ -85,7 +90,7 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .send(let chatID, let clientMsgID, let body, let replyToMessageID, let attachmentIDs, let pollOptions):
+        case .send(let chatID, let clientMsgID, let body, let replyToMessageID, let attachmentIDs, let pollOptions, let mentions):
             try container.encode("send", forKey: .type)
             try container.encode(chatID, forKey: .chatID)
             try container.encode(clientMsgID, forKey: .clientMsgID)
@@ -95,6 +100,7 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
             // field as absent.
             try container.encodeIfPresent(replyToMessageID, forKey: .replyToMessageID)
             try container.encodeIfPresent(attachmentIDs, forKey: .attachmentIDs)
+            try container.encodeIfPresent(mentions, forKey: .mentions)
             if let pollOptions {
                 var poll = container.nestedContainer(keyedBy: NewPollKeys.self, forKey: .poll)
                 try poll.encode(pollOptions, forKey: .options)

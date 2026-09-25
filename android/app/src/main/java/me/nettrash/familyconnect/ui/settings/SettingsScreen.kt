@@ -104,6 +104,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.BuildConfig
+import me.nettrash.familyconnect.ui.components.AssistantConsentDialog
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.DestructiveTextButton
 import me.nettrash.familyconnect.ui.components.ErrorCard
@@ -494,6 +495,60 @@ fun SettingsScreen(
                     viewModel.setMapPreviewsEnabled(!state.mapPreviewsEnabled)
                 },
             )
+            // The assistant question: WHO the words go to, whether this
+            // member has agreed, and the way back out of it
+            // (docs/protocol.md, "Consenting to the assistant"). Absent
+            // where this server named no processor — there is nothing to
+            // have agreed to, and a row about it would be a setting for a
+            // feature that does not exist here.
+            state.assistantProcessor?.takeIf { it.isNotBlank() }?.let { processor ->
+                if (state.assistantConsentAt != null) {
+                    ListItem(
+                        headlineContent = { Text(stringResource(R.string.s_agreed)) },
+                        supportingContent = {
+                            Text(
+                                stringResource(
+                                    R.string.s_consent_stopping_takes_effect_at_once,
+                                    processor,
+                                ),
+                            )
+                        },
+                        leadingContent = {
+                            Icon(Icons.Outlined.Shield, contentDescription = null)
+                        },
+                    )
+                    ListItem(
+                        headlineContent = {
+                            Text(
+                                text = stringResource(R.string.s_stop_sending_my_messages),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        },
+                        modifier = Modifier.clickable(enabled = !state.busy) {
+                            viewModel.setAssistantConsent(false)
+                        },
+                    )
+                } else {
+                    ListItem(
+                        headlineContent = { Text(stringResource(R.string.s_review_and_agree)) },
+                        supportingContent = {
+                            Text(
+                                stringResource(
+                                    R.string.s_consent_until_you_agree_nothing_is_sent,
+                                    processor,
+                                ),
+                            )
+                        },
+                        leadingContent = {
+                            Icon(Icons.Outlined.Shield, contentDescription = null)
+                        },
+                        modifier = Modifier.clickable(enabled = !state.busy) {
+                            viewModel.reviewAssistant()
+                        },
+                    )
+                }
+            }
+
             // Play's Data safety form takes the policy URL, but the policy
             // has to be reachable from inside the app too — the iOS side
             // carries the same two rows for guideline 5.1.1(i). These open
@@ -592,6 +647,22 @@ fun SettingsScreen(
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
             Spacer(Modifier.height(24.dp))
+        }
+    }
+
+    // The consent screen, reached from the row above (docs/protocol.md,
+    // "Consenting to the assistant"). The same screen a blocked send
+    // raises in the chat, drawn from the family's own switches so it
+    // promises what will actually happen.
+    if (state.reviewingAssistant) {
+        state.assistantProcessor?.takeIf { it.isNotBlank() }?.let { processor ->
+            AssistantConsentDialog(
+                processor = processor,
+                familyHistory = state.familyAiHistory,
+                familyVision = state.familyAiVision,
+                onAgree = { viewModel.setAssistantConsent(true) },
+                onDismiss = viewModel::dismissAssistantReview,
+            )
         }
     }
 

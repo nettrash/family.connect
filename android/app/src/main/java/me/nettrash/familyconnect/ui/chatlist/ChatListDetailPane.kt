@@ -59,6 +59,8 @@ import androidx.navigation.navArgument
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.navigation.Routes
 import me.nettrash.familyconnect.ui.chat.ChatScreen
+import me.nettrash.familyconnect.ui.thread.ThreadScreen
+import me.nettrash.familyconnect.ui.polls.OpenPollsScreen
 
 /** The list pane's width: the iPad sidebar's 320pt, which fits a two-line family name beside its time. */
 private val LIST_PANE_WIDTH = 340.dp
@@ -116,7 +118,38 @@ fun ChatListDetailPane(
                             route = Routes.CHAT,
                             arguments = listOf(navArgument("chatId") { type = NavType.LongType }),
                         ) {
-                            ChatScreen(onBack = { selectedChatId = null })
+                            ChatScreen(
+                                onBack = { selectedChatId = null },
+                                onOpenPolls = { id -> detailNav.navigate(Routes.openPolls(id)) },
+                                onOpenThread = { id, rootId -> detailNav.navigate(Routes.thread(id, rootId)) },
+                                onOpenChat = { id -> selectedChatId = id },
+                            )
+                        }
+                        // The chat's own surfaces open inside the detail
+                        // pane, as they do on a phone — a chip or a menu
+                        // row that does nothing here is worse than none.
+                        composable(
+                            Routes.OPEN_POLLS,
+                            arguments = listOf(navArgument("chatId") { type = NavType.LongType }),
+                        ) { entry ->
+                            OpenPollsScreen(
+                                chatId = entry.arguments?.getLong("chatId") ?: 0L,
+                                onBack = { detailNav.popBackStack() },
+                            )
+                        }
+                        composable(
+                            Routes.THREAD,
+                            arguments = listOf(
+                                navArgument("chatId") { type = NavType.LongType },
+                                navArgument("rootId") { type = NavType.LongType },
+                            ),
+                        ) { entry ->
+                            ThreadScreen(
+                                chatId = entry.arguments?.getLong("chatId") ?: 0L,
+                                rootId = entry.arguments?.getLong("rootId") ?: 0L,
+                                onBack = { detailNav.popBackStack() },
+                                onOpenChat = { id -> selectedChatId = id },
+                            )
                         }
                     }
                 }

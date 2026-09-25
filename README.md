@@ -20,6 +20,7 @@ about the four places where something does. Every one of them is yours to switch
 | **The assistant** | off | What a member types to it goes to whichever provider you configured. `docs/protocol.md` enumerates exactly what is sent; nothing outside that list is. |
 | **The assistant looking at a photograph** | off, *and* off per family | Two locks. Configure `[ai.vision]` AND the family's owner turns `ai_vision` on — off by default for every family, including ones that already exist. Even then only a photo a member deliberately pointed it at: one attached to a question in their own assistant chat, one attached to an `@ai` message in the family chat, or one they replied to with `@ai` — at most four, at most 5 MiB each, never from an earlier message and never a photo the mention did not touch — unless the owner ALSO turns on a third switch, `ai_history_photos` (off by default, only openable while `ai_vision` is on): then a mention is shown the family chat's newest photos too, filling what the mention and its quote left of the same four. Nearly every mention in a chat full of photos then becomes a four-image vision call, which is why it stays off until an owner chooses it. |
 | **The assistant making a picture** | off | Configure `[ai.images]`; a member then writes `/draw something`, or simply asks for a picture and the assistant decides to draw one. What leaves for the image model is the words after `/draw`, or — when the assistant decided — the one prompt it wrote, and nothing else: not the conversation, not the system prompt. |
+| **A map on a shared location** | on, per device | The Apple apps draw it with Apple's MapKit and the Windows app from OpenStreetMap's tiles, so Apple or OpenStreetMap is asked for the map around the place a member shared — roughly where it is, and nothing else. Each device's "Map Previews" setting turns it off; the bubble then keeps its pin and a link out. The web client draws no map. |
 
 Turn them all off and nothing leaves the box — at the cost of lock-screen previews and of calls
 between different networks. Messages are stored in plaintext in *your* PostgreSQL: the model is
@@ -36,6 +37,7 @@ family.connect/
 ├── ios/                   # SwiftUI client for iOS 17+ AND macOS 14+, one universal
 │                          # target (FamilyConnect.xcodeproj)
 ├── android/               # Jetpack Compose client, Android 8+ (Gradle, :app)
+├── web/                   # Yew (Rust → WASM) client, served from the server's own origin
 ├── tools/i18n/            # translation helper scripts
 ├── CHANGELOG              # plain-text release history
 ├── CODEOWNERS             # review ownership
@@ -51,6 +53,11 @@ family.connect/
   are delivered for real: APNs (including PushKit VoIP, which is what makes an incoming call
   ring) and FCM. A platform with no credentials configured falls back to logging the
   notification it would have sent, so a server without push keys works unchanged.
+- **Web client** (`web/`): Rust compiled to WASM with Yew, built by Trunk and served as static
+  files by the SAME nginx that proxies the API — same origin, so there is no CORS on this wire.
+  It signs in, lists chats and carries the live conversation; it registers no device and takes no
+  push, and its session token lives in `sessionStorage`, so closing the tab signs out. See
+  `docs/operations.md` §7.
 - **Clients** (`ios/`, `android/`): Telegram-simple. The Apple target builds one app for both
   iPhone and Mac. First run asks for the server address,
   then register or log in, then create a family or join one with an invite code (family owners
@@ -77,6 +84,12 @@ cd android
 cd ios
 xcodebuild test -project FamilyConnect.xcodeproj -scheme FamilyConnect \
   -destination 'platform=iOS Simulator,name=iPhone 17' CODE_SIGNING_ALLOWED=NO
+
+# Web (needs `rustup target add wasm32-unknown-unknown`, trunk and wasm-pack)
+cd web
+trunk build --release                         # writes web/dist
+cargo clippy --target wasm32-unknown-unknown --all-targets
+wasm-pack test --headless --chrome            # the tests run in a BROWSER, not `cargo test`
 ```
 
 ## Store builds with a predefined server
@@ -97,6 +110,11 @@ xcodebuild archive -project FamilyConnect.xcodeproj -scheme FamilyConnect-nettra
 # nettrashRelease). Play Store bundle:
 cd android
 ./gradlew bundleNettrashRelease -PversionName=<tag>
+
+# Windows — the default server is an MSBuild property; this writes one unsigned
+# .msixupload per architecture (x64, ARM64) for Partner Center, which signs them
+# (listing, images and checklist: win/store/listing.md):
+powershell -NoProfile -ExecutionPolicy Bypass -File win/store/build-store-packages.ps1
 ```
 
 ## Installing the server (Ubuntu)

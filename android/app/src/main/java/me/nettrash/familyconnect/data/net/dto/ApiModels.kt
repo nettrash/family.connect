@@ -15,6 +15,7 @@
 package me.nettrash.familyconnect.data.net.dto
 
 import kotlinx.serialization.SerialName
+import me.nettrash.familyconnect.util.PollVoteState
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -166,6 +167,40 @@ data class FamilyDto(
      */
     @SerialName("ai_history_photos") val aiHistoryPhotos: Boolean = false,
     /**
+     * Whether the assistant may post one unprompted good-morning message a
+     * day into this family's chat (docs/protocol.md, "The daily greeting").
+     *
+     * ALWAYS present on the wire, and FALSE by default — for every family
+     * that predates it and for a server that predates the field, which
+     * posts no greeting at all.
+     *
+     * INDEPENDENT of the three switches above, uniquely among them. They
+     * answer widening forms of one question — how much of what this family
+     * said and photographed may be shown to a model — which is why
+     * [aiHistoryPhotos] is bound to [aiVision]. This one answers a different
+     * question: whether the assistant SPEAKS when nobody asked. Nothing it
+     * sends is the family's own words or pictures, so no setting of the
+     * others gates it and none of them clears it.
+     *
+     * It is the family's half of a two-key arrangement; the operator's half
+     * is `MeResponse.greetingsEnabled`.
+     */
+    @SerialName("ai_greeting") val aiGreeting: Boolean = false,
+    /**
+     * Whether an `@ai` mention in the family chat may ALSO be shown the
+     * profile pictures of the members whose lines are in the transcript it
+     * sends (docs/protocol.md, "Profile pictures of members"). A FIFTH
+     * switch, beside [aiHistoryPhotos] rather than inside it: that switch's
+     * sentence names "the most recent photos in the family chat", and a
+     * profile picture is not in the chat.
+     *
+     * ALWAYS present on the wire, FALSE by default — for every family that
+     * predates it and for a server that predates the field, which sends no
+     * face at all. Only true while [aiVision] is: the server refuses the
+     * other state and turns this off whenever [aiVision] goes off.
+     */
+    @SerialName("ai_faces") val aiFaces: Boolean = false,
+    /**
      * The most members this family admits, or null for NO cap of the
      * owner's own — in which case the operator's ceiling
      * (`MeResponse.maxFamilyMembers`) is what binds at the join door.
@@ -257,15 +292,24 @@ data class PollOptionDto(
 @Serializable
 data class PollDto(
     @SerialName("poll_seq") val pollSeq: Long,
-    val closed: Boolean,
+    override val closed: Boolean,
     val options: List<PollOptionDto>,
-) {
+) : PollVoteState {
     /** The option this user currently holds, or null when they have not voted. */
     fun optionHeldBy(userId: Long): PollOptionDto? =
         options.firstOrNull { option -> option.votes.any { it == userId } }
 
     /** Everybody who has voted, each counted once (a vote is one option). */
     val voters: Set<Long> get() = options.flatMapTo(LinkedHashSet()) { it.votes }
+
+    /**
+     * The same set as [voters], under the name the shared badge rule asks
+     * for (`util/OpenPollsBadge.kt`). Declaring the interface here rather
+     * than mapping into it at each call site is what stops the rule and the
+     * data drifting apart — the iOS side does the same with a protocol
+     * conformance.
+     */
+    override val voterIds: List<Long> get() = voters.toList()
 
     /** Votes cast in total — the denominator of every option's share. */
     val totalVotes: Int get() = options.sumOf { it.votes.size }
@@ -327,6 +371,32 @@ data class QuotedParentDto(
     val excerpt: String,
 )
 
+/**
+ * A member a message names: the id, and the display name AS TYPED after
+ * the `@`, so a bubble can find the token to highlight without knowing
+ * what the member is called today (docs/protocol.md, "Mentioning a
+ * member"). One shape in and out.
+ */
+@Serializable
+data class MentionDto(
+    @SerialName("user_id") val userId: Long,
+    val name: String,
+)
+
+/**
+ * Local persistence codec: the messages table stores the mention list
+ * verbatim in its WIRE shape (`mentionsJson` — null = names nobody).
+ */
+object MentionsCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun encode(mentions: List<MentionDto>): String = json.encodeToString(mentions)
+
+    fun decode(raw: String?): List<MentionDto> =
+        raw?.let { runCatching { json.decodeFromString<List<MentionDto>>(it) }.getOrNull() }
+            .orEmpty()
+}
+
 @Serializable
 data class MessageDto(
     val id: Long,
@@ -341,6 +411,18 @@ data class MessageDto(
     @SerialName("reaction_seq") val reactionSeq: Long? = null,
     // Present when (and only when) this message is a reply.
     @SerialName("reply_to") val replyTo: ReplyToDto? = null,
+    /**
+     * The TOP of this reply's chain, decided by the server at send time and
+     * never changed (docs/protocol.md, "Threads"). Absent on a message that
+     * is not a reply, and once retention has swept the root.
+     */
+    @SerialName("thread_root_id") val threadRootId: Long? = null,
+    /**
+     * How many messages name this one as their root, recomputed by the
+     * server on every read. Present only on a root somebody answered —
+     * absent, never 0, everywhere else.
+     */
+    @SerialName("reply_count") val replyCount: Long? = null,
     // Both present when (and only when) the body has been edited. The seq
     // is the apply guard — see MessageRepository.applyBody.
     @SerialName("edited_at") val editedAt: String? = null,
@@ -376,6 +458,12 @@ data class MessageDto(
      * the call it was on.
      */
     val call: CallDto? = null,
+    /**
+     * The members this message names — decided at send time, in the
+     * sender's order, never changed by an edit (docs/protocol.md,
+     * "Mentioning a member"). Absent, never [], otherwise.
+     */
+    @SerialName("mentions") val mentions: List<MentionDto>? = null,
 ) {
     /**
      * The read rule, in one place: prefer `attachments`, fall back to the
@@ -607,6 +695,45 @@ object PollCodec {
  * replaced whole, never patched, and a house-config change can never
  * silently re-shape stored rows.
  */
+/**
+ * One member's answer to an event: `going`, `maybe` or `no`, one per member
+ * (docs/protocol.md, "Board").
+ */
+@Serializable
+data class RsvpDto(
+    @SerialName("user_id") val userId: Long,
+    val answer: String,
+)
+
+/** The board's own codec: the wire's `rsvps` stored verbatim. */
+/**
+ * The same, for the members a note names — stored verbatim so the highlight
+ * is drawn from what the server said rather than guessed at
+ * (docs/protocol.md, "Board").
+ */
+object NoteMentionsCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun encode(mentions: List<MentionDto>): String? =
+        mentions.takeIf { it.isNotEmpty() }?.let { json.encodeToString(it) }
+
+    fun decode(raw: String?): List<MentionDto> =
+        raw?.let { runCatching { json.decodeFromString<List<MentionDto>>(it) }.getOrNull() }
+            .orEmpty()
+}
+
+object RsvpCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun encode(rsvps: List<RsvpDto>): String = json.encodeToString(rsvps)
+
+    fun decode(raw: String?): List<RsvpDto> =
+        raw?.let { runCatching { json.decodeFromString<List<RsvpDto>>(it) }.getOrNull() }.orEmpty()
+}
+
+@Serializable
+data class RsvpRequest(val answer: String)
+
 object AttachmentsCodec {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -660,6 +787,8 @@ data class PatchFamilyRequest(
     @SerialName("ai_history") val aiHistory: Boolean? = null,
     @SerialName("ai_vision") val aiVision: Boolean? = null,
     @SerialName("ai_history_photos") val aiHistoryPhotos: Boolean? = null,
+    @SerialName("ai_greeting") val aiGreeting: Boolean? = null,
+    @SerialName("ai_faces") val aiFaces: Boolean? = null,
     @SerialName("max_members") val maxMembers: JsonElement? = null,
 ) {
     companion object {
@@ -699,6 +828,25 @@ data class PatchFamilyRequest(
          * (docs/protocol.md, "Recent photos from the family chat").
          */
         fun aiHistoryPhotos(enabled: Boolean) = PatchFamilyRequest(aiHistoryPhotos = enabled)
+
+        /**
+         * The fourth switch, and the one bound to nothing: whether the
+         * assistant greets the family unprompted once a day
+         * (docs/protocol.md, "The daily greeting"). Unlike
+         * [aiHistoryPhotos] no state of the others can refuse it or clear
+         * it, so there is nothing here for the answer to teach this client
+         * beyond the value it just set.
+         */
+        fun aiGreeting(enabled: Boolean) = PatchFamilyRequest(aiGreeting = enabled)
+
+        /**
+         * The fifth switch, of the third's exact shape: `true` is refused
+         * while `ai_vision` is off (`validation`, 400) and turned off
+         * whenever `ai_vision` goes off — both the server's to enforce, and
+         * this client learns them from the answer (docs/protocol.md,
+         * "Profile pictures of members").
+         */
+        fun aiFaces(enabled: Boolean) = PatchFamilyRequest(aiFaces = enabled)
     }
 }
 
@@ -733,6 +881,8 @@ data class SendMessageRequest(
      * message — encodeDefaults=false again.
      */
     val poll: NewPollDto? = null,
+    /** The members this message names — omitted when null, like the rest. */
+    val mentions: List<MentionDto>? = null,
 )
 
 /**
@@ -813,9 +963,95 @@ data class NoteDto(
      */
     @SerialName("content_seq") val contentSeq: Long? = null,
     val deleted: Boolean? = null,
+    /**
+     * One of plain/serif/mono/casual — an INTENT each client draws with a
+     * system face of its own. Null on a tombstone, and null from a server
+     * that predates the field, which reads as "plain".
+     */
+    val font: String? = null,
+    /**
+     * `text` or `photo`. Null on a tombstone, and null from a server that
+     * predates the field, which reads as "text".
+     */
+    val kind: String? = null,
+    /**
+     * The picture: the content on a `photo` note, and an `event`'s BACKDROP
+     * — the ground its card is drawn on (docs/protocol.md, "Board").
+     */
+    val attachment: AttachmentDto? = null,
+    /** An `event` and nowhere else (docs/protocol.md, "Board"). */
+    @SerialName("starts_at") val startsAt: String? = null,
+    @SerialName("ends_at") val endsAt: String? = null,
+    val place: String? = null,
+    /**
+     * Who is planning to come. `[]` on an event nobody has answered, null
+     * on every other kind.
+     */
+    val rsvps: List<RsvpDto>? = null,
+    /**
+     * The members this note NAMES, in the author's order
+     * (docs/protocol.md, "Board"). Null when it names nobody.
+     */
+    val mentions: List<MentionDto>? = null,
+    /**
+     * The things to do, in the author's order. `[]` on a task list nothing
+     * has been written into yet, null on every other kind — the difference
+     * is the point, as with [rsvps] (docs/protocol.md, "Board").
+     */
+    val items: List<TaskItemDto>? = null,
 ) {
     val isTombstone: Boolean get() = deleted == true
 }
+
+/**
+ * One line of a task list (docs/protocol.md, "Board").
+ *
+ * [id] is the server's and stable for the life of the line: it is what a
+ * tick refers to, and what carries a tick through the author's rewrite.
+ */
+@Serializable
+data class TaskItemDto(
+    val id: Long,
+    val text: String,
+    val done: Boolean = false,
+    /**
+     * Who ticked it — null while it is not done, and null on a tick whose
+     * account has since been deleted.
+     */
+    @SerialName("done_by") val doneBy: Long? = null,
+)
+
+/**
+ * The lines as the store holds them: the wire's list verbatim, so a tick
+ * and the server's own ids are kept rather than re-derived.
+ *
+ * An EMPTY list still encodes, unlike a mention list: `[]` means "a list
+ * with nothing on it" and null means "not a list at all", and the two are
+ * different notes.
+ */
+object TaskItemsCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun encode(items: List<TaskItemDto>): String = json.encodeToString(items)
+
+    fun decode(raw: String?): List<TaskItemDto> =
+        raw?.let { runCatching { json.decodeFromString<List<TaskItemDto>>(it) }.getOrNull() }
+            .orEmpty()
+}
+
+/**
+ * One line the AUTHOR is writing. [id] says "the line you already have",
+ * which is what carries its TICK through a rewrite; null, the line is new
+ * (docs/protocol.md, "Board").
+ */
+@Serializable
+data class TaskLineRequest(
+    val id: Long? = null,
+    val text: String,
+)
+
+@Serializable
+data class TaskDoneRequest(val done: Boolean)
 
 @Serializable
 data class BoardResponse(
@@ -836,6 +1072,22 @@ data class CreateNoteRequest(
     val size: String,
     val x: Double,
     val y: Double,
+    /** Absent means `plain`, as absent size means `medium`. */
+    val font: String? = null,
+    /** Omitted on a text note, both of them: the two arrive together or not at all. */
+    val kind: String? = null,
+    @SerialName("attachment_id") val attachmentId: Long? = null,
+    /** An event's own three, omitted everywhere else. */
+    @SerialName("starts_at") val startsAt: String? = null,
+    @SerialName("ends_at") val endsAt: String? = null,
+    val place: String? = null,
+    /** The members the text names (docs/protocol.md, "Board"). */
+    val mentions: List<MentionDto>? = null,
+    /**
+     * A task list's lines, on a `tasks` note and nowhere else — the server
+     * refuses them on any other kind (docs/protocol.md, "Board").
+     */
+    val items: List<TaskLineRequest>? = null,
 )
 
 /**
@@ -851,6 +1103,21 @@ data class PatchNoteRequest(
     val size: String? = null,
     val x: Double? = null,
     val y: Double? = null,
+    val font: String? = null,
+    @SerialName("starts_at") val startsAt: String? = null,
+    val place: String? = null,
+    /**
+     * REPLACES the note's names, and rides with every text edit: they are
+     * re-decided on each one, and a text patch without them clears them
+     * (docs/protocol.md, "Board").
+     */
+    val mentions: List<MentionDto>? = null,
+    /**
+     * REPLACES a task list's lines, and the author's like its title: a
+     * line carrying its id keeps its TICK, one without an id is new, and a
+     * line left out is gone (docs/protocol.md, "Board").
+     */
+    val items: List<TaskLineRequest>? = null,
 )
 
 @Serializable
@@ -946,6 +1213,30 @@ data class MeResponse(
      * (docs/protocol.md, `GET /me`).
      */
     @SerialName("support_contact") val supportContact: String? = null,
+    /**
+     * Whether this server posts the assistant's daily greeting at all —
+     * `[greetings]` on AND a usable assistant, since the greeting is written
+     * by that deployment (docs/protocol.md, "The daily greeting").
+     *
+     * ALWAYS present on a current server; FALSE for one that predates it,
+     * which is also the right answer there. It exists for the reason
+     * [callsEnabled] does: `ai_greeting` is only the family's half, so
+     * without this an owner who turned their half on and saw nothing all
+     * week could not tell a server that never posts from a switch that did
+     * not save.
+     */
+    @SerialName("greetings_enabled") val greetingsEnabled: Boolean = false,
+    /**
+     * When this caller agreed that their words may go to the model, or
+     * null if they have not — and null on a server with no assistant,
+     * which a client never has to tell apart because such a server offers
+     * no `ai` chat (docs/protocol.md, "Consenting to the assistant").
+     *
+     * Read at step 1 of the resync, so the composer knows before it is
+     * drawn whether the next thing to show is the consent screen rather
+     * than a send.
+     */
+    @SerialName("assistant_consent_at") val assistantConsentAt: String? = null,
 )
 
 @Serializable
@@ -1073,6 +1364,32 @@ data class AssistantDto(
      * (docs/protocol.md, "Drawing without being told to").
      */
     val images: Boolean = false,
+    /**
+     * WHO ANSWERS, in the operator's own words — "Microsoft — Azure
+     * OpenAI (Sweden Central)", or whoever their deployment belongs to.
+     * Shown VERBATIM on the consent screen, because a person cannot weigh
+     * "some third party" (docs/protocol.md, "Consenting to the
+     * assistant").
+     *
+     * Absent on a server that predates the field. A client that cannot
+     * name the recipient cannot ask the question honestly, so it offers
+     * no assistant there at all.
+     */
+    val processor: String? = null,
+)
+
+/**
+ * `POST /me/assistant-consent` — this member's own answer to the assistant
+ * question (docs/protocol.md, "Consenting to the assistant"). No user id,
+ * deliberately: nobody may answer for anybody else.
+ */
+@Serializable
+data class AssistantConsentRequest(val granted: Boolean)
+
+/** What the server now holds: a stamp when granted, null when withdrawn. */
+@Serializable
+data class AssistantConsentResponse(
+    @SerialName("assistant_consent_at") val assistantConsentAt: String? = null,
 )
 
 @Serializable
@@ -1114,7 +1431,32 @@ data class ReportDto(
      * because the author may edit it away and retention will sweep it.
      */
     @SerialName("message_excerpt") val messageExcerpt: String? = null,
+    /**
+     * What the reported message CARRIED, trimmed exactly as a chat-list
+     * preview is: kind and name, no dimensions and no coordinates. A photo
+     * sent without a caption has an EMPTY body, and "inappropriate" is very
+     * often exactly that message — then this is the only thing on the row
+     * that says what was reported. Absent on a report that names a person,
+     * and absent once retention has swept the message with its attachments.
+     */
+    @SerialName("message_attachments")
+    val messageAttachments: List<ReportedAttachmentDto> = emptyList(),
     @SerialName("created_at") val createdAt: String? = null,
+)
+
+/**
+ * One attachment of a reported message, as the owner's inbox needs it: what
+ * it is, and what it is called. No id, no size, no preview flag — and no
+ * COORDINATES, deliberately: a moderator needs to know that a place was
+ * sent, not where the sender was standing (docs/protocol.md, "Reporting a
+ * member").
+ */
+@Serializable
+data class ReportedAttachmentDto(
+    /** "photo" | "video" | "audio" | "file" | "location". */
+    val kind: String,
+    /** A file's name, or the label on a voice note or a location. */
+    val name: String? = null,
 )
 
 @Serializable
@@ -1129,6 +1471,41 @@ data class ReportResponse(val report: ReportDto)
  * config is what keeps it off the wire rather than sending an explicit
  * null.
  */
+/**
+ * `POST /reports/assistant` — what a member says the ASSISTANT got wrong
+ * (docs/protocol.md, "Reporting the assistant"). Not under `/families`: it
+ * needs no family, and no family owner may read it. [note] is free text and
+ * is omitted when empty, which `encodeDefaults=false` in the house Json
+ * config takes care of.
+ */
+@Serializable
+data class CreateAssistantReportRequest(
+    @SerialName("message_id") val messageId: Long,
+    val reason: String,
+    val note: String? = null,
+)
+
+/**
+ * The OPERATOR's row, answered back to the reporter's own app so it can say
+ * the report was taken. It appears in no other read — the owner's inbox
+ * included.
+ */
+@Serializable
+data class AssistantReportDto(
+    val id: Long,
+    /** The reply reported, while it lasts; retention drops it and the excerpt outlives it. */
+    @SerialName("message_id") val messageId: Long? = null,
+    /** The WHOLE reply, frozen when the report was raised. */
+    @SerialName("message_excerpt") val messageExcerpt: String? = null,
+    /** `ai` for the reporter's private thread, `family` for an `@ai` answer. */
+    @SerialName("chat_kind") val chatKind: String? = null,
+    val reason: String? = null,
+    val note: String? = null,
+)
+
+@Serializable
+data class AssistantReportResponse(val report: AssistantReportDto)
+
 @Serializable
 data class CreateReportRequest(
     @SerialName("reported_user_id") val reportedUserId: Long,
@@ -1170,6 +1547,12 @@ data class ChatListItemDto(
     // can never see a change to an older row, and a vote is nothing but
     // a change to an older row.
     @SerialName("max_poll_seq") val maxPollSeq: Long? = null,
+    /**
+     * `true` when (and only when) an unread message in the chat names the
+     * caller — a filter over the rows [unreadCount] counts. Absent
+     * otherwise, never `false` (docs/protocol.md, "Mentioning a member").
+     */
+    val mentioned: Boolean? = null,
 )
 
 @Serializable

@@ -17,6 +17,7 @@
 package me.nettrash.familyconnect.data.net.dto
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import me.nettrash.familyconnect.ui.chat.AssistantMention
 import org.junit.Test
@@ -56,6 +57,10 @@ class FamilySettingsDtoTest {
         // nobody pointed at (docs/protocol.md, "Recent photos from the
         // family chat").
         assertThat(family.aiHistoryPhotos).isFalse()
+        // …and the FOURTH, which is not about disclosure at all: a server that
+        // predates it posts no greeting, which is what `false` reports
+        // (docs/protocol.md, "The daily greeting").
+        assertThat(family.aiGreeting).isFalse()
     }
 
     @Test
@@ -245,5 +250,60 @@ class FamilySettingsDtoTest {
     fun `a birthday request is two integers and no year`() {
         val body = houseJson.encodeToString(BirthdayRequest(month = 2, day = 29))
         assertThat(body).isEqualTo("""{"month":2,"day":29}""")
+    }
+
+    // -- The daily greeting (protocol.md, "The daily greeting") ----------------
+
+    @Test
+    fun `the greeting switch arrives when the owner has turned it on`() {
+        val on = json.decodeFromString<FamilyDto>(
+            """{"id": 3, "name": "The Smiths", "join_policy": "open", "ai_greeting": true}""",
+        )
+        assertThat(on.aiGreeting).isTrue()
+        val off = json.decodeFromString<FamilyDto>(
+            """{"id": 3, "name": "The Smiths", "join_policy": "open", "ai_greeting": false}""",
+        )
+        assertThat(off.aiGreeting).isFalse()
+    }
+
+    @Test
+    fun `the operator's half arrives on me, and is false on a server that predates it`() {
+        val posts = json.decodeFromString<MeResponse>(
+            """{"user": {"id": 7, "username": "anna", "display_name": "Anna"}, "greetings_enabled": true}""",
+        )
+        assertThat(posts.greetingsEnabled).isTrue()
+        val older = json.decodeFromString<MeResponse>(
+            """{"user": {"id": 7, "username": "anna", "display_name": "Anna"}}""",
+        )
+        assertThat(older.greetingsEnabled).isFalse()
+    }
+
+    // -- Profile pictures (protocol.md, "Profile pictures of members") ----------
+
+    @Test
+    fun `the faces switch defaults off and arrives when the owner turned it on`() {
+        val older = json.decodeFromString<FamilyDto>(
+            """{"id": 3, "name": "The Smiths", "join_policy": "open"}""",
+        )
+        assertThat(older.aiFaces).isFalse()
+        val on = json.decodeFromString<FamilyDto>(
+            """{"id": 3, "name": "The Smiths", "join_policy": "open", "ai_vision": true, "ai_faces": true}""",
+        )
+        assertThat(on.aiFaces).isTrue()
+    }
+
+    @Test
+    fun `setting the faces switch sends exactly that one key`() {
+        assertThat(houseJson.encodeToString(PatchFamilyRequest.aiFaces(true)))
+            .isEqualTo("""{"ai_faces":true}""")
+    }
+
+    /** One key and nothing else — absent leaves every neighbour alone. */
+    @Test
+    fun `setting the greeting sends exactly that one key`() {
+        assertThat(houseJson.encodeToString(PatchFamilyRequest.aiGreeting(true)))
+            .isEqualTo("""{"ai_greeting":true}""")
+        assertThat(houseJson.encodeToString(PatchFamilyRequest.aiGreeting(false)))
+            .isEqualTo("""{"ai_greeting":false}""")
     }
 }

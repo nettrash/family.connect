@@ -2,8 +2,8 @@
 //  CallManager.swift
 //  FamilyConnect
 //
-//  The voice-call state machine (docs/protocol.md, "Voice calls"). One
-//  call at a time, one to one, audio only, peer to peer: the server only
+//  The call state machine (docs/protocol.md, "Voice calls"). One call at
+//  a time, one to one, voice OR VIDEO, peer to peer: the server only
 //  passes the JSON below between the two people and wakes a phone that
 //  has no socket. This object owns the whole client half of that:
 //

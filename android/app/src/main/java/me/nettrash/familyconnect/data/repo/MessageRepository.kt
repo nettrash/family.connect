@@ -53,6 +53,7 @@ import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AttachmentApi
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.net.dto.ReportedAttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import me.nettrash.familyconnect.data.net.dto.CallDto
 import me.nettrash.familyconnect.data.net.dto.MessageDto
@@ -63,6 +64,8 @@ import me.nettrash.familyconnect.data.net.dto.PollDto
 import me.nettrash.familyconnect.data.net.dto.PollOptionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
+import me.nettrash.familyconnect.data.net.dto.MentionDto
+import me.nettrash.familyconnect.data.net.dto.MentionsCodec
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
@@ -92,6 +95,12 @@ class MessageRepository @Inject constructor(
     private val clock: Clock,
     private val pendingAttachmentDao: PendingAttachmentDao,
     private val staging: MediaStaging,
+    /**
+     * Who finishes an upload the app is not around for (docs/protocol.md,
+     * "Sending on an unreliable network"). Defaulted so a unit test that
+     * sends media needs no WorkManager; Hilt binds the real one.
+     */
+    private val uploads: MediaUploadScheduler = MediaUploadScheduler.None,
 ) {
     /** The device's words for the chat-list previews (see [PreviewLabels]). */
     private val previewLabels: PreviewLabels by lazy { PreviewLabels.from(appContext) }
@@ -124,7 +133,7 @@ class MessageRepository @Inject constructor(
         scope.launch {
             socket.frames.collect { frame ->
                 when (frame) {
-                    is ServerFrame.Ack -> ackMessage(frame.clientMsgId, frame.message)
+                    is ServerFrame.Ack -> ackMessage(frame.clientMsgId, frame.message, chainLive = true)
                     is ServerFrame.Message -> applyServerMessage(frame.message, live = true)
                     is ServerFrame.MessageEdited -> {
                         // The authoritative body: whatever was accumulated
@@ -188,7 +197,13 @@ class MessageRepository @Inject constructor(
 
     // -- Outbound -----------------------------------------------------------------
 
-    suspend fun send(chatId: Long, body: String, replyTo: ReplyToDto? = null) {
+    suspend fun send(
+        chatId: Long,
+        body: String,
+        replyTo: ReplyToDto? = null,
+        /** The members the body names, resolved by the composer (docs/protocol.md, "Mentioning a member"). */
+        mentions: List<MentionDto>? = null,
+    ) {
         val trimmed = body.trim()
         if (trimmed.isEmpty()) return
         val me = settings.state.first().myUserId ?: return
@@ -209,10 +224,20 @@ class MessageRepository @Inject constructor(
                 replyToMessageId = replyTo?.messageId,
                 replySenderId = replyTo?.senderId,
                 replyExcerpt = replyTo?.excerpt,
+                // The chain, derived from the quoted row this device holds
+                // so the thread screen shows the reply the instant it is
+                // sent; the ack's copy overwrites it with the server's own.
+                threadRootId = derivedThreadRoot(replyTo),
+                // Held on the row so a retry after a process death still
+                // names whom the sender named.
+                mentionsJson = mentions?.takeIf { it.isNotEmpty() }?.let(MentionsCodec::encode),
             ),
         )
         chatDao.updateLastMessage(chatId, trimmed, now, me)
-        dispatch(clientMsgId, chatId, trimmed, replyTo?.messageId, attachmentIds = null)
+        dispatch(
+            clientMsgId, chatId, trimmed, replyTo?.messageId, attachmentIds = null,
+            mentions = mentions?.takeIf { it.isNotEmpty() },
+        )
     }
 
     /**
@@ -236,7 +261,15 @@ class MessageRepository @Inject constructor(
         question: String,
         options: List<String>,
         replyTo: ReplyToDto? = null,
+        /**
+         * The members the body names (docs/protocol.md, "Mentioning a
+         * member"). A caption and a poll's question are bodies like any
+         * other: the strip offers names while either is typed, and the
+         * server reads the same `@Name` out of them.
+         */
+        mentions: List<MentionDto>? = null,
     ) {
+        val named = mentions?.takeIf { it.isNotEmpty() }
         val trimmedQuestion = question.trim()
         val trimmedOptions = options.map { it.trim() }.filter { it.isNotEmpty() }
         // A poll's body may NOT be empty, unlike a message carrying an
@@ -265,6 +298,10 @@ class MessageRepository @Inject constructor(
                 replyToMessageId = replyTo?.messageId,
                 replySenderId = replyTo?.senderId,
                 replyExcerpt = replyTo?.excerpt,
+                threadRootId = derivedThreadRoot(replyTo),
+                // Held on the row, so an upload or a retry that runs after
+                // a process death still names whom the sender named.
+                mentionsJson = named?.let(MentionsCodec::encode),
             ),
         )
         chatDao.updateLastMessage(chatId, trimmedQuestion, now, me)
@@ -275,6 +312,7 @@ class MessageRepository @Inject constructor(
             replyTo?.messageId,
             attachmentIds = null,
             poll = NewPollDto(trimmedOptions),
+            mentions = named,
         )
     }
 
@@ -311,7 +349,15 @@ class MessageRepository @Inject constructor(
         caption: String,
         chatId: Long,
         replyTo: ReplyToDto? = null,
+        /**
+         * The members the body names (docs/protocol.md, "Mentioning a
+         * member"). A caption and a poll's question are bodies like any
+         * other: the strip offers names while either is typed, and the
+         * server reads the same `@Name` out of them.
+         */
+        mentions: List<MentionDto>? = null,
     ): Boolean {
+        val named = mentions?.takeIf { it.isNotEmpty() }
         val me = settings.state.first().myUserId ?: return false
         val uploaded = attachmentApi.uploadLocation(latitude, longitude, accuracyM, label)
         val attachment = (uploaded as? ApiResult.Ok)?.value?.attachment ?: return false
@@ -342,10 +388,17 @@ class MessageRepository @Inject constructor(
                 replyToMessageId = replyTo?.messageId,
                 replySenderId = replyTo?.senderId,
                 replyExcerpt = replyTo?.excerpt,
+                threadRootId = derivedThreadRoot(replyTo),
+                // Held on the row, so an upload or a retry that runs after
+                // a process death still names whom the sender named.
+                mentionsJson = named?.let(MentionsCodec::encode),
             ),
         )
         chatDao.updateLastMessage(chatId, previewText(body, listOf(attachment), labels = previewLabels), now, me)
-        dispatch(clientMsgId, chatId, body, replyTo?.messageId, listOf(attachment.id))
+        dispatch(
+            clientMsgId, chatId, body, replyTo?.messageId, listOf(attachment.id),
+            mentions = named,
+        )
         return true
     }
 
@@ -370,7 +423,15 @@ class MessageRepository @Inject constructor(
         caption: String,
         chatId: Long,
         replyTo: ReplyToDto? = null,
+        /**
+         * The members the body names (docs/protocol.md, "Mentioning a
+         * member"). A caption and a poll's question are bodies like any
+         * other: the strip offers names while either is typed, and the
+         * server reads the same `@Name` out of them.
+         */
+        mentions: List<MentionDto>? = null,
     ): String? {
+        val named = mentions?.takeIf { it.isNotEmpty() }
         if (prepared.isEmpty()) return null
         val me = settings.state.first().myUserId ?: return null
         val clientMsgId = UUID.randomUUID().toString()
@@ -434,6 +495,10 @@ class MessageRepository @Inject constructor(
                 replyToMessageId = replyTo?.messageId,
                 replySenderId = replyTo?.senderId,
                 replyExcerpt = replyTo?.excerpt,
+                threadRootId = derivedThreadRoot(replyTo),
+                // Held on the row, so an upload or a retry that runs after
+                // a process death still names whom the sender named.
+                mentionsJson = named?.let(MentionsCodec::encode),
             ),
         )
         chatDao.updateLastMessage(chatId, previewText(body, placeholders, labels = previewLabels), now, me)
@@ -446,7 +511,14 @@ class MessageRepository @Inject constructor(
                 }
             }
         }
+        // Two uploaders, deliberately: this coroutine is the one that
+        // starts NOW, while somebody is still looking at the bubble, and
+        // the scheduled job is the one that survives them leaving the app
+        // — a 90 MB video does not finish in the seconds a departing
+        // process is given. `uploadPending`'s own guard makes whichever
+        // arrives second a no-op.
         scope.launch { uploadPending(clientMsgId) }
+        uploads.schedule(clientMsgId)
         return clientMsgId
     }
 
@@ -487,6 +559,7 @@ class MessageRepository @Inject constructor(
                 row.body,
                 row.replyToMessageId,
                 attachments.map { it.id },
+                mentions = pendingMentionsOf(row),
             )
         } finally {
             mediaUploads.remove(clientMsgId)
@@ -643,6 +716,7 @@ class MessageRepository @Inject constructor(
             row.replyToMessageId,
             row.attachmentIds,
             pendingPollOf(row),
+            pendingMentionsOf(row),
         )
     }
 
@@ -654,6 +728,15 @@ class MessageRepository @Inject constructor(
      * would land as a plain question with no options at all, and the
      * server would have no way to know one was meant.
      */
+    /**
+     * The members a not-yet-acked message must be re-sent naming — off the
+     * row, for the same reason as the poll's options.
+     */
+    private fun pendingMentionsOf(row: MessageEntity): List<MentionDto>? {
+        if (row.serverId != null) return null
+        return MentionsCodec.decode(row.mentionsJson).takeIf { it.isNotEmpty() }
+    }
+
     private fun pendingPollOf(row: MessageEntity): NewPollDto? {
         if (row.serverId != null) return null
         val options = PollCodec.decode(row.pollJson)?.options ?: return null
@@ -699,6 +782,10 @@ class MessageRepository @Inject constructor(
                 // whole resync open. The guard inside makes a second call
                 // a no-op.
                 scope.launch { uploadPending(row.clientMsgId) }
+                // And asked for again, because this is also the catch-up
+                // after a process that was killed mid-upload: the job it
+                // had may have been spent while there was no network.
+                uploads.schedule(row.clientMsgId)
                 return@forEach
             }
             if (!pendingAcks.containsKey(row.clientMsgId)) {
@@ -709,6 +796,7 @@ class MessageRepository @Inject constructor(
                     row.replyToMessageId,
                     row.attachmentIds,
                     pendingPollOf(row),
+                    pendingMentionsOf(row),
                 )
             }
         }
@@ -728,6 +816,7 @@ class MessageRepository @Inject constructor(
         replyToMessageId: Long?,
         attachmentIds: List<Long>?,
         poll: NewPollDto? = null,
+        mentions: List<MentionDto>? = null,
     ) {
         if (attachmentIds?.any { it < 0 } == true) {
             scope.launch { uploadPending(clientMsgId) }
@@ -735,7 +824,7 @@ class MessageRepository @Inject constructor(
         }
         val overSocket = socket.state.value == SocketState.Open &&
             socket.trySend(
-                ClientFrame.Send(chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll),
+                ClientFrame.Send(chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions),
             )
         if (overSocket) {
             pendingAcks[clientMsgId] = scope.launch {
@@ -743,11 +832,11 @@ class MessageRepository @Inject constructor(
                 pendingAcks.remove(clientMsgId)
                 // No ack in time — the frame may or may not have landed.
                 // REST with the same client_msg_id is safe either way.
-                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll)
+                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions)
             }
         } else {
             scope.launch {
-                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll)
+                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions)
             }
         }
     }
@@ -759,13 +848,14 @@ class MessageRepository @Inject constructor(
         replyToMessageId: Long?,
         attachmentIds: List<Long>?,
         poll: NewPollDto? = null,
+        mentions: List<MentionDto>? = null,
     ) {
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // ack won the race
         val result =
-            chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll)
+            chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions)
         when (result) {
-            is ApiResult.Ok -> ackMessage(clientMsgId, result.value.message)
+            is ApiResult.Ok -> ackMessage(clientMsgId, result.value.message, chainLive = true)
             else -> recordSendFailure(clientMsgId, result)
         }
     }
@@ -861,7 +951,7 @@ class MessageRepository @Inject constructor(
 
     // -- Inbound -------------------------------------------------------------------
 
-    private suspend fun ackMessage(clientMsgId: String, message: MessageDto) {
+    private suspend fun ackMessage(clientMsgId: String, message: MessageDto, chainLive: Boolean) {
         pendingAcks.remove(clientMsgId)?.cancel()
         // A resync may have inserted this message under its synthetic
         // "s<id>" key before the ack reached us — drop that copy first or
@@ -872,6 +962,10 @@ class MessageRepository @Inject constructor(
             }
         }
         val createdAt = TimeFormat.parseTimestamp(message.createdAt) ?: clock.now()
+        // A pending row taking its server id is the one moment an own reply
+        // is FIRST seen as sent — the live half of the chain. The socket's
+        // copy of the same send arrives with the id already set.
+        val firstSight = messageDao.findByClientMsgId(clientMsgId)?.serverId == null
         messageDao.markAcked(clientMsgId, message.id, createdAt)
         // It landed: the staged bytes and the item rows have no further
         // job, and holding 100 MB for a message the family has already
@@ -891,6 +985,16 @@ class MessageRepository @Inject constructor(
             message.replyTo?.parent?.messageId,
             message.replyTo?.parent?.senderId,
             message.replyTo?.parent?.excerpt,
+        )
+        // The server's word on the chain replaces what this device derived
+        // when it enqueued the row; and the root is raised once, now.
+        messageDao.setThread(clientMsgId, message.threadRootId, message.replyCount ?: 0L)
+        if (firstSight && chainLive) message.threadRootId?.let { messageDao.bumpReplyCount(it) }
+        // The server's list replaces what this device resolved when it
+        // enqueued the row — the same rule as the quote.
+        messageDao.setMentions(
+            clientMsgId,
+            message.mentions?.takeIf { it.isNotEmpty() }?.let(MentionsCodec::encode),
         )
         // An attachment is fixed at send time — except has_preview, which
         // flips once the preview upload lands. The server's copy is the
@@ -991,8 +1095,71 @@ class MessageRepository @Inject constructor(
      * One server-authored message, from a live `message` frame
      * (live=true) or a resync/history page (live=false).
      */
-    suspend fun applyServerMessage(message: MessageDto, live: Boolean) {
+    /**
+     * The chain fields on a server copy of a message this device already
+     * holds (docs/protocol.md, "Threads"). `threadRootId` is the server's
+     * to say and never changes; `replyCount` is the recomputed truth on
+     * every copy — a page, a catch-up copy, the thread read — and ABSENT on
+     * the wire means nobody has answered, which is 0 here.
+     */
+    private suspend fun applyEmbeddedThread(message: MessageDto) {
+        val row = messageDao.findByServerId(message.id) ?: return
+        messageDao.setThread(row.clientMsgId, message.threadRootId, message.replyCount ?: 0L)
+    }
+
+    /**
+     * The root an optimistic reply belongs to, from the quoted row this
+     * device holds: its root when it is a reply, itself when it is not —
+     * the server's rule, applied to what is cached. Null when the quoted
+     * message is not held, rather than a guess.
+     */
+    private suspend fun derivedThreadRoot(replyTo: ReplyToDto?): Long? {
+        val quoted = replyTo?.let { messageDao.findByServerId(it.messageId) } ?: return null
+        return quoted.threadRootId ?: quoted.serverId
+    }
+
+    /**
+     * Fill in the chain [rootId] heads — the root and every reply, oldest
+     * first, page after page until a short one — through the same apply a
+     * page of history goes through, so the thread screen reads it from the
+     * store exactly as the chat does (docs/protocol.md, "Threads"). Answers
+     * whether the read completed; whatever it fetched is in the store
+     * either way.
+     */
+    suspend fun loadThread(chatId: Long, rootId: Long, limit: Int = 50): Boolean {
+        var afterId: Long? = null
+        while (true) {
+            val page = when (val result = chatApi.getThread(chatId, rootId, afterId, limit)) {
+                is ApiResult.Ok -> result.value.messages
+                else -> return false
+            }
+            page.forEach { applyServerMessage(it, live = false, detached = true) }
+            if (page.size < limit) return true
+            afterId = page.last().id
+        }
+    }
+
+    suspend fun applyServerMessage(
+        message: MessageDto,
+        live: Boolean,
+        /**
+         * Whether this copy is the FIRST this device could have seen of the
+         * message, for the chain's count: the socket's frame, this device's
+         * own send answered, or the `after_id` catch-up that stands in for
+         * the frames missed while away — which by construction delivers
+         * only what is newer than everything held, so a cached root's count
+         * cannot yet include it. Never a history page, the edits catch-up
+         * or the thread read: those deliver replies the root's recomputed
+         * copy already includes (docs/protocol.md, "Threads").
+         */
+        chainLive: Boolean = live,
+        /** Fetched by the thread read: may sit outside the window, see [MessageEntity.detached]. */
+        detached: Boolean = false,
+    ) {
         if (messageDao.existsByServerId(message.id)) {
+            // A page reaching a row the thread read fetched first: the row
+            // is inside the contiguous window now, and may move cursors.
+            if (!detached) messageDao.attach(message.id)
             // Already held — but a re-delivered message (history page,
             // resync overlap) may carry NEWER embedded reactions, or a
             // newer BODY. Both applies are seq-guarded, so an older copy
@@ -1000,6 +1167,7 @@ class MessageRepository @Inject constructor(
             applyEmbeddedReactions(message)
             applyEmbeddedPoll(message)
             if (message.editSeq != null) applyEdit(message)
+            applyEmbeddedThread(message)
             return
         }
         // My own message echoing back (WS ack lost, other path delivered,
@@ -1007,7 +1175,7 @@ class MessageRepository @Inject constructor(
         // optimistic row from a previous session): fold into that row.
         val own = messageDao.findByClientMsgId(message.clientMsgId)
         if (own != null && own.chatId == message.chatId && own.senderId == message.senderId) {
-            ackMessage(message.clientMsgId, message)
+            ackMessage(message.clientMsgId, message, chainLive)
             applyEmbeddedReactions(message)
             return
         }
@@ -1038,6 +1206,13 @@ class MessageRepository @Inject constructor(
                     replyParentMessageId = message.replyTo?.parent?.messageId,
                     replyParentSenderId = message.replyTo?.parent?.senderId,
                     replyParentExcerpt = message.replyTo?.parent?.excerpt,
+                    // The chain, on the path a message ARRIVES on — the
+                    // fourth write site a new message field needs.
+                    threadRootId = message.threadRootId,
+                    replyCount = message.replyCount ?: 0L,
+                    detached = detached,
+                    // The list, on the path a message ARRIVES on.
+                    mentionsJson = message.mentions?.takeIf { it.isNotEmpty() }?.let(MentionsCodec::encode),
                     editSeq = message.editSeq ?: 0L,
                     editedAt = message.editedAt?.let(TimeFormat::parseTimestamp),
                     attachmentId = arrivedFirst?.id,
@@ -1078,6 +1253,11 @@ class MessageRepository @Inject constructor(
                 ),
             ),
         )
+        // The live half of the chain: a reply that arrives on the socket
+        // raises the root it names by one — and ONLY live. A history page,
+        // a catch-up page or the thread read deliver replies the root's own
+        // recomputed count already includes (docs/protocol.md, "Threads").
+        if (chainLive) message.threadRootId?.let { messageDao.bumpReplyCount(it) }
         chatDao.updateLastMessage(
             message.chatId,
             previewText(message.body, arrived, message.call),
@@ -1085,7 +1265,8 @@ class MessageRepository @Inject constructor(
             message.senderId,
         )
         if (live) {
-            val me = settings.state.first().myUserId
+            val settingsState = settings.state.first()
+            val me = settingsState.myUserId
             val openChat = chatRepository.openChatId.value
             // Open is not enough: the chat must also be parked at its
             // newest message, because that is the only case where this
@@ -1096,6 +1277,20 @@ class MessageRepository @Inject constructor(
             val seen = message.chatId == openChat && chatRepository.openChatAtNewest.value
             if (!seen && message.senderId != me) {
                 chatRepository.bumpUnread(message.chatId, message.id)
+                // The "@" mark: an unread message that names this reader
+                // and comes from somebody they have NOT blocked — the
+                // server's `mentioned` is that same filter, and a blocked
+                // member's frame arrives here unfiltered (the row is
+                // "Hidden — blocked member"), so without this test the mark
+                // would advertise the one person a block is meant to
+                // remove, and the next `GET /chats` would take it away
+                // again (protocol.md, "Mentioning a member").
+                if (me != null &&
+                    message.senderId !in settingsState.blockedUserIds &&
+                    message.mentions?.any { it.userId == me } == true
+                ) {
+                    chatRepository.markMentioned(message.chatId, message.id)
+                }
             }
         }
     }
@@ -1166,6 +1361,7 @@ class MessageRepository @Inject constructor(
             row.replyToMessageId,
             row.attachmentIds,
             pendingPollOf(row),
+            pendingMentionsOf(row),
         )
     }
 
@@ -1354,6 +1550,9 @@ class MessageRepository @Inject constructor(
      * compare-and-set on the seq read a moment ago, so a frame that
      * lands mid-vote is never clobbered by a stale local write.
      */
+    /** Every poll row in a chat, no window — the open-polls badge's input. */
+    fun observePolls(chatId: Long): Flow<List<MessageEntity>> = messageDao.observePolls(chatId)
+
     suspend fun toggleVote(chatId: Long, messageServerId: Long, optionId: Long) {
         val me = settings.state.first().myUserId ?: return
         val row = messageDao.findByServerId(messageServerId) ?: return
@@ -1500,7 +1699,7 @@ class MessageRepository @Inject constructor(
     suspend fun catchUp(chatId: Long, afterId: Long, limit: Int): CatchUpPage? {
         val result = chatApi.messages(chatId, afterId = afterId, limit = limit)
         val page = result.okOrNull()?.messages ?: return null
-        page.forEach { applyServerMessage(it, live = false) }
+        page.forEach { applyServerMessage(it, live = false, chainLive = true) }
         return CatchUpPage(size = page.size, maxServerId = page.maxOfOrNull { it.id })
     }
 
@@ -1658,6 +1857,35 @@ class MessageRepository @Inject constructor(
         /** The pre-plurality spelling, kept for single-attachment callers. */
         fun previewText(body: String, attachment: AttachmentDto?, call: CallDto? = null): String =
             previewText(body, attachment?.let(::listOf).orEmpty(), call)
+
+        /**
+         * WHAT A REPORTED MESSAGE CARRIED, for the owner's inbox — the
+         * chat-list preview's own wording over the trimmed set a report
+         * brings (docs/protocol.md, "Reporting a member").
+         *
+         * Null when the report names a PERSON, or a message that carried
+         * nothing: there the excerpt is the whole row. The mapping is the
+         * web and Windows clients' one, so one family's owner reads the
+         * same row whichever app they open — a count for several photos,
+         * the kind for one, and a file's own name where it has one.
+         */
+        fun carried(
+            attachments: List<ReportedAttachmentDto>,
+            labels: PreviewLabels = PreviewLabels.ENGLISH,
+        ): String? {
+            val first = attachments.firstOrNull() ?: return null
+            return when {
+                first.kind == AttachmentDto.KIND_PHOTO && attachments.size > 1 ->
+                    labels.photos(attachments.size)
+                first.kind == AttachmentDto.KIND_PHOTO -> labels.photo
+                first.kind == AttachmentDto.KIND_VIDEO -> labels.video
+                first.kind == AttachmentDto.KIND_AUDIO -> labels.audio
+                first.kind == AttachmentDto.KIND_LOCATION -> labels.location
+                // A file, or a kind a newer server added: its name if it has
+                // one, and otherwise the one word that is true of both.
+                else -> first.name?.takeIf { it.isNotEmpty() } ?: labels.file
+            }
+        }
 
         private const val TAG = "MessageRepository"
 

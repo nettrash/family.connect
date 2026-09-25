@@ -86,6 +86,13 @@ data class ChatEntity(
      * jumped ahead of them would skip changes this device never saw.
      */
     @ColumnInfo(defaultValue = "0") val maxPollSeq: Long = 0,
+    /**
+     * An unread message here names this reader — the "@" mark on the row
+     * (docs/protocol.md, "Mentioning a member"). Maintained by the same
+     * writers the count has: a live frame sets it, reading clears it, a
+     * recount at zero clears it, and `GET /chats` overwrites it.
+     */
+    @ColumnInfo(defaultValue = "0") val mentionedUnread: Boolean = false,
 )
 
 /**
@@ -164,6 +171,8 @@ data class PendingAttachmentEntity(
         Index(value = ["serverId"], unique = true),
         Index(value = ["chatId", "serverId"]),
         Index(value = ["chatId", "status"]),
+        // The chain's access path (docs/protocol.md, "Threads").
+        Index(value = ["threadRootId"]),
     ],
 )
 data class MessageEntity(
@@ -219,6 +228,39 @@ data class MessageEntity(
     val replyParentMessageId: Long? = null,
     val replyParentSenderId: Long? = null,
     val replyParentExcerpt: String? = null,
+    /**
+     * The TOP of this reply's chain, as the server decided it at send time —
+     * or, on an optimistic row, as this device derived it from the quoted
+     * message it holds (docs/protocol.md, "Threads"). Null on a message
+     * that is not a reply, and once retention has swept the root.
+     */
+    val threadRootId: Long? = null,
+    /**
+     * How many messages name this one as their root. 0 is "nobody has
+     * answered" — the wire's ABSENT, stored as a number so the chip rule is
+     * one comparison. Raised by one per reply that arrives LIVE, and
+     * overwritten by every server copy of this message.
+     */
+    @ColumnInfo(defaultValue = "0") val replyCount: Long = 0,
+    /**
+     * Fetched by the thread read rather than by a history or catch-up page,
+     * so it may sit OUTSIDE the contiguous window this device holds. The
+     * paging cursors are derived from the store's oldest and newest server
+     * ids, and a detached row must not move them — a root older than the
+     * window would make the next history page skip everything between, and
+     * a reply newer than it would make the next catch-up skip the same. It
+     * clears the moment a page delivers the same message (docs/protocol.md,
+     * "Threads": the read is no part of catch-up).
+     */
+    @ColumnInfo(defaultValue = "0") val detached: Boolean = false,
+    /**
+     * The members this message names, as the wire's `mentions` array stored
+     * verbatim (MentionsCodec); null when it names nobody. Written on the
+     * optimistic row from what the composer resolved, so a retry re-sends
+     * the list, and overwritten by every server copy (docs/protocol.md,
+     * "Mentioning a member").
+     */
+    val mentionsJson: String? = null,
     /**
      * Set once the body has been edited. [editSeq] is the apply guard: a
      * stored body is overwritten only by a body at least as new, or a
@@ -359,6 +401,25 @@ data class MessageEntity(
  * a note is written only when the incoming seq is greater than the one
  * held, so an out-of-order frame cannot undo a newer move.
  */
+/**
+ * A note a TOMBSTONE has taken, and it never comes back.
+ *
+ * A delete is the last thing that happens to a note, but board seqs commit out of order and a
+ * catch-up page carries the pre-delete copy — so without this table an older answer crossing the
+ * tombstone on the wire RESURRECTS a note the family took down, and nothing but the next full read
+ * takes it off again. protocol.md ("Board") says it outright: "a note a client has seen deleted —
+ * by a tombstone, by a full read that left it out, or by its own DELETE — is never brought back by
+ * an older copy of itself arriving late, from a page, a frame or a reply that was already in
+ * flight." Note ids are never reused, so remembering the id is the whole of it.
+ *
+ * One row per note the family has ever deleted, which is a handful a week at worst. The web client
+ * keeps the same set in memory; the Windows client keeps the same table.
+ */
+@Entity(tableName = "goneNotes")
+data class GoneNoteEntity(
+    @PrimaryKey val noteId: Long,
+)
+
 @Entity(tableName = "notes")
 data class NoteEntity(
     @PrimaryKey val id: Long,
@@ -375,6 +436,60 @@ data class NoteEntity(
      * upgraded schema validates against a fresh one.
      */
     @ColumnInfo(defaultValue = "medium") val size: String = "medium",
+    /**
+     * One of the protocol's four hands — plain, serif, mono, casual — an
+     * INTENT this client draws with a system face of its own. Text for the
+     * same reason as [color] and [size]: an unknown one still renders, as
+     * plain. A real default rather than nullable, because absent-on-the-wire
+     * IS "plain" — the face every note was written in before the field
+     * existed — and the @ColumnInfo default byte-matches MIGRATION_23_24.
+     */
+    @ColumnInfo(defaultValue = "plain") val font: String = "plain",
+    /**
+     * `text` or `photo` (docs/protocol.md, "Board"), text for the same
+     * reason as [color]: an unknown kind from a newer server draws as a
+     * text note rather than being dropped — the note still has a slot on a
+     * shared wall, and a hole in the family's layout is worse than a
+     * sticker that says only what it says.
+     */
+    @ColumnInfo(defaultValue = "text") val kind: String = "text",
+    /**
+     * The picture: the CONTENT on a photo note, and an EVENT's BACKDROP —
+     * the ground its card is drawn on (docs/protocol.md, "Board"). The
+     * wire's Attachment stored verbatim (AttachmentsCodec, a one-element
+     * list — the same codec a message's attachments use, so there is one
+     * shape to read). The PIXELS come from AttachmentRepository by the id
+     * inside it, exactly as a message's do; nothing about the file is
+     * duplicated here — including `has_preview`, which decides WHICH bytes
+     * the board asks for (see NoteBackdrop).
+     */
+    val attachmentJson: String? = null,
+    /**
+     * An event's when and where (docs/protocol.md, "Board"), epoch millis
+     * like every other instant in this store. Null on every other kind,
+     * and on every note written before events existed.
+     */
+    val startsAt: Long? = null,
+    val endsAt: Long? = null,
+    val place: String? = null,
+    /**
+     * Who is coming, as the wire's `rsvps` stored verbatim (RsvpCodec).
+     * Null on every other kind; "[]" on an event nobody has answered — the
+     * difference is the point.
+     */
+    val rsvpsJson: String? = null,
+    /**
+     * The members this note names, the wire's list stored verbatim
+     * (NoteMentionsCodec). Null when it names nobody (docs/protocol.md,
+     * "Board").
+     */
+    val mentionsJson: String? = null,
+    /**
+     * The things to do, the wire's list stored verbatim (TaskItemsCodec).
+     * Null on every other kind; "[]" on a task list nothing has been
+     * written into yet — the difference is the point, as with [rsvpsJson].
+     */
+    val itemsJson: String? = null,
     /** Fractions of the board, 0..1 from the top-left. */
     val x: Double,
     val y: Double,

@@ -2,6 +2,8 @@
 //
 //   swift ios/scripts/mac-window.swift <owner name> [expected title substring]
 //   swift ios/scripts/mac-window.swift --pid <pid> [expected title substring]
+//   swift ios/scripts/mac-window.swift --pid <pid> --any [expected title]
+//   swift ios/scripts/mac-window.swift --raise <pid>
 //
 // Prints one line per window: "<id>\t<width>x<height>\t<title>".
 // With an expected title, prints ONLY matching windows, so a capture
@@ -19,7 +21,28 @@
 // of the build it launched itself. That also frees the capture to follow
 // the app into Board, Family and Settings, whose windows are not titled
 // after the seeded family and which a title guard would refuse.
+//
+// --any DROPS the on-screen requirement. Measured 2026-09-17:
+// `screencapture -l <id>` photographs a window that is on another Space —
+// in colour, with live traffic lights — so the automated capture does not
+// need the window in front of anybody, and cannot get it there anyway
+// (see --raise). The default stays on-screen-only for the hand-driven
+// path, where "the window I am looking at" is the whole point.
+//
+// --raise ACTIVATES that pid's app and prints nothing. It exists because
+// the capture must not photograph an inactive window — grey traffic
+// lights and a muted title bar, and running the capture from a terminal
+// is itself what deactivates it — and because the obvious way to do that
+// cannot work here. `tell application process "Family" to set frontmost`
+// needs BOTH a process name this app does not have (System Events sees
+// "FamilyConnect"; only CoreGraphics calls it "Family") and Accessibility
+// permission for whatever runs the script, which a terminal usually has
+// not been granted: it fails with -25211 and the old script swallowed it
+// with `|| true`, so every window was captured inactive. NSRunningApplication
+// is public API, needs no permission, and takes a pid — which is also the
+// only way to tell the screenshot build from the real app.
 
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -28,22 +51,41 @@ guard args.count >= 2 else {
     FileHandle.standardError.write(Data("usage: mac-window.swift <owner> [title]\n".utf8))
     exit(2)
 }
+if args[1] == "--raise" {
+    guard args.count > 2, let pid = Int(args[2]), let app = NSRunningApplication(processIdentifier: pid_t(pid)) else {
+        FileHandle.standardError.write(Data("--raise needs the pid of a running app\n".utf8))
+        exit(2)
+    }
+    app.activate(options: [.activateAllWindows])
+    // Activation is asynchronous: give the window server a moment to put
+    // the window forward before the caller photographs it.
+    Thread.sleep(forTimeInterval: 1.5)
+    exit(app.isActive ? 0 : 1)
+}
 var owner: String? = nil
 var expected: String? = nil
 var wantedPID: Int? = nil
+var anySpace = false
 if args[1] == "--pid" {
     guard args.count > 2, let pid = Int(args[2]) else {
         FileHandle.standardError.write(Data("--pid needs a number\n".utf8))
         exit(2)
     }
     wantedPID = pid
-    expected = args.count > 3 ? args[3] : nil
+    var rest = Array(args.dropFirst(3))
+    if let i = rest.firstIndex(of: "--any") {
+        anySpace = true
+        rest.remove(at: i)
+    }
+    expected = rest.first
 } else {
     owner = args[1]
     expected = args.count > 2 ? args[2] : nil
 }
 
-let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+let options: CGWindowListOption = anySpace
+    ? [.excludeDesktopElements]
+    : [.optionOnScreenOnly, .excludeDesktopElements]
 guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
     exit(1)
 }

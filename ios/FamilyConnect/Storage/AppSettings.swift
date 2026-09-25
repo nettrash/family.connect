@@ -58,11 +58,30 @@ nonisolated enum AppSettings {
         /// because that is both the honest answer for a server that
         /// predates the feature and the one that offers nothing.
         static let assistantVision = "v1.assistant.vision"
+        /// Whether the SERVER posts the assistant's daily greeting at all,
+        /// as `GET /me` last reported it (protocol.md, "The daily greeting").
+        /// Stored the plain way round for the reason above — a missing key
+        /// reads as "does not", which is the truth on a server that predates
+        /// the feature and the answer that promises nothing.
+        ///
+        /// It lives here rather than on `AppSession` because the screen that
+        /// needs it — the family's assistant settings — already reads its
+        /// other capability answers from here, and because it must survive a
+        /// launch: the switch is drawn before the first `/me` of a session
+        /// comes back.
+        static let greetingsEnabled = "v1.greetings.enabled"
         static let assistantImages = "v1.assistant.images"
         /// The picture token as the server spells it. Held so the client
         /// can be certain the server means the same five characters by it
         /// before offering an affordance built on its own copy.
         static let assistantDraw = "v1.assistant.draw"
+        /// WHO ANSWERS, as the operator named them and the server last
+        /// reported (protocol.md, "Consenting to the assistant"). Held
+        /// because the consent screen must say it verbatim and may be
+        /// drawn before any call has been made on this launch; a missing
+        /// key means no assistant is offered at all, which is the honest
+        /// answer for a server that names nobody.
+        static let assistantProcessor = "v1.assistant.processor"
         /// Pre-push installs stored a "registered once, token null"
         /// boolean under this key; superseded by the pair above and only
         /// referenced by wipe() so upgraded installs shed it.
@@ -303,6 +322,19 @@ nonisolated enum AppSettings {
         set { defaults.set(newValue, forKey: Key.assistantVision) }
     }
 
+    /// Whether this server posts the assistant's daily greeting at all — the
+    /// OPERATOR's half of the two-key arrangement (protocol.md, "The daily
+    /// greeting"). The family's half is `FamilyDTO.aiGreeting`.
+    ///
+    /// False here disables the family's switch and says why, rather than
+    /// hiding it: unlike `assistantVision`, a switch shown on a server that
+    /// will not act promises only a message, and the owner is owed the reason
+    /// their mornings are quiet — it is their operator's to change.
+    static var greetingsEnabled: Bool {
+        get { defaults.bool(forKey: Key.greetingsEnabled) }
+        set { defaults.set(newValue, forKey: Key.greetingsEnabled) }
+    }
+
     /// Whether this server can GENERATE one. The whole of the `/draw`
     /// capability check: generation has no family switch, because what
     /// leaves on such a request is the words after the token and nothing
@@ -313,6 +345,21 @@ nonisolated enum AppSettings {
     static var assistantImages: Bool {
         get { defaults.bool(forKey: Key.assistantImages) }
         set { defaults.set(newValue, forKey: Key.assistantImages) }
+    }
+
+    /// Who the words go to, or nil when this server named nobody — which
+    /// is a server whose assistant this client must not offer, because a
+    /// consent screen that cannot say the recipient is not consent
+    /// (protocol.md, "Consenting to the assistant").
+    static var assistantProcessor: String? {
+        get { defaults.string(forKey: Key.assistantProcessor) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.assistantProcessor)
+            } else {
+                defaults.removeObject(forKey: Key.assistantProcessor)
+            }
+        }
     }
 
     /// The picture token the server named, or nil when it named none.
@@ -349,6 +396,10 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.assistantVision)
         defaults.removeObject(forKey: Key.assistantImages)
         defaults.removeObject(forKey: Key.assistantDraw)
+        // The operator's half of the daily greeting is a fact about THIS
+        // server, like the three above; a different server must not inherit it.
+        defaults.removeObject(forKey: Key.greetingsEnabled)
+        defaults.removeObject(forKey: Key.assistantProcessor)
         defaults.removeObject(forKey: Key.joinPending)
         defaults.removeObject(forKey: Key.pushToken)
         defaults.removeObject(forKey: Key.pushDeviceID)

@@ -1,0 +1,294 @@
+{
+  "de": {
+    "%@. %lld votes": {
+      "one": "%1$@. %2$lld Stimme",
+      "other": "%1$@. %2$lld Stimmen"
+    },
+    "%lld members": {
+      "one": "%lld Mitglied",
+      "other": "%lld Mitglieder"
+    },
+    "%lld new messages": {
+      "one": "%lld neue Nachricht",
+      "other": "%lld neue Nachrichten"
+    },
+    "%lld of %lld voted": {
+      "one": "%1$lld von %2$lld hat abgestimmt",
+      "other": "%1$lld von %2$lld haben abgestimmt"
+    },
+    "%lld replies": {
+      "one": "%lld Antwort",
+      "other": "%lld Antworten"
+    },
+    "%lld voted": {
+      "one": "%lld hat abgestimmt",
+      "other": "%lld haben abgestimmt"
+    },
+    "+%lld more": {
+      "one": "+%lld weitere",
+      "other": "+%lld weitere"
+    }
+  },
+  "en": {
+    "%@. %lld votes": {
+      "one": "%1$@. %2$lld vote",
+      "other": "%1$@. %2$lld votes"
+    },
+    "%lld attachments, %@": {
+      "one": "%lld attachment, %@",
+      "other": "%lld attachments, %@"
+    },
+    "%lld members": {
+      "one": "%lld member",
+      "other": "%lld members"
+    },
+    "%lld members now. Nobody new can join until somebody leaves; no one is removed.": {
+      "one": "%lld member now. Nobody new can join until somebody leaves; no one is removed.",
+      "other": "%lld members now. Nobody new can join until somebody leaves; no one is removed."
+    },
+    "%lld new messages": {
+      "one": "%lld new message",
+      "other": "%lld new messages"
+    },
+    "%lld pictures from the assistant": {
+      "one": "%lld picture from the assistant",
+      "other": "%lld pictures from the assistant"
+    },
+    "%lld questions to the assistant": {
+      "one": "%lld question to the assistant",
+      "other": "%lld questions to the assistant"
+    },
+    "%lld replies": {
+      "one": "%lld reply",
+      "other": "%lld replies"
+    },
+    "+%lld more": {
+      "one": "+%lld more",
+      "other": "+%lld more"
+    }
+  },
+  "es": {
+    "%@. %lld votes": {
+      "one": "%1$@. %2$lld voto",
+      "other": "%1$@. %2$lld votos"
+    },
+    "%lld members": {
+      "one": "%lld miembro",
+      "other": "%lld miembros"
+    },
+    "%lld new messages": {
+      "one": "%lld mensaje nuevo",
+      "other": "%lld mensajes nuevos"
+    },
+    "%lld of %lld voted": {
+      "one": "%1$lld de %2$lld ha votado",
+      "other": "%1$lld de %2$lld han votado"
+    },
+    "%lld replies": {
+      "one": "%lld respuesta",
+      "other": "%lld respuestas"
+    },
+    "%lld voted": {
+      "one": "%lld ha votado",
+      "other": "%lld han votado"
+    },
+    "+%lld more": {
+      "one": "+%lld más",
+      "other": "+%lld más"
+    }
+  },
+  "fr": {
+    "%@. %lld votes": {
+      "one": "%1$@. %2$lld vote",
+      "other": "%1$@. %2$lld votes"
+    },
+    "%lld members": {
+      "one": "%lld membre",
+      "other": "%lld membres"
+    },
+    "%lld new messages": {
+      "one": "%lld nouveau message",
+      "other": "%lld nouveaux messages"
+    },
+    "%lld of %lld voted": {
+      "one": "%1$lld sur %2$lld a voté",
+      "other": "%1$lld sur %2$lld ont voté"
+    },
+    "%lld replies": {
+      "one": "%lld réponse",
+      "other": "%lld réponses"
+    },
+    "%lld voted": {
+      "one": "%lld a voté",
+      "other": "%lld ont voté"
+    },
+    "+%lld more": {
+      "one": "+%lld autre",
+      "other": "+%lld autres"
+    }
+  },
+  "ja": {
+    "%@. %lld votes": {
+      "other": "%1$@。%2$lld票"
+    },
+    "%lld members": {
+      "other": "%lld人のメンバー"
+    },
+    "%lld new messages": {
+      "other": "新着メッセージ%lld件"
+    },
+    "%lld of %lld voted": {
+      "other": "%2$lld人中%1$lld人が投票"
+    },
+    "%lld replies": {
+      "other": "%lld件の返信"
+    },
+    "%lld voted": {
+      "other": "%lld人が投票"
+    },
+    "+%lld more": {
+      "other": "ほか %lld 件"
+    }
+  },
+  "ru": {
+    "%@. %lld votes": {
+      "few": "%1$@. %2$lld голоса",
+      "many": "%1$@. %2$lld голосов",
+      "one": "%1$@. %2$lld голос",
+      "other": "%1$@. %2$lld голоса"
+    },
+    "%lld members": {
+      "few": "%lld участника",
+      "many": "%lld участников",
+      "one": "%lld участник",
+      "other": "%lld участника"
+    },
+    "%lld new messages": {
+      "few": "%lld новых сообщения",
+      "many": "%lld новых сообщений",
+      "one": "%lld новое сообщение",
+      "other": "%lld новых сообщения"
+    },
+    "%lld of %lld voted": {
+      "few": "%1$lld голоса из %2$lld",
+      "many": "%1$lld голосов из %2$lld",
+      "one": "%1$lld голос из %2$lld",
+      "other": "%1$lld голоса из %2$lld"
+    },
+    "%lld replies": {
+      "few": "%lld ответа",
+      "many": "%lld ответов",
+      "one": "%lld ответ",
+      "other": "%lld ответа"
+    },
+    "%lld voted": {
+      "few": "%lld голоса",
+      "many": "%lld голосов",
+      "one": "%lld голос",
+      "other": "%lld голоса"
+    },
+    "+%lld more": {
+      "few": "+%lld ещё",
+      "many": "+%lld ещё",
+      "one": "+%lld ещё",
+      "other": "+%lld ещё"
+    }
+  },
+  "sr": {
+    "%@. %lld votes": {
+      "few": "%1$@. %2$lld гласа",
+      "one": "%1$@. %2$lld глас",
+      "other": "%1$@. %2$lld гласова"
+    },
+    "%lld members": {
+      "few": "%lld члана",
+      "one": "%lld члан",
+      "other": "%lld чланова"
+    },
+    "%lld new messages": {
+      "few": "%lld нове поруке",
+      "one": "%lld нова порука",
+      "other": "%lld нових порука"
+    },
+    "%lld of %lld voted": {
+      "few": "%1$lld гласа од %2$lld",
+      "one": "%1$lld глас од %2$lld",
+      "other": "%1$lld гласова од %2$lld"
+    },
+    "%lld replies": {
+      "few": "%lld одговора",
+      "one": "%lld одговор",
+      "other": "%lld одговора"
+    },
+    "%lld voted": {
+      "few": "%lld гласа",
+      "one": "%lld глас",
+      "other": "%lld гласова"
+    },
+    "+%lld more": {
+      "few": "+%lld још",
+      "one": "+%lld још",
+      "other": "+%lld још"
+    }
+  },
+  "sr-Latn": {
+    "%@. %lld votes": {
+      "few": "%1$@. %2$lld glasa",
+      "one": "%1$@. %2$lld glas",
+      "other": "%1$@. %2$lld glasova"
+    },
+    "%lld members": {
+      "few": "%lld člana",
+      "one": "%lld član",
+      "other": "%lld članova"
+    },
+    "%lld new messages": {
+      "few": "%lld nove poruke",
+      "one": "%lld nova poruka",
+      "other": "%lld novih poruka"
+    },
+    "%lld of %lld voted": {
+      "few": "%1$lld glasa od %2$lld",
+      "one": "%1$lld glas od %2$lld",
+      "other": "%1$lld glasova od %2$lld"
+    },
+    "%lld replies": {
+      "few": "%lld odgovora",
+      "one": "%lld odgovor",
+      "other": "%lld odgovora"
+    },
+    "%lld voted": {
+      "few": "%lld glasa",
+      "one": "%lld glas",
+      "other": "%lld glasova"
+    },
+    "+%lld more": {
+      "few": "+%lld još",
+      "one": "+%lld još",
+      "other": "+%lld još"
+    }
+  },
+  "zh-Hans": {
+    "%@. %lld votes": {
+      "other": "%1$@。%2$lld 票"
+    },
+    "%lld members": {
+      "other": "%lld 位成员"
+    },
+    "%lld new messages": {
+      "other": "%lld 条新消息"
+    },
+    "%lld of %lld voted": {
+      "other": "%2$lld 人中 %1$lld 人已投票"
+    },
+    "%lld replies": {
+      "other": "%lld 条回复"
+    },
+    "%lld voted": {
+      "other": "%lld 人已投票"
+    },
+    "+%lld more": {
+      "other": "还有 %lld 项"
+    }
+  }
+}

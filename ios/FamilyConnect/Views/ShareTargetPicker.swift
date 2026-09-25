@@ -73,18 +73,17 @@ struct ShareTargetPicker: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            #if os(macOS)
-            // A macOS sheet draws no title bar, so the navigation title
-            // above never renders there — the same reason PollComposerView
-            // hand-rolls its "New poll" headline. Say the question.
-            .safeAreaInset(edge: .top, spacing: 0) {
-                Text("Send to")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-                    .background(.bar)
-            }
-            #endif
+            // No hand-rolled headline on macOS. The comment that used to
+            // stand here said a macOS sheet draws no title bar, so the
+            // navigation title above never renders — and that is FALSE while
+            // there is a NavigationStack, which there is. Measured: the stack
+            // renders its own 47.5pt bar carrying `.navigationTitle`, and
+            // removing the modifier removes the bar. The inset therefore drew
+            // "Send to" a second time, above the first, at a different indent.
+            // `ReportSheet` is the shape that has always been right; the
+            // premise only holds for a sheet with no NavigationStack at all,
+            // which is `StatisticsView`, and PollComposerView's macOS branch
+            // replaces the stack rather than adding to it.
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

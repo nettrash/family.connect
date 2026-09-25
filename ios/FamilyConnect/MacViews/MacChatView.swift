@@ -193,6 +193,19 @@ struct MacChatView: View {
             if selectedChatID == nil { selectedChatID = chats.first?.chatID }
             consumePendingRoute() // clicked before this window existed
             if session.pendingShareImport != nil { showsShareTarget = true }
+            #if DEBUG
+            // The Mac App Store capture opens ONE screen per launch, named
+            // by `-v1.showScreen` (MacScreenshotRoute). Without that launch
+            // argument this does nothing, and a Release build cannot be
+            // given it. The chat-level screens — the thread chain and the
+            // open polls — belong to MacConversationView and are set there.
+            switch MacScreenshotRoute.requested {
+            case .family: showingFamily = true
+            case .board: openWindow(id: MacWindow.board)
+            case .settings: openSettings()
+            case .thread, .polls, .none: break
+            }
+            #endif
         }
         .onChange(of: session.pendingPushRoute) { _, _ in
             consumePendingRoute() // clicked while the window is up
@@ -356,6 +369,15 @@ private struct MacChatRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 0)
+                    if chat.hasUnreadMention {
+                        Text(verbatim: "@")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor, in: Capsule())
+                            .accessibilityLabel(Text("Mentions you"))
+                    }
                     if chat.unreadCount > 0 {
                         Text("\(chat.unreadCount)")
                             .font(.caption2.weight(.semibold).monospacedDigit())

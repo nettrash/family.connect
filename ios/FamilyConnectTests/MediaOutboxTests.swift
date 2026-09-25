@@ -114,6 +114,41 @@ struct MediaOutboxTests {
         #expect(adopted.fileName.hasSuffix("Holiday.mov"), "the real name is the file's identity")
     }
 
+    /// THE SAME VIDEO, on the way OUT. Taking an item off the strip — or
+    /// refusing it past the cap — used to delete `fileURL` blindly, and for
+    /// a clip that already fit the ceiling that is the person's own file in
+    /// their Movies folder. `adopt` was taught the difference; the discard
+    /// paths were not.
+    @Test("discarding an item never deletes a file the sender owns")
+    func discardLeavesForeignFilesAlone() throws {
+        let theirs = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("theirs-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: theirs, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: theirs) }
+        let original = theirs.appendingPathComponent("Holiday.mov")
+        try Data([0x00, 0x01]).write(to: original)
+        let prepared = MediaPrep.Prepared(
+            fileURL: original, mime: "video/quicktime", kind: "video",
+            width: 4, height: 3, durationMS: 1000, previewJPEG: nil, name: nil)
+
+        MediaPrep.discard(prepared)
+
+        #expect(FileManager.default.fileExists(atPath: original.path),
+                "taking a video off the strip deleted the sender's own file")
+    }
+
+    /// And the other half: what `MediaPrep` wrote into `tmp` is litter once
+    /// it will not be sent, and discarding it cleans it up.
+    @Test("discarding an item deletes a file we staged ourselves")
+    func discardRemovesOurOwnFiles() throws {
+        let prepared = try makeItem(in: FileManager.default.temporaryDirectory)
+
+        MediaPrep.discard(prepared)
+
+        #expect(!FileManager.default.fileExists(atPath: prepared.fileURL.path),
+                "a file MediaPrep wrote was left behind")
+    }
+
     /// Anything under `tmp` was written by `MediaPrep` for this send, so
     /// moving it is right and costs nothing.
     @Test("adopt moves a file we staged ourselves")

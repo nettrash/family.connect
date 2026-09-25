@@ -24,17 +24,27 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import me.nettrash.familyconnect.data.db.GoneNoteEntity
+import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.BoardApi
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
+import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.NoteDto
+import me.nettrash.familyconnect.data.net.dto.NoteMentionsCodec
+import me.nettrash.familyconnect.data.net.dto.RsvpCodec
+import me.nettrash.familyconnect.data.net.dto.TaskItemsCodec
+import me.nettrash.familyconnect.data.net.dto.TaskLineRequest
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.di.AppScope
 import me.nettrash.familyconnect.util.BoardBadge
 import me.nettrash.familyconnect.util.badgeMarks
+import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.util.TimeFormat
 import me.nettrash.familyconnect.util.marks
 import javax.inject.Inject
@@ -44,6 +54,11 @@ import javax.inject.Singleton
 class BoardRepository @Inject constructor(
     private val boardApi: BoardApi,
     private val noteDao: NoteDao,
+    /**
+     * The roster a note's names are resolved against (docs/protocol.md,
+     * "Board").
+     */
+    private val memberDao: MemberDao,
     private val settings: SettingsRepository,
     socket: ChatSocket,
     @param:AppScope private val scope: CoroutineScope,
@@ -79,12 +94,28 @@ class BoardRepository @Inject constructor(
         // the field existed needs its badge mark seeded, or the server's
         // backfill badges the whole wall (BoardBadge.contentMarkSeed).
         seedContentMarkIfNeeded()
+        // A TOMBSTONE IS THE LAST WORD. Board seqs commit out of order and a catch-up page
+        // carries the pre-delete copy, so without this an older answer crossing the tombstone on
+        // the wire puts a note the family took down back on the wall (docs/protocol.md, "Board":
+        // "never brought back by an older copy of itself arriving late").
+        if (noteDao.isGone(note.id)) return false
         val existing = noteDao.findById(note.id)
-        if (existing != null && note.boardSeq <= existing.boardSeq) return false
+        // STRICTLY older is refused; the SAME seq is written when it would
+        // change the row. An equal seq is the same server state — except to
+        // a row cached before this device knew a field: a photo note or an
+        // event stored by a build from before kinds is a blank text note at
+        // that very seq, and refusing the identical copy left it blank for
+        // good (issue #69). The comparison below keeps an unchanged copy a
+        // no-op, as it always was.
+        if (existing != null && note.boardSeq < existing.boardSeq) return false
 
         if (note.isTombstone) {
-            // The guard covers deletion too: a stale tombstone must not
-            // remove a note that has since moved.
+            // The guard above covers deletion too: a stale tombstone never
+            // reaches here, so it removes nothing and remembers nothing —
+            // the note it names legitimately outlived it. A tombstone for a
+            // note this device never HELD does get remembered, because the
+            // copy it is about may still be on its way.
+            noteDao.remember(GoneNoteEntity(note.id))
             if (existing != null) noteDao.delete(note.id)
             return existing != null
         }
@@ -100,7 +131,7 @@ class BoardRepository @Inject constructor(
             return false
         }
         val now = System.currentTimeMillis()
-        noteDao.upsert(
+        val entity =
             NoteEntity(
                 id = note.id,
                 authorId = authorId,
@@ -111,6 +142,20 @@ class BoardRepository @Inject constructor(
                 // kept as-is and the screen draws it as medium, the same
                 // forgiveness color gets.
                 size = note.size ?: "medium",
+                // Absent from an older server means "plain", the face every
+                // note was written in before the field existed.
+                font = note.font ?: "plain",
+                // A server from before kinds sends none, and every note it
+                // has is a text note — which is also what an unknown kind
+                // DRAWS as (docs/protocol.md, "Board").
+                kind = note.kind ?: "text",
+                attachmentJson = note.attachment?.let { AttachmentsCodec.encode(listOf(it)) },
+                startsAt = note.startsAt?.let(TimeFormat::parseTimestamp),
+                endsAt = note.endsAt?.let(TimeFormat::parseTimestamp),
+                place = note.place,
+                rsvpsJson = note.rsvps?.let(RsvpCodec::encode),
+                mentionsJson = note.mentions?.let(NoteMentionsCodec::encode),
+                itemsJson = note.items?.let(TaskItemsCodec::encode),
                 x = x,
                 y = y,
                 createdAt = note.createdAt?.let(TimeFormat::parseTimestamp) ?: existing?.createdAt ?: now,
@@ -120,8 +165,9 @@ class BoardRepository @Inject constructor(
                 // how this table spells "nobody said" — the badge then
                 // judges the note by its id, as it always did.
                 contentSeq = note.contentSeq ?: 0L,
-            ),
-        )
+            )
+        if (existing != null && note.boardSeq == existing.boardSeq && entity == existing) return false
+        noteDao.upsert(entity)
         return true
     }
 
@@ -143,6 +189,18 @@ class BoardRepository @Inject constructor(
     /** Full board read — the first open, and any time the cursor is 0. */
     suspend fun loadBoard(): Boolean {
         val board = boardApi.getBoard().okOrNull() ?: return false
+        // It REPLACES what is held (docs/protocol.md, "Board"): the read
+        // never returns tombstones, so a note it leaves out is a note that is
+        // gone, and merely applying what it did return kept every note
+        // deleted while this device was not listening. A note held ABOVE the
+        // read's mark arrived after the read was taken, and stays.
+        val listed = board.notes.map { it.id }
+        // Read BEFORE they are dropped: a note the read left out is a note that is gone, and it
+        // is remembered as gone for the same reason a tombstone is.
+        noteDao.idsNotListed(board.maxBoardSeq, listed).forEach {
+            noteDao.remember(GoneNoteEntity(it))
+        }
+        noteDao.deleteNotListed(board.maxBoardSeq, listed)
         board.notes.forEach { applyNote(it) }
         settings.setBoardCursor(maxOf(boardCursor(), board.maxBoardSeq))
         return true
@@ -174,11 +232,49 @@ class BoardRepository @Inject constructor(
         }
     }
 
-    suspend fun addNote(text: String, color: String, size: String, x: Double, y: Double): Boolean =
-        when (val result = boardApi.createNote(text, color, size, x, y)) {
+    /**
+     * The members a note's text names (docs/protocol.md, "Board").
+     *
+     * Resolved HERE rather than on the screen, so a note written from
+     * anywhere in the app names the same people: the names are read off
+     * the text against the live roster, exactly as a message's are.
+     */
+    private suspend fun namedMembers(text: String): List<MentionDto> {
+        if (!text.contains('@')) return emptyList()
+        val roster = memberDao.activeMembers().map { MentionDto(it.userId, it.displayName) }
+        return MemberMention.resolve(text, roster)
+    }
+
+    suspend fun addNote(
+        text: String,
+        color: String,
+        size: String,
+        font: String,
+        x: Double,
+        y: Double,
+        attachmentId: Long? = null,
+        startsAt: String? = null,
+        endsAt: String? = null,
+        place: String? = null,
+        /**
+         * A task list's lines — what makes this a list. Empty is still a
+         * list; null is not one (docs/protocol.md, "Board").
+         */
+        items: List<TaskLineRequest>? = null,
+    ): Boolean =
+        when (
+            val result =
+                boardApi.createNote(
+                    text, color, size, font, x, y, attachmentId, startsAt, endsAt, place,
+                    namedMembers(text), items,
+                )
+        ) {
             is ApiResult.Ok -> {
+                // The answer to this device's own change moves NO cursor
+                // (docs/protocol.md, "Board"): it says nothing about another
+                // note's lower seq, and REST works while the socket is down —
+                // exactly when the frames carrying those were missed.
                 applyNote(result.value.note)
-                settings.setBoardCursor(maxOf(boardCursor(), result.value.note.boardSeq))
                 true
             }
             else -> false
@@ -191,24 +287,93 @@ class BoardRepository @Inject constructor(
      * text and color, because how loudly a note speaks is the writer's
      * call (docs/protocol.md, "Board").
      */
+    /**
+     * Say whether this member is coming — null retracts. ANY member may,
+     * which is why it is not `updateNote` (docs/protocol.md, "Board").
+     */
+    suspend fun answerNote(id: Long, answer: String?): Boolean =
+        when (val result = boardApi.answerNote(id, answer)) {
+            is ApiResult.Ok -> {
+                applyNote(result.value.note)
+                true
+            }
+            else -> false
+        }
+
     suspend fun updateNote(
         id: Long,
         text: String? = null,
         color: String? = null,
         size: String? = null,
+        font: String? = null,
         x: Double? = null,
         y: Double? = null,
-    ): Boolean = when (val result = boardApi.patchNote(id, text, color, size, x, y)) {
+        /**
+         * REPLACES a task list's lines, and the author's like its title. A
+         * move sends none, which leaves them alone (docs/protocol.md,
+         * "Board").
+         */
+        items: List<TaskLineRequest>? = null,
+    ): Boolean = when (
+        val result = boardApi.patchNote(
+            id, text, color, size, font, x, y,
+            // A text edit carries the names again — they are re-decided on
+            // every one, and a text patch without them clears them. A move
+            // sends none, so a dragged note keeps the names it had
+            // (docs/protocol.md, "Board").
+            mentions = text?.let { namedMembers(it) },
+            items = items,
+        )
+    ) {
         is ApiResult.Ok -> {
+            // Like a create's answer: applied, and moving no cursor.
             applyNote(result.value.note)
-            settings.setBoardCursor(maxOf(boardCursor(), result.value.note.boardSeq))
             true
         }
         else -> false
     }
 
+    /**
+     * Tick or untick one line. ANY member may, which is why this is not
+     * `updateNote` — ticking is not authorship, and it is a STATE rather
+     * than a toggle (docs/protocol.md, "Board").
+     */
+    suspend fun tickTask(noteId: Long, itemId: Long, done: Boolean): Boolean = when (
+        val result = boardApi.tickTask(noteId, itemId, done)
+    ) {
+        is ApiResult.Ok -> {
+            applyNote(result.value.note)
+            true
+        }
+        else -> false
+    }
+
+    /**
+     * Ask the assistant for a backdrop. The AUTHOR's, and drawn from the
+     * note's own title (docs/protocol.md, "Board").
+     *
+     * Answers with the PICTURE — null when none arrived. A redraw replaces
+     * the picture with a new attachment, and the dialog that asked holds the
+     * note as it was when it opened: without the new one it would keep
+     * drawing the old picture, or none, which is what made asking again look
+     * like nothing happening.
+     */
+    suspend fun drawBackdrop(noteId: Long): AttachmentDto? = when (
+        val result = boardApi.drawBackdrop(noteId)
+    ) {
+        is ApiResult.Ok -> {
+            applyNote(result.value.note)
+            result.value.note.attachment
+        }
+        else -> null
+    }
+
     suspend fun deleteNote(id: Long): Boolean = when (boardApi.deleteNote(id)) {
         is ApiResult.Ok -> {
+            // The third of the protocol's three doors to "gone": a tombstone, a full read that
+            // left it out, and this client's own DELETE. The frame that confirms it arrives
+            // later and finds the id already remembered, which is the point.
+            noteDao.remember(GoneNoteEntity(id))
             noteDao.delete(id)
             true
         }

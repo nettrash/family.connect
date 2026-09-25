@@ -1,0 +1,129 @@
+[package]
+name = "family-connect-web"
+version = "1.1.0"
+edition = "2021"
+authors = ["nettrash"]
+description = "Family Connect in a browser — the web client (docs/protocol.md)."
+license = "MIT"
+
+[dependencies]
+yew = { version = "0.21", features = ["csr"] }
+yew-router = "0.18"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+# The message-text rules, ported from the Apple app — pure Rust, tested natively.
+fc-text = { path = "text" }
+gloo-net = { version = "0.5", features = ["http", "websocket"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "js"] }
+wasm-logger = "0.2"
+log = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Storage",
+    "Location",
+    "HtmlInputElement",
+    "HtmlSelectElement",
+    "HtmlTextAreaElement",
+    "HtmlElement",
+    "Element",
+    "ScrollToOptions",
+    "ScrollBehavior",
+    "Performance",
+    "Node",
+    "DomRect",
+    "Event",
+    "EventTarget",
+    "AbortController",
+    "AbortSignal",
+    "Navigator",
+    "Clipboard",
+    "BeforeUnloadEvent",
+    "EventInit",
+    "Blob",
+    "BlobPropertyBag",
+    "File",
+    "FileList",
+    "Url",
+    "Response",
+    "ResponseInit",
+    "RequestCache",
+    "HtmlMediaElement",
+    "HtmlAudioElement",
+    "HtmlVideoElement",
+    "WheelEvent",
+    "PointerEvent",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "ImageBitmap",
+    "ImageBitmapOptions",
+    "ImageOrientation",
+    "FilePropertyBag",
+    "MediaDevices",
+    "MediaStream",
+    "MediaStreamTrack",
+    "MediaStreamConstraints",
+    "RtcPeerConnection",
+    "RtcConfiguration",
+    "RtcIceServer",
+    "RtcIceTransportPolicy",
+    "RtcSessionDescriptionInit",
+    "RtcSdpType",
+    "RtcIceCandidate",
+    "RtcIceCandidateInit",
+    "RtcPeerConnectionIceEvent",
+    "RtcTrackEvent",
+    "RtcPeerConnectionState",
+    "RtcIceConnectionState",
+    "RtcRtpSender",
+    "RtcRtpTransceiver",
+    "RtcRtpTransceiverInit",
+    "RtcRtpTransceiverDirection",
+    "RtcOfferOptions",
+    "OscillatorNode",
+    "OscillatorType",
+    "GainNode",
+    "AudioParam",
+    "Notification",
+    "NotificationOptions",
+    "MediaRecorder",
+    "MediaRecorderOptions",
+    "BlobEvent",
+    "AudioContext",
+    "BaseAudioContext",
+    "AudioNode",
+    "AudioBuffer",
+    "AudioDestinationNode",
+    "MediaStreamAudioSourceNode",
+    "ScriptProcessorNode",
+    "AudioProcessingEvent",
+    "Geolocation",
+    "Position",
+    "Coordinates",
+    "PositionError",
+    "PositionOptions",
+    "ClipboardEvent",
+    "DataTransfer",
+    "DataTransferItem",
+    "DataTransferItemList",
+    "FileSystemEntry",
+    "DragEvent",
+    "ClipboardItem",
+    "ImageData",
+    "ResizeObserver",
+    "CssStyleDeclaration",
+    "DomTokenList",
+    "PointerEventInit",
+    "KeyboardEventInit",
+    "MouseEventInit",
+    "StorageEvent",
+    "CompositionEvent",
+] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

@@ -64,6 +64,19 @@ interface MemberDao {
     fun observeActiveMembers(): Flow<List<MemberEntity>>
 
     /**
+     * The same roster, read once — for resolving the members a board note's
+     * text names (docs/protocol.md, "Board"), which is a question asked at
+     * the moment of a write rather than watched.
+     */
+    @Query(
+        """
+        SELECT * FROM members WHERE hasLeft = 0 AND deleted = 0
+        ORDER BY displayName COLLATE NOCASE ASC
+        """,
+    )
+    suspend fun activeMembers(): List<MemberEntity>
+
+    /**
      * One member's display name, or null when this device holds no row for
      * them. Tombstones included on purpose — a departing owner's successor
      * is by definition still here, but a name is better than nothing if

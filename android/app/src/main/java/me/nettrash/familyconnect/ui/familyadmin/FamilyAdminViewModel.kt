@@ -115,6 +115,34 @@ class FamilyAdminViewModel @Inject constructor(
          * something is stopping me".
          */
         val assistantVision: Boolean = false,
+        /**
+         * Whether the assistant greets this family unprompted once a day
+         * (docs/protocol.md, "The daily greeting") — the FAMILY's half.
+         */
+        val aiGreeting: Boolean = false,
+        /**
+         * Whether this SERVER posts daily greetings at all — the OPERATOR's
+         * half (`GET /me` → greetings_enabled).
+         *
+         * The switch above is DISABLED when this is false, not hidden —
+         * following the third switch rather than [assistantVision]'s. The
+         * two cases differ: a picture switch on a server that cannot see
+         * would promise that photographs are one tap from leaving, which is
+         * a frightening thing to say untruthfully. This one promises only a
+         * message, and an owner who turned it on and saw nothing all week is
+         * owed the reason — which is their operator's to change, and which
+         * they can now go and ask for.
+         */
+        val greetingsEnabled: Boolean = false,
+        /**
+         * Whether a mention may be shown the profile pictures of the members
+         * named in its transcript (docs/protocol.md, "Profile pictures of
+         * members") — the FIFTH switch. Drawn under [historyPhotosSwitch]'s
+         * own rule: the same two locks, the same withheld-with-the-reason,
+         * so the two disclosure switches cannot disagree about when they
+         * are offered.
+         */
+        val aiFaces: Boolean = false,
         /** The owner's own cap, or null for none of their own. */
         val maxMembers: Int? = null,
         /** The operator's ceiling; null on a server too old to say. */
@@ -206,6 +234,9 @@ class FamilyAdminViewModel @Inject constructor(
                         aiVision = mine.family.aiVision,
                         aiHistoryPhotos = mine.family.aiHistoryPhotos,
                         assistantVision = mine.assistant?.vision == true,
+                        aiGreeting = mine.family.aiGreeting,
+                        aiFaces = mine.family.aiFaces,
+                        greetingsEnabled = settings.state.first().greetingsEnabled,
                         maxMembers = mine.family.maxMembers,
                         memberCount = mine.members.size,
                         ceiling = settings.state.first().maxFamilyMembers,
@@ -423,11 +454,12 @@ class FamilyAdminViewModel @Inject constructor(
                         it.copy(
                             busy = false,
                             aiVision = result.value.family.aiVision,
-                            // Turning this OFF turns the third switch off
-                            // in the same write on the server, asked or
-                            // not — the answer carries both, and both are
-                            // drawn from it.
+                            // Turning this OFF turns the third AND the
+                            // fifth switch off in the same write on the
+                            // server, asked or not — the answer carries all
+                            // three, and all three are drawn from it.
                             aiHistoryPhotos = result.value.family.aiHistoryPhotos,
+                            aiFaces = result.value.family.aiFaces,
                         )
                     }
                 is ApiResult.HttpError ->
@@ -450,6 +482,60 @@ class FamilyAdminViewModel @Inject constructor(
      * shut `ai_vision` — but a refusal that does arrive is shown, and the
      * switch stays where the server says it is.
      */
+    /**
+     * Owner-only: the fifth switch (docs/protocol.md, "Profile pictures of
+     * members"). The screen never calls this while the switch is withheld,
+     * but a refusal that does arrive is shown, and the switch stays where the
+     * server says it is — which, when `ai_vision` went off, is off.
+     */
+    fun setAiFaces(enabled: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setAiFaces(enabled)) {
+                is ApiResult.Ok ->
+                    _state.update { it.copy(busy = false, aiFaces = result.value.family.aiFaces) }
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = result.message
+                                ?: appContext.getString(R.string.e_change_assistant_faces_failed),
+                        )
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /**
+     * Owner-only: the fourth switch (docs/protocol.md, "The daily
+     * greeting"). Unlike the third it can never be refused for the state of
+     * another switch — it is bound to none of them — so a failure here is
+     * a network or permission problem and nothing else.
+     */
+    fun setAiGreeting(enabled: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setAiGreeting(enabled)) {
+                is ApiResult.Ok ->
+                    _state.update {
+                        it.copy(busy = false, aiGreeting = result.value.family.aiGreeting)
+                    }
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = result.message
+                                ?: appContext.getString(R.string.e_change_assistant_greeting_failed),
+                        )
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
     fun setAiHistoryPhotos(enabled: Boolean) {
         viewModelScope.launch {
             _state.update { it.copy(busy = true, error = null) }

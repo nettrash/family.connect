@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX manifest for Family Connect.
+
+  THE IDENTITY IS PARTNER CENTER'S. The product is reserved as "FamilyConnect", and Name, Publisher and
+  PublisherDisplayName are copied from Partner Center ▸ Product identity exactly as written there
+  (md.win learned the Store validates all three against the account). <DisplayName> is the reserved
+  name; the Start menu and the tiles keep "Family Connect" (uap:VisualElements), as the other apps do.
+
+  Changing the identity makes a different app to Windows: a build under a new identity installs beside
+  the old one, with its own credential locker, cache and settings.
+
+  VERSION: MAJOR AND MINOR ARE WRITTEN HERE BY HAND; THE BUILD NUMBER IS NOT. The third part is
+  stamped by CI (the `win-app` job, from `Directory.Build.props` plus the run number) into a
+  working copy and never committed, so what is checked in stays `<major>.<minor>.0.0` and a local
+  build is visibly unstamped — Settings then says "1.1", not "1.1 (0)" (AppVersionText).
+
+  The fourth part stays 0 and is not ours to set: Partner Center RESERVES the revision and refuses
+  a package that fills it in. Every part is a 16-bit number (0-65535), which is why the build
+  number cannot be a date.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  IgnorableNamespaces="uap uap5 rescap">
+  <Identity
+    Name="nttrsh.FamilyConnect"
+    Publisher="CN=28EC49E1-8A19-45EF-A576-FF596547E069"
+    Version="1.1.0.0" />
+  <Properties>
+    <!-- The name reserved in Partner Center, exactly as reserved: certification matches this string against it. -->
+    <DisplayName>FamilyConnect</DisplayName>
+    <PublisherDisplayName>nttrsh</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>Your family's own chat, on your family's own server.</Description>
+  </Properties>
+  <Dependencies>
+    <!-- Windows 11 (22000): assumed until the minimum build is decided (issue #64). -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Resources>
+    <Resource Language="x-generate"/>
+  </Resources>
+  <Applications>
+    <Application Id="App"
+      Executable="$targetnametoken$.exe"
+      EntryPoint="$targetentrypoint$">
+      <uap:VisualElements
+        DisplayName="Family Connect"
+        Description="Your family's own chat, on your family's own server."
+        BackgroundColor="#095DB1"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          Wide310x150Logo="Assets\Wide310x150Logo.png"
+          Square71x71Logo="Assets\SmallTile.png"
+          Square310x310Logo="Assets\LargeTile.png"
+          ShortName="Family Connect">
+          <uap:ShowNameOnTiles>
+            <uap:ShowOn Tile="square150x150Logo"/>
+            <uap:ShowOn Tile="wide310x150Logo"/>
+          </uap:ShowNameOnTiles>
+        </uap:DefaultTile>
+        <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#095DB1" />
+      </uap:VisualElements>
+      <!--
+        A clicked notification launches or reaches the app through this COM class. The CLSID is this
+        app's own and must stay the same across versions: Windows keeps notifications addressed to it.
+      -->
+      <Extensions>
+        <!--
+          Share INTO the app from anywhere in Windows: files, or a picture shared as a picture. The window asks which chat
+          and stages them there; nothing is sent until the reader presses Send (Services/ShareInbox.cs).
+        -->
+        <uap:Extension Category="windows.shareTarget">
+          <uap:ShareTarget Description="Family Connect">
+            <uap:SupportedFileTypes>
+              <uap:SupportsAnyFileType />
+            </uap:SupportedFileTypes>
+            <uap:DataFormat>StorageItems</uap:DataFormat>
+            <uap:DataFormat>Bitmap</uap:DataFormat>
+          </uap:ShareTarget>
+        </uap:Extension>
+        <desktop:Extension Category="windows.toastNotificationActivation">
+          <desktop:ToastNotificationActivation ToastActivatorCLSID="74271E14-83B7-4BCA-8DA5-6BEF8178A993" />
+        </desktop:Extension>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer Executable="FamilyConnect.exe" DisplayName="Family Connect" Arguments="----AppNotificationActivated:">
+              <com:Class Id="74271E14-83B7-4BCA-8DA5-6BEF8178A993" />
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
+        <!--
+          Start when the person signs in, so calls and messages reach them without opening the app
+          first (Settings ▸ "Start when I sign in"). Enabled="false" is deliberate and required
+          reading: a startup task is DECLARED here and turned on only by the person, through
+          StartupTask.RequestEnableAsync, and Windows lets them countermand it in Task Manager ▸
+          Startup apps — after which the app cannot turn it back on (StartupSetting.RequestSucceeded).
+          Launched this way the app goes straight to the notification area and shows no window (App.xaml.cs).
+        -->
+        <uap5:Extension Category="windows.startupTask" Executable="FamilyConnect.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap5:StartupTask TaskId="FamilyConnectStartup" Enabled="false" DisplayName="Family Connect" />
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <!-- Voice notes. Windows asks the person the first time, and Settings ▸ Privacy ▸ Microphone can take it back. -->
+    <DeviceCapability Name="microphone" />
+    <DeviceCapability Name="location" />
+    <DeviceCapability Name="webcam" />
+  </Capabilities>
+</Package>

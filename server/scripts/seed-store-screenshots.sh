@@ -47,6 +47,7 @@ echo
 
 PHOTO_DIR="$SCRIPT_DIR/screenshot-photos" python3 - << 'EOF'
 import json, os, glob, struct, zlib, uuid, urllib.request, urllib.parse
+from datetime import datetime, timedelta, timezone
 
 BASE = "http://127.0.0.1:8091/api/v1"
 
@@ -143,6 +144,27 @@ thread = [
 for tok, text in thread:
     send(family_chat, tok, text)
 
+# --- a reply chain ----------------------------------------------------
+# A thread is the 1.1 feature the store set photographs, and it needs a
+# ROOT with replies under it: the bubble draws "N replies" only when the
+# server's recomputed count says so (docs/protocol.md, "Threads").
+posted = call("GET", f"/chats/{family_chat}/messages", nora)["messages"]
+root_id = next(m["id"] for m in posted
+               if "Rob, are you still coming Sunday?" in m["body"])
+# Eight of them, not four: the thread opens on its newest and draws
+# upwards, so a short chain photographs as a third of a blank sheet.
+for tok, text in (
+    (rob,   "Sunday works. What time do you want us?"),
+    (nora,  "One-ish. Mae is coming at noon to help with the potatoes."),
+    (mae,   "I am bringing the good gravy boat and I will be taking it home."),
+    (rob,   "Noted. I'll do the bread and a pudding."),
+    (ellie, "Can I bring Priya? She is on her own this weekend."),
+    (nora,  "Of course. That makes nine, so we will use the long table."),
+    (dan,   "I'll get the leaf out of the loft on Saturday then."),
+    (mae,   "And I will finally see the garden you keep describing."),
+):
+    send(family_chat, tok, text, reply_to_message_id=root_id)
+
 # Album — four photos in ONE message.
 album_ids = []
 for data, mime in photos():
@@ -162,6 +184,16 @@ for tok, idx in ((nora, 0), (mae, 0), (dan, 1), (ellie, 1)):
     call("PUT", f"/chats/{family_chat}/messages/{poll_id}/vote", tok,
          {"option_id": opts[idx]["id"]})
 
+# A second poll, also open: "Open polls" is a LIST, and one card on it
+# photographs as an empty screen with a card at the top.
+second_poll = send(family_chat, dan, "Who can do the school run on Friday?",
+                   poll={"options": ["I can", "Nora", "Ask Rob"]})
+second_id = second_poll["message"]["id"]
+second_opts = second_poll["message"]["poll"]["options"]
+for tok, idx in ((dan, 0), (ellie, 0), (mae, 2)):
+    call("PUT", f"/chats/{family_chat}/messages/{second_id}/vote", tok,
+         {"option_id": second_opts[idx]["id"]})
+
 # Shared location — a public place, never a home address.
 loc = call("POST", "/attachments?" + urllib.parse.urlencode({
     "kind": "location", "latitude": 51.5290, "longitude": -0.1565,
@@ -178,20 +210,63 @@ for m in first:
                  tok, {"emoji": emoji})
 
 # --- board ------------------------------------------------------------
-notes = [("Bins go out Tuesday", "yellow", 0.12, 0.10),
-         ("Ellie — dentist, Thu 4pm", "blue", 0.52, 0.16),
-         ("Rob's bread recipe is in the tin", "green", 0.18, 0.46),
-         ("Holiday photos → shared album", "pink", 0.58, 0.54)]
+# A PHONE SEES ROUGHLY y 0..0.62 of the wall when the board opens, so the
+# two large 1.1 cards go in that band and the plain notes frame them: two
+# above, two below the fold for the wall to carry on past the frame.
+notes = [("Bins go out Tuesday", "yellow", 0.06, 0.04),
+         ("Ellie — dentist, Thu 4pm", "blue", 0.60, 0.05),
+         ("Rob's bread recipe is in the tin", "green", 0.14, 0.78),
+         ("Holiday photos → shared album", "pink", 0.62, 0.84)]
 for text, color, x, y in notes:
     call("POST", "/families/mine/board/notes", nora,
          {"text": text, "color": color, "x": x, "y": y})
 
-# --- a direct chat ----------------------------------------------------
+# An EVENT, with who is going — the board's 1.1 headline. Dated relative to
+# the run so the card never reads as a date in the past, and placed
+# somewhere public: this ends up on a store listing.
+# THE NEXT SUNDAY AT ONE, in this machine's own zone — the card shows
+# local time, and "Sunday lunch at ours" at 8:56 PM on a Saturday is what
+# now+3d+4h in UTC produced.
+local = datetime.now().astimezone().tzinfo
+today = datetime.now(local).replace(hour=13, minute=0, second=0, microsecond=0)
+starts = today + timedelta(days=(6 - today.weekday()) % 7 or 7)
+event = call("POST", "/families/mine/board/notes", nora,
+             {"text": "Sunday lunch at ours", "color": "blue", "x": 0.06, "y": 0.22,
+              "kind": "event", "size": "large",
+              "starts_at": starts.isoformat().replace("+00:00", "Z"),
+              "ends_at": (starts + timedelta(hours=3)).isoformat().replace("+00:00", "Z"),
+              "place": "Nora and Dan's"})["note"]["id"]
+for tok, answer in ((rob, "going"), (mae, "going"), (ellie, "maybe")):
+    call("PUT", f"/families/mine/board/notes/{event}/rsvp", tok, {"answer": answer})
+
+# A TASK LIST, part ticked: the wall shows what is done (protocol.md,
+# "Board"), so a card with everything or nothing ticked says less.
+tasks = call("POST", "/families/mine/board/notes", nora,
+             {"text": "Before Sunday", "color": "green", "x": 0.54, "y": 0.40,
+              "kind": "tasks", "size": "large",
+              "items": [{"text": "Order the meat"}, {"text": "Borrow chairs"},
+                        {"text": "Charge the camera"}, {"text": "Ice for drinks"}]})["note"]
+for item in tasks["items"][:2]:
+    call("PUT", f"/families/mine/board/notes/{tasks['id']}/tasks/{item['id']}",
+         dan, {"done": True})
+
+# --- direct chats -----------------------------------------------------
+# Three of them, not one: `01-chats` is the first slot of the listing, and
+# a family chat above a single row photographs as an empty app.
 direct = call("POST", "/chats/direct", nora, {"user_id": me[ellie]})["chat"]["id"]
 send(direct, ellie, "Can I stay at Priya's on Saturday?")
 send(direct, nora, "Yes — home by lunch on Sunday please.")
 
+with_rob = call("POST", "/chats/direct", nora, {"user_id": me[rob]})["chat"]["id"]
+send(with_rob, nora, "Did the bread tin ever come back from Mae's?")
+send(with_rob, rob, "It is in my boot. I'll bring it Sunday.")
+
+with_mae = call("POST", "/chats/direct", nora, {"user_id": me[mae]})["chat"]["id"]
+send(with_mae, mae, "Tell Ellie I found the photographs of her mother.")
+
 print(f"\n  family 'The Harpers'  chat {family_chat}  invite {code}")
+print("  1.1 material: an 8-reply chain, two open polls, an event with answers,")
+print("                a task list mid-tick — the last two in the phone's board frame")
 print("  photograph as: nora / password123   (owner)")
 print("  server: http://127.0.0.1:8091")
 EOF

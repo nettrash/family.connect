@@ -52,6 +52,9 @@ pub struct Config {
 
     #[serde(default)]
     pub families: FamiliesConfig,
+
+    #[serde(default)]
+    pub greetings: GreetingsConfig,
 }
 
 /// `[families]` — who may start a family here (docs/protocol.md, "Starting
@@ -92,6 +95,88 @@ impl Default for FamiliesConfig {
             familyless_account_ttl_days: default_familyless_account_ttl_days(),
         }
     }
+}
+
+/// `[greetings]` — the assistant's one unprompted message a day
+/// (docs/protocol.md, "The daily greeting").
+///
+/// This is the OPERATOR's half of a two-key switch. Nothing is posted for a
+/// family until its owner has also turned `ai_greeting` on, and nothing is
+/// posted at all unless `[ai]` is usable — the greeting is written by the
+/// same deployment every other assistant answer goes to, and it is the
+/// operator who pays for it.
+///
+/// Off by default. A server that upgrades into this version starts posting
+/// nothing, which is the only defensible default for a feature whose whole
+/// nature is speaking without being asked.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GreetingsConfig {
+    /// Whether this server posts daily greetings at all.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// The hour, UTC, at which the day's greeting is posted, 0-23.
+    ///
+    /// **UTC and only UTC**, because that is the only clock this server has:
+    /// no timezone is stored for a family and none travels on the wire
+    /// (docs/protocol.md, "The assistant"), so there is nothing to convert
+    /// to and nothing honest to convert from. An operator who knows where
+    /// their family lives sets the hour that suits them; the server cannot
+    /// work it out and does not pretend to.
+    ///
+    /// The default is 06:00 UTC, which is the issue's own suggestion. It is
+    /// also why the greeting never pushes: 06:00 UTC is the middle of the
+    /// night across a great deal of the world, and the server has no way to
+    /// know whether this family is one of those.
+    #[serde(default = "default_greeting_hour_utc")]
+    pub hour_utc: u8,
+
+    /// The minute past that hour, 0-59. 0 by default.
+    ///
+    /// It exists so that an operator running several services on one box can
+    /// keep them off the same minute, not because a family cares.
+    #[serde(default)]
+    pub minute: u8,
+
+    /// The language to write in for a family that has NOT set one of its own
+    /// — an IETF tag, the same set `families.language` takes.
+    ///
+    /// Unset by default, and unset means **that family gets no greeting**
+    /// rather than an English one. A greeting has no asking device, so the
+    /// usual fallback chain has nothing to fall back to; this document
+    /// already argues at length that an unset family language is not English
+    /// (docs/protocol.md, "The family's language"), and a greeting that
+    /// silently chose one would contradict it. An operator who knows what
+    /// their families read names it here; one who does not, leaves it, and
+    /// only families that answered the question themselves are greeted.
+    #[serde(default)]
+    pub language: Option<String>,
+}
+
+impl Default for GreetingsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hour_utc: default_greeting_hour_utc(),
+            minute: 0,
+            language: None,
+        }
+    }
+}
+
+impl GreetingsConfig {
+    /// Configured well enough to post. As with [`AiConfig::is_usable`], a
+    /// half-filled section behaves like "off" rather than failing daily at
+    /// runtime — though here the only way to be half-filled is an hour or a
+    /// minute out of range, which [`Config::validate`] refuses at startup.
+    pub fn is_usable(&self) -> bool {
+        self.enabled && self.hour_utc < 24 && self.minute < 60
+    }
+}
+
+/// 06:00 UTC — the hour the issue asked for.
+fn default_greeting_hour_utc() -> u8 {
+    6
 }
 
 /// `[calls]` — peer-to-peer voice calls (docs/protocol.md, "Voice calls").
@@ -214,6 +299,22 @@ pub struct AiConfig {
     /// answered.
     #[serde(default)]
     pub model: String,
+
+    /// WHO ANSWERS, in the operator's own words — "Microsoft — Azure OpenAI
+    /// (Sweden Central)", or whoever this deployment actually points at.
+    ///
+    /// Required for the assistant to exist at all ([`AiConfig::is_usable`]),
+    /// and that is deliberate: this product is self-hosted, so only the
+    /// operator knows whose model the endpoint belongs to, and a client
+    /// cannot ask a member's permission to send their words to someone it
+    /// cannot name (docs/protocol.md, "Consenting to the assistant"). An
+    /// `[ai]` section with everything else filled in and no `processor`
+    /// therefore behaves exactly like one that is switched off.
+    ///
+    /// It is shown to people verbatim, so it says a NAME and not a URL —
+    /// the endpoint is not the answer to "who is this going to".
+    #[serde(default)]
+    pub processor: String,
 
     /// The key itself. Never logged, never sent to a client. How it is
     /// PRESENTED is [`AiConfig::auth`]'s business.
@@ -428,6 +529,7 @@ impl Default for AiConfig {
             endpoint: String::new(),
             deployment: String::new(),
             model: String::new(),
+            processor: String::new(),
             api_key: String::new(),
             auth: AuthScheme::default(),
             api_version: default_ai_api_version(),
@@ -509,9 +611,28 @@ impl AiConfig {
             && !self.endpoint.trim().is_empty()
             && !self.deployment.trim().is_empty()
             && !self.api_key.trim().is_empty()
+            // See `processor`: an assistant nobody can name is one no
+            // client may ask permission for, so it does not exist.
+            && !self.processor.trim().is_empty()
     }
 
-    /// The chat-completions URL for the configured deployment.
+    /// Everything an assistant needs EXCEPT somebody to name.
+    ///
+    /// The one upgrade footgun this section has: a server that ran an
+    /// assistant before `processor` existed keeps its config, starts
+    /// cleanly, and quietly has no assistant at all — the object vanishes
+    /// from `GET /families/mine` and every client stops offering it. Not a
+    /// refusal to start, deliberately: a family's chat going down is worse
+    /// than a family's assistant going quiet. So it boots, and says so
+    /// (see `main`).
+    pub fn configured_but_nameless(&self) -> bool {
+        self.enabled
+            && !self.endpoint.trim().is_empty()
+            && !self.deployment.trim().is_empty()
+            && !self.api_key.trim().is_empty()
+            && self.processor.trim().is_empty()
+    }
+
     /// The chat-completions URL for the configured deployment.
     ///
     /// Azure has more than one shape. Classic Azure OpenAI is
@@ -897,6 +1018,13 @@ pub struct LimitsConfig {
     #[serde(default = "default_max_board_notes")]
     pub max_board_notes: i64,
 
+    /// Most lines one task list may hold. A runaway guard in the same
+    /// sense as `max_board_notes`, and the number the protocol states: a
+    /// sticker a family cannot read from across the room is not a list
+    /// (protocol.md, "Board").
+    #[serde(default = "default_max_task_items")]
+    pub max_task_items: i64,
+
     /// The CEILING on what a family owner may set as their own
     /// `max_members`, and the cap that binds at the join door for a family
     /// that has set none. It is an operator's runaway guard, in the sense
@@ -1171,6 +1299,7 @@ impl Default for LimitsConfig {
             max_poll_options: default_max_poll_options(),
             max_poll_option_chars: default_max_poll_option_chars(),
             max_board_notes: default_max_board_notes(),
+            max_task_items: default_max_task_items(),
             max_family_members: default_max_family_members(),
             max_attachment_bytes: default_max_attachment_bytes(),
             max_attachments_per_message: default_max_attachments_per_message(),
@@ -1213,6 +1342,7 @@ const AI_KEYS: &[&str] = &[
     "endpoint",
     "deployment",
     "model",
+    "processor",
     "api_key",
     "auth",
     "api_version",
@@ -1342,6 +1472,23 @@ impl Config {
         }
         if self.auth.session_ttl_days < 1 {
             anyhow::bail!("auth.session_ttl_days must be at least 1");
+        }
+        // Refused at startup rather than clamped at 06:00 daily: an operator
+        // who typed 25 meant something, and a server that silently posted at
+        // a different hour than the one in their file would be lying to them
+        // once a day for ever.
+        if self.greetings.hour_utc > 23 {
+            anyhow::bail!(
+                "greetings.hour_utc must be 0-23 (it is UTC, and it is the only clock the \
+                 server has — no timezone is stored for a family), got {}",
+                self.greetings.hour_utc
+            );
+        }
+        if self.greetings.minute > 59 {
+            anyhow::bail!(
+                "greetings.minute must be 0-59, got {}",
+                self.greetings.minute
+            );
         }
         // Bounded above as well: the sweep binds it as a PostgreSQL `int`
         // for `make_interval`, and a "practically never" such as
@@ -1560,6 +1707,10 @@ fn default_retention_days() -> i64 {
 
 fn default_max_board_notes() -> i64 {
     500
+}
+
+fn default_max_task_items() -> i64 {
+    20
 }
 
 fn default_max_family_members() -> i64 {
@@ -1816,6 +1967,7 @@ enabled = true
 endpoint = "https://example.openai.azure.com"
 deployment = "text"
 api_key = "k"
+processor = "Microsoft — Azure OpenAI"
 
 [ai.vision]
 deployment = "sees"
@@ -1956,6 +2108,7 @@ endpoint = "https://nettrash.openai.azure.com"
 deployment = "nettrash-gpt-oss-120b"
 model = "gpt-oss-120b"
 api_key = "secret"
+processor = "Microsoft - Azure OpenAI"
 api_version = "2024-10-21"
 
 [ai.vision]
@@ -2020,6 +2173,7 @@ size = "1024x1024"
             enabled: true,
             endpoint: "https://example.openai.azure.com".to_string(),
             deployment: "text".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "k".to_string(),
             ..Default::default()
         };
@@ -2038,6 +2192,7 @@ size = "1024x1024"
             enabled: true,
             endpoint: "https://example.openai.azure.com".to_string(),
             deployment: "text".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "k".to_string(),
             ..Default::default()
         };
@@ -2058,6 +2213,7 @@ size = "1024x1024"
             enabled: true,
             endpoint: "https://example.openai.azure.com".to_string(),
             deployment: "text".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "k".to_string(),
             ..Default::default()
         };
@@ -2086,6 +2242,7 @@ enabled = true
 endpoint = "https://example.openai.azure.com"
 deployment = "text"
 api_key = "k"
+processor = "Microsoft — Azure OpenAI"
 
 [ai.images]
 deployment = "draws"
@@ -2107,6 +2264,7 @@ contextual = false
             enabled: true,
             endpoint: "https://text.openai.azure.com".to_string(),
             deployment: "text".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "text-key".to_string(),
             api_version: "2024-10-21".to_string(),
             ..Default::default()
@@ -2140,6 +2298,7 @@ contextual = false
             enabled: true,
             endpoint: "https://nettrash.openai.azure.com/openai/v1".to_string(),
             deployment: "nettrash-gpt-oss-120b".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "k".to_string(),
             ..Default::default()
         };
@@ -2176,6 +2335,7 @@ enabled = true
 endpoint = "https://nettrash-openai.openai.azure.com"
 deployment = "nettrash-gpt-oss-120b"
 api_key = "one-key-for-both"
+processor = "Microsoft - Azure OpenAI"
 api_version = "2024-10-21"
 
 [ai.images]
@@ -2304,6 +2464,7 @@ height = 1024
             enabled: true,
             endpoint: "https://r.openai.azure.com".to_string(),
             deployment: "text".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "k".to_string(),
             ..Default::default()
         };

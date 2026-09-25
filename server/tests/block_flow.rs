@@ -413,17 +413,27 @@ async fn a_blocked_members_message_does_not_wake_the_blocker() {
     );
 }
 
-/// THE ASSISTANT HOLE. When a blocked member mentions `@ai`, the answer is
-/// a real message whose SENDER is the assistant, quoting the mention. A
-/// filter keyed on the sender alone lets that answer light up the blocker's
-/// phone for a thread they cannot read — so the quoted sender is consulted
-/// too.
+/// A BLOCK IS ABOUT ONE MEMBER'S OWN WORDS: a reply from an unblocked
+/// member still wakes the blocker, even when it quotes the blocked one.
 ///
-/// Proved here without an assistant configured, by the same shape: a reply
-/// from an UNBLOCKED member quoting a BLOCKED one.
+/// This test used to assert the opposite, standing a member's reply in for
+/// the assistant's answer "by the same shape". The shapes are not the same,
+/// and the protocol says so in as many words: suppressing every reply that
+/// quotes a blocked member "would silence pushes written by people the
+/// blocker has NOT blocked, and would hand the blocked member a way to do
+/// it on purpose: post something reply-worthy, wait for a third member to
+/// quote it, and the blocker's phone stays dark for a message they were
+/// meant to see" (protocol.md, "Push notifications"). The code matched the
+/// stand-in rather than the rule until #61a, where the swallowed push was
+/// the one that NAMES the blocker.
+///
+/// THE ASSISTANT HOLE the second gate really exists for — a blocked
+/// member's `@ai` question answered by the assistant, quoting them — needs
+/// a configured assistant and is pinned in assistant_flow.rs
+/// (`the_assistants_answer_to_a_blocked_member_does_not_wake_the_blocker`).
 #[tokio::test]
 #[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
-async fn a_reply_quoting_a_blocked_member_does_not_wake_the_blocker() {
+async fn a_reply_quoting_a_blocked_member_still_wakes_the_blocker() {
     let ts = spawn_server().await;
     let (owner, _) = ts.register("owner", "Olive").await;
     let (blocked, blocked_id) = ts.register("junior", "Junior").await;
@@ -470,19 +480,16 @@ async fn a_reply_quoting_a_blocked_member_does_not_wake_the_blocker() {
         .await;
     assert_eq!(reply.status(), 201);
 
-    // Give the fire-and-forget dispatch a moment, then assert nothing woke
-    // the blocker.
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    let woken: Vec<String> = ts
-        .push
-        .calls()
+    // Cousin's words are Cousin's, whoever they quote.
+    let woken = wait_for_push_calls(&ts, 1).await;
+    let tokens: Vec<String> = woken
         .iter()
         .flat_map(|c| c.devices.iter().map(|d| d.push_token.clone()))
         .collect();
     assert!(
-        !woken.contains(&"owner-device".to_string()),
-        "a reply quoting a blocked member must not wake the blocker — this is \
-         the shape an @ai answer takes: {woken:?}"
+        tokens.contains(&"owner-device".to_string()),
+        "a block is about one member's own words: an unblocked member's reply \
+         still wakes the blocker, whoever it quotes: {tokens:?}"
     );
 }
 

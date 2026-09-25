@@ -1,0 +1,64 @@
+-- The daily greeting (docs/protocol.md, "The daily greeting"): whether the
+-- assistant may post one unprompted good-morning message a day into this
+-- family's chat.
+--
+-- A FOURTH switch on `families`, and the first one that is not about
+-- disclosure. The three before it — `ai_history` (0019), `ai_vision` (0032),
+-- `ai_history_photos` (0033) — all answer the same question in widening
+-- forms: how much of what this family said and photographed may be shown to
+-- a model. This one answers a different question entirely, and that is why
+-- it stands apart from them with no CHECK tying it to any of them: not what
+-- the assistant may SEE, but whether it may SPEAK when nobody asked it
+-- anything.
+--
+-- That is a genuinely new thing in this protocol. Until now the assistant
+-- was reachable in exactly two ways and silent otherwise, and every message
+-- it has ever sent was the second half of an exchange a member started. A
+-- greeting has no member's act behind it at all.
+
+-- NOT NULL DEFAULT FALSE, for the reason 0032 and 0033 default off, arrived
+-- at from the other direction. Those two default off because of what they
+-- would DISCLOSE. This one defaults off because of what it would DO: appear,
+-- daily, in a family's chat, saying something nobody asked for.
+--
+-- And because a family has no other lever. The assistant CANNOT be blocked
+-- (blocking requires the same family and the assistant belongs to none),
+-- there is no per-member mute anywhere in this protocol, and no member may
+-- delete another's message. A greeting a family did not want would be a
+-- message they could neither stop nor remove — so the only safe default is
+-- the one where it never starts.
+--
+-- Off for families created after this and, as with every switch here, off
+-- for every family that existed before it. Nobody is opted in by a
+-- migration.
+--
+-- A switch, therefore NOT NULL: there is no third state for a NULL to mean.
+ALTER TABLE families ADD COLUMN ai_greeting BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- No CHECK, deliberately, and it is worth saying why in a file whose two
+-- immediate neighbours both have one.
+--
+-- `ai_history_photos` needed a constraint because it is a widening of
+-- `ai_vision` and would otherwise spring back the day its neighbour was
+-- turned on again, reaching a disclosure nobody chose twice. Nothing of that
+-- kind applies here. A greeting sends the family NOTHING of theirs: the
+-- signs it may mention are computed on the server from `birthday_month` and
+-- `birthday_day`, at most twelve words leave, and no name, no birth date and
+-- no roster travel with them. There is therefore no setting of the other
+-- three under which this one becomes a wider disclosure than it already is,
+-- and no state of them it must be forced to follow.
+--
+-- The two conditions it genuinely depends on are both OUTSIDE this table and
+-- neither can be expressed here: the operator's `[greetings]` section must be
+-- on, and `[ai]` must be usable. Both live in the server's configuration
+-- file, both can change between restarts, and a column that tried to mirror
+-- either would be a copy of a value it cannot see. So an owner may leave this
+-- true on a server that posts nothing, and that is the honest arrangement:
+-- the family's answer is recorded, and the operator's answer is the
+-- operator's.
+
+-- What this column can never do: make the assistant push. A greeting is
+-- delivered to open sockets and written to history, and wakes no device, at
+-- any setting of this or any other column — see the protocol section, which
+-- explains that with no timezone on the wire the server cannot know whose
+-- night its configured hour falls in.

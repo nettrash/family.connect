@@ -12,6 +12,8 @@
 //! whom — a family owner is often a parent and the blocked person is often
 //! in the same house.
 
+use std::collections::HashMap;
+
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -24,7 +26,9 @@ use sqlx::postgres::PgRow;
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
-use crate::models::{Report, User};
+use crate::models::{
+    AssistantReport, CreateAssistantReportRequest, Report, ReportedAttachment, User,
+};
 use crate::state::AppState;
 
 /// The four reasons, fixed. Free text would mean an owner's inbox can hold
@@ -66,6 +70,8 @@ fn report_from_row(row: &PgRow) -> Report {
         reason: row.get("reason"),
         message_id: row.get("message_id"),
         message_excerpt: row.get("message_excerpt"),
+        // Filled by `carry`, which reads them for every report in one query.
+        message_attachments: Vec::new(),
         created_at: row.get("created_at"),
     }
 }
@@ -80,6 +86,49 @@ const SELECT_REPORT: &str = "SELECT r.id, r.reason, r.message_id, r.message_exce
    FROM member_reports r
    JOIN users rep ON rep.id = r.reporter_user_id
    JOIN users tgt ON tgt.id = r.reported_user_id";
+
+/// What the reported messages carried, onto the reports that named them —
+/// kind and name, in the sender's own order (docs/protocol.md, "Reporting a
+/// member").
+///
+/// RECOMPUTED, not frozen. The excerpt is stored because the author may edit
+/// it away and retention deletes the message; these rows go WITH that message,
+/// which is the whole reason a client offers to open an attachment only while
+/// `message_id` survives. Two reports may name the same message — two members
+/// reporting one photo — so the map is read, never drained.
+async fn carry(pool: &sqlx::PgPool, reports: &mut [Report]) -> Result<(), ApiError> {
+    let ids: Vec<i64> = reports
+        .iter()
+        .filter_map(|report| report.message_id)
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let rows = sqlx::query(
+        "SELECT message_id, kind, name FROM attachments
+          WHERE message_id = ANY($1)
+          ORDER BY message_id, position, id",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await?;
+    let mut by_message: HashMap<i64, Vec<ReportedAttachment>> = HashMap::new();
+    for row in &rows {
+        by_message
+            .entry(row.get("message_id"))
+            .or_default()
+            .push(ReportedAttachment {
+                kind: row.get("kind"),
+                name: row.get("name"),
+            });
+    }
+    for report in reports.iter_mut() {
+        if let Some(carried) = report.message_id.and_then(|id| by_message.get(&id)) {
+            report.message_attachments = carried.clone();
+        }
+    }
+    Ok(())
+}
 
 /// `POST /families/reports`
 pub async fn create_report(
@@ -188,11 +237,9 @@ pub async fn create_report(
             .bind(id)
             .fetch_one(&state.pool)
             .await?;
-        return Ok((
-            StatusCode::OK,
-            Json(json!({"report": report_from_row(&row)})),
-        )
-            .into_response());
+        let mut report = report_from_row(&row);
+        carry(&state.pool, std::slice::from_mut(&mut report)).await?;
+        return Ok((StatusCode::OK, Json(json!({"report": report}))).into_response());
     }
 
     let id: i64 = sqlx::query_scalar(
@@ -214,6 +261,8 @@ pub async fn create_report(
         .bind(id)
         .fetch_one(&state.pool)
         .await?;
+    let mut report = report_from_row(&row);
+    carry(&state.pool, std::slice::from_mut(&mut report)).await?;
 
     // The owner is pushed and NO WebSocket frame is raised, exactly as for
     // a join request: they read the list on their next visit.
@@ -233,11 +282,7 @@ pub async fn create_report(
         .await,
     );
 
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({"report": report_from_row(&row)})),
-    )
-        .into_response())
+    Ok((StatusCode::CREATED, Json(json!({"report": report}))).into_response())
 }
 
 /// `GET /families/reports` (owner) — open only, oldest first.
@@ -265,7 +310,8 @@ pub async fn list_reports(
     .bind(state.cfg.limits.max_page_size)
     .fetch_all(&state.pool)
     .await?;
-    let reports: Vec<Report> = rows.iter().map(report_from_row).collect();
+    let mut reports: Vec<Report> = rows.iter().map(report_from_row).collect();
+    carry(&state.pool, &mut reports).await?;
     Ok((StatusCode::OK, Json(json!({"reports": reports}))).into_response())
 }
 
@@ -281,9 +327,10 @@ pub async fn resolve_report(
 ) -> Result<Response, ApiError> {
     let family = crate::handlers_family::require_owner_family(&state, &auth).await?;
     let mut tx = state.pool.begin().await?;
-    // ONE answer for four conditions — unknown id, another family's report,
-    // already resolved, or one naming the owner — so the endpoint never
-    // confirms that an id exists elsewhere.
+    // ONE answer for everything OUTSIDE this owner's own inbox — an unknown
+    // id, another family's report, or one naming the owner — so the endpoint
+    // never confirms that an id exists elsewhere. Already resolved is NOT in
+    // that set: see below.
     let not_pending = || ApiError::conflict(codes::REPORT_NOT_PENDING, "report is not pending");
     let row: Option<(String, i64)> = sqlx::query_as(
         "SELECT status, reported_user_id FROM member_reports
@@ -296,8 +343,18 @@ pub async fn resolve_report(
     let Some((status, reported_user_id)) = row else {
         return Err(not_pending());
     };
-    if status != "open" || reported_user_id == auth.user_id {
+    if reported_user_id == auth.user_id {
         return Err(not_pending());
+    }
+    // ALREADY RESOLVED IS SUCCESS, for a report of their own inbox: a double
+    // tap, a second device, and a retry after a timeout that actually worked
+    // are the same request twice, and none of them is an error
+    // (docs/protocol.md, `POST /families/reports/{id}/resolve`). Nothing is
+    // written and the row lock goes; `resolved_by` and `resolved_at` keep
+    // the FIRST answer, which is the one that did the work.
+    if status != "open" {
+        tx.rollback().await?;
+        return Ok(StatusCode::NO_CONTENT.into_response());
     }
     sqlx::query(
         "UPDATE member_reports SET status = 'resolved', resolved_at = now(), resolved_by = $2
@@ -309,4 +366,176 @@ pub async fn resolve_report(
     .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The most a note may say. Generous because the reader is one operator and
+/// the useful reports are the ones that explain themselves ("it invented a
+/// person, see the third paragraph"), bounded because it is free text from the
+/// network and the column should not become a place to store a novel.
+const MAX_NOTE_CHARS: usize = 1000;
+
+/// `POST /reports/assistant` — what a member says the assistant got wrong
+/// (docs/protocol.md, "Reporting the assistant").
+///
+/// NOT a member report, and it deliberately shares nothing with one but the
+/// four reason words. `POST /families/reports` still refuses the assistant
+/// with `not_same_family`, because its account belongs to no family; that
+/// endpoint is about a PERSON in your family and the owner's power over them,
+/// and neither half applies to a model.
+///
+/// THE OPERATOR READS THIS, NEVER THE OWNER. A private `ai` thread belongs to
+/// its member alone, so handing a reply out of one to the family owner — very
+/// often the parent the member would least want reading it — would break the
+/// only guarantee that thread has. And there is nothing an owner could do
+/// with it: the deployment's AI switches are the operator's. So the row is
+/// stored, logged at WARN exactly as a report ABOUT the owner is, and returned
+/// by no client read.
+///
+/// No family is required. The report is about the assistant rather than about
+/// anybody's member, and a caller who can SEE an assistant message has all the
+/// standing this needs.
+pub async fn create_assistant_report(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    AppJson(req): AppJson<CreateAssistantReportRequest>,
+) -> Result<Response, ApiError> {
+    if !REASONS.contains(&req.reason.as_str()) {
+        return Err(ApiError::validation(format!(
+            "reason must be one of {}",
+            REASONS.join(", ")
+        )));
+    }
+    let note = match req.note.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(note) if note.chars().count() > MAX_NOTE_CHARS => {
+            return Err(ApiError::validation(format!(
+                "note must be at most {MAX_NOTE_CHARS} characters"
+            )));
+        }
+        Some(note) => Some(note.to_owned()),
+    };
+
+    // The assistant of THIS deployment. A server with none has no assistant
+    // message either, so the answer is the same as for any id the caller
+    // cannot see — never "there is no assistant", which would answer a
+    // question about the deployment to anybody who asks.
+    let Some(assistant_id) = crate::handlers_ai::assistant_user_id(&state).await? else {
+        return Err(ApiError::not_found(
+            codes::MESSAGE_NOT_FOUND,
+            "no such message",
+        ));
+    };
+
+    // Visible to the caller AND written by the assistant. `chat_members` is
+    // the visibility test for both surfaces: an `ai` chat inserts its owner's
+    // row exactly as a family chat does. Anything else — a member's message,
+    // or a real message in a chat the caller is not in — is
+    // `message_not_found`, so this endpoint never confirms that an id exists
+    // elsewhere, the same non-enumeration rule `reply_to_message_id` follows.
+    let found: Option<(String, String)> = sqlx::query_as(
+        "SELECT m.body, c.kind
+           FROM messages m
+           JOIN chats c ON c.id = m.chat_id
+           JOIN chat_members cm ON cm.chat_id = m.chat_id AND cm.user_id = $2
+          WHERE m.id = $1 AND m.sender_id = $3",
+    )
+    .bind(req.message_id)
+    .bind(auth.user_id)
+    .bind(assistant_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some((excerpt, chat_kind)) = found else {
+        return Err(ApiError::not_found(
+            codes::MESSAGE_NOT_FOUND,
+            "no such message",
+        ));
+    };
+
+    // A second tap on the same reply is the same report: the stored row comes
+    // back and the stored reason is not overwritten, exactly as a member
+    // report answers a repeat.
+    if let Some(row) = sqlx::query(
+        "SELECT id, message_id, message_excerpt, chat_kind, reason, note, created_at
+           FROM assistant_reports
+          WHERE reporter_user_id = $1 AND message_id = $2",
+    )
+    .bind(auth.user_id)
+    .bind(req.message_id)
+    .fetch_optional(&state.pool)
+    .await?
+    {
+        return Ok((
+            StatusCode::OK,
+            Json(json!({ "report": assistant_report(&row) })),
+        )
+            .into_response());
+    }
+
+    // ON CONFLICT, because the read above cannot settle a race: two taps in
+    // flight at once both find nothing and both insert, and the loser would
+    // otherwise meet the unique index as a 500 on the one screen a store
+    // reviewer is asked to use. DO NOTHING returns no row, and the re-read
+    // then answers with whichever insert won — which is the same 200 a second
+    // tap gets, so a double-click and a retry after a timeout are one report.
+    // (`create_report` above has the same SELECT-then-INSERT shape and the
+    // same race; left alone here rather than changed unasked.)
+    let inserted = sqlx::query(
+        "INSERT INTO assistant_reports
+             (reporter_user_id, message_id, message_excerpt, chat_kind, reason, note)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (reporter_user_id, message_id) WHERE message_id IS NOT NULL DO NOTHING
+         RETURNING id, message_id, message_excerpt, chat_kind, reason, note, created_at",
+    )
+    .bind(auth.user_id)
+    .bind(req.message_id)
+    .bind(&excerpt)
+    .bind(&chat_kind)
+    .bind(&req.reason)
+    .bind(note.as_deref())
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(row) = inserted else {
+        let row = sqlx::query(
+            "SELECT id, message_id, message_excerpt, chat_kind, reason, note, created_at
+               FROM assistant_reports
+              WHERE reporter_user_id = $1 AND message_id = $2",
+        )
+        .bind(auth.user_id)
+        .bind(req.message_id)
+        .fetch_one(&state.pool)
+        .await?;
+        return Ok((
+            StatusCode::OK,
+            Json(json!({ "report": assistant_report(&row) })),
+        )
+            .into_response());
+    };
+    let report = assistant_report(&row);
+
+    // WARN, because this is how the operator learns it happened at all: there
+    // is no inbox, no push and no frame. The reply itself is NOT logged — the
+    // row holds it, and a private thread's words do not belong in a log file
+    // that may be shipped somewhere else.
+    tracing::warn!(
+        report_id = report.id,
+        reporter_user_id = auth.user_id,
+        message_id = req.message_id,
+        chat_kind = %report.chat_kind,
+        reason = %report.reason,
+        note = note.is_some(),
+        "assistant reply reported"
+    );
+    Ok((StatusCode::CREATED, Json(json!({ "report": report }))).into_response())
+}
+
+fn assistant_report(row: &PgRow) -> AssistantReport {
+    AssistantReport {
+        id: row.get("id"),
+        message_id: row.get("message_id"),
+        message_excerpt: row.get("message_excerpt"),
+        chat_kind: row.get("chat_kind"),
+        reason: row.get("reason"),
+        note: row.get("note"),
+        created_at: row.get("created_at"),
+    }
 }

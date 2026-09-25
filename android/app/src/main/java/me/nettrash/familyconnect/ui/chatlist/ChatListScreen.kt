@@ -75,6 +75,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
@@ -389,6 +391,15 @@ private fun ChatRow(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            // The "@" mark: an unread message here names this reader
+            // (docs/protocol.md, "Mentioning a member").
+            if (chat.mentionedUnread) {
+                Spacer(Modifier.height(4.dp))
+                val mentionsYou = stringResource(R.string.s_mentions_you)
+                Badge(modifier = Modifier.semantics { contentDescription = mentionsYou }) {
+                    Text(text = "@", fontWeight = FontWeight.SemiBold)
+                }
             }
             if (chat.unreadCount > 0) {
                 Spacer(Modifier.height(4.dp))

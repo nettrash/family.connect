@@ -49,12 +49,22 @@ pub mod codes {
     pub const CANNOT_REPORT_SELF: &str = "cannot_report_self";
     pub const REPORT_NOT_PENDING: &str = "report_not_pending";
     pub const NOT_SAME_FAMILY: &str = "not_same_family";
+    /// The thing addressed does not exist ON THIS SERVER — used where a
+    /// more specific code would itself be an answer, as on
+    /// `POST /me/assistant-consent` for a deployment with no assistant:
+    /// "no such endpoint" tells a caller nothing about the configuration,
+    /// while "no assistant" would.
+    pub const NOT_FOUND: &str = "not_found";
     pub const USER_NOT_FOUND: &str = "user_not_found";
     pub const CHAT_NOT_FOUND: &str = "chat_not_found";
     pub const NOT_CHAT_MEMBER: &str = "not_chat_member";
     pub const MESSAGE_EMPTY: &str = "message_empty";
     pub const MESSAGE_TOO_LONG: &str = "message_too_long";
     pub const MESSAGE_NOT_FOUND: &str = "message_not_found";
+    /// The sender has not agreed that their words may go to the model
+    /// (docs/protocol.md, "Consenting to the assistant"). A refusal rather
+    /// than a silent drop, so the client can ask and offer to send again.
+    pub const ASSISTANT_CONSENT_REQUIRED: &str = "assistant_consent_required";
     pub const NOT_MESSAGE_AUTHOR: &str = "not_message_author";
     pub const INVALID_POLL: &str = "invalid_poll";
     pub const POLL_CLOSED: &str = "poll_closed";
@@ -70,6 +80,19 @@ pub mod codes {
     pub const NOT_NOTE_AUTHOR: &str = "not_note_author";
     pub const INVALID_NOTE_COLOR: &str = "invalid_note_color";
     pub const INVALID_NOTE_SIZE: &str = "invalid_note_size";
+    pub const INVALID_NOTE_FONT: &str = "invalid_note_font";
+    pub const INVALID_NOTE_KIND: &str = "invalid_note_kind";
+    pub const INVALID_RSVP: &str = "invalid_rsvp";
+    /// The note is not a task list, or the item is not one of its lines.
+    /// A 400 rather than a 404, for the reason `invalid_rsvp` is one: the
+    /// note is right there, and "no such note" would send a client looking
+    /// for a sync bug it does not have.
+    pub const INVALID_TASK: &str = "invalid_task";
+    /// This server has no images deployment, so nothing can draw. A 403
+    /// like `calls_disabled`, and for the same reason: it is a fact about
+    /// the SERVER rather than the request, and a client checks
+    /// `assistant.images` before it offers the action at all.
+    pub const PICTURES_UNAVAILABLE: &str = "pictures_unavailable";
     pub const INVALID_LANGUAGE: &str = "invalid_language";
     pub const BOARD_FULL: &str = "board_full";
     pub const INVALID_EMOJI: &str = "invalid_emoji";

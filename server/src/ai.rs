@@ -1,12 +1,21 @@
 //! The assistant: Azure OpenAI chat completions (streamed) and image
 //! generations.
 //!
-//! What leaves this server is deliberately narrow. A request carries the
-//! configured system prompt and the last N messages of ONE member's OWN
-//! assistant chat — never the family chat, never another member's thread
-//! (docs/protocol.md, "The assistant"). That is the invariant which makes a
-//! privacy-first family server able to talk to a hosted model at all, and it
-//! is enforced here, at the only place that builds a request.
+//! What leaves this server depends on WHERE the question was asked, and the
+//! difference has to be stated plainly here: an operator reads this file to
+//! decide whether to switch the section on at all.
+//!
+//! In a member's own assistant chat, a request carries the configured system
+//! prompt and the last N messages of THAT MEMBER'S OWN thread — never another
+//! member's, and never the family chat (docs/protocol.md, "The assistant").
+//!
+//! An `@ai` mention IN THE FAMILY CHAT is the other case, and it is not
+//! narrow: while the family's `ai_history` is on — and it defaults to ON —
+//! recent family conversation goes with the question, other members' words,
+//! their display names and their timestamps included, bounded by the history
+//! limits (protocol.md, "Mentioning the assistant in the family chat"). Only
+//! the family's OWNER can turn that off, and no member is asked first. Both
+//! paths are built here, at the only place that builds a request.
 //!
 //! Pictures are the same invariant drawn tighter (protocol.md, "Pictures").
 //! A photograph rides on a turn only when the member attached it to the
@@ -669,6 +678,7 @@ mod tests {
             endpoint: "https://example.openai.azure.com/".to_string(),
             deployment: "my-deployment".to_string(),
             model: "gpt-oss-120b".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "secret".to_string(),
             api_version: "2024-10-21".to_string(),
             ..Default::default()
@@ -686,6 +696,7 @@ mod tests {
     fn an_endpoint_that_is_already_a_full_url_is_used_verbatim() {
         let base = AiConfig {
             enabled: true,
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "secret".to_string(),
             api_version: "2024-10-21".to_string(),
             ..Default::default()
@@ -733,6 +744,7 @@ mod tests {
             endpoint: "https://nettrash-openai.openai.azure.com/openai/v1".to_string(),
             deployment: "nettrash-gpt-oss-120b".to_string(),
             model: "nettrash-gpt-oss-120b".to_string(),
+            processor: "Microsoft — Azure OpenAI".to_string(),
             api_key: "secret".to_string(),
             api_version: "2024-10-21".to_string(),
             ..Default::default()
@@ -1167,8 +1179,33 @@ mod tests {
         cfg.deployment = "d".to_string();
         assert!(!cfg.is_usable());
         cfg.api_key = "k".to_string();
+        // Still not enough, and this one is a privacy rule rather than a
+        // configuration one: an assistant nobody can NAME is one no client
+        // may ask permission for, so it does not exist (protocol.md,
+        // "Consenting to the assistant").
+        assert!(
+            !cfg.is_usable(),
+            "a deployment with no processor named must behave as off"
+        );
+        // …and THAT state is the one an upgrade lands in, so it has its own
+        // question: everything filled in but the name. `main` warns on it at
+        // boot, because a server that quietly lost its assistant looks
+        // exactly like one whose provider is down.
+        assert!(
+            cfg.configured_but_nameless(),
+            "an upgraded config is nameless, not half-filled"
+        );
+        cfg.processor = "Microsoft — Azure OpenAI".to_string();
         assert!(cfg.is_usable());
+        assert!(
+            !cfg.configured_but_nameless(),
+            "named, so nothing to warn about"
+        );
         cfg.enabled = false;
         assert!(!cfg.is_usable());
+        assert!(
+            !cfg.configured_but_nameless(),
+            "a section switched off is not a warning either"
+        );
     }
 }
