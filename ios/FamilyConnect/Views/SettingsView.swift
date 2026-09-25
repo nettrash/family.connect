@@ -69,12 +69,17 @@ struct SettingsView: View {
     @State private var editingBirthday = false
     @State private var deletingAccount = false
     @State private var avatarError: String?
+    /// The assistant question, and what went wrong answering it
+    /// (protocol.md, "Consenting to the assistant").
+    @State private var reviewingAssistant = false
+    @State private var assistantConsentError: String?
 
     var body: some View {
         NavigationStack {
             Form {
                 profileSection
                 familySection
+                assistantConsentSection
                 privacySection
                 serverSection
                 sessionSection
@@ -95,6 +100,18 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $deletingAccount) {
                 DeleteAccountView()
+            }
+            .sheet(isPresented: $reviewingAssistant) {
+                AssistantConsentSheet(
+                    processor: AppSettings.assistantProcessor ?? "",
+                    familyHistory: session.family?.aiHistory == true,
+                    familyVision: session.family?.aiVision == true,
+                    onAgree: {
+                        try await session.setAssistantConsent(true)
+                        assistantConsentError = nil
+                        reviewingAssistant = false
+                    },
+                    onDecline: { reviewingAssistant = false })
             }
             .sheet(isPresented: Bindable(model).showsStatistics) {
                 NavigationStack { StatisticsView() }
@@ -369,6 +386,59 @@ struct SettingsView: View {
                 Label(error, systemImage: "xmark.circle")
                     .foregroundStyle(.red)
             }
+        }
+    }
+
+    /// The answer to the assistant question, and the way back out of it
+    /// (protocol.md, "Consenting to the assistant").
+    ///
+    /// Absent entirely when this server has no assistant — there is
+    /// nothing to have agreed to, and a row saying so would be a setting
+    /// for a feature that does not exist here. Withdrawal is a plain
+    /// button rather than a toggle because the two directions are not
+    /// symmetrical: agreeing has a screen to read first, and stopping
+    /// takes effect with nothing more to say than what it cannot undo.
+    @ViewBuilder
+    private var assistantConsentSection: some View {
+        if AssistantConsent.isAvailable(processor: AppSettings.assistantProcessor),
+            let processor = AppSettings.assistantProcessor
+        {
+            Section {
+                if let agreed = session.assistantConsentAt {
+                    LabeledContent(
+                        String(localized: "Agreed"),
+                        value: agreed.formatted(date: .abbreviated, time: .shortened))
+                    Button("Stop Sending My Messages", role: .destructive) {
+                        Task { await setAssistantConsent(false) }
+                    }
+                } else {
+                    Button("Review and Agree…") { reviewingAssistant = true }
+                }
+                if let assistantConsentError {
+                    Label(assistantConsentError, systemImage: "xmark.circle")
+                        .foregroundStyle(.red)
+                }
+            } header: {
+                Text("Assistant")
+            } footer: {
+                if session.assistantConsentAt == nil {
+                    Text("Until you agree, nothing you write is sent to \(processor) and the assistant does not answer you.")
+                } else {
+                    Text("What you write to the assistant is sent to \(processor). Stopping takes effect at once; what has already been sent cannot be taken back.")
+                }
+            }
+        }
+    }
+
+    /// Write the answer through the session, which holds the server's own
+    /// timestamp. A failure is SHOWN: somebody who pressed stop and saw
+    /// nothing change would reasonably believe it had.
+    private func setAssistantConsent(_ granted: Bool) async {
+        do {
+            try await session.setAssistantConsent(granted)
+            assistantConsentError = nil
+        } catch {
+            assistantConsentError = String(localized: "Couldn't save your answer. Try again.")
         }
     }
 

@@ -82,6 +82,9 @@ import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
+import me.nettrash.familyconnect.util.resolvedDisplayName
+import me.nettrash.familyconnect.util.MemberMention
+import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.calls.CallStarter
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.net.AttachmentApi
@@ -107,6 +110,8 @@ import me.nettrash.familyconnect.data.repo.PastedMedia
 import me.nettrash.familyconnect.data.repo.ShareStash
 import android.content.ClipData
 import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.data.net.dto.PollCodec
+import me.nettrash.familyconnect.util.OpenPollsBadge
 import me.nettrash.familyconnect.di.AppScope
 import me.nettrash.familyconnect.util.Clock
 import me.nettrash.familyconnect.util.resolvedDisplayNames
@@ -281,12 +286,28 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
+     * Report an ASSISTANT reply. A separate path from [report]: the assistant
+     * belongs to no family, so the member endpoint refuses it, and the people
+     * who run the server read this one rather than the family owner
+     * (docs/protocol.md, "Reporting the assistant").
+     */
+    fun reportAssistant(messageId: Long, reason: String, note: String?, onDone: () -> Unit) {
+        viewModelScope.launch {
+            val result = familyRepository.reportAssistant(messageId, reason, note)
+            if (result is ApiResult.Ok<*>) {
+                onDone()
+            } else {
+                _transientMessages.tryEmit(appContext.getString(R.string.e_report_failed))
+            }
+        }
+    }
+
+    /**
      * Whether it also allows VIDEO calls (`GET /me` → video_calls_enabled,
      * docs/protocol.md, "Video") — gates the video-call button alone.
      */
     val videoCallsEnabled: StateFlow<Boolean> = settings.state.map { it.videoCallsEnabled }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
-
     /**
      * Ring the other person in this direct chat. The screen has already
      * secured the microphone permission (and asked for the camera when
@@ -408,6 +429,35 @@ class ChatViewModel @Inject constructor(
     }
         .onEach { _initialLoadSettled.value = true }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * How many open polls in this chat this reader still has to answer — the
+     * badge on the toolbar's open-polls button (docs/protocol.md, "Finding
+     * the open ones").
+     *
+     * Over the WHOLE cached chat (`observePolls`, no window), not over [items]:
+     * that flow is the thread's render window and grows as the reader scrolls
+     * up, so a badge derived from it undercounted older polls and changed
+     * with scroll position, while iOS counted its whole store. The two ports
+     * now feed the shared rule the same input.
+     *
+     * A poll by somebody this reader has blocked is a hidden row on the
+     * surface and counts toward nothing — the same rule the thread applies
+     * (`BlockedMessageRule.isHidden`).
+     *
+     * The RULE lives in `util/OpenPollsBadge.kt` and is mirrored on iOS.
+     */
+    val openPollsToAnswer: StateFlow<Int> = combine(
+        messageRepository.observePolls(chatId),
+        myUserId,
+        blockedUserIds,
+    ) { rows, me, blocked ->
+        val mine = me ?: -1L
+        val visible = rows
+            .filterNot { BlockedMessageRule.isHidden(it.senderId, mine, blocked) }
+            .mapNotNull { PollCodec.decode(it.pollJson) }
+        OpenPollsBadge.count(visible, mine)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
     /**
      * The input field's text, owned as TextFieldState rather than a
@@ -610,7 +660,10 @@ class ChatViewModel @Inject constructor(
         _replyDraft.value = null
         _pollDraft.value = null
         viewModelScope.launch {
-            messageRepository.sendPoll(chatId, draft.question, draft.sendableOptions, quote)
+            messageRepository.sendPoll(
+                chatId, draft.question, draft.sendableOptions, quote,
+                resolvedMentions(draft.question),
+            )
         }
     }
 
@@ -870,6 +923,60 @@ class ChatViewModel @Inject constructor(
         snapshotFlow { inputState.text.toString() }
             .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
+    // -- Member mentions (docs/protocol.md, "Mentioning a member") ---------
+
+    /** Everybody a mention may name: the active roster, by the name the app calls them. */
+    private val mentionRoster: StateFlow<List<MentionDto>> = memberDao.observeActiveMembers()
+        .map { members -> members.map { MentionDto(it.userId, it.resolvedDisplayName(appContext)) } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * What the strip above the composer offers: the roster narrowed to the
+     * `@prefix` being typed — never the reader themself, never the
+     * blocked, and never the assistant, which is not in the roster and has
+     * its own button. Empty outside the family chat and outside a token.
+     */
+    val mentionCandidates: StateFlow<List<MentionDto>> = combine(
+        draftText,
+        mentionRoster,
+        chat,
+        settings.state,
+    ) { draft, roster, chatEntity, settingsState ->
+        if (chatEntity?.kind != "family") return@combine emptyList()
+        val query = MemberMention.query(draft) ?: return@combine emptyList()
+        MemberMention.candidates(
+            roster,
+            query,
+            excluding = settingsState.blockedUserIds + setOfNotNull(settingsState.myUserId),
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** A name picked from the strip: the trailing `@prefix` becomes `@Name `. */
+    fun acceptMention(name: String) {
+        inputState.setTextAndPlaceCursorAtEnd(MemberMention.accept(inputState.text.toString(), name))
+    }
+
+    /** The members the text names, resolved at send — family chat only. */
+    private fun resolvedMentions(body: String): List<MentionDto>? {
+        if (chat.value?.kind != "family") return null
+        return MemberMention.resolve(body, mentionRoster.value).takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * A tap on a name opens the one-to-one chat with that member — never
+     * the reader's own name, a member who has left or a deleted account.
+     */
+    fun openDirectChat(userId: Long, onOpened: (Long) -> Unit) {
+        if (userId == myUserId.value) return
+        if (mentionRoster.value.none { it.userId == userId }) return
+        viewModelScope.launch {
+            when (val result = chatRepository.createDirect(userId)) {
+                is ApiResult.Ok -> onOpened(result.value.id)
+                else -> Unit
+            }
+        }
+    }
+
     /**
      * What the message being replied to carries, looked up once per reply
      * target — from this device's own rows, because a [ReplyToDto] holds
@@ -928,6 +1035,115 @@ class ChatViewModel @Inject constructor(
             }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    /**
+     * WHO ANSWERS, verbatim as the operator named them, or null on a
+     * server that named nobody — which is a server whose assistant this
+     * client does not offer at all (docs/protocol.md, "Consenting to the
+     * assistant").
+     */
+    val assistantProcessor: StateFlow<String?> = settings.state
+        .map { it.assistantProcessor }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * Whether this draft would go to the model with nobody having agreed
+     * to that yet. The composer shows the line that says where it would
+     * go, and the send raises the screen that asks.
+     *
+     * Eager, for [mentionPictureNotice]'s reason: the line has to be there
+     * on the frame the `@ai` is, not one frame later.
+     */
+    val assistantConsentNeeded: StateFlow<Boolean> =
+        combine(chat, draftText, settings.state, _editTarget) {
+                chatEntity, draft, settingsState, editing ->
+            // Not while the composer is borrowed for an edit: rewriting an
+            // old message calls no model, and the draft holding an `@ai`
+            // there is the message being fixed rather than a question.
+            editing == null &&
+                AssistantConsent.isRequired(
+                    chatKind = chatEntity?.kind,
+                    body = draft,
+                    processor = settingsState.assistantProcessor,
+                    agreedAt = settingsState.assistantConsentAt,
+                )
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
+     * Whether this draft would reach an assistant this server refuses to
+     * name — in which case it goes nowhere, and the composer says why.
+     */
+    val assistantIsUnnamed: StateFlow<Boolean> =
+        combine(chat, draftText, settings.state, _editTarget) {
+                chatEntity, draft, settingsState, editing ->
+            editing == null &&
+                AssistantConsent.isWithheldFromAnUnnamedAssistant(
+                    chatKind = chatEntity?.kind,
+                    body = draft,
+                    hasAssistant = settingsState.assistantUserId != null,
+                    processor = settingsState.assistantProcessor,
+                )
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
+     * Answer the assistant question, and send what was waiting.
+     *
+     * The stamp is the SERVER's: agreeing twice keeps the first one, and a
+     * client that invented a date would show one the server would not.
+     * [send] is called again afterwards because the draft is still in the
+     * box — agreeing finishes the send the person already asked for.
+     */
+    fun agreeToTheAssistant() {
+        viewModelScope.launch {
+            _assistantConsentAsked.value = false
+            if (familyRepository.setAssistantConsent(true)) {
+                // The draft never left the box, so this finishes the send
+                // the person already asked for.
+                send()
+            }
+        }
+    }
+
+    /** "Not Now": the screen closes and the draft stays where it is. */
+    fun dismissAssistantConsent() {
+        _assistantConsentAsked.value = false
+    }
+
+    /**
+     * Whether the consent screen is up, because a send would have reached
+     * the model (docs/protocol.md, "Consenting to the assistant").
+     */
+    private val _assistantConsentAsked = MutableStateFlow(false)
+
+    /**
+     * What the consent screen must say, or null while it is not up.
+     *
+     * One value rather than three, because the screen's promises depend on
+     * the family's own switches: with `ai_history` off a mention takes
+     * nothing but itself, and a screen claiming the last 30 days would be
+     * asking permission for something that does not happen — and hiding
+     * what does.
+     */
+    val assistantConsentAsk: StateFlow<AssistantConsentAsk?> =
+        combine(_assistantConsentAsked, settings.state) { asked, settingsState ->
+            val processor = settingsState.assistantProcessor
+            if (!asked || processor.isNullOrBlank()) {
+                null
+            } else {
+                AssistantConsentAsk(
+                    processor = processor,
+                    familyHistory = settingsState.familyAiHistory,
+                    familyVision = settingsState.familyAiVision,
+                )
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** What the consent screen is drawn from. */
+    data class AssistantConsentAsk(
+        val processor: String,
+        val familyHistory: Boolean,
+        val familyVision: Boolean,
+    )
+
     /** Screen calls this from a LifecycleResumeEffect. */
     fun setResumed(isResumed: Boolean) {
         resumed.value = isResumed
@@ -985,6 +1201,17 @@ class ChatViewModel @Inject constructor(
 
     fun send() {
         val body = inputState.text.toString()
+        // NOTHING REACHES THE MODEL UNASKED. Before the staged list is
+        // taken, so a refused send consumes nothing: the server refuses
+        // this with `assistant_consent_required` anyway, and asking here
+        // is what turns that refusal into a question with the message
+        // still in hand (docs/protocol.md, "Consenting to the assistant").
+        if (assistantConsentNeeded.value) {
+            _assistantConsentAsked.value = true
+            return
+        }
+        // And a server that will not say WHO answers gets nothing at all.
+        if (assistantIsUnnamed.value) return
         // An attachment can travel with no words at all — that is how a
         // photo is normally sent — so a blank draft only stops the send
         // when there is nothing staged either.
@@ -1017,7 +1244,7 @@ class ChatViewModel @Inject constructor(
         // sent, and leaving it primed would silently quote the next one too.
         val quote = _replyDraft.value
         _replyDraft.value = null
-        viewModelScope.launch { messageRepository.send(chatId, body, quote) }
+        viewModelScope.launch { messageRepository.send(chatId, body, quote, resolvedMentions(body)) }
     }
 
     /**
@@ -1112,6 +1339,7 @@ class ChatViewModel @Inject constructor(
                         caption = caption,
                         chatId = chatId,
                         replyTo = quote,
+                        mentions = resolvedMentions(caption),
                     )
                     if (sent) {
                         _mediaState.value = MediaSendState.Idle
@@ -1162,7 +1390,8 @@ class ChatViewModel @Inject constructor(
         // App scope, not viewModelScope: the staging and the first upload
         // must not be cancelled by navigating away.
         appScope.launch {
-            val queued = messageRepository.sendMedia(prepared, caption, chatId, quote)
+            val queued =
+                messageRepository.sendMedia(prepared, caption, chatId, quote, resolvedMentions(caption))
             if (queued == null) {
                 // Only when not one item could be staged — a full disk, or
                 // a file that vanished between picking and sending.

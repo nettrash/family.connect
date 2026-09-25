@@ -150,6 +150,26 @@ data class SettingsState(
      */
     val assistantImages: Boolean = false,
     /**
+     * WHO ANSWERS, as the server named them (`assistant.processor`,
+     * docs/protocol.md, "Consenting to the assistant"). Held because the
+     * consent screen says it VERBATIM and may be drawn before any call
+     * has been made on this launch.
+     *
+     * Null means this client offers no assistant at all: a screen that
+     * cannot say where the words go cannot ask the question.
+     */
+    val assistantProcessor: String? = null,
+    /**
+     * When this member agreed that their words may go to the model
+     * (`GET /me` → `assistant_consent_at`), or null until they have.
+     *
+     * The SERVER's answer and not this device's: the server is what calls
+     * the model, so a client that forgot to ask is still refused; a
+     * reinstall must not quietly re-ask and re-send; and somebody who
+     * agreed on their phone has agreed, not agreed-on-that-phone.
+     */
+    val assistantConsentAt: String? = null,
+    /**
      * Whether the family's OWNER has allowed a photograph a member points
      * the assistant at to be shown to the model (`Family.ai_vision`) — in
      * their own assistant chat, and since #56 on an `@ai` message in the
@@ -181,6 +201,20 @@ data class SettingsState(
      * to say "up to N recent photos" without a round trip.
      */
     val familyAiHistoryPhotos: Boolean = false,
+    /**
+     * Whether the assistant may greet this family unprompted once a day
+     * (docs/protocol.md, "The daily greeting"). False for every family that
+     * predates it, and bound to none of the three switches above.
+     */
+    val familyAiGreeting: Boolean = false,
+    /**
+     * Whether the SERVER posts daily greetings at all (`GET /me` →
+     * greetings_enabled). Account-scoped like the assistant's own
+     * capabilities: a different server may post none. False disables the
+     * family's switch and says why, rather than leaving an owner to wonder
+     * why their mornings are quiet — that half is their operator's.
+     */
+    val greetingsEnabled: Boolean = false,
     /**
      * Whether the server signals voice calls (`GET /me` → calls_enabled).
      * Account-scoped like the assistant: a different server may have them
@@ -260,7 +294,16 @@ interface SettingsRepository {
         displayName: String?,
         vision: Boolean = false,
         images: Boolean = false,
+        processor: String? = null,
     )
+
+    /**
+     * Record what `GET /me` — or this member's own answer — said about
+     * the assistant question (docs/protocol.md, "Consenting to the
+     * assistant"). Unconditional, null included: a withdrawal from
+     * another device has to reach this one.
+     */
+    suspend fun setAssistantConsentAt(at: String?)
 
     /**
      * Record the family's own picture switch, from `GET /families/mine`
@@ -282,6 +325,16 @@ interface SettingsRepository {
      * `ai_vision` goes off, whether or not this device asked.
      */
     suspend fun setFamilyAiHistoryPhotos(enabled: Boolean)
+
+    /**
+     * Record the family's fourth switch — the daily greeting. Bound to none
+     * of the others, so unlike the third it can never be turned off by a
+     * write this device did not make.
+     */
+    suspend fun setFamilyAiGreeting(enabled: Boolean)
+
+    /** Record what `GET /me` said about daily greetings on this server. */
+    suspend fun setGreetingsEnabled(enabled: Boolean)
 
     /** Record what `GET /me` said about voice calls on this server. */
     suspend fun setCallsEnabled(enabled: Boolean)
@@ -358,6 +411,8 @@ class DataStoreSettingsRepository @Inject constructor(
         val ASSISTANT_NAME = stringPreferencesKey("assistant_name")
         val ASSISTANT_VISION = booleanPreferencesKey("assistant_vision")
         val ASSISTANT_IMAGES = booleanPreferencesKey("assistant_images")
+        val ASSISTANT_PROCESSOR = stringPreferencesKey("assistant_processor")
+        val ASSISTANT_CONSENT_AT = stringPreferencesKey("assistant_consent_at")
         // Stored PLAIN, not inverted like the two preview keys above: this
         // one's default is already `false`, so a missing key and an
         // explicit `false` say the same thing and neither can be read as
@@ -369,6 +424,10 @@ class DataStoreSettingsRepository @Inject constructor(
         // Plain, like FAMILY_AI_VISION and for its reason: a missing key
         // and an explicit `false` say the same thing.
         val FAMILY_AI_HISTORY_PHOTOS = booleanPreferencesKey("family_ai_history_photos")
+        // Both plain, for FAMILY_AI_VISION's reason: a missing key and an
+        // explicit `false` say the same thing — no greeting.
+        val FAMILY_AI_GREETING = booleanPreferencesKey("family_ai_greeting")
+        val GREETINGS_ENABLED = booleanPreferencesKey("greetings_enabled")
         val CALLS_ENABLED = booleanPreferencesKey("calls_enabled")
         val VIDEO_CALLS_ENABLED = booleanPreferencesKey("video_calls_enabled")
         val FAMILY_REGISTRATION_ENABLED = booleanPreferencesKey("family_registration_enabled")
@@ -405,9 +464,13 @@ class DataStoreSettingsRepository @Inject constructor(
             assistantName = prefs[Keys.ASSISTANT_NAME],
             assistantVision = prefs[Keys.ASSISTANT_VISION] == true,
             assistantImages = prefs[Keys.ASSISTANT_IMAGES] == true,
+            assistantProcessor = prefs[Keys.ASSISTANT_PROCESSOR],
+            assistantConsentAt = prefs[Keys.ASSISTANT_CONSENT_AT],
             familyAiVision = prefs[Keys.FAMILY_AI_VISION] == true,
             familyAiHistory = prefs[Keys.FAMILY_AI_HISTORY] ?: true,
             familyAiHistoryPhotos = prefs[Keys.FAMILY_AI_HISTORY_PHOTOS] == true,
+            familyAiGreeting = prefs[Keys.FAMILY_AI_GREETING] == true,
+            greetingsEnabled = prefs[Keys.GREETINGS_ENABLED] == true,
             callsEnabled = prefs[Keys.CALLS_ENABLED] == true,
             videoCallsEnabled = prefs[Keys.VIDEO_CALLS_ENABLED] == true,
             familyRegistrationEnabled = prefs[Keys.FAMILY_REGISTRATION_ENABLED] != false,
@@ -492,6 +555,7 @@ class DataStoreSettingsRepository @Inject constructor(
         displayName: String?,
         vision: Boolean,
         images: Boolean,
+        processor: String?,
     ) {
         dataStore.edit { prefs ->
             if (userId != null && displayName != null) {
@@ -499,6 +563,13 @@ class DataStoreSettingsRepository @Inject constructor(
                 prefs[Keys.ASSISTANT_NAME] = displayName
                 prefs[Keys.ASSISTANT_VISION] = vision
                 prefs[Keys.ASSISTANT_IMAGES] = images
+                // A server that named nobody leaves this cleared, which
+                // is what turns the assistant off in this client.
+                if (processor.isNullOrBlank()) {
+                    prefs.remove(Keys.ASSISTANT_PROCESSOR)
+                } else {
+                    prefs[Keys.ASSISTANT_PROCESSOR] = processor
+                }
             } else {
                 // Cleared rather than left stale: a server that turned the
                 // assistant off must stop offering `@ai` on the next resync.
@@ -509,6 +580,17 @@ class DataStoreSettingsRepository @Inject constructor(
                 prefs.remove(Keys.ASSISTANT_NAME)
                 prefs.remove(Keys.ASSISTANT_VISION)
                 prefs.remove(Keys.ASSISTANT_IMAGES)
+                prefs.remove(Keys.ASSISTANT_PROCESSOR)
+            }
+        }
+    }
+
+    override suspend fun setAssistantConsentAt(at: String?) {
+        dataStore.edit { prefs ->
+            if (at.isNullOrBlank()) {
+                prefs.remove(Keys.ASSISTANT_CONSENT_AT)
+            } else {
+                prefs[Keys.ASSISTANT_CONSENT_AT] = at
             }
         }
     }
@@ -525,6 +607,14 @@ class DataStoreSettingsRepository @Inject constructor(
     override suspend fun setFamilyAiHistoryPhotos(enabled: Boolean) {
         // Unconditional, false included. See the interface.
         dataStore.edit { it[Keys.FAMILY_AI_HISTORY_PHOTOS] = enabled }
+    }
+
+    override suspend fun setFamilyAiGreeting(enabled: Boolean) {
+        dataStore.edit { it[Keys.FAMILY_AI_GREETING] = enabled }
+    }
+
+    override suspend fun setGreetingsEnabled(enabled: Boolean) {
+        dataStore.edit { it[Keys.GREETINGS_ENABLED] = enabled }
     }
 
     override suspend fun setCallsEnabled(enabled: Boolean) {

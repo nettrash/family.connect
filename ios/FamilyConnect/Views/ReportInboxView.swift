@@ -79,6 +79,14 @@ struct ReportInboxView: View {
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
                     .textSelection(.enabled)
             }
+            // And WHAT IT CARRIED, when the words do not say: a photo sent
+            // without a caption has an empty excerpt, and "inappropriate" is
+            // very often exactly that message.
+            if let carried = report.carried {
+                Label(carried, systemImage: "paperclip")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.vertical, 2)
 

@@ -203,6 +203,61 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "assistant_is_not_removable",
         sql: include_str!("../migrations/0036_assistant_is_not_removable.sql"),
     },
+    Migration {
+        version: 37,
+        name: "ai_greeting",
+        sql: include_str!("../migrations/0037_ai_greeting.sql"),
+    },
+    Migration {
+        version: 38,
+        name: "ai_faces",
+        sql: include_str!("../migrations/0038_ai_faces.sql"),
+    },
+    Migration {
+        version: 39,
+        name: "threads",
+        sql: include_str!("../migrations/0039_threads.sql"),
+    },
+    Migration {
+        version: 40,
+        name: "message_mentions",
+        sql: include_str!("../migrations/0040_message_mentions.sql"),
+    },
+    Migration {
+        version: 41,
+        name: "note_font",
+        sql: include_str!("../migrations/0041_note_font.sql"),
+    },
+    Migration {
+        version: 42,
+        name: "photo_notes",
+        sql: include_str!("../migrations/0042_photo_notes.sql"),
+    },
+    Migration {
+        version: 43,
+        name: "board_events",
+        sql: include_str!("../migrations/0043_board_events.sql"),
+    },
+    Migration {
+        version: 44,
+        name: "note_mentions",
+        sql: include_str!("../migrations/0044_note_mentions.sql"),
+    },
+    Migration {
+        version: 45,
+        name: "note_tasks",
+        sql: include_str!("../migrations/0045_note_tasks.sql"),
+    },
+    Migration {
+        version: 46,
+        name: "assistant_reports",
+        sql: include_str!("../migrations/0046_assistant_reports.sql"),
+    },
+    Migration {
+        version: 47,
+        name: "assistant_consent",
+        sql: include_str!("../migrations/0047_assistant_consent.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

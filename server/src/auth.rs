@@ -57,8 +57,45 @@ impl FromRequestParts<AppState> for AuthUser {
 
 /// Pull the bearer token out of the Authorization header, if any.
 fn bearer_token(parts: &Parts) -> Option<String> {
-    let value = parts.headers.get(AUTHORIZATION)?.to_str().ok()?;
+    bearer_from_header(&parts.headers)
+}
+
+/// The same, from a bare header map — the WebSocket upgrade authenticates
+/// by hand, because it has a second place to look (below).
+pub fn bearer_from_header(headers: &axum::http::HeaderMap) -> Option<String> {
+    let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
     value.strip_prefix("Bearer ").map(str::to_string)
+}
+
+/// The subprotocol a browser names to say "this is Family Connect". The
+/// server echoes it back; it must, or the browser fails the handshake.
+pub const WS_SUBPROTOCOL: &str = "family-connect";
+
+/// The prefix of the subprotocol that CARRIES the token.
+pub const WS_BEARER_PREFIX: &str = "bearer.";
+
+/// A browser's token, offered as a WebSocket SUBPROTOCOL (docs/protocol.md,
+/// "A browser is a client too").
+///
+/// A browser's WebSocket API takes no headers, so a browser cannot send
+/// `Authorization` on the upgrade. It CAN offer subprotocols, and those
+/// travel in `Sec-WebSocket-Protocol` — a header, which nginx does not
+/// write to its access log. The alternative, the token in the URL, is the
+/// whole credential written into every access log line and every proxy in
+/// between, so it is not accepted at all.
+///
+/// Session tokens are base64url without padding, which is exactly the set
+/// of characters a subprotocol may contain, so the token needs no encoding.
+pub fn bearer_from_subprotocols(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get_all(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .find_map(|protocol| protocol.strip_prefix(WS_BEARER_PREFIX))
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
 }
 
 /// Resolve a bearer token to its session + user, sliding the expiry.

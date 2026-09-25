@@ -1,0 +1,36 @@
+<Solution>
+  <!--
+    ONE solution for everything under win/. Open it in Visual Studio on Windows.
+
+    Off Windows, build and test the PROJECTS, not this file: FamilyConnect.App's XAML compiler is a
+    .NET Framework executable, so building the solution fails on macOS and Linux at that project.
+    The CI win job and win/README.md name the test projects by path for exactly that reason, and
+    tools/xamlcheck is how the app is checked where it cannot be built.
+  -->
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="ARM64" />
+  </Configurations>
+  <Folder Name="/src/">
+    <!--
+      FamilyConnect.App is the only project with <Platforms>x64;ARM64</Platforms>. A .slnx stores
+      RULES, not a per-project configuration list, and with no rule a project is mapped to AnyCPU —
+      a configuration the app does not have, so Visual Studio refuses to open the solution and
+      `dotnet build -p:Platform=x64` silently builds the other architecture (md.win paid for this).
+      These two rules are the whole fix; the AnyCPU projects need none.
+    -->
+    <Project Path="src/FamilyConnect.App/FamilyConnect.App.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+      <Platform Solution="*|ARM64" Project="ARM64" />
+    </Project>
+    <Project Path="src/FamilyConnect.App.Logic/FamilyConnect.App.Logic.csproj" />
+    <Project Path="src/FamilyConnect.Core/FamilyConnect.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FamilyConnect.App.Logic.Tests/FamilyConnect.App.Logic.Tests.csproj" />
+    <Project Path="tests/FamilyConnect.Core.Tests/FamilyConnect.Core.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/xamlcheck/xamlcheck.csproj" />
+  </Folder>
+</Solution>

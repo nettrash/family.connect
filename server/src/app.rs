@@ -35,6 +35,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(handlers_auth::login))
         .route("/api/v1/auth/logout", post(handlers_auth::logout))
         .route("/api/v1/me", get(handlers_auth::me))
+        .route(
+            // The member's own permission for their words to reach the
+            // model (docs/protocol.md, "Consenting to the assistant").
+            "/api/v1/me/assistant-consent",
+            post(handlers_auth::set_assistant_consent),
+        )
         .route("/api/v1/me/password", post(handlers_auth::change_password))
         // A POST rather than a DELETE /me: the request carries a body, and
         // RFC 9110 gives content on a DELETE no defined semantics
@@ -123,6 +129,13 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/families/reports/{id}/resolve",
             post(handlers_report::resolve_report),
         )
+        .route(
+            // NOT under /families: an assistant report needs no family, and
+            // no owner may read it (docs/protocol.md, "Reporting the
+            // assistant").
+            "/api/v1/reports/assistant",
+            post(handlers_report::create_assistant_report),
+        )
         // Chats & messages
         .route("/api/v1/chats", get(handlers_chat::list_chats))
         .route("/api/v1/chats/direct", post(handlers_chat::direct_chat))
@@ -144,6 +157,11 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers_chat::get_reactions),
         )
         .route("/api/v1/chats/{id}/edits", get(handlers_chat::get_edits))
+        // A chain of replies, read on its own (protocol.md, "Threads").
+        .route(
+            "/api/v1/chats/{id}/messages/{message_id}/thread",
+            get(handlers_chat::get_thread),
+        )
         // Polls. A vote is set and retracted like a reaction; closing is the
         // author's, and one-way (protocol.md, "Polls").
         .route(
@@ -155,6 +173,16 @@ pub fn build_router(state: AppState) -> Router {
             post(handlers_poll::close_poll_handler),
         )
         .route("/api/v1/chats/{id}/polls", get(handlers_poll::get_polls))
+        // The open ones, as whole messages — a surface's read, not a cursor
+        // (protocol.md, "Finding the open ones"). It answers with MESSAGES,
+        // so it lives in handlers_chat with the rest of the message columns.
+        // Declared AFTER the line above: axum matches the literal segment
+        // before it would take `open` as an `{id}`, but keeping them in this
+        // order means the more specific path is also the more specific line.
+        .route(
+            "/api/v1/chats/{id}/polls/open",
+            get(handlers_chat::get_open_polls),
+        )
         // Attachments
         .route(
             "/api/v1/attachments",
@@ -187,6 +215,26 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/families/mine/board/notes/{note_id}",
             patch(handlers_board::patch_note).delete(handlers_board::delete_note),
+        )
+        // Answering an event is the SHARED act, like moving a note: any
+        // member may, and it has its own route because it is not an edit
+        // (docs/protocol.md, "Board").
+        .route(
+            "/api/v1/families/mine/board/notes/{note_id}/rsvp",
+            put(handlers_board::put_rsvp).delete(handlers_board::delete_rsvp),
+        )
+        // The assistant's picture behind an event: the AUTHOR's, and its
+        // own route because it is not an edit anybody could send — the
+        // prompt is the note's own title (docs/protocol.md, "Board").
+        .route(
+            "/api/v1/families/mine/board/notes/{note_id}/backdrop",
+            post(handlers_board::draw_backdrop),
+        )
+        // Ticking a line off a task list is the shared act too, for the
+        // same reason and with its own route (docs/protocol.md, "Board").
+        .route(
+            "/api/v1/families/mine/board/notes/{note_id}/tasks/{item_id}",
+            put(handlers_board::put_task_done),
         )
         // Devices
         .route("/api/v1/devices", post(handlers_device::register_device))

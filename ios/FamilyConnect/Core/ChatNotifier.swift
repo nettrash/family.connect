@@ -23,9 +23,10 @@
 //     not to the device, so a resync that finds `last_read_message_id`
 //     further along than this device had recorded has learned that the
 //     banners sitting here below it are stale, whichever device did the
-//     reading. That is the only way this device ever finds out — the live
-//     `read` frame is relayed to the OTHER members of the chat, so a
-//     reader's own devices never see their own read go past.
+//     reading. Two doors deliver that fact: the live `read` frame, which
+//     since #61 reaches a reader's own other devices and is handled in
+//     ChatSyncCoordinator's `.read` branch, and the resync, for a device
+//     that held no socket when the reading happened.
 //
 //  WORDING IS NOT INVENTED HERE. `server/src/push_payload.rs` composes
 //  what a phone is told about a message, and a Mac saying something
@@ -77,8 +78,21 @@ nonisolated enum ChatNotifier {
     /// what makes a Mac and a phone say the SAME thing about the same
     /// message. The words inside it — names — are not ours to translate
     /// either.
-    static func title(chatKind: String, chatTitle: String, senderName: String) -> String {
-        chatKind == "family" ? "\(chatTitle) — \(senderName)" : senderName
+    static func title(
+        chatKind: String,
+        chatTitle: String,
+        senderName: String,
+        /// Does this message name the person at this Mac? The server gives
+        /// that push its own title (`push_payload::mention_notification`),
+        /// and a banner this app raises itself has to say the same thing —
+        /// it is the only signal the feature adds to a notification
+        /// (docs/protocol.md, "Mentioning a member").
+        namesMe: Bool = false
+    ) -> String {
+        guard chatKind == "family" else { return senderName }
+        return namesMe
+            ? "\(chatTitle) — \(senderName) mentioned you"
+            : "\(chatTitle) — \(senderName)"
     }
 
     /// The text, or what kind of thing arrived when a message carries no
@@ -296,9 +310,10 @@ nonisolated enum ChatNotifier {
     /// value, shared across every device they own — so a resync that finds
     /// it further along than this device had recorded has learned that the
     /// chat was read somewhere else, and that the banners sitting here for
-    /// the messages below it are stale. Nothing else ever tells this device
-    /// that: the live `read` frame is relayed only to OTHER members, so a
-    /// reader's own devices never see their own read go past.
+    /// the messages below it are stale. The live `read` frame tells a
+    /// connected device the same thing (ChatSyncCoordinator's `.read`
+    /// branch calls this door with the marker that won); the resync is how
+    /// a device that had no socket at the time catches up.
     ///
     /// A whole map rather than a chat at a time because a resync answers
     /// for the entire list at once, and one pass over the delivered

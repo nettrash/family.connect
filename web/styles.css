@@ -1,0 +1,1475 @@
+/* Family Connect on the web.
+ *
+ * Light and dark from one set of tokens: the page follows the reader's
+ * system setting, which is the only preference a browser reliably knows and
+ * the one the phone apps already respect.
+ */
+:root {
+    color-scheme: light dark;
+    --bg: #f6f6f8;
+    --panel: #ffffff;
+    --ink: #12121a;
+    --muted: #6a6a78;
+    --line: #e3e3ea;
+    --tint: #2f6fd0;
+    --mine: #dceafd;
+    --danger: #b3261e;
+    --soft: #eef0f5;
+    --radius: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #14141a;
+        --panel: #1d1d25;
+        --ink: #f2f2f6;
+        --muted: #9a9aa8;
+        --line: #2c2c36;
+        --tint: #6fa5f5;
+        --mine: #24405f;
+        --danger: #f2b8b5;
+        --soft: #262631;
+    }
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* --- sign in ------------------------------------------------------------ */
+
+.login {
+    min-height: 100dvh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+}
+
+.login-card {
+    width: min(360px, 100%);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 24px;
+    display: grid;
+    gap: 8px;
+}
+
+.login-card h1 { margin: 0 0 8px; font-size: 20px; }
+.login-card label { font-size: 13px; color: var(--muted); }
+
+input, textarea {
+    font: inherit;
+    color: inherit;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 9px 10px;
+    width: 100%;
+}
+
+button {
+    font: inherit;
+    background: var(--tint);
+    color: #fff;
+    border: 0;
+    border-radius: 8px;
+    padding: 9px 14px;
+    cursor: pointer;
+}
+
+button:disabled { opacity: .5; cursor: default; }
+
+/* A button that reads as a link: menus, inline actions, dismissals. */
+button.link, .link {
+    background: transparent;
+    color: var(--tint);
+    padding: 0 4px;
+    border-radius: 4px;
+}
+
+.error, .notice {
+    font-size: 13px;
+    margin: 4px 0 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.error { color: var(--danger); }
+.notice { color: var(--muted); }
+
+.app > .error, .app > .notice { padding: 6px 16px; margin: 0; background: var(--panel); }
+
+/* --- the app ------------------------------------------------------------ */
+
+/* THE SHELL IS EXACTLY THE WINDOW. The bar, the chat list and the composer
+ * stay put, and only the two panes scroll, each on its own.
+ *
+ * `height`, not `min-height`: a minimum lets the content push the shell
+ * taller than the window, and then the PAGE scrolls — bar, list and
+ * composer with it, which is the one thing a chat must never do. `vh`
+ * first for a browser without `dvh`; `dvh` then tracks a phone's
+ * collapsing toolbar, where `vh` would put the composer under it. */
+.app {
+    height: 100vh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.app > .bar,
+.app > .error,
+.app > .notice { flex: none; }
+
+.bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+}
+
+.brand { font-weight: 600; }
+/* Next to the brand; the board and the sign-out button keep the far end. */
+.status { margin-right: auto; color: var(--muted); font-size: 13px; }
+.bar-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.signout { background: transparent; color: var(--tint); padding: 6px 8px; }
+.board-button {
+    background: transparent;
+    color: var(--tint);
+    padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.board-button.is-active { background: color-mix(in srgb, var(--tint) 12%, transparent); }
+
+.split {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(220px, 300px) 1fr;
+    /* The row is pinned to the space the shell has, so each pane scrolls
+     * inside it instead of growing it. This and the panes' own
+     * `min-height: 0` are REDUNDANT on purpose: any one of them holds the
+     * layout in Chrome, and removing all of them lets the page scroll
+     * again (layout_tests::the_page_never_scrolls_only_the_two_panes_do).
+     * Two locks, so nobody deletes the only one thinking it is decoration. */
+    grid-template-rows: minmax(0, 1fr);
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* A thread or the open polls open BESIDE the chat, not over it. */
+.split.with-panel { grid-template-columns: minmax(220px, 300px) 1fr minmax(280px, 380px); }
+
+/* One column on a phone: the list above, the chat below, and still the
+ * same rule — each scrolls on its own and the composer never leaves. A
+ * panel, there, takes the chat's place. */
+@media (max-width: 720px) {
+    .split, .split.with-panel {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(0, 35%) minmax(0, 1fr);
+    }
+    .split.with-panel > .conversation { display: none; }
+    .chat-list {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+    }
+}
+
+.chat-list {
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+    overflow-y: auto;
+    /* Reaching the end of the list must not start scrolling something
+     * else — there is nothing else to scroll, and on a phone the chained
+     * gesture is a pull-to-refresh that reloads the app. */
+    overscroll-behavior: contain;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.chat-row {
+    /* A row is its own height; in a scrolling column it must never be
+     * squeezed to make the list fit. */
+    flex: none;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    padding: 12px 14px;
+    display: grid;
+    gap: 2px;
+}
+
+.chat-row.is-selected { background: color-mix(in srgb, var(--tint) 12%, transparent); }
+.chat-head, .chat-foot { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chat-title {
+    font-weight: 600;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* The family's own name may take two lines. */
+.chat-row.is-family .chat-title { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.chat-time { color: var(--muted); font-size: 12px; flex: none; }
+.chat-preview {
+    flex: 1;
+    min-width: 0;
+    color: var(--muted);
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.badge {
+    flex: none;
+    background: var(--tint);
+    color: #fff;
+    border-radius: 999px;
+    padding: 1px 8px;
+    font-size: 12px;
+}
+
+.mention-mark {
+    flex: none;
+    color: var(--tint);
+    font-weight: 700;
+    font-size: 13px;
+}
+
+.conversation, .thread-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.conversation.empty { display: grid; place-items: center; color: var(--muted); }
+
+.conversation-bar, .thread-bar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+}
+
+.conversation-title, .thread-bar h2 { margin: 0; font-size: 15px; flex: 1; min-width: 0; }
+.open-polls { background: transparent; color: var(--tint); padding: 4px 8px; display: flex; gap: 6px; align-items: center; }
+
+.thread-panel { border-left: 1px solid var(--line); background: var(--bg); }
+
+.messages, .thread-messages {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    /* Loading earlier messages inserts them ABOVE what is on screen, and
+     * the conversation keeps the reader's place itself (views/conversation.rs)
+     * — Safari has no scroll anchoring, and where a browser does have it,
+     * both adjusting would move the reader twice. */
+    overflow-anchor: none;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.row { display: flex; flex-direction: column; flex: none; border-radius: var(--radius); transition: background .4s; }
+.row.is-highlighted { background: color-mix(in srgb, var(--tint) 18%, transparent); }
+.row.is-root { border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+
+.day-pill {
+    flex: none;
+    align-self: center;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--muted);
+    background: var(--soft);
+    border-radius: 999px;
+    padding: 3px 10px;
+    margin: 6px 0;
+}
+
+.unread-divider {
+    flex: none;
+    align-self: stretch;
+    text-align: center;
+    font-size: 12px;
+    color: var(--tint);
+    border-top: 1px solid color-mix(in srgb, var(--tint) 40%, transparent);
+    padding-top: 4px;
+    margin: 6px 0;
+}
+
+.load-more { align-self: center; background: transparent; color: var(--tint); }
+.empty-note { color: var(--muted); text-align: center; }
+
+.jump-newest {
+    position: relative;
+    align-self: flex-end;
+    margin: -48px 16px 8px 0;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    padding: 0;
+    box-shadow: 0 2px 8px rgb(0 0 0 / 20%);
+    flex: none;
+}
+
+/* --- one message ---------------------------------------------------------- */
+
+.bubble {
+    position: relative;
+    flex: none;
+    max-width: min(72ch, 78%);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+    align-self: flex-start;
+}
+
+.bubble.is-mine {
+    background: var(--mine);
+    border-color: transparent;
+    align-self: flex-end;
+}
+
+.row > .bubble.is-mine { align-self: flex-end; }
+
+.bubble.is-hidden { background: transparent; border-style: dashed; color: var(--muted); display: flex; gap: 8px; align-items: baseline; }
+.bubble.is-call { background: var(--soft); border-color: transparent; }
+.call-record { margin: 0; }
+.call-record.is-missed { color: var(--danger); }
+
+.sender { font-size: 12px; color: var(--muted); display: block; }
+.bubble .body { margin: 2px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.awaiting { animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.ai-failed { color: var(--muted); font-style: italic; font-size: 13px; margin: 2px 0; }
+
+/* --- attachments ---------------------------------------------------------- *
+ * Sized from the attachment's metadata (views/attachments.rs), so a row is
+ * the height it will be before its picture lands. */
+.attachments { display: grid; gap: 4px; justify-items: start; margin: 2px 0 4px; }
+.bubble.is-media-only { background: transparent; border-color: transparent; padding: 0; }
+.bubble.is-media-only .bubble-foot { padding: 2px 4px 0; }
+
+.tile, .card {
+    position: relative;
+    display: block;
+    padding: 0;
+    overflow: hidden;
+    border-radius: var(--radius);
+    border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+    background: linear-gradient(to bottom, color-mix(in srgb, var(--ink) 10%, transparent), color-mix(in srgb, var(--ink) 4%, transparent));
+    cursor: pointer;
+    max-width: 100%;
+}
+.tile img, .card img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.tile.is-loading::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--ink) 25%, transparent);
+    border-top-color: var(--tint);
+    animation: spin 0.9s linear infinite;
+}
+.tile:has(.play).is-loading::after { display: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.play {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 44px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: rgb(0 0 0 / 40%);
+    color: #fff;
+    font-size: 18px;
+    padding-left: 3px;
+    pointer-events: none;
+}
+
+.album { position: relative; padding: 0; background: transparent; display: block; cursor: pointer; max-width: 100%; }
+.album-card { position: relative; width: 100%; }
+.album-layer { position: absolute; inset: 0; }
+.album-shrink { position: absolute; inset: 0; transform-origin: top center; }
+.album-top { position: absolute; inset: 0; }
+.album .card { width: 100%; height: 100%; }
+.album-count {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    color: #fff;
+    background: rgb(0 0 0 / 55%);
+    border-radius: 999px;
+    padding: 2px 6px;
+}
+
+.file-row, .location-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    text-align: left;
+    background: color-mix(in srgb, var(--ink) 5%, transparent);
+    color: var(--ink);
+    border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+    border-radius: 10px;
+    padding: 6px 10px 6px 8px;
+    max-width: 320px;
+    min-width: 0;
+}
+.file-icon, .pin {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--tint) 12%, transparent);
+    flex: none;
+}
+.file-text { display: grid; min-width: 0; }
+.file-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-size { font-size: 12px; opacity: .7; white-space: nowrap; }
+.open-maps { margin-left: auto; font-size: 12px; color: var(--tint); white-space: nowrap; }
+
+.audio {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 260px;
+    max-width: 100%;
+    padding: 6px 8px;
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--ink) 5%, transparent);
+    border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.audio-toggle { width: 36px; height: 36px; border-radius: 50%; padding: 0; flex: none; }
+.audio-track { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.audio-track input { width: 100%; accent-color: var(--tint); margin: 0; }
+.audio-times { display: flex; justify-content: space-between; font-size: 11px; font-variant-numeric: tabular-nums; opacity: .75; }
+.audio audio { display: none; }
+
+/* --- the viewer ------------------------------------------------------------ */
+.viewer {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    background: rgb(10 10 14 / 94%);
+    color: #f2f2f6;
+    outline: none;
+}
+.viewer-bar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; }
+.viewer-title { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer-position { font-size: 13px; opacity: .7; }
+.viewer .secondary { background: rgb(255 255 255 / 12%); color: #f2f2f6; }
+.viewer .link { color: #f2f2f6; font-size: 18px; }
+.viewer-stage { position: relative; min-height: 0; display: grid; place-items: center; overflow: hidden; }
+/* THE PICTURE FITS THE WINDOW, both ways.
+ *
+ * The rows and columns are pinned to `minmax(0, 1fr)` on purpose, and this is
+ * the whole fix: an AUTO track grows to its content, so the image's own 1200px
+ * became the grid area, `max-height: 100%` resolved against THAT, and a
+ * portrait photograph opened at natural size and was clipped by the overflow
+ * below — the middle third of it, in a window with room for all of it. A
+ * bounded track makes the area the BOX, which is what the percentages were
+ * always meant to mean. */
+.viewer-photo, .viewer-video {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    place-items: center;
+    overflow: hidden;
+}
+.viewer-photo img, .viewer-video img, .viewer-video video {
+    max-width: 100%;
+    max-height: 100%;
+    /* `contain` alone would not have saved it: the element itself was 1200
+     * tall, so there was nothing left over to letterbox. */
+    object-fit: contain;
+}
+.viewer-photo img { transition: transform .12s ease-out; touch-action: none; user-select: none; }
+.viewer-photo img.is-zoomed { cursor: grab; transition: none; }
+.viewer-loading { margin: 0; opacity: .8; }
+.viewer-loading.is-over { position: absolute; bottom: 16px; left: 0; right: 0; text-align: center; }
+.viewer-zoom { position: absolute; bottom: 12px; right: 16px; display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.viewer-arrow {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 2;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    padding: 0;
+    font-size: 28px;
+    line-height: 1;
+    background: rgb(255 255 255 / 14%);
+    color: #fff;
+}
+.viewer-arrow.is-previous { left: 16px; }
+.viewer-arrow.is-next { right: 16px; }
+
+.quote {
+    border-left: 3px solid var(--tint);
+    padding: 2px 8px;
+    margin: 2px 0 6px;
+    font-size: 13px;
+    cursor: pointer;
+    display: grid;
+    gap: 2px;
+}
+.quote-name { font-weight: 600; font-size: 12px; margin-right: 6px; }
+.quote-text { color: var(--muted); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.quote-parent { opacity: .75; }
+.quote-parent .quote-text { -webkit-line-clamp: 1; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.chip {
+    background: var(--soft);
+    color: var(--ink);
+    border: 1px solid transparent;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 13px;
+}
+.chip.is-mine { border-color: var(--tint); }
+.chip-count { margin-left: 4px; font-size: 12px; color: var(--muted); }
+
+.thread-chip { background: transparent; color: var(--tint); padding: 2px 0; font-size: 12px; font-weight: 500; }
+
+.bubble-foot { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-height: 4px; }
+.meta { font-size: 11px; color: var(--muted); }
+.tick.is-seen { color: var(--tint); }
+.more {
+    background: transparent;
+    color: var(--muted);
+    padding: 0 4px;
+    line-height: 1;
+    opacity: 0;
+}
+.bubble:hover .more, .bubble:focus-within .more, .more:focus { opacity: 1; }
+
+.menu, .popover {
+    position: absolute;
+    z-index: 5;
+    top: 100%;
+    right: 0;
+    min-width: 200px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
+    padding: 6px;
+    display: grid;
+    gap: 2px;
+}
+.bubble:not(.is-mine) .menu, .bubble:not(.is-mine) .popover { left: 0; right: auto; }
+.menu > button { background: transparent; color: var(--ink); text-align: left; padding: 6px 8px; border-radius: 6px; }
+.menu > button:hover { background: var(--soft); }
+.menu > button.danger, .danger { color: var(--danger); }
+.menu-reactions { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.menu-emoji { background: transparent; padding: 4px; font-size: 18px; }
+.menu-section { font-size: 11px; color: var(--muted); padding: 6px 8px 2px; border-top: 1px solid var(--line); }
+.reactor { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; }
+
+/* Not delivered yet, and not delivered at all: neither may look like a
+ * message that arrived. */
+.bubble.is-pending { opacity: .55; }
+.bubble.is-failed { opacity: 1; border: 1px solid var(--danger); }
+.send-failed { color: var(--danger); display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.send-failed .link { font-size: 12px; font-weight: 600; }
+
+/* --- a message's body: the markdown subset, links, mentions -------------- */
+
+.md { overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 2px 0; white-space: pre-wrap; }
+/* Headings and fences are RUNS in one text, as on Apple — a `#` line
+ * changes a font, it does not open a block. The ladder is the contract:
+ * 1.29 / 1.18 / 1.00 em, bold (Android's numbers for Apple's styles). */
+.md .h1 { font-size: 1.29em; font-weight: 700; line-height: 1.3; }
+.md .h2 { font-size: 1.18em; font-weight: 700; line-height: 1.3; }
+.md .h3 { font-size: 1em; font-weight: 700; }
+.md .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .92em; }
+.md code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .92em; background: var(--soft); border-radius: 4px; padding: 0 3px; }
+.md .table-wrap { overflow-x: auto; margin: 4px 0; }
+.md table { border-collapse: collapse; font-size: .95em; }
+.md th, .md td { border: 1px solid var(--line); padding: 3px 8px; vertical-align: top; }
+.md th { background: var(--soft); }
+.md a { color: var(--tint); text-decoration: underline; }
+/* A mention is BOLD and nothing else (docs/protocol.md, "Mentioning a
+ * member"): the tint it used to take is this balloon's own background on
+ * my own messages, so @Anna was invisible in exactly the place somebody
+ * reads their own words back. `color: inherit` because a <button> would
+ * otherwise take the user agent's. */
+.mention { color: inherit; font-weight: 600; background: transparent; padding: 0; }
+button.mention { cursor: pointer; }
+
+/* A message of one to four emoji is drawn large and without a balloon. */
+.bubble.is-emoji-only { background: transparent; border-color: transparent; padding: 0 2px; }
+.emoji-only { line-height: 1.1; margin: 0; }
+
+/* --- polls ---------------------------------------------------------------- */
+
+.poll { display: grid; gap: 6px; margin-top: 6px; min-width: 240px; }
+.poll-option { display: grid; gap: 2px; }
+.poll-choice {
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    background: var(--bg);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    text-align: left;
+}
+.poll-choice.is-mine { border-color: var(--tint); font-weight: 600; }
+.poll-bar { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--tint) 18%, transparent); }
+.poll-text, .poll-count { position: relative; }
+.poll-voters { font-size: 12px; color: var(--muted); }
+.poll-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+
+/* --- the composer --------------------------------------------------------- */
+
+.typing { flex: none; margin: 0 16px; color: var(--muted); font-size: 13px; }
+
+.composer-wrap { flex: none; border-top: 1px solid var(--line); background: var(--panel); position: relative; }
+
+.composer {
+    flex: none;
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px;
+    align-items: flex-end;
+}
+
+/* One line tall, growing with what is typed to five lines and no further
+ * (the Mac's `.lineLimit(1...5)`). The height itself is fitted in script —
+ * `field-sizing: content` is not in every browser yet — so what is here is
+ * the line it is measured in and the ceiling it stops at: five lines plus
+ * the padding and borders of the box. */
+.composer textarea {
+    resize: none;
+    line-height: 1.25;
+    max-height: calc(1.25em * 5 + 20px);
+    overflow-y: auto;
+}
+.composer .tool { background: transparent; color: var(--tint); padding: 8px; }
+
+.composer-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 16px 0;
+    font-size: 13px;
+    color: var(--muted);
+}
+.composer-banner .banner-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.composer-notice { padding: 4px 16px 0; font-size: 12px; color: var(--muted); }
+.picture-notice { margin: 0; padding: 6px 16px 0; font-size: 12px; color: var(--muted); }
+
+/* The media notices, the staged strip and the recording bar sit between the
+ * messages and the composer, and like the composer never scroll away. */
+.media-notice { flex: none; margin: 0; display: flex; gap: 8px; align-items: center; padding: 6px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+.media-notice .link { margin-left: auto; }
+
+.attach { position: relative; flex: none; }
+.attach .attach-menu { top: auto; bottom: 100%; left: 0; right: auto; margin-bottom: 6px; }
+.menu-backdrop { position: fixed; inset: 0; z-index: 4; }
+.hidden-picker { display: none; }
+
+.staging {
+    flex: none;
+    display: flex;
+    gap: 8px;
+    padding: 8px 16px;
+    overflow-x: auto;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+}
+.staged {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 240px;
+    padding: 4px 4px 4px 4px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--bg);
+    font-size: 12px;
+}
+.staged-thumb { width: 40px; height: 40px; border-radius: 7px; object-fit: cover; display: grid; place-items: center; background: var(--soft); flex: none; font-size: 18px; }
+.staged-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.staged-remove { background: transparent; color: var(--muted); padding: 2px 6px; flex: none; }
+
+.recording {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+    font-variant-numeric: tabular-nums;
+}
+.recording-dot { color: var(--danger); animation: blink 1s steps(2) infinite; }
+.recording .secondary { margin-left: auto; background: transparent; color: var(--tint); }
+
+/* A drag over the pane: an accent border, as the Mac draws one. */
+.conversation.is-drop-target { outline: 3px solid var(--tint); outline-offset: -3px; }
+
+.suggestions {
+    position: absolute;
+    bottom: 100%;
+    left: 16px;
+    z-index: 6;
+    min-width: 220px;
+    max-height: 240px;
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
+    padding: 4px;
+    display: grid;
+}
+.suggestions button { background: transparent; color: var(--ink); text-align: left; padding: 6px 8px; }
+.suggestions button.is-active, .suggestions button:hover { background: var(--soft); }
+
+/* --- dialogs -------------------------------------------------------------- */
+
+.dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: rgb(0 0 0 / 35%);
+    display: grid;
+    place-items: center;
+    padding: 16px;
+}
+
+.dialog {
+    width: min(460px, 100%);
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+    background: var(--panel);
+    border-radius: var(--radius);
+    padding: 20px;
+    display: grid;
+    gap: 10px;
+    box-shadow: 0 12px 40px rgb(0 0 0 / 25%);
+}
+.dialog h2 { margin: 0; font-size: 17px; }
+.dialog h3 { margin: 0; font-size: 14px; }
+.dialog fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 6px; }
+.dialog legend { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.dialog .field { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.reason { display: flex; gap: 8px; align-items: center; }
+.reason input { width: auto; }
+.footnote { font-size: 12px; color: var(--muted); margin: 0; }
+.verbatim { white-space: pre-wrap; user-select: text; margin: 0; }
+.option-row { display: flex; gap: 6px; align-items: center; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.dialog-actions .secondary { background: transparent; color: var(--tint); }
+
+.emoji-picker { width: min(420px, 100%); }
+.emoji-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.emoji-tabs button { background: transparent; color: var(--ink); padding: 4px 6px; font-size: 18px; }
+.emoji-tabs button.is-active { background: var(--soft); }
+.emoji-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 2px; max-height: 320px; overflow-y: auto; }
+.emoji-grid button { background: transparent; padding: 4px; font-size: 22px; }
+.emoji-grid button:hover { background: var(--soft); }
+
+/* --- the family board ---------------------------------------------------- */
+
+/* The board takes the chat's place in the main pane, and like it never
+ * scrolls the page: the wall is exactly the space left under its bar. */
+.board { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.board-bar {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+}
+.board-title { margin: 0; font-size: 15px; flex: 1; min-width: 0; }
+.board-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.board-actions .secondary { background: transparent; color: var(--tint); padding: 6px 10px; }
+
+/* The wall SCROLLS: it is taller than the window (docs/protocol.md,
+ * "Board"), so a family can pin something without taking something down.
+ * The ground is a quiet paper — two soft washes and a fine weave, no
+ * asset — and the pastels on top keep their contrast in both appearances. */
+.board-wall {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    background-color: #cbb391;
+    background-image:
+        radial-gradient(120% 90% at 15% 0%, rgb(255 255 255 / 26%), transparent 60%),
+        radial-gradient(90% 70% at 85% 100%, rgb(0 0 0 / 14%), transparent 55%),
+        repeating-linear-gradient(38deg, rgb(0 0 0 / 4%) 0 1px, transparent 1px 4px),
+        repeating-linear-gradient(-52deg, rgb(255 255 255 / 5%) 0 1px, transparent 1px 5px);
+    /* The stickers' z-indexes rank them against each other and nothing
+     * else: without a stacking context of its own, the twentieth note
+     * painted over the note sheet and took its clicks. */
+    isolation: isolate;
+}
+@media (prefers-color-scheme: dark) {
+    /* Cork in the dark, the same board with the lamp off. */
+    .board-wall { background-color: #5b4a36; }
+}
+
+/* Nothing to see: the box that gives the wall its height, since every
+ * sticker on it is positioned and adds none. */
+.board-extent {
+    width: 1px;
+    height: 160%;
+    pointer-events: none;
+}
+.board-wall.is-drop-target { outline: 3px solid var(--tint); outline-offset: -3px; }
+.board-empty {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-content: center;
+    text-align: center;
+    color: var(--muted);
+    margin: 0;
+    pointer-events: none;
+}
+.board-empty p { margin: 2px 0; }
+.board-empty-title { font-weight: 600; color: var(--ink); }
+
+/* The names a half-typed `@` could mean, in the note editor. Chips, not
+ * the chat's keyboard list: a dialog's Tab belongs to its fields. */
+.note-names { display: flex; flex-wrap: wrap; gap: 6px; }
+.note-name {
+    background: var(--soft);
+    color: var(--tint);
+    border: 1px solid var(--line);
+    padding: 4px 8px;
+    font-size: 13px;
+    border-radius: 999px;
+}
+
+/* A sticker. The pastels are fixed LIGHT colours in both appearances, so
+ * the ink is forced dark on them rather than following the page — the
+ * page's dark-mode white would be unreadable on yellow (BoardView). */
+.sticker {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px;
+    border-radius: 8px;
+    color: rgb(0 0 0 / 85%);
+    box-shadow: 0 2px 4px rgb(0 0 0 / 14%);
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    /* VISIBLE, so the pin can sit over the card's top edge the way a real
+     * one does — the picture and the text each clip themselves, so nothing
+     * else leaks out. Taking room from the text for the pin would have
+     * cost a line of the words, which the wall's whole promise is against
+     * (docs/protocol.md, "Board": the text fits the note). */
+    overflow: visible;
+    transition: left .2s ease, top .2s ease, box-shadow .12s ease, transform .12s ease;
+}
+.sticker:focus-visible { outline: 2px solid var(--tint); outline-offset: 3px; }
+/* The pin. Decoration, and nowhere on the wire (docs/protocol.md,
+ * "Board"): a head with a highlight, and no hit area of its own. */
+.sticker::after {
+    content: "";
+    position: absolute;
+    top: -4px;
+    left: 50%;
+    width: 9px;
+    height: 9px;
+    margin-left: -4.5px;
+    border-radius: 50%;
+    background:
+        radial-gradient(circle at 35% 30%, rgb(255 255 255 / 85%), transparent 45%),
+        radial-gradient(circle at 60% 65%, #b3261e, #7a1a15);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 35%);
+    pointer-events: none;
+}
+/* A PHOTO WITH NO CAPTION IS THE BARE PICTURE: no paper behind it, no
+ * padding around it, nothing under it — a picture pinned to a wall
+ * (docs/protocol.md, "Board"). A caption brings the card back, because
+ * words need paper to sit on. */
+.sticker.is-photo:not(.has-caption) {
+    padding: 0;
+    background: transparent !important;
+    border-radius: 4px;
+    /* The shadow is on the PICTURE, not the card: the card is sized to the
+     * fitted photograph (Sticker), and a shadow drawn from the box would
+     * outline the box even where the last pixel rounds away. */
+    box-shadow: none;
+}
+.sticker.is-photo:not(.has-caption) .note-picture { border-radius: 3px; }
+.sticker.is-photo:not(.has-caption) .note-picture img {
+    border-radius: 3px;
+    filter: drop-shadow(0 3px 6px rgb(0 0 0 / 32%));
+}
+.sticker.is-photo:not(.has-caption).is-dragging .note-picture img {
+    filter: drop-shadow(0 8px 18px rgb(0 0 0 / 34%));
+}
+/* Lifted off the wall while in hand, and following the pointer exactly. */
+.sticker.is-dragging {
+    cursor: grabbing;
+    z-index: 10;
+    transition: box-shadow .12s ease, transform .12s ease;
+    box-shadow: 0 8px 22px rgb(0 0 0 / 28%);
+}
+
+.note-text {
+    flex: 1 1 auto;
+    /* Always a line of the words: an event's when and where give way
+     * before its title does. */
+    min-height: 1.2em;
+    overflow: hidden;
+    line-height: 1.2;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+/* Past the floor: cut with an ellipsis, at the lines it has room for. */
+.note-text.is-cut { display: -webkit-box; -webkit-box-orient: vertical; }
+.note-hidden { font-style: italic; color: rgb(0 0 0 / 45%); }
+.note-author {
+    flex: none;
+    font-size: 11px;
+    color: rgb(0 0 0 / 50%);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* A pinned picture takes the card, with the caption under it — and is
+ * SHOWN WHOLE: fitted in both dimensions and centred, never cropped to fill
+ * its box (docs/protocol.md, "Board"). `cover` was fitting the width and
+ * spilling the height off the edge, which took two thirds of an axis off
+ * every portrait photograph pinned from a phone (issue #71).
+ *
+ * No ground of its own: what shows around a fitted picture is the sticker's
+ * own paper, and on a bare photo the wall. A grey ground would have been a
+ * grey frame around every portrait. */
+.note-picture {
+    flex: none;
+    min-height: 0;
+    border-radius: 6px;
+    overflow: hidden;
+    background: transparent;
+}
+.sticker.is-photo .note-picture { flex: 1 1 auto; }
+.sticker.is-photo.has-caption .note-picture { flex: 0 0 55%; }
+.sticker.is-photo.has-caption .note-text { flex: 1 1 0; }
+.note-picture img { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+/* The shape to reserve while the bytes are on their way — the only time
+ * the picture's box shows a ground of its own. */
+.note-picture.is-loading { background: rgb(0 0 0 / 6%); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .6; } }
+
+/* AN EVENT'S BACKDROP: the picture the assistant drew, as the card's GROUND
+ * (docs/protocol.md, "Board"). The one picture here that is not drawn whole
+ * — it stands in for the paper, so it covers the card and is cropped to its
+ * shape — with a scrim of its own so the note's fixed dark ink stays
+ * readable over whatever the model chose to draw. Taken out of the flow so
+ * it takes none of the room the words need — the wall's promise is that a
+ * note's text fits its card. */
+.note-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    overflow: hidden;
+    pointer-events: none;
+}
+.note-backdrop img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.note-backdrop::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    /* Lighter at the top, where the date block sits on its own white paper,
+     * and heavier under the title and the place. */
+    background: linear-gradient(to bottom, rgb(255 255 255 / 45%), rgb(255 255 255 / 78%));
+}
+/* Everything the card SAYS is lifted over the ground. Without this the
+ * backdrop paints in document order — over the date block and the title,
+ * which is a card with a picture and no words on it. */
+.sticker.has-backdrop > *:not(.note-backdrop) { position: relative; z-index: 1; }
+/* And a slightly deeper shadow, because a picture reaches the card's edges
+ * where a pastel had the wall showing through its own translucency: without
+ * it a pale backdrop dissolves into the cork. */
+.sticker.has-backdrop { box-shadow: 0 2px 6px rgb(0 0 0 / 22%); }
+
+/* A TASK LIST on the wall: the first lines with their state, and then how
+ * many are left (docs/protocol.md, "Board"). Inside `.note-text`, so the
+ * fitting scales the title and the lines together — and aria-hidden, since
+ * nothing here takes a tap: the sticker's label already says the note. */
+.note-tasks { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 1px; min-width: 0; }
+.note-task {
+    display: flex;
+    gap: 4px;
+    align-items: baseline;
+    font-size: 0.85em;
+    min-width: 0;
+}
+.note-task-box { flex: none; }
+.note-task-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-task.is-done .note-task-text { text-decoration: line-through; opacity: .55; }
+.note-task-more { opacity: .6; font-style: italic; }
+
+/* The list in the note somebody has opened, which is where a tap ticks. */
+.task-list { min-width: 0; }
+.task-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.task-row { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.task-box { flex: none; width: auto; min-width: 0; }
+.task-line { flex: 1 1 auto; min-width: 0; }
+.task-line-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.task-row.is-done .task-line-text { text-decoration: line-through; opacity: .6; }
+.task-drop {
+    flex: none;
+    background: none;
+    border: 0;
+    padding: 4px 8px;
+    font-size: 18px;
+    line-height: 1;
+    color: var(--muted);
+    cursor: pointer;
+}
+.task-drop:hover { color: var(--danger); }
+
+/* An event says WHEN before it says what, and says it as a CALENDAR
+ * ENTRY: the date in a block, the time and place beside it
+ * (docs/protocol.md, "Board"). */
+.note-event {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+    font-size: 11px;
+    color: rgb(0 0 0 / 55%);
+    min-width: 0;
+}
+.note-event-lines { display: grid; align-content: start; gap: 1px; min-width: 0; }
+.note-event-lines > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The block: the day's number over its short month, on paper of its own so
+ * it reads as a torn calendar page rather than another line of text. */
+.note-date {
+    flex: none;
+    display: grid;
+    justify-items: center;
+    padding: 2px 5px 3px;
+    border-radius: 5px;
+    background: rgb(255 255 255 / 55%);
+    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
+    line-height: 1;
+}
+.note-day { font-size: 15px; font-weight: 700; color: rgb(0 0 0 / 78%); }
+.note-month { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: rgb(178 38 30 / 85%); }
+/* When may take two lines, as on the phone: an event cut before its end
+ * time is an event whose end nobody can read. */
+.note-when {
+    font-weight: 600;
+    color: rgb(0 0 0 / 75%);
+    white-space: normal !important;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+.note-event.is-past .note-when { color: rgb(0 0 0 / 40%); }
+.note-event.is-past .note-date { opacity: .55; }
+
+/* The note, opened: an event's own block, its guests and its actions. */
+.sheet-event { display: flex; gap: 10px; align-items: flex-start; }
+.sheet-date { font-size: 13px; }
+.sheet-date .note-day { font-size: 20px; }
+.sheet-date .note-month { font-size: 11px; }
+.guests { display: grid; gap: 4px; margin: 4px 0 0; }
+.guest-group { margin: 0; display: flex; gap: 8px; align-items: baseline; font-size: 14px; }
+.guest-answer { flex: none; font-weight: 600; color: var(--muted); min-width: 4.5em; }
+.guest-names { overflow-wrap: anywhere; }
+.event-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+
+/* The note, opened. */
+.note-sheet { width: min(480px, 100%); }
+.note-sheet textarea { resize: vertical; }
+.check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.check input { width: auto; }
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.swatch {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 1px solid rgb(0 0 0 / 15%);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+}
+.swatch:has(input:checked) { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--tint); }
+.swatch:has(input:focus-visible) { outline: 2px solid var(--tint); outline-offset: 4px; }
+.swatch input, .segmented input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+.segmented { display: flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.segmented > label, .segmented > button {
+    position: relative;
+    flex: 1 1 auto;
+    text-align: center;
+    padding: 6px 10px;
+    font-size: 13px;
+    background: transparent;
+    color: var(--ink);
+    border-radius: 0;
+    cursor: pointer;
+}
+.segmented > * + * { border-left: 1px solid var(--line); }
+.segmented > .is-chosen { background: color-mix(in srgb, var(--tint) 16%, transparent); font-weight: 600; }
+.segmented > label:has(input:focus-visible) { outline: 2px solid var(--tint); outline-offset: -2px; }
+.sheet-preview { display: grid; place-items: center; padding: 8px 0; overflow-x: auto; }
+.sticker.is-preview { position: relative; cursor: default; transform: none; touch-action: auto; }
+.sheet-picture { padding: 0; background: transparent; border-radius: 8px; overflow: hidden; cursor: zoom-in; }
+/* The OPEN note shows the picture WHOLE as well (docs/protocol.md,
+ * "Board") — and its box hugs the picture, so a tall photograph gets the
+ * height instead of a stamp between two ribbons of margin. The fixed
+ * height stays for the moment before the bytes land, where there is
+ * nothing to take a shape from. */
+.sheet-picture .note-picture { height: auto; }
+.sheet-picture .note-picture img {
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: min(360px, 52vh);
+    margin: 0 auto;
+}
+.sheet-picture .note-picture.is-loading { height: min(240px, 40vh); }
+/* The backdrop over an OPEN event: a banner, not a ground — a dialog's
+ * fields need their own paper, and this is where the picture the family
+ * asked for is big enough to look at. Click opens it in the viewer, like
+ * any other picture on this board. */
+.sheet-banner {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: transparent;
+    cursor: zoom-in;
+}
+.sheet-banner .note-backdrop {
+    position: relative;
+    inset: auto;
+    height: min(180px, 28vh);
+}
+/* No scrim here: there are no words over it in a dialog. */
+.sheet-banner .note-backdrop::after { content: none; }
+.sheet-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; }
+.sheet-when { margin: 0; display: grid; gap: 2px; font-weight: 600; }
+.sheet-place { font-weight: 400; color: var(--muted); }
+.rsvp legend { font-size: 13px; color: var(--muted); }
+.note-sheet .dialog-actions { align-items: center; flex-wrap: wrap; }
+.note-sheet .spacer { flex: 1; }
+.note-sheet .confirm { font-size: 13px; }
+/* A fixed red in both appearances: the dark theme's pale --danger under
+ * white text was unreadable. */
+.danger-button { background: #b3261e; color: #fff; }
+.secondary.danger { color: var(--danger); }
+
+/* --- people ----------------------------------------------------------------- */
+
+/* A face, or initials over the tint — the apps' own circle. */
+.avatar {
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 50%;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--tint) 20%, transparent);
+    color: var(--tint);
+    font-weight: 600;
+    line-height: 1;
+    user-select: none;
+}
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* --- phase 4: pictures, the family gate, settings and the family --------- */
+
+/* A chat row is its picture and its two lines. */
+.chat-row { grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: center; }
+.chat-text { display: grid; gap: 2px; min-width: 0; }
+.sender { display: inline-flex; align-items: center; gap: 6px; }
+
+.avatar { flex: none; overflow: hidden; }
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.muted { color: var(--muted); }
+.hint { font-size: 13px; color: var(--muted); margin: 0; }
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+.code, input.code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: .04em; }
+/* Shown as the capitals it is sent as, whatever the keyboard typed. */
+input.code { text-transform: uppercase; }
+.capsule {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--tint);
+    background: color-mix(in srgb, var(--tint) 15%, transparent);
+    border-radius: 999px;
+    padding: 1px 7px;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+
+/* The gate and the waiting room share the sign-in card. */
+.gate-card { width: min(440px, 100%); gap: 10px; }
+.gate-card h2 { margin: 0; font-size: 16px; }
+.greeting { margin: 0; font-weight: 600; }
+.banner {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: color-mix(in srgb, #e8a33d 18%, transparent);
+    font-size: 13px;
+}
+.closed-server { display: grid; gap: 6px; padding: 12px; border-radius: 8px; background: var(--soft); }
+.doors { display: grid; gap: 8px; }
+.door {
+    display: grid;
+    gap: 2px;
+    text-align: left;
+    background: var(--bg);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    padding: 12px 14px;
+}
+.door span { font-size: 13px; color: var(--muted); }
+.door:hover { border-color: var(--tint); }
+.gate-step { display: grid; gap: 8px; }
+.gate-step label { font-size: 13px; color: var(--muted); }
+.back { justify-self: start; padding: 0; }
+.signout.link { justify-self: center; margin-top: 6px; }
+.pending { text-align: center; justify-items: center; }
+.hourglass { font-size: 44px; line-height: 1; padding-top: 8px; }
+
+/* Settings and the family: a pane in the chat's place, like the board. */
+.pane { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.pane-head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+}
+.pane-head h2 { margin: 0; font-size: 15px; flex: 1; min-width: 0; }
+.pane-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 16px;
+    display: grid;
+    align-content: start;
+    gap: 14px;
+}
+.pane-body > * { width: min(640px, 100%); justify-self: center; }
+.identity { display: flex; align-items: center; gap: 12px; }
+.identity-text { display: grid; gap: 1px; min-width: 0; flex: 1; }
+.identity-text strong { overflow-wrap: anywhere; }
+.group {
+    display: grid;
+    gap: 6px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+}
+.group h3 { margin: 0 0 2px; font-size: 13px; color: var(--muted); font-weight: 600; }
+.setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 12px;
+    flex-wrap: wrap;
+    min-height: 30px;
+}
+.row-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
+.button-like {
+    background: var(--tint);
+    color: #fff;
+    border-radius: 8px;
+    padding: 6px 12px;
+    cursor: pointer;
+    position: relative;
+    font-size: 14px;
+}
+.button-like:has(input:focus-visible) { outline: 2px solid var(--tint); outline-offset: 2px; }
+.button-like.is-disabled { opacity: .5; cursor: default; }
+.toggle input { width: auto; }
+.stepper { display: inline-flex; align-items: center; gap: 4px; }
+.stepper input { width: 5em; text-align: center; }
+.stepper .link { font-size: 18px; padding: 0 8px; }
+.version { text-align: center; font-size: 12px; color: var(--muted); margin: 0; }
+.members { list-style: none; margin: 0; padding: 0; display: grid; }
+.member-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-top: 1px solid var(--line);
+}
+.member-row:first-child { border-top: 0; }
+.menu-anchor { position: relative; }
+.menu-anchor .menu { z-index: 6; }
+.menu-anchor .menu-backdrop { z-index: 5; }
+.report-row { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--line); }
+.report-row:first-of-type { border-top: 0; }
+.excerpt { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--soft); }
+.invite-code { font-size: 18px; user-select: all; }
+.number { font-variant-numeric: tabular-nums; }
+.stat-member > span:first-child { display: grid; }
+.unavailable { display: grid; gap: 6px; justify-items: center; text-align: center; }
+.dialog-message { margin: 0; }
+.dialog-form { display: grid; gap: 10px; }
+.consequences { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13px; }
+.birthday-fields { display: flex; gap: 10px; flex-wrap: wrap; }
+.birthday-fields .field { flex: 1 1 140px; }
+select {
+    font: inherit;
+    color: inherit;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+.dialog-actions .push-left { margin-right: auto; }
+.statistics { width: min(520px, 100%); }
+
+/* On a phone the bar keeps its buttons and drops the name. */
+@media (max-width: 560px) {
+    .brand { display: none; }
+    .bar-actions { gap: 0; }
+    .board-button { padding: 6px 8px; }
+}
+/* A destructive action drawn as a link is still red: `button.link` would
+ * otherwise win on specificity and paint it the tint. */
+button.link.danger { color: var(--danger); }
+.pane a { color: var(--tint); }
+/* The join policy is a fieldset: none of a fieldset's own frame, and the
+ * hidden legend is not the first segment, so no divider before it. */
+fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
+.segmented > legend + label { border-left: 0; }
+/* Long words — a username, a pasted link in a reported message, a family
+ * name with no spaces — wrap inside their column rather than run under the
+ * row's buttons or widen the pane. */
+.identity-text { grid-template-columns: minmax(0, 1fr); }
+.identity-text > * { min-width: 0; overflow-wrap: anywhere; }
+.excerpt, .setting-row > .muted { overflow-wrap: anywhere; min-width: 0; }
+@media (max-width: 560px) {
+    /* Four buttons and "Connecting…" do not fit a phone's width on one
+     * line: the bar takes two rather than pushing Sign out off the edge. */
+    .bar { flex-wrap: wrap; row-gap: 2px; }
+}
+
+/* --- phase 5: a call in a tab --------------------------------------------- */
+
+/* A band under the bar, not a panel over the page: it takes its own room
+ * rather than covering the composer, the call buttons or a note. */
+.call {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+}
+/* A call being offered is the one thing in a tab worth interrupting for. */
+.call.is-incoming { background: color-mix(in srgb, var(--tint) 12%, var(--panel)); }
+.call-who { display: flex; align-items: center; gap: 12px; flex: 1 1 200px; min-width: 0; }
+.call-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.call-actions button { flex: 0 0 auto; }
+/* The call's own secondary buttons read as what they are — the one red
+ * button is the one that ends it. */
+.call-actions .secondary {
+    background: transparent;
+    color: var(--tint);
+    border: 1px solid var(--line);
+}
+.call-actions .secondary.is-chosen { background: color-mix(in srgb, var(--tint) 16%, transparent); }
+/* The picture takes the whole width of the band, under its head. */
+.call-picture {
+    order: 3;
+    flex: 1 1 100%;
+    position: relative;
+    aspect-ratio: 16 / 9;
+    max-height: 45dvh;
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+}
+.call-remote { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* Our own picture, small and in the corner — and mirrored, because a
+ * camera pointed at somebody is a mirror to them. */
+.call-local {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    width: 28%;
+    max-width: 180px;
+    border-radius: 6px;
+    border: 1px solid rgb(255 255 255 / 25%);
+    transform: scaleX(-1);
+    object-fit: cover;
+    background: #000;
+}
+.call-buttons { display: flex; gap: 4px; flex: none; }

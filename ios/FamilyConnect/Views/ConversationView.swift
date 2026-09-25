@@ -101,6 +101,10 @@ struct ConversationView: View {
     @Query private var chats: [ChatEntity]
     @Query private var members: [MemberEntity]
     @State private var model = ConversationModel()
+    /// The open-polls surface, reached from this chat's toolbar.
+    @State private var showsOpenPolls = false
+    /// The chain open on its own sheet (docs/protocol.md, "Threads").
+    @State private var threadTarget: ThreadTarget?
     /// False until the opening layout settled where this open was meant to
     /// land (the convergence loop in `.task`, or the anchored scroll that
     /// replaces it); a history-load scroll-restore before that would yank a
@@ -222,6 +226,12 @@ struct ConversationView: View {
     /// they stage in the order picked, which is the order sent.
     @State private var pickedMedia: [PhotosPickerItem] = []
     @State private var showPhotoPicker = false
+    /// The consent screen, and the send it interrupted (protocol.md,
+    /// "Consenting to the assistant"). The draft is left exactly as typed
+    /// while it is up, so agreeing finishes the send the person already
+    /// asked for rather than making them type it again.
+    @State private var showAssistantConsent = false
+    @State private var afterAssistantConsent: (() -> Void)?
     @State private var showCamera = false
     @State private var recorder = AudioRecorder()
     @State private var showFilePicker = false
@@ -292,6 +302,10 @@ struct ConversationView: View {
     @State private var menuPage: MessageContextMenu.Page = .main
     /// The member a report sheet is open for, if any.
     @State private var reportTarget: ReportTarget?
+    /// The assistant reply being reported, if any — a separate target from
+    /// `reportTarget` because it goes to a separate endpoint and a separate
+    /// reader (docs/protocol.md, "Reporting the assistant").
+    @State private var assistantReportTarget: AssistantReportTarget?
     /// The bubble the "+" full emoji picker sheet is up for.
     @State private var fullPickerTarget: ReactionTarget?
     /// Text handed to the share sheet, nil while it is closed.
@@ -346,6 +360,86 @@ struct ConversationView: View {
     /// the chat rather than looked up (docs/protocol.md, "The assistant").
     private var isAssistantChat: Bool { chat?.kind == "ai" }
     private var currentUserID: Int64 { AppSettings.currentUserID ?? -1 }
+
+    /// Extracted rather than written inline in the `.sheet` closure: `body`
+    /// here is already close to the type-checker's budget, and adding a
+    /// conditional builder inside it tipped it over ("unable to type-check
+    /// this expression in reasonable time"). One named property costs
+    /// nothing and keeps that expression the size it was.
+    @ViewBuilder
+    private var openPollsSheet: some View {
+        if let chatID = chat?.chatID {
+            OpenPollsView(chatID: chatID)
+        }
+    }
+
+
+    // MARK: - Member mentions (docs/protocol.md, "Mentioning a member")
+
+    /// Everybody a mention may name: the current roster, by the name the
+    /// app calls them.
+    private var mentionRoster: [MentionDTO] {
+        members.filter { !$0.hasLeft && !$0.accountDeleted }
+            .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) }
+    }
+
+    /// What the strip offers for the prefix being typed: never the reader
+    /// themself, never the blocked, and never the assistant — which is not
+    /// in the roster and has its own button.
+    private func mentionCandidates(matching query: String) -> [MentionDTO] {
+        MemberMentions.candidates(
+            in: mentionRoster, matching: query,
+            excluding: coordinator.blockedUserIDs.union([currentUserID]))
+    }
+
+    /// The members the text names, resolved at send — family chat only,
+    /// nil when it names nobody so the wire stays as it was.
+    private func resolvedMentions(in body: String) -> [MentionDTO]? {
+        guard isFamilyChat else { return nil }
+        let found = MemberMentions.resolve(body: body, roster: mentionRoster)
+        return found.isEmpty ? nil : found
+    }
+
+    /// A tap on a name opens the one-to-one chat with that member — the
+    /// reader's own name, a member who has left and a deleted account are
+    /// highlighted and not tappable.
+    private func openMember(_ userID: Int64) {
+        guard userID != currentUserID,
+              let member = members.first(where: { $0.userID == userID }),
+              !member.hasLeft, !member.accountDeleted
+        else { return }
+        Task {
+            if let chatID = try? await coordinator.openDirectChat(with: userID) {
+                session.pendingPushRoute = .chat(chatID)
+            }
+        }
+    }
+
+    /// The chain this message belongs to, on its own sheet: the root it
+    /// names when it is a reply, itself when it is the root.
+    private func openThread(serverID: Int64?, threadRootID: Int64?) {
+        guard let serverID else { return }
+        threadTarget = ThreadTarget(chatID: chatID, rootID: threadRootID ?? serverID)
+    }
+
+    /// How many open polls in this chat this reader still has to answer —
+    /// the badge on the toolbar entry point (OpenPollsBadge, shared with the
+    /// Mac and mirrored on Android).
+    ///
+    /// Computed from what this device already holds rather than from the
+    /// endpoint: the badge must be right the moment the chat opens, and a
+    /// request per open would be a request per open. The polls it has are
+    /// the polls the chat has synced, which is what the reader is looking at.
+    private var openPollsToAnswer: Int {
+        // A poll by somebody this reader has blocked is a hidden row on the
+        // surface and counts toward nothing: a badge is a claim that there
+        // is something for them to answer, and a question they chose not to
+        // see is not one (protocol.md, "Finding the open ones").
+        let me = currentUserID
+        let blocked = coordinator.blockedUserIDs
+        let visible = messages.filter { $0.senderID == me || !blocked.contains($0.senderID) }
+        return OpenPollsBadge.count(polls: visible.compactMap(\.poll), currentUserID: me)
+    }
 
     /// How many of the locally cached messages are RENDERED. The thread
     /// deliberately renders a bounded window (grown by the top sentinel —
@@ -760,6 +854,41 @@ struct ConversationView: View {
                 },
                 onCancel: { reportTarget = nil })
         }
+        .sheet(item: $assistantReportTarget) { target in
+            AssistantReportSheet(
+                target: target,
+                onSubmit: { reason, note in
+                    assistantReportTarget = nil
+                    Task {
+                        await coordinator.reportAssistant(
+                            messageID: target.messageID,
+                            // The RAW value: the untranslated wire string,
+                            // never the label somebody reads.
+                            reason: reason.rawValue,
+                            note: note)
+                    }
+                },
+                onCancel: { assistantReportTarget = nil })
+        }
+        .sheet(isPresented: $showAssistantConsent) {
+            AssistantConsentSheet(
+                processor: AppSettings.assistantProcessor ?? "",
+                familyHistory: session.family?.aiHistory == true,
+                familyVision: session.family?.aiVision == true,
+                onAgree: {
+                    try await session.setAssistantConsent(true)
+                    showAssistantConsent = false
+                    let resume = afterAssistantConsent
+                    afterAssistantConsent = nil
+                    resume?()
+                },
+                onDecline: {
+                    showAssistantConsent = false
+                    // The draft stays where it is. Declining is "not this
+                    // one", not "lose what I typed".
+                    afterAssistantConsent = nil
+                })
+        }
         .sheet(item: $shareText) { share in
             ShareSheet(text: share.text)
         }
@@ -834,6 +963,50 @@ struct ConversationView: View {
                     .disabled(!calls.isIdle)
                 }
             }
+            // The way back to a decision the family has scrolled past
+            // (docs/protocol.md, "Finding the open ones"). Family chat only,
+            // because polls exist nowhere else — which is also why this slot
+            // was empty here: `canCall` is false in the family chat, so it
+            // had no trailing item at all.
+            //
+            // The badge counts open polls THIS READER has not voted in,
+            // derived from the votes already on every poll (OpenPollsBadge).
+            // Not "all open polls": that stays lit after you have answered
+            // everything, until somebody else closes them, and a badge that
+            // cannot be cleared by doing the thing it asks for stops meaning
+            // anything within a day.
+            if chat?.kind == "family" {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showsOpenPolls = true
+                    } label: {
+                        // The count is drawn BY HAND. `.badge` on a toolbar
+                        // item renders only on iOS 26 / macOS 26, and this
+                        // app deploys to iOS 17 — on every earlier OS it is
+                        // silently nothing, and the whole OpenPollsBadge
+                        // apparatus would have computed a number nobody saw.
+                        // The capsule is the chat list's own unread badge.
+                        Image(systemName: "chart.bar.doc.horizontal")
+                            .overlay(alignment: .topTrailing) {
+                                if openPollsToAnswer > 0 {
+                                    Text("\(openPollsToAnswer)")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(.tint, in: Capsule())
+                                        .offset(x: 9, y: -8)
+                                }
+                            }
+                    }
+                    .accessibilityLabel("Open polls")
+                    .accessibilityValue(openPollsToAnswer > 0 ? Text("\(openPollsToAnswer) to answer") : Text(""))
+                }
+            }
+        }
+        .sheet(isPresented: $showsOpenPolls) { openPollsSheet }
+        .sheet(item: $threadTarget) { target in
+            ThreadView(chatID: target.chatID, rootID: target.rootID)
         }
         .onAppear {
             // Claims the chat, and claims NOTHING about having seen it:
@@ -984,6 +1157,11 @@ struct ConversationView: View {
                                 memberNames: memberNames,
                                 currentUserID: currentUserID,
                                 onTapQuote: { jumpToMessage($0, proxy: proxy) },
+                                onTapMention: { openMember($0) },
+                                replyCount: message.replyCount,
+                                onOpenThread: {
+                                    openThread(serverID: message.serverID, threadRootID: message.threadRootID)
+                                },
                                 onOpenAttachment: { attachment in
                                     if attachment.isFile {
                                         openFile(attachment)
@@ -1307,6 +1485,34 @@ struct ConversationView: View {
             // photo an `@ai` draft is about to carry (#56).
             if let notice = pictureNotice ?? mentionPictureNotice {
                 assistantPictureNotice(notice)
+            }
+            // The roster, while a member is being named (protocol.md,
+            // "Mentioning a member") — family chat only, and only while
+            // the draft ends in an `@` token.
+            if isFamilyChat, let query = MemberMentions.query(in: model.draft) {
+                let candidates = mentionCandidates(matching: query)
+                if !candidates.isEmpty {
+                    MentionSuggestions(candidates: candidates) { name in
+                        model.draft = MemberMentions.accept(draft: model.draft, name: name)
+                    }
+                }
+            }
+            // Before any of that: nothing goes to the model until this
+            // member has said so (protocol.md, "Consenting to the
+            // assistant"). Shown rather than a silent refusal, and shown
+            // as the draft becomes one that would travel — in the
+            // assistant's own chat that is from the first character, and
+            // in the family chat it is the moment `@ai` is typed.
+            if assistantConsentNeeded, let processor = AppSettings.assistantProcessor {
+                AssistantConsentBar(processor: processor) {
+                    afterAssistantConsent = { send() }
+                    showAssistantConsent = true
+                }
+            } else if assistantIsUnnamed {
+                // Nothing to agree TO on such a server, so there is no
+                // screen to raise — only this, and a send that does not
+                // happen (protocol.md, "Consenting to the assistant").
+                assistantPictureNotice(AssistantConsent.unnamedProcessorNotice)
             }
             HStack(alignment: .bottom, spacing: 8) {
                 // A Menu rather than two buttons: the composer is narrow,
@@ -2081,7 +2287,7 @@ struct ConversationView: View {
     /// prepared file cleaned up, because nothing else owns it now.
     private func stage(_ prepared: MediaPrep.Prepared) {
         guard StagedAttachment.canAdd(to: staged.count) else {
-            try? FileManager.default.removeItem(at: prepared.fileURL)
+            MediaPrep.discard(prepared)
             mediaState = .idle
             composerNotice = String(
                 localized: "You can attach up to \(StagedAttachment.maxPerMessage) items.")
@@ -2116,6 +2322,7 @@ struct ConversationView: View {
             items.map(\.prepared),
             caption: handoff.caption,
             replyTo: handoff.replyTo,
+            mentions: resolvedMentions(in: handoff.caption),
             in: chatID) == nil
         {
             // Only when not one item could be staged — a full disk, or a
@@ -2127,20 +2334,22 @@ struct ConversationView: View {
         }
     }
 
-    /// Throw away ONE staged item and its temp file.
+    /// Throw away ONE staged item, and its temp file if it has one.
     ///
-    /// The file is ours: `MediaPrep` wrote it into a temp directory and
-    /// nothing else will clean it up, because the delete that normally
-    /// consumes it lives in `sendMedia` — which never ran.
+    /// Usually the file is ours — `MediaPrep` wrote it into a temp
+    /// directory, and nothing else will clean it up because the delete
+    /// that normally consumes it lives in `sendMedia`, which never ran. But
+    /// a video that already fits the ceiling is staged as the person's OWN
+    /// file, and `MediaPrep.discard` is what knows not to delete that.
     private func discardStaged(_ item: StagedAttachment) {
-        try? FileManager.default.removeItem(at: item.prepared.fileURL)
+        MediaPrep.discard(item.prepared)
         staged.removeAll { $0.id == item.id }
     }
 
     /// Throw away the whole staged set.
     private func discardStaged() {
         for item in staged {
-            try? FileManager.default.removeItem(at: item.prepared.fileURL)
+            MediaPrep.discard(item.prepared)
         }
         staged = []
     }
@@ -2274,6 +2483,9 @@ struct ConversationView: View {
                         // it — and under the capsule when that had to
                         // flip down too, so the two never overlap.
                         let canReply = message.serverID != nil
+                        // In a chain: a reply, or a root somebody answered.
+                        let canViewThread = message.serverID != nil
+                            && (message.threadRootID != nil || message.replyCount > 0)
                         let canEdit = message.serverID != nil && message.senderID == currentUserID
                         let attachment = message.attachmentSnapshot
                         // A photo sent without a caption has nothing to copy.
@@ -2287,7 +2499,22 @@ struct ConversationView: View {
                         let isOther = message.senderID != currentUserID
                         let isAssistantSender = isAssistantChat
                             || message.senderID == AppSettings.assistantUserID
-                        let canReport = isOther && !isAssistantSender && message.serverID != nil
+                        let canReportMember = SafetyRules.canReportMember(
+                            senderID: message.senderID, currentUserID: currentUserID,
+                            isAssistant: isAssistantSender, hasServerID: message.serverID != nil)
+                        // THE ASSISTANT'S OWN PATH (docs/protocol.md,
+                        // "Reporting the assistant"): a reply may be
+                        // reported, to the people who run the server rather
+                        // than to the family owner. There is still nothing to
+                        // BLOCK — the assistant is not a member — so the
+                        // Safety page holds one row for it.
+                        let canReportAssistant = SafetyRules.canReportAssistant(
+                            senderID: message.senderID, currentUserID: currentUserID,
+                            isAssistant: isAssistantSender, hasServerID: message.serverID != nil)
+                        // ONE value for the size call and the menu, as the
+                        // note below insists: a row counted here and drawn
+                        // there places the panel for the wrong height.
+                        let canReport = canReportMember || canReportAssistant
                         let blockState: MessageContextMenu.BlockState? =
                             (isOther && !isAssistantSender)
                             ? (coordinator.blockedUserIDs.contains(message.senderID)
@@ -2298,6 +2525,7 @@ struct ConversationView: View {
                         // places one menu and draws another.
                         let menuSize = MessageContextMenu.size(
                             canReply: canReply,
+                            canViewThread: canViewThread,
                             canEdit: canEdit,
                             canCopy: canCopy,
                             canReport: canReport,
@@ -2340,13 +2568,25 @@ struct ConversationView: View {
                                         shareText = ShareText(text: message.body)
                                     }
                                 },
+                                onViewThread: {
+                                    dismissReactionPicker()
+                                    openThread(serverID: message.serverID, threadRootID: message.threadRootID)
+                                },
                                 canReply: canReply,
+                                canViewThread: canViewThread,
                                 canEdit: canEdit,
                                 canCopy: canCopy,
                                 canReport: canReport,
+                                reportsAssistant: canReportAssistant,
                                 blockState: blockState,
                                 onReport: {
                                     dismissReactionPicker()
+                                    if canReportAssistant, let serverID = message.serverID {
+                                        assistantReportTarget = AssistantReportTarget(
+                                            messageID: serverID,
+                                            isPrivateThread: isAssistantChat)
+                                        return
+                                    }
                                     reportTarget = ReportTarget(
                                         senderID: message.senderID,
                                         senderName: displayName(for: message.senderID)
@@ -2486,6 +2726,24 @@ struct ConversationView: View {
 
     private func send() {
         let body = model.draft
+        // Nothing reaches the model unasked. The server refuses this with
+        // `assistant_consent_required` anyway; asking here is what turns
+        // that refusal into a question with the message still in hand
+        // (protocol.md, "Consenting to the assistant").
+        if editTarget == nil,
+            AssistantConsent.isRequired(
+                chatKind: chat?.kind,
+                body: body,
+                processor: AppSettings.assistantProcessor,
+                agreedAt: session.assistantConsentAt)
+        {
+            afterAssistantConsent = { send() }
+            showAssistantConsent = true
+            return
+        }
+        // And a server that will not say who answers gets nothing at all:
+        // there is no honest way to ask, so there is nothing to send.
+        if editTarget == nil, assistantIsUnnamed { return }
         // An attachment can travel with no words at all — that is how a
         // photo is normally sent — so an empty draft is only a reason to
         // stop when there is nothing staged either.
@@ -2500,7 +2758,8 @@ struct ConversationView: View {
             sendStaged(staged, caption: body)
             return
         }
-        coordinator.send(body: body, in: chatID, replyTo: replyDraft)
+        coordinator.send(
+            body: body, in: chatID, replyTo: replyDraft, mentions: resolvedMentions(in: body))
         withAnimation(.spring(duration: 0.25)) {
             replyDraft = nil
         }
@@ -2529,8 +2788,23 @@ struct ConversationView: View {
     /// touched — the question came from the sheet, and anything typed in
     /// the composer is still going somewhere else.
     private func sendPoll(question: String, options: [String]) {
+        // The poll's QUESTION is the message body, so an `@ai` in it asks
+        // the assistant exactly as a typed one does — and the draft this
+        // screen holds has nothing to do with it.
+        if AssistantConsent.isRequired(
+            chatKind: chat?.kind,
+            body: question,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt)
+        {
+            afterAssistantConsent = { sendPoll(question: question, options: options) }
+            showAssistantConsent = true
+            return
+        }
         let quote = replyDraft
-        coordinator.sendPoll(question: question, options: options, in: chatID, replyTo: quote)
+        coordinator.sendPoll(
+            question: question, options: options, in: chatID, replyTo: quote,
+            mentions: resolvedMentions(in: question))
         withAnimation(.spring(duration: 0.25)) {
             replyDraft = nil
         }
@@ -2698,6 +2972,7 @@ struct ConversationView: View {
                     label: nil,
                     caption: composer.caption,
                     replyTo: composer.replyTo,
+                    mentions: resolvedMentions(in: composer.caption),
                     in: chatID) == nil
                 {
                     restore(composer)
@@ -2731,6 +3006,36 @@ struct ConversationView: View {
     /// characters than a button that types them.
     private var showsAssistantMention: Bool {
         chat?.kind == "family" && AppSettings.assistantUserID != nil
+            // A server that names nobody is one whose assistant this
+            // client does not offer: the consent screen would have a hole
+            // exactly where the person needs to read (protocol.md,
+            // "Consenting to the assistant").
+            && AssistantConsent.isAvailable(processor: AppSettings.assistantProcessor)
+    }
+
+    /// Would this draft reach an assistant this server refuses to name?
+    /// Then it goes nowhere, and the composer says why.
+    private var assistantIsUnnamed: Bool {
+        guard editTarget == nil else { return false }
+        return AssistantConsent.isWithheldFromAnUnnamedAssistant(
+            chatKind: chat?.kind,
+            body: model.draft,
+            hasAssistant: AppSettings.assistantUserID != nil,
+            processor: AppSettings.assistantProcessor)
+    }
+
+    /// Would this draft go to the model, with nobody having agreed to that
+    /// yet? The composer says so above the field and the send waits.
+    private var assistantConsentNeeded: Bool {
+        // Not while the composer is borrowed for an edit: rewriting an old
+        // message calls no model, and the draft holding an `@ai` there is
+        // the message being fixed rather than a question being asked.
+        guard editTarget == nil else { return false }
+        return AssistantConsent.isRequired(
+            chatKind: chat?.kind,
+            body: model.draft,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt)
     }
 
     /// Both locks, and only in the assistant's own chat.
@@ -2956,7 +3261,7 @@ struct ConversationView: View {
 }
 
 /// The "Today / Yesterday / Mon, Aug 17" capsule between day sections.
-private struct DayPill: View {
+struct DayPill: View {
     let day: Date
 
     var body: some View {

@@ -53,6 +53,7 @@ struct DeleteAccountView: View {
                     }
                 }
             }
+            .macSheetForm()
             .navigationTitle("Delete Account")
             .inlineNavigationTitle()
             .toolbar {
@@ -80,6 +81,7 @@ struct DeleteAccountView: View {
                 Text("This happens immediately and cannot be undone.")
             }
         }
+        .macSheetFrame(MacSheetSize.deleteAccount)
         .interactiveDismissDisabled(isDeleting)
     }
 

@@ -106,6 +106,20 @@ class SettingsViewModel @Inject constructor(
         val handedOverTo: String? = null,
         val uploadingAvatar: Boolean = false,
         val avatarError: String? = null,
+        /**
+         * WHO the assistant's words go to, verbatim as the operator named
+         * them, or null when this server named nobody — and then there is
+         * no assistant row on this screen at all: nothing to have agreed
+         * to (docs/protocol.md, "Consenting to the assistant").
+         */
+        val assistantProcessor: String? = null,
+        /** When this member agreed, or null until they have. */
+        val assistantConsentAt: String? = null,
+        /** The family's switches, which decide what the screen promises. */
+        val familyAiHistory: Boolean = true,
+        val familyAiVision: Boolean = false,
+        /** The consent screen is up. */
+        val reviewingAssistant: Boolean = false,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -129,6 +143,15 @@ class SettingsViewModel @Inject constructor(
                         // entries have to appear then, not at the next
                         // visit.
                         isOwner = stored.familyStatus == FamilyStatus.OWNER,
+                        // The assistant question, followed for the same
+                        // reason: a withdrawal from another device lands
+                        // on `/me` and has to reach this screen while it
+                        // is open (protocol.md, "Consenting to the
+                        // assistant").
+                        assistantProcessor = stored.assistantProcessor,
+                        assistantConsentAt = stored.assistantConsentAt,
+                        familyAiHistory = stored.familyAiHistory,
+                        familyAiVision = stored.familyAiVision,
                     )
                 }
             }
@@ -141,6 +164,38 @@ class SettingsViewModel @Inject constructor(
 
     fun setMapPreviewsEnabled(enabled: Boolean) {
         viewModelScope.launch { settings.setMapPreviewsEnabled(enabled) }
+    }
+
+    /** Open the consent screen from the row, rather than from a send. */
+    fun reviewAssistant() {
+        _state.update { it.copy(reviewingAssistant = true, error = null) }
+    }
+
+    fun dismissAssistantReview() {
+        _state.update { it.copy(reviewingAssistant = false) }
+    }
+
+    /**
+     * Answer the assistant question (docs/protocol.md, "Consenting to the
+     * assistant"). A failure is SHOWN: somebody who pressed stop and saw
+     * nothing change would reasonably believe it had.
+     */
+    fun setAssistantConsent(granted: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            val saved = familyRepository.setAssistantConsent(granted)
+            _state.update {
+                it.copy(
+                    busy = false,
+                    reviewingAssistant = false,
+                    error = if (saved) {
+                        null
+                    } else {
+                        appContext.getString(R.string.s_couldnt_save_your_answer)
+                    },
+                )
+            }
+        }
     }
 
     fun load() {

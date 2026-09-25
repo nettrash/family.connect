@@ -79,6 +79,7 @@ jobs:
       server: ${{ steps.filter.outputs.server }}
       android: ${{ steps.filter.outputs.android }}
       ios: ${{ steps.filter.outputs.ios }}
+      win: ${{ steps.filter.outputs.win }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,14 +89,14 @@ jobs:
           base='${{ github.event.before }}'
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             echo "No usable diff base ($base) -- running every job."
-            printf 'server=true\nandroid=true\nios=true\n' >> "$GITHUB_OUTPUT"
+            printf 'server=true\nandroid=true\nios=true\nwin=true\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           files=$(git diff --name-only "$base" '${{ github.sha }}')
           echo "Changed files:"; echo "$files" | sed 's/^/  /'
           if echo "$files" | grep -q -E '^(docs/protocol\.md|\.github/)'; then
             echo "A shared path changed (the protocol contract or CI itself) -- running every job."
-            printf 'server=true\nandroid=true\nios=true\n' >> "$GITHUB_OUTPUT"
+            printf 'server=true\nandroid=true\nios=true\nwin=true\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # The `@ai` and `/draw` vector tables live in THREE files and are
@@ -113,7 +114,20 @@ jobs:
             echo "A client mirror table changed -- the server holds the test that compares all three."
             mirror_changed=true
           fi
-          for stack in server android ios; do
+          # The Windows client's oracles are GENERATED from web/text, so a change there is a
+          # change to what the C# port is held to — the fixture in win/ is only right while the
+          # Rust it was printed from says the same thing, and no other job would notice.
+          if echo "$files" | grep -q -E '^web/text/'; then
+            echo "The shared text crate changed -- the Windows oracles are generated from it."
+            echo "win=true" >> "$GITHUB_OUTPUT"
+            web_text_changed=true
+          else
+            web_text_changed=false
+          fi
+          for stack in server android ios win; do
+            if [ "$stack" = win ] && [ "$web_text_changed" = true ]; then
+              continue  # already decided above
+            fi
             if echo "$files" | grep -q -E "^$stack/"; then
               echo "$stack=true" >> "$GITHUB_OUTPUT"
             elif [ "$stack" = server ] && [ "$mirror_changed" = true ]; then
@@ -613,6 +627,275 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  win:
+    name: Windows client (core + app logic)
+    needs: changes
+    if: needs.changes.outputs.win == 'true'
+    # BOTH, and the pair is the point. Everything under win/src is deliberately free of any
+    # Windows API so that it can be written and tested on the Mac this port is developed on —
+    # which is worth nothing unless something actually runs it on Windows too. The differences
+    # this lane exists to catch are not compile errors: they are SQLite's file locking, the
+    # path separator, line endings in the oracle fixtures, and the reader's own culture
+    # (win/README.md, and the `fi-FI` case in CultureTests).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          # The band win/global.json pins, so the runner cannot quietly build with another one.
+          global-json-file: win/global.json
+
+      - name: Show toolchain
+        working-directory: win
+        run: |
+          dotnet --info
+          dotnet --version
+
+      # The PROJECTS, not the solution: FamilyConnect.slnx also holds the WinUI app, whose XAML
+      # compiler runs only on Windows — the win-app job below builds that one.
+      - name: Build
+        working-directory: win
+        run: |
+          dotnet build tests/FamilyConnect.Core.Tests --configuration Release
+          dotnet build tests/FamilyConnect.App.Logic.Tests --configuration Release
+
+      - name: Run tests
+        working-directory: win
+        shell: bash
+        run: |
+          set -o pipefail
+          : > "$RUNNER_TEMP/win-test.log"
+          status=0
+          # Both suites run even when the first fails: one red suite must not hide the other.
+          for suite in tests/FamilyConnect.Core.Tests tests/FamilyConnect.App.Logic.Tests; do
+            dotnet test "$suite" --configuration Release --no-build \
+              --logger "console;verbosity=normal" 2>&1 | tee -a "$RUNNER_TEMP/win-test.log" || status=1
+          done
+          exit $status
+
+      # An exit code is not a result, which is this file's whole rule. `dotnet test` over a
+      # solution prints one summary line per assembly and exits 0 for a run that matched no
+      # tests at all — a mistyped filter, a project dropped from the .slnx, a test assembly that
+      # failed to load — so the count is read back and a collapse fails the lane. A FLOOR rather
+      # than an equality, so that adding a test does not break CI while losing a suite does.
+      # The pattern reads what the step ABOVE prints: at normal console verbosity that is a
+      # "Test Run …" / "Total tests:" block per assembly. It first matched the default-verbosity
+      # one-liner instead, which this step never prints, so the lane failed every run it had —
+      # green ones included (2026-09-12: all 355 passed on windows-2025, and it said "nothing ran").
+      - name: Assert the tests actually ran
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/win-test.log"
+          test -s "$log" || { echo "::error::no test log -- the test step produced nothing"; exit 1; }
+          python3 - "$log" <<'PY'
+          import re, sys
+          text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+          # `--logger "console;verbosity=normal"` ends each assembly with a block like
+          #   Test Run Successful.        (or: Test Run Failed.)
+          #   Total tests: 240
+          #        Passed: 240
+          #        Failed: 1              (only when something failed)
+          # The one-line "Passed!  - Failed: 0, Passed: 240" summary belongs to the default
+          # verbosity and never appears here. Any status but Successful (Failed, Aborted) fails.
+          runs = re.findall(
+              r"^Test Run (\w+)\.\s*\n"
+              r"Total tests:\s*(\d+)\s*\n"
+              r"((?:[ \t]+(?:Passed|Failed|Skipped|Not Run|Aborted):\s*\d+\s*\n)*)",
+              text, re.M)
+          if not runs:
+              print("::error::no summary line in the log -- nothing ran"); sys.exit(1)
+          def count(block, word):
+              m = re.search(rf"{word}:\s*(\d+)", block)
+              return int(m.group(1)) if m else 0
+          failed = sum(count(b, "Failed") for _, _, b in runs)
+          passed = sum(count(b, "Passed") for _, _, b in runs)
+          unsuccessful = [status for status, _, _ in runs if status != "Successful"]
+          print(f"assemblies={len(runs)} passed={passed} failed={failed}")
+          if failed or unsuccessful:
+              print(f"::error::{failed} tests failed; runs not successful: {unsuccessful}"); sys.exit(1)
+          if len(runs) < 2:
+              print(f"::error::only {len(runs)} test assembly ran; expected Core and App.Logic"); sys.exit(1)
+          if passed < 320:
+              print(f"::error::only {passed} tests ran; expected ~355"); sys.exit(1)
+          PY
+
+      # The nine language tables are GENERATED from the apps' own catalogue, and a hand-edited or
+      # stale one is a Russian window drawing English at the moment somebody notices. `--check`
+      # writes nothing and exits non-zero when they no longer match.
+      - name: The language tables are not stale
+        if: matrix.os == 'ubuntu-24.04'
+        # --check, so a stale table FAILS rather than being quietly rewritten under CI's feet.
+        run: python3 win/i18n/generate.py . --check
+
+      # And the two ORACLE fixtures are printed by a Rust program that depends on web/text BY
+      # PATH: "an oracle built on one machine proves nothing" (float-pow10-portability). If the
+      # shared crate has moved, the fixture the C# suite is held to has to move with it, and the
+      # only way to know is to print it again and look.
+      - name: The oracles still say what the fixtures say
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          cd win/tools/board-oracle
+          cargo run --quiet > ../../tests/FamilyConnect.Core.Tests/Fixtures/board-vectors.json
+          cargo run --quiet -- chat > ../../tests/FamilyConnect.Core.Tests/Fixtures/chat-vectors.json
+          cd ../../..
+          git diff --exit-code -- win/tests/FamilyConnect.Core.Tests/Fixtures \
+            || { echo "::error::the oracle fixtures are out of date -- regenerate them (win/README.md)"; exit 1; }
+
+      # The WinUI app cannot build here (its XAML compiler is a .NET Framework executable), but
+      # everything short of that compiler can be checked: every XAML element, attribute and handler
+      # against the real WinUI metadata, and the code-behind compiled in a shadow library with the
+      # XAML compiler's generated fields stubbed in (win/tools/xamlcheck/README.md). The fast
+      # signal for app code written off Windows; the real proof is the win-app job below.
+      - name: The app's XAML and code-behind check out
+        if: matrix.os == 'ubuntu-24.04'
+        working-directory: win
+        run: tools/xamlcheck/run.sh .
+
+      - name: Upload test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-test-log-${{ matrix.os }}
+          path: ${{ runner.temp }}/win-test.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  win-app:
+    name: Windows app & MSIX (${{ matrix.platform }})
+    needs: changes
+    if: needs.changes.outputs.win == 'true'
+    # The only project under win/ that needs Windows. Unsigned on purpose: where the app ships (the
+    # Store signs what it publishes, a side-loaded build needs a certificate) is still open on #64,
+    # and an unsigned package proves the same thing — that the XAML compiles, the manifest is valid
+    # and the payload carries what the app reads at run time.
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64, ARM64]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: win/global.json
+
+      - uses: microsoft/setup-msbuild@v2
+
+      # The build number, and the only place one is ever stamped. Major and minor are read out of
+      # Directory.Build.props rather than written here, so a 1.2 needs no CI edit; the third part
+      # is this run, and the fourth stays 0 because Partner Center RESERVES the revision and
+      # refuses a package that sets it. Every part is a 16-bit number, which is also why the
+      # number cannot be a date.
+      #
+      # Stamped into the working copy, never committed: the checked-in manifest stays at
+      # `1.1.0.0`, so a local build is visibly unstamped (Settings then says "1.1", not
+      # "1.1 (0)" — AppVersionText) and can never be mistaken for a Store build.
+      - name: Stamp the build number
+        id: version
+        shell: pwsh
+        run: |
+          $props = 'win/Directory.Build.props'
+          # Selected, counted, and only then read. `.Project.PropertyGroup.Version` silently
+          # answers nothing once a second PropertyGroup exists, and this step would then stamp
+          # "..437.0" and carry on — tested, and exactly the silent shift worth a guard.
+          $xml = [xml](Get-Content $props)
+          $found = @($xml.SelectNodes('//PropertyGroup/Version') |
+            ForEach-Object { $_.InnerText.Trim() } | Where-Object { $_ })
+          if ($found.Count -ne 1) { throw "expected one <Version> in $props, found $($found.Count)" }
+          $marketing = $found[0]
+          if ($marketing -notmatch '^(\d+)\.(\d+)') { throw "no Major.Minor in $props : '$marketing'" }
+          $major, $minor = $Matches[1], $Matches[2]
+          $build = ${env:GITHUB_RUN_NUMBER}
+          if ([int]$build -gt 65535) { throw "run number $build is past the 16-bit MSIX limit" }
+          $packageVersion = "$major.$minor.$build.0"
+
+          # A targeted rewrite of Identity/@Version, not an XML round-trip: the manifest carries
+          # comments that say why its identity is what it is, and reformatting them is not this
+          # step's business.
+          $manifest = 'win/src/FamilyConnect.App/Package.appxmanifest'
+          # `[^>]` keeps the match inside the single <Identity …> tag and `\bVersion` keeps it off
+          # the tail of MinVersion — a looser `(?s).*?Version="` rewrote TargetDeviceFamily's
+          # MinVersion to "1.1.439.0" when the Identity's own attribute was missing, which is a
+          # green build shipping a manifest that claims to install on Windows 1.1. Tested.
+          $pattern = '(<Identity\b[^>]*?\bVersion=")[^"]+(")'
+          $text = Get-Content $manifest -Raw
+          # Asked before writing, and checked after. "Nothing changed" is NOT the test for a
+          # missing attribute — a re-run stamps the value already there — so absence is one
+          # question and the write is another.
+          if ($text -notmatch $pattern) { throw "Identity/@Version was not found in $manifest" }
+          Set-Content $manifest -NoNewline -Value ([regex]::Replace(
+            $text, $pattern, "`${1}$packageVersion`${2}", 1))
+          if ((Get-Content $manifest -Raw) -notmatch [regex]::Escape("Version=`"$packageVersion`"")) {
+            throw "$manifest does not carry $packageVersion after patching"
+          }
+          "package=$packageVersion" >> $env:GITHUB_OUTPUT
+          "assembly=$major.$minor.$build" >> $env:GITHUB_OUTPUT
+          Write-Host "stamped $packageVersion"
+
+      - name: Restore
+        run: >
+          msbuild win/src/FamilyConnect.App/FamilyConnect.App.csproj -t:Restore
+          -p:Configuration=Release -p:Platform=${{ matrix.platform }}
+          -p:RuntimeIdentifier=win-${{ matrix.platform == 'ARM64' && 'arm64' || 'x64' }}
+
+      - name: Build the app and an unsigned MSIX
+        run: >
+          msbuild win/src/FamilyConnect.App/FamilyConnect.App.csproj
+          -p:Configuration=Release
+          -p:Platform=${{ matrix.platform }}
+          -p:RuntimeIdentifier=win-${{ matrix.platform == 'ARM64' && 'arm64' || 'x64' }}
+          -p:GenerateAppxPackageOnBuild=true
+          -p:AppxPackageSigningEnabled=false
+          -p:AppxBundle=Never
+          -p:AppxPackageDir=${{ github.workspace }}\AppPackages\
+          -p:EnableWinAppRunSupport=false
+          -p:Version=${{ steps.version.outputs.assembly }}
+          -v:minimal
+
+      # The packaging bug a green build hides: Content only reaches the payload when it carries
+      # CopyToOutputDirectory (md.win measured it). Drop that and everything still builds and
+      # uploads — and the installed app has no icon for its title bar. An .msix is a zip, so list it.
+      - name: The package carries the executable and its assets
+        shell: pwsh
+        run: |
+          $msix = Get-ChildItem -Path "${{ github.workspace }}\AppPackages" -Recurse -Filter *.msix | Select-Object -First 1
+          if (-not $msix) { throw "no .msix was produced" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($msix.FullName)
+          try {
+            $names = $zip.Entries.FullName | ForEach-Object { [System.Uri]::UnescapeDataString($_).Replace('\', '/') }
+          } finally { $zip.Dispose() }
+          $required = @('FamilyConnect.exe', 'AppxManifest.xml', 'Assets/AppIcon.ico',
+            'Assets/Square44x44Logo.png', 'Assets/Square150x150Logo.png', 'Assets/StoreLogo.png')
+          $missing = $required | Where-Object { $names -notcontains $_ }
+          if ($missing) { throw "MSIX payload is missing: $($missing -join ', ')" }
+          Write-Host "MSIX payload OK: $($names.Count) entries."
+
+          # The stamp reached the package. A manifest patched after the build, or a cached
+          # AppxManifest, is a green run that uploads version 1.1.0.0 — which Partner Center
+          # then refuses as not newer than the last submission.
+          $expected = '${{ steps.version.outputs.package }}'
+          if ($msix.Name -notmatch [regex]::Escape($expected)) {
+            throw "the .msix is named $($msix.Name), which does not carry version $expected"
+          }
+          Write-Host "MSIX version OK: $expected."
+
+      - name: Upload the MSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: familyconnect-${{ matrix.platform }}-msix
+          path: AppPackages/**/*.msix
+          retention-days: 14
+
 # Deliberately not here, and why:
 #
 #   * A macOS UI lane -- the Mac launch smoke test (MacLaunchSmokeUITests). It
@@ -638,6 +921,9 @@ jobs:
 #   * A required-check / branch-protection rule: this repo is private on the
 #     free plan, where branch protection is not available. CI here is advisory,
 #     which is part of why it triggers on push rather than on pull_request.
+#   * Running FamilyConnect.App in CI. win-app builds and packages it, but there is no UI test and
+#     no self-test mode yet: what the window DECIDES is App.Logic's and tested in the win lane,
+#     and what it looks like is checked on a real Windows machine.
 #   * A README badge. Every sibling has one, but an unparameterised badge URL
 #     reports the DEFAULT branch -- master, which is 39 commits behind -- so it
 #     would show a green tick for code nobody is running. Add one with

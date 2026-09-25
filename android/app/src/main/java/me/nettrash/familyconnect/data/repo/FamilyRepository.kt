@@ -28,6 +28,7 @@ import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AuthApi
 import me.nettrash.familyconnect.data.net.FamilyApi
+import me.nettrash.familyconnect.data.net.dto.AssistantReportResponse
 import me.nettrash.familyconnect.data.net.dto.BirthdayDto
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyResponse
@@ -184,6 +185,40 @@ class FamilyRepository @Inject constructor(
         messageId: Long?,
     ): ApiResult<ReportResponse> = familyApi.report(reportedUserId, reason, messageId)
 
+    /**
+     * Report an ASSISTANT reply. A separate path from [report]: the assistant
+     * belongs to no family, so that endpoint refuses it, and this one is read
+     * by the people who run the server rather than by the family owner
+     * (docs/protocol.md, "Reporting the assistant").
+     */
+    suspend fun reportAssistant(
+        messageId: Long,
+        reason: String,
+        note: String?,
+    ): ApiResult<AssistantReportResponse> = familyApi.reportAssistant(messageId, reason, note)
+
+    /**
+     * This member's own answer to the assistant question, and nobody
+     * else's (docs/protocol.md, "Consenting to the assistant").
+     *
+     * Here beside [reportAssistant] for that call's reason: neither is the
+     * family's business, but this is where the client's assistant state is
+     * kept and where the composer reads it from. The stamp the server
+     * answers with is written straight into settings, so the composer
+     * stops asking — or starts again — without waiting for the next `/me`.
+     *
+     * Answers whether it was recorded: false leaves the composer asking,
+     * which is the safe direction, and the caller says so.
+     */
+    suspend fun setAssistantConsent(granted: Boolean): Boolean =
+        when (val result = authApi.setAssistantConsent(granted)) {
+            is ApiResult.Ok -> {
+                settings.setAssistantConsentAt(result.value.assistantConsentAt)
+                true
+            }
+            else -> false
+        }
+
     suspend fun unblock(userId: Long): ApiResult<Unit> =
         familyApi.unblockMember(userId).also {
             if (it is ApiResult.Ok) applyBlockLocally(userId, blocked = false)
@@ -269,6 +304,12 @@ class FamilyRepository @Inject constructor(
                 // have neither deployment (docs/protocol.md, "Pictures").
                 vision = result.value.assistant?.vision == true,
                 images = result.value.assistant?.images == true,
+                // WHO answers, for the consent screen to name verbatim.
+                // Null turns the assistant off in this client entirely: a
+                // screen that cannot say where the words go cannot ask
+                // the question (protocol.md, "Consenting to the
+                // assistant").
+                processor = result.value.assistant?.processor,
             )
             // …and what this FAMILY allows, which is a different question
             // with a different answer and its own owner-only switch —
@@ -370,6 +411,27 @@ class FamilyRepository @Inject constructor(
         }
         return result
     }
+
+    /**
+     * Owner-only: the fourth switch (docs/protocol.md, "The daily
+     * greeting"). Mirrored like the three above so the owner's own device
+     * agrees with the server at once — no frame will tell it what it just
+     * did itself.
+     */
+    suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse> {
+        val result = familyApi.setAiGreeting(enabled)
+        if (result is ApiResult.Ok) {
+            settings.setFamilyAiGreeting(result.value.family.aiGreeting)
+        }
+        return result
+    }
+
+    /**
+     * Owner-only: the fifth switch (docs/protocol.md, "Profile pictures of
+     * members"). Nothing is mirrored into settings: no composer strip reads
+     * it — the protocol asks for the switch and its sentence, nothing more.
+     */
+    suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> = familyApi.setAiFaces(enabled)
 
     /**
      * My own birthday, mirrored onto my roster row.

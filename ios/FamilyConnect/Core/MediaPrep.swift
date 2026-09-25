@@ -27,6 +27,74 @@ import os
 
 nonisolated enum MediaPrep {
 
+    /// The server's own magic-number check, on this side of the wire.
+    ///
+    /// A CLAIM ABOUT BYTES IS CHECKED BEFORE IT IS MADE. The server verifies that a declared type
+    /// matches what the bytes ARE for every photo, video and audio upload — "a type that
+    /// contradicts the kind, or bytes that do not match the type declared, is
+    /// `invalid_attachment`" (docs/protocol.md) — and refuses the upload when it does not. A
+    /// client that guesses the type from a file EXTENSION therefore has two ways to be wrong
+    /// about the same file, and both end as a failed send the sender cannot act on:
+    ///
+    ///   * a `.aac` file is usually raw ADTS, not ISO base media, so calling it `audio/mp4` (as
+    ///     the extension table did) is a 400 for every such file a family ever picks;
+    ///   * a `.mkv` conforms to `public.movie`, so it went down the video path and was uploaded
+    ///     UNCHANGED under a flat `video/mp4` — Matroska bytes claiming an MP4 container.
+    ///     AVFoundation cannot re-encode it either, so there is nothing to convert it into.
+    ///
+    /// The protocol already says what to do with something a client cannot honestly type:
+    /// "a recording that a client cannot encode into a checkable container should be sent as
+    /// `kind=file` instead, where nothing is verified." So this decides, and the callers below
+    /// fall back to the file path — where the family still gets the thing they picked.
+    ///
+    /// Mirrors `server/src/handlers_attachment.rs::matches_magic` and
+    /// `fc_text::media::matches_magic` (the web's copy) table for table.
+    enum Magic {
+        /// How many bytes are enough to judge any of the types below.
+        static let head = 12
+
+        static func matches(mime: String, head bytes: Data) -> Bool {
+            let head = [UInt8](bytes.prefix(Self.head))
+            switch mime {
+            case "image/jpeg":
+                return head.starts(with: [0xFF, 0xD8, 0xFF])
+            case "image/png":
+                return head.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+            // HEIC/HEIF, MP4/MOV and m4a are all ISO base media: "ftyp" at offset 4, with the
+            // brand that follows telling them apart.
+            case "image/heic", "image/heif", "video/mp4", "video/quicktime",
+                 "audio/mp4", "audio/m4a":
+                return head.count >= 12 && Array(head[4..<8]) == Array("ftyp".utf8)
+            // An MP3 is either an ID3 tag or a raw frame sync (11 set bits).
+            case "audio/mpeg":
+                return head.starts(with: Array("ID3".utf8))
+                    || (head.count >= 2 && head[0] == 0xFF && (head[1] & 0xE0) == 0xE0)
+            case "audio/wav":
+                return head.count >= 12
+                    && head.starts(with: Array("RIFF".utf8))
+                    && Array(head[8..<12]) == Array("WAVE".utf8)
+            case "audio/ogg":
+                return head.starts(with: Array("OggS".utf8))
+            default:
+                return false
+            }
+        }
+
+        /// The first bytes of a file, or nil when it cannot be read at all.
+        static func head(of url: URL) -> Data? {
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+            defer { try? handle.close() }
+            return try? handle.read(upToCount: Self.head)
+        }
+
+        /// Whether this file may honestly be uploaded as `mime`. A file we cannot read is judged
+        /// UNSAFE: the send would fail anyway, and the file path is the answer either way.
+        static func honest(url: URL, mime: String) -> Bool {
+            guard let bytes = head(of: url) else { return false }
+            return matches(mime: mime, head: bytes)
+        }
+    }
+
     /// What the picker gave us, prepared for upload.
     struct Prepared {
         /// The file to upload. Lives in a temp directory; delete after.
@@ -62,6 +130,20 @@ nonisolated enum MediaPrep {
             self.previewJPEG = previewJPEG
             self.name = name
         }
+    }
+
+    /// Throw away an item that will not be sent: taken off the strip,
+    /// refused past the ten-item cap, or a board pin that is over.
+    ///
+    /// The file goes ONLY if MediaPrep wrote it. `prepareVideo` hands back
+    /// the ORIGINAL url when a clip already fits the ceiling, and a picked
+    /// or dropped file is the person's own — deleting `fileURL` without
+    /// asking deleted their video from wherever they kept it. The same
+    /// ownership test `PendingMediaStaging.adopt` uses to copy instead of
+    /// move.
+    static func discard(_ prepared: Prepared) {
+        guard PendingMediaStaging.isOurs(prepared.fileURL) else { return }
+        try? FileManager.default.removeItem(at: prepared.fileURL)
     }
 
     enum PrepError: Error {
@@ -148,6 +230,16 @@ nonisolated enum MediaPrep {
 
         let uploadURL: URL
         if originalSize <= limit {
+            // UNCHANGED, which means the bytes have to be what this path is about to call them.
+            // A container the server does not take as video — Matroska, AVI, WebM, all of which
+            // conform to `public.movie` and so arrive here — was uploaded as `video/mp4` and
+            // refused; AVFoundation cannot re-encode those either, so a FILE is what the family
+            // can actually be given (see `Magic`).
+            guard Magic.honest(url: sourceURL, mime: "video/mp4")
+                || Magic.honest(url: sourceURL, mime: "video/quicktime")
+            else {
+                return try await prepareFile(from: sourceURL, name: nil, limit: limit)
+            }
             uploadURL = sourceURL
         } else {
             uploadURL = try await export(asset: asset)
@@ -332,8 +424,16 @@ nonisolated enum MediaPrep {
     /// the caller sends it as a file — where the type is metadata and no
     /// magic number is checked — rather than getting a 400.
     static func isSupportedAudio(_ url: URL) -> Bool {
-        ["m4a", "mp4", "aac", "mp3", "wav", "wave", "ogg", "oga"]
+        guard ["m4a", "mp4", "aac", "mp3", "wav", "wave", "ogg", "oga"]
             .contains(url.pathExtension.lowercased())
+        else {
+            return false
+        }
+        // AND the bytes have to be what the extension says. A `.aac` is usually raw ADTS rather
+        // than an ISO container, so the type this would claim for it (`audio/mp4`) is a 400 on
+        // every one — and an `.m4a` somebody renamed is the same story one extension over. The
+        // file path takes it instead, where nothing is verified and the family still gets it.
+        return Magic.honest(url: url, mime: audioMIME(for: url))
     }
 
     /// The system's type for this extension, or the generic one. The server

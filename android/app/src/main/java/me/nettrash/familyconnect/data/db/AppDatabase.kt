@@ -41,9 +41,10 @@ fun interface LocalDataWiper {
         MessageEntity::class,
         MemberEntity::class,
         NoteEntity::class,
+        GoneNoteEntity::class,
         PendingAttachmentEntity::class,
     ],
-    version = 21,
+    version = 28,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -367,6 +368,118 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * 22: threads (docs/protocol.md, "Threads") — the root of a reply's
+         * chain and how many replies a root has. Nullable and defaulted, so
+         * every existing row reads as "no chain / nobody answered", which is
+         * the truth until the next server copy of it says otherwise. The
+         * index name is the one Room derives for `Index(value =
+         * ["threadRootId"])`, or the schema check on open fails.
+         */
+        val MIGRATION_21_22: Migration = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN threadRootId INTEGER")
+                db.execSQL("ALTER TABLE messages ADD COLUMN replyCount INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE messages ADD COLUMN detached INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_messages_threadRootId ON messages (threadRootId)",
+                )
+            }
+        }
+
+        /**
+         * 23: member mentions (docs/protocol.md, "Mentioning a member") —
+         * the list a message names, and the "@" mark on a chat row. Both
+         * defaulted, so every existing row reads as "names nobody / not
+         * marked", which is the truth until the next server copy.
+         */
+        val MIGRATION_22_23: Migration = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN mentionsJson TEXT")
+                db.execSQL("ALTER TABLE chats ADD COLUMN mentionedUnread INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * 24: the hand a note is written in (docs/protocol.md, "Board").
+         *
+         * DEFAULT 'plain' byte-matches NoteEntity's @ColumnInfo, and it is
+         * the truth about the past: every note already on a wall WAS drawn
+         * in the plain face, so nothing pinned changes.
+         */
+        val MIGRATION_23_24: Migration = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN font TEXT NOT NULL DEFAULT 'plain'")
+            }
+        }
+
+        /**
+         * 25: a note can be a picture (docs/protocol.md, "Board").
+         *
+         * DEFAULT 'text' byte-matches NoteEntity's @ColumnInfo and is the
+         * truth about the past: every note ever pinned was a text note.
+         * `attachmentJson` is nullable because most notes have no picture.
+         */
+        val MIGRATION_24_25: Migration = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'")
+                db.execSQL("ALTER TABLE notes ADD COLUMN attachmentJson TEXT")
+            }
+        }
+
+        /**
+         * 26: a note can be an event (docs/protocol.md, "Board") — when,
+         * where, and who is coming.
+         *
+         * All four nullable: they are meaningless on every other kind, and
+         * every note already pinned has none.
+         */
+        /**
+         * v27: the two lists a note can carry — the members it NAMES and
+         * the things to DO (docs/protocol.md, "Board").
+         *
+         * Both in one step because they land in one release. Nullable with
+         * no default: null is what every note already pinned means by
+         * "names nobody" and "is not a list", so nothing on a wall changes
+         * when the columns arrive.
+         */
+        /**
+         * v28: the notes a tombstone has taken, remembered so they cannot come back.
+         *
+         * A NEW ENTITY NEEDS BOTH HALVES — the `version` above and this step. The mentions
+         * column shipped without a migration once and would have crashed every upgraded install
+         * on the next launch (issue #70); a missing step for a new TABLE is the same mistake with
+         * a different error message.
+         *
+         * Nothing is backfilled, and nothing can be: a device upgrading today cannot know which
+         * notes it has already been told about. The set starts empty and fills from the next
+         * tombstone on, which is exactly the guarantee the protocol asks for going forward.
+         */
+        val MIGRATION_27_28: Migration = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS goneNotes " +
+                        "(noteId INTEGER NOT NULL, PRIMARY KEY(noteId))",
+                )
+            }
+        }
+
+        val MIGRATION_26_27: Migration = object : Migration(26, 27) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN mentionsJson TEXT")
+                db.execSQL("ALTER TABLE notes ADD COLUMN itemsJson TEXT")
+            }
+        }
+
+        val MIGRATION_25_26: Migration = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN startsAt INTEGER")
+                db.execSQL("ALTER TABLE notes ADD COLUMN endsAt INTEGER")
+                db.execSQL("ALTER TABLE notes ADD COLUMN place TEXT")
+                db.execSQL("ALTER TABLE notes ADD COLUMN rsvpsJson TEXT")
+            }
+        }
+
         val MIGRATION_9_10: Migration = object : Migration(9, 10) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE messages ADD COLUMN replyParentMessageId INTEGER")
@@ -439,6 +552,13 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_18_19,
                 MIGRATION_19_20,
                 MIGRATION_20_21,
+                MIGRATION_21_22,
+                MIGRATION_22_23,
+                MIGRATION_23_24,
+                MIGRATION_24_25,
+                MIGRATION_25_26,
+                MIGRATION_26_27,
+                MIGRATION_27_28,
             )
         }
     }

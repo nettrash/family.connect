@@ -291,6 +291,15 @@ class SessionRepository @Inject constructor(
                 settings.setVideoCallsEnabled(me.videoCallsEnabled)
                 settings.setFamilyRegistrationEnabled(me.familyRegistrationEnabled)
                 settings.setFamilylessAccountTtlDays(me.familylessAccountTtlDays)
+                // The operator's half of the daily greeting — the family's
+                // own switch is drawn against it (protocol.md, "The daily
+                // greeting").
+                settings.setGreetingsEnabled(me.greetingsEnabled)
+                // Whether this member has agreed that their words may go
+                // to the model. Unconditional, null included: a
+                // withdrawal from another device arrives exactly here
+                // (protocol.md, "Consenting to the assistant").
+                settings.setAssistantConsentAt(me.assistantConsentAt)
                 // The AUTHORITATIVE apply. `/me` is step 1 of the resync,
                 // it is the only one on the login path, and it is the only
                 // one a caller with NO family reaches at all — a block is a

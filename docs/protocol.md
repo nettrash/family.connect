@@ -12,6 +12,149 @@ disagree, this document wins; fix the code.
 - In production the server binds to loopback and sits behind nginx, which terminates TLS and
   proxies both REST and the WebSocket upgrade.
 
+### A browser is a client too
+
+A web client is served **from the same origin as the API**, by the same nginx that already proxies
+`/api/v1` — the static bundle at `/`, everything else exactly as it is. There is no CORS anywhere
+on this wire and none is planned: a second origin would mean preflights on every call, a
+credential story for a token in another site's storage, and a whole class of question this
+protocol does not otherwise have. So `{base}` for a browser is its own origin, and the user enters
+no server URL at all — the page it was served is the server it talks to, which is the one thing a
+browser knows that an app has to be told.
+
+The consequences worth stating rather than discovering:
+
+- **A browser registers no device and receives no push.** `POST /devices` takes `ios`, `macos` or
+  `android`, and a web client sends none of them: it has no APNs or FCM token to give, and a
+  member reading in a tab is a member whose socket is live, which is exactly the case the push
+  gate already suppresses. The absence is deliberate, not a gap — everything else about delivery
+  is unchanged, because the socket is the same socket.
+- **The session token lives in `sessionStorage`, not `localStorage`.** It is the whole credential,
+  and a token that outlives the tab is a token left behind on a shared machine. Closing the tab is
+  a sign-out; `POST /auth/logout` on the way out is the one that also revokes it server-side.
+- **A browser authenticates its socket with a SUBPROTOCOL.** The WebSocket API in a browser takes
+  no headers, so it cannot send `Authorization` on the upgrade. It offers two subprotocols instead
+  — `family-connect` and `bearer.<token>` — and the server authenticates from the second and
+  echoes the FIRST back, which it must or the browser fails the handshake, and which means the
+  token goes up and never comes back down. Session tokens are base64url, exactly the characters a
+  subprotocol may carry, so nothing is encoded. The header still wins when both are present, and
+  every app goes on sending the header. A token in the QUERY STRING is refused even when it is
+  right: a URL is written into every access log and every proxy on the way, and nothing should
+  ever come to depend on the one place a credential leaks by default.
+- **A browser SENDS over REST, and only listens on the socket.** Every message goes out as
+  `POST /chats/{id}/messages`, one at a time and in the order it was written, under exactly the
+  rules of "Sending on an unreliable network": delivered, refused or unknown; a terminal code
+  fails the message at once, and unknown is retried with backoff and shown as failed only when
+  the attempts are spent. The HTTP response is the ack, so there is no ack deadline to keep and
+  no way for a socket that is down — or one a sleeping laptop left half-open, which a browser
+  cannot tell from a live one — to swallow a message. The `message` frame the same send fans out
+  to the sender's own socket carries the `client_msg_id`, and either copy landing first settles
+  it. What a browser still says on the socket — `read`, `typing`, `ping` — is momentary: said
+  while the socket is down it is dropped, not saved up and delivered late. Nothing is lost by
+  that, because a browser also reports `read` over REST whenever its reader arrives at the newest
+  message of the open chat — on opening it, after a catch-up, on scrolling back down, on the tab
+  coming back into view or the window to the front. Never before: a reader scrolled up in the
+  history, or opening a chat at its unread divider with the newest below the fold, has not read
+  what is down there, and a marker once reported is wrong on every device.
+- **A browser SENDS CALL SIGNALLING on the socket, and that is the one exception to the bullet
+  above.** `call_offer`, `call_answer`, `call_ice` and `call_end` are client frames and nothing
+  else carries them: calls have no REST surface, and giving them one would be a second path to keep
+  in step for no gain. The reason the rule exists does not reach them either. What is at stake with
+  a message is somebody believing they sent it, so a message goes out over the path that answers; a
+  call's signalling is momentary, and an offer that did not go up is a call that did not happen —
+  visibly, on the screen of the person who tried it. So a browser sends those four frames, and only
+  those, on the socket it already holds, under the same rule every client follows: a client keeps
+  its socket open for the life of a call, ringing included. A browser could not suspend it if it
+  wanted to.
+- **A browser rings only while its tab is open.** It registers no device and takes no push, so
+  nothing wakes it: a call to somebody whose tab is closed is a call they never hear, and it ends
+  the ordinary way — `timeout`, and a `missed` record that tells the caller exactly what a phone
+  that was switched off would have told them. A tab that is open but in the background DOES ring,
+  because its socket is live; the ringing is the tab's own — its title, a tone, the incoming screen
+  waiting when it is brought to the front. This is a real gap against the phones and not a design
+  choice, and it is the same gap a Mac has (see "Incoming calls").
+- **A browser's call ends when its tab does.** Closing the tab or navigating away takes the peer
+  connection with it, so the client says so while it still can — one synchronous `call_end` on the
+  way out, `hangup` for a call that was answered and `cancel` for one still ringing. Where even
+  that does not get out, the server's own rules cover it: a caller's connection closing while it
+  rings is `cancel`, and an answered call with neither party connected for 60 s is `failed`.
+- **A browser asks for the microphone, and the camera, per origin and at the moment of the call.**
+  There is no settings screen to grant it in advance, so the first call shows the browser's own
+  prompt; a refusal is a call that cannot be placed or answered, and the client says which
+  permission is missing rather than failing quietly. The remote audio element is started from the
+  same click that placed or answered the call, which is the gesture every browser's autoplay rule
+  asks for.
+- **The outbox is kept beside the token, in `sessionStorage`.** A reload goes on sending what was
+  unsent — the same rows, the same `client_msg_id`s, their attempts and failures — rather than
+  losing what the sender saw as "Sending…". Closing the tab ends the session and loses the outbox
+  with it, so a page with anything still unsent asks the browser to confirm before it closes.
+  What is kept is the ROW, not the bytes: a photo or a recording waiting to upload lives in the
+  tab's memory, and storage that outlived the tab would be a family's pictures left on a shared
+  machine. So after a reload a message whose attachments had all landed is sent as it stands —
+  the ids are good for the server's unclaimed grace — and one whose bytes had not finished
+  uploading fails at once, visibly, saying they were lost, rather than waiting to be retried with
+  nothing to send.
+- **A browser fetches media with its token, and keeps none of it.** An `<img>`, `<video>` or
+  `<audio>` element cannot send `Authorization`, and a token in a URL is refused, so a browser
+  reads `GET /attachments/{id}` and its preview with `fetch` and draws the bytes from memory. It
+  asks with `cache: no-store`. The server's `Cache-Control: private, immutable` is right for an
+  app's own cache and wrong for a browser's, which every account that signs in on the machine
+  shares and which outlives the tab — the reason the token lives in `sessionStorage` in the first
+  place. A reload fetches again; that is the price, and it is paid only by the reader. Profile
+  pictures (`GET /users/{id}/avatar`) are fetched the same way, held in memory under the user id
+  AND the `avatar_version`, which is never reused for another picture; a `404` there — no picture,
+  or a person this reader may not see, the same answer by design — is settled for the tab rather
+  than asked again on every draw, while any other failure is tried again. A tile
+  never downloads a VIDEO to draw itself: it draws the poster, or a placeholder until one lands.
+- **A browser records voice notes into MP4 (AAC) where it can, and into WAV where it cannot —
+  never WebM.** WebM is what most browsers' recorders produce by default, `kind=audio` does not
+  accept it, and a family's phones could not play it if it did. WAV is large, and it plays
+  everywhere. Everything else about a voice note — five minutes at most, staged so a caption can
+  be added — is the apps' rule. A browser's location comes from its own geolocation, under the
+  same freshness bar the apps apply (see "Locations"): never a fix older than two minutes.
+- **A browser notifies ITSELF, and names who rather than what.** It registers no device and takes
+  no push, so what it has instead is the tab it is already in: the number of unread messages in the
+  page's TITLE — derived from its own store, exactly as a running app derives the badge it puts on
+  its icon — and, once somebody has asked for it, one notification per message that arrives while
+  the tab is not in front. A browser will not let a page ask unprompted, so asking is a switch in
+  its settings and not a prompt on arrival. What such a notification says is the title the push
+  rules give ("Titles", above: the sender in a direct chat; `"<Family> — <Sender>"`, or
+  `"<Family> — <Sender> mentioned you"`, in the family chat) and, for a body, what a server with
+  `include_message_body = false` would send — `"New message"`, `"New note"`. Never the words
+  themselves: `[push] include_message_body` is the operator's decision about family text on a lock
+  screen, it is not on the wire, and a browser that cannot know it has been told no does not get to
+  guess. What is notified is what is pushed — a message (a poll included), a board note — under the
+  same gating, the block first among it: a member a reader has blocked wakes nobody, and typing,
+  reads, reactions, edits and note moves notify no more than they push.
+- **A browser reads the app in the BROWSER's language, and says the apps' own words.** The nine
+  the apps ship in are the nine a browser reads in (`en`, `de`, `es`, `fr`, `ja`, `ru`, `sr`,
+  `sr-Latn`, `zh-Hans` — "The family's language" lists the same nine for the assistant), chosen
+  from what the browser asks for, in the reader's own order of preference: a tag is matched on its
+  own terms and then on its base language, so `de-AT` reads German and `sr-Latn-RS` reads Serbian
+  in Latin script while `sr-RS` reads it in Cyrillic; a Chinese tag reads Simplified, which is
+  closer than English; and a language none of the nine covers reads English. The chosen one is put
+  on the document as `lang`, because a screen reader's pronunciation and a browser's hyphenation
+  both come from there and neither can guess. What a string is looked up BY is the apps' own
+  English source string — the key in `Localizable.xcstrings` — so the three clients say the same
+  words to the same family, an untranslated string is readable English rather than a blank, and a
+  string the web says that the apps do not is English until somebody translates it. This is the
+  READER's language and it is nobody else's: the family's language is what the assistant answers
+  in, and the two are deliberately separate, so a Serbian grandmother reads a Russian family's
+  chat in Serbian (see "The family's language", which says the same thing from the other end).
+- **The board's two seen-marks are the one thing a browser keeps past the tab.** They live in
+  `localStorage`, under the account's user id, and they are two numbers — the highest note id and
+  the highest `content_seq` this browser has shown that account (see "Board") — which say how far
+  somebody has looked and nothing whatever about what the notes say. Kept for the tab alone, like
+  everything else here, they would be gone at every sign-in, and a badge that starts every session
+  by counting the whole wall as new is a badge that cries wolf until nobody reads it. Everything
+  that IS the board — its notes, their text, their pictures — lives in the tab's memory and goes
+  with it, and a browser reads the whole board again on every sign-in. A browser that has never
+  shown an account the board counts the whole wall, exactly as an app does on its first launch.
+
+Everything else in this document applies to a browser unchanged. Where a section says Windows and
+web are "not asked to draw" something yet, that is a statement about what has been BUILT, never a
+different protocol.
+
 ## Compatibility rules
 
 - Clients MUST ignore unknown JSON fields in any response, and unknown `type` values in any
@@ -28,6 +171,12 @@ disagree, this document wins; fix the code.
 - Every other endpoint (and the WebSocket upgrade) requires `Authorization: Bearer <token>`.
 - Sessions have a sliding expiry (default 180 days, refreshed by use). A `401` means the session
   is gone — the client wipes local state (keeping the server URL) and returns to login.
+- **Except `invalid_credentials`, which shares the status and not the meaning.** It is a password
+  that was wrong: at `POST /auth/login`, where there is no session yet, and as the proof
+  `POST /me/password` and `POST /me/delete` ask for, where the session that sent it is still live
+  and still this device's. A client tells the two apart by the `code`, never by the status alone —
+  one that signs somebody out for a mistyped current password, or tells them at the login form
+  that their session has expired, has read the status and not the answer.
 - A password change revokes sessions, which is what makes it useful for recovery rather than just
   hygiene: changing your own password ends every OTHER session you have, and an owner resetting a
   member's password ends ALL of theirs. Those devices find out the ordinary way — their next call
@@ -50,8 +199,10 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `cannot_remove_owner`, `cannot_dm_self`, `cannot_block_self`, `blocked`, `cannot_report_self`,
 `report_not_pending`, `not_same_family`, `user_not_found`, `chat_not_found`, `not_chat_member`,
 `message_empty`, `message_too_long`, `message_not_found`, `not_message_author`, `invalid_emoji`,
-`note_not_found`, `not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_language`,
+`note_not_found`, `not_note_author`, `invalid_note_color`, `invalid_note_size`,
+`invalid_note_font`, `invalid_note_kind`, `invalid_rsvp`, `invalid_task`, `invalid_language`,
 `board_full`, `invalid_pagination`, `device_not_found`, `invalid_poll`, `poll_closed`,
+`pictures_unavailable`,
 `calls_disabled`, `video_calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`,
 `peer_busy`, `peer_unreachable`, `avatar_too_large`, `invalid_image`, `attachment_too_large`,
 `invalid_attachment`, `attachment_not_found`, `attachment_expired`, `attachment_already_used`,
@@ -104,7 +255,7 @@ Member    {"id": 7, "username": "anna", "display_name": "Anna", "role": "owner|m
             name is the client's job, and may not be possible (see "Blocking a member")
 Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval|closed",
            "created_at": "…", "ai_history": true, "ai_vision": false,
-           "ai_history_photos": false}
+           "ai_history_photos": false, "ai_greeting": false, "ai_faces": false}
           — plus "invite_code": "ABCD2345" when (and only when) the caller is the owner
           — plus "max_members": 8 when (and only when) the owner has set a cap. ABSENT means
             the family has no cap of its own and only the operator's ceiling binds — absent is
@@ -136,6 +287,22 @@ Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval|closed",
             goes off. It does nothing unless "ai_history" is on and the server can see. A
             client that never heard of it reads an absent key as false, which is the truth
             for every family that predates it — see "Recent photos from the family chat"
+          — "ai_greeting" is ALWAYS present too, and defaults to FALSE. It says whether the
+            assistant may post one unprompted good-morning message a day into this family's
+            chat. It is INDEPENDENT of the three above — it neither reads them nor is read by
+            them — because it is not about what the family's own words and pictures may be
+            shown; it is about whether the assistant speaks at all when nobody asked. It does
+            nothing unless the OPERATOR has also turned greetings on for the server, so an
+            owner can leave it true on a server that never posts one, and a client shows it as
+            the family's answer rather than as a promise — see "The daily greeting"
+          — "ai_faces" is ALWAYS present too, and defaults to FALSE. A FIFTH switch, and the
+            fourth about disclosure: whether an @ai mention in the family chat may also be shown
+            the profile pictures of the members whose lines are in the transcript it sends. It
+            can only be true while "ai_vision" is true, exactly as "ai_history_photos" can, and
+            for the same reason; it does nothing unless "ai_history" is on, because a face
+            travels only for a name the model has been told. A client that never heard of it
+            reads an absent key as false, which is the truth for every family that predates it —
+            see "Profile pictures of members"
 JoinRequest {"id": 12, "user": {User}, "created_at": "…"}
 Report    {"id": 4, "reporter": {User}, "reported": {User},
            "reason": "spam|harassment|inappropriate|other", "created_at": "…"}
@@ -169,6 +336,23 @@ Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
             message has ever been reacted to. After the last reaction is removed the fields
             stay present with "reactions": [] — clients distinguish "cleared" from "no data".
           — plus "reply_to": {ReplyTo} when (and only when) the message is a reply.
+          — plus "thread_root_id": 38 when (and only when) the message is a reply: the id of the
+            TOP of its chain — the first message in its ancestry that is not itself a reply —
+            decided at send time from the quoted message's own root and never changed. Absent
+            once retention has swept that root (the FK is ON DELETE SET NULL, like the reply's
+            own) — see "Threads".
+          — plus "reply_count": 3 when (and only when) the message is the ROOT of a chain with
+            at least one reply in it: how many messages name it as their "thread_root_id",
+            recomputed on every read. Absent — never 0 — on a message nobody has answered and
+            on every reply that belongs to a chain, whose count belongs to its root. The one
+            message that can carry BOTH "reply_to" and "reply_count" is a reply whose root
+            retention has swept and that somebody has answered since: it heads the new chain.
+            Not filtered per reader — see "Threads". Neither field rides on "last_message"
+            previews or push payloads.
+          — plus "mentions": [Mention] when (and only when) the message names members — see
+            "Mentioning a member". Decided at send time from what the sender's client sent, in
+            the order sent, and never changed by an edit. Absent, never an empty array,
+            otherwise; and never on "last_message" previews or push payloads.
           — plus "edited_at": "…" and "edit_seq": 88 when (and only when) the body has been
             edited. Both absent on a message still in its original form.
           — plus "attachments": [Attachment] when the message carries photos, videos,
@@ -184,6 +368,9 @@ Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
             call. The body is then the English placeholder "Voice call" / "Missed voice
             call", which a client that knows the object never shows — see "Voice calls".
 ReplyTo   {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"}
+Mention   {"user_id": 9, "name": "Anna"}
+          — "name" is the display name AS TYPED into the body after the "@", so a client can
+            find the token to highlight without knowing what the member is called today
 Reaction  {"user_id": 9, "emoji": "❤️"}
 Attachment {"id": 34, "kind": "photo|video|audio|file|location", "mime": "image/jpeg",
             "size": 182734, "width": 1600, "height": 1200, "duration_ms": 8400,
@@ -219,13 +406,30 @@ IceServer {"urls": ["turn:turn.example.com:3478?transport=udp"],
            "username": "1756300000:7", "credential": "…"}
           — "username"/"credential" on a TURN server only, and only when the operator
             configured credentials; a STUN server is "urls" alone — see "Voice calls"
-Note      {"id": 12, "author_id": 7, "text": "Milk", "color": "yellow", "size": "medium",
-           "x": 0.42, "y": 0.13, "created_at": "…", "updated_at": "…", "board_seq": 88,
-           "content_seq": 84}
+Note      {"id": 12, "author_id": 7, "kind": "text", "text": "Milk", "color": "yellow",
+           "size": "medium", "font": "plain", "x": 0.42, "y": 0.13, "created_at": "…",
+           "updated_at": "…", "board_seq": 88, "content_seq": 84}
+          — plus "attachment": {Attachment} on a "photo" note, whose "text" is its caption
+            and may be empty
+          — plus "starts_at", optional "ends_at", optional "place", optional "attachment"
+            (the backdrop) and "rsvps": [{user_id, answer}] on an "event" note, whose
+            "text" is its title — see "Board"
+          — plus "items": [{id, text, done, done_by?}] on a "tasks" note, whose "text" is
+            the list's title; the items are in the author's order, "done_by" is whoever
+            ticked the item and is absent while it is not done — see "Board"
           — plus "deleted": true INSTEAD of the content fields on a tombstone; see "Board"
           — "content_seq" is the board_seq of the last change to what the note SAYS; a
-            move, a resize and a recolour leave it alone. It is what a badge counts, and
-            it is absent on a tombstone and from a server that predates it — see "Board"
+            move, a resize, a recolour and a change of font leave it alone. It is what a
+            badge counts, and it is absent on a tombstone and from a server that predates
+            it — see "Board"
+          — "font" is an INTENT, one of plain/serif/mono/casual, which each client draws
+            with a system face of its own. Always present on a live note; a reader that
+            finds it missing (an older server) draws the note plain, which is what every
+            note was before the field existed — see "Board"
+          — "kind" is "text", "photo", "event" or "tasks". Always present on a live note; a reader that
+            finds it missing (an older server) reads "text", which is what every note
+            was. A client that does not know a kind draws the note as a text one — see
+            "Board"
 ```
 
 **A body is plain text on the wire, and always has been.** No markup is parsed, transformed or
@@ -310,6 +514,103 @@ Every mutation of a message's reactions (set, replace, remove) takes the next va
 server-wide sequence and stamps it on the message as `reaction_seq`; each chat exposes the
 maximum such value over its messages as `max_reaction_seq` in `GET /chats`. Together they give
 clients a monotonic cursor for reaction catch-up, exactly as message ids drive `after_id`.
+
+#### Threads
+
+A reply is drawn where it was sent, and an exchange of six answers to one question is six bubbles
+scattered through an evening of other talk. So a chain of replies can be read on its own, **like
+iMessage**: replies stay in the scroll exactly as they are, a message that has been answered says
+so, and a tap opens the chain on a surface of its own, with a composer whose sends answer the
+original.
+
+**A chain is rooted at the top.** Every reply carries `thread_root_id`: the first message in its
+ancestry that is not itself a reply. Decided ONCE, at send time, from the quoted message — its own
+root when it is a reply, the quoted message itself when it is not — and STORED, unlike the quote,
+because a chain is read far more often than it is written and walking `reply_to` links on every
+read would need the whole ancestry in hand, which is the unbounded thing the two-level quote exists
+to avoid. So an answer to an answer to an answer is in the SAME thread as the question, not a
+thread of its own: a family arguing about dinner is one conversation however deep the quoting
+goes, which is how iMessage reads it and what "see the reply chain" asks for.
+
+**Retention.** `thread_root_id` is a foreign key `ON DELETE SET NULL`, exactly as the reply's own
+(migration 0012) and for the same reason — a reply is a message in its own right. When the root is
+swept the replies stay in the scroll, keep their quotes as far as those survive, and simply stop
+belonging to a chain: there is no root left to open one from. A reply whose PARENT was swept but
+whose root was not stays in the thread, because the chain is the root's and not the parent's.
+A chain is decided at send time and a sweep only ever REMOVES a root — but a message left without
+one is a root again for whatever answers it afterwards: the answer is rooted at it (the rule is
+"the quoted message's root, or the quoted message itself"), so a survivor that is answered heads a
+new chain and then carries both its own surviving `reply_to` and a `reply_count`. That is the one
+message that carries both, and it is the honest shape: the conversation went on from the oldest
+survivor. **Chains that predate threads** are decided ONCE, at the upgrade, from the surviving
+quote links — each reply walked up to the first message that is not one — so a reply whose parent
+or root had already been swept then heads a chain of its own, with whatever still quoted it under
+it. A one-time answer, and for a chain that straddled the retention cutoff at the upgrade a
+different one from what send-time would have said: it is what the surviving links can say.
+
+**The root says how many.** A message that is the root of a chain with at least one reply carries
+`reply_count`: how many messages name it as their root, recomputed on every read so a history page,
+a catch-up copy and the thread itself all agree. Absent — never 0 — on a message nobody has
+answered and on every reply, because a reply in the middle of a chain has no thread of its own to
+count. It is deliberately NOT filtered per reader: a blocked member's reply counts, exactly as
+their message is delivered and their poll is listed, because the hidden row has to have something
+to reveal and a count that differed per member would be a small oracle of who blocked whom.
+
+**Live.** A new reply's `message` frame carries its `thread_root_id`, and that is the whole live
+protocol: a client that holds the root raises the root's count by one on arrival — on the frame, or
+on the `after_id` catch-up that stands in for the frames missed while away, which by construction
+delivers only what is newer than everything the client holds, so a cached root's count cannot yet
+include it. THE ROOT ITSELF MAY BE NEWER THAN THAT, and then it is no longer cached: a root above
+the cursor the pass opened with arrives ON the pass, carrying a recomputed count that already holds
+every reply riding with it, so a client that also counted those replies would show twice what there
+is. So the catch-up raises the count of a root at or below the cursor the pass opened with, and of
+no other — and a first sync, whose cursor is 0 and which delivers a root and its replies together,
+is the ordinary case of that, not an exotic one. It showed "8 replies" under a message with four.
+Never on a history page, the edits catch-up or the thread read below: those deliver replies the
+root's own recomputed copy already includes, and a client that counted them would show two where
+there is one — the thread read in particular answers the root first, so the count it carries
+already holds every reply on the page, this client's own pending one included. Any server copy of
+the root — a page, the edits catch-up, the thread read — overwrites the count with the recomputed
+truth. The root's own frame is NOT re-sent: a sequence for "somebody answered this" would be a
+third cursor on every message, kept to carry a number a page corrects anyway. Retention lowering a
+count is not announced either. Which also says how fresh a cached count is: as fresh as the last
+copy of the root or the last reply that arrived, because no page re-delivers a root a client
+already holds; the thread read is what refreshes it, and a client may ask it whenever it opens the
+surface. And the thread read is no part of catch-up in a second sense: rows it fetches may sit
+outside the contiguous window a client holds — a root older than it, a reply newer — and a client
+must not move its paging cursors to them, or the next page would skip everything between.
+
+**Reading a chain:** `GET /chats/{id}/messages/{message_id}/thread` → `{messages: [Message]}` — the
+root first, then every reply in the chain, oldest first by id. The id named may be the root OR any
+reply in it: "View thread" on a reply in the middle of a chain must open the same thread as the
+affordance on the root does, and a client that has only the reply cached cannot know the root
+without asking. It answers whole `Message` objects for the reason "Finding the open ones" gives —
+every client already decodes exactly this shape — and a client applies the page through the same
+path as a page of history, which is what makes the chain complete even when it began before
+anything the client has cached. `after_id` pages it, strictly newer and oldest first, looped until
+a short page like every other oldest-first read; the root is the oldest message in its chain — a
+reply is always newer than what it quotes — so it rides exactly while it is newer than `after_id`.
+A plain read, not a cursor, no part of catch-up. A message that is neither a reply nor answered is
+a chain of one — asking is not an error. Access is the chat's, and the id must be a message in
+THIS chat: anything else is `message_not_found`, the same non-enumeration rule
+`reply_to_message_id` follows.
+
+**Answering from the thread.** A message sent from the thread surface is a reply to the ROOT,
+whatever the reader was looking at — the iMessage rule, and the one that keeps the root's count
+honest: a reply to the last reply would land in the same thread anyway, rooted at the top, but
+would quote a bubble the reader may not have been answering.
+
+**What a client shows**, all three clients: under a root that carries `reply_count`, a small
+"N replies" affordance in the language of the app, drawn with the message rather than as a bubble
+of its own; tapping it opens the chain on its own surface — the root at the top, the replies below
+it in order, a composer at the bottom. "View thread" is also offered on any reply in a chain. Rows
+on that surface draw exactly as they do in the chat — the same bubbles, the same quotes, the same
+hidden-row rule for a blocked member, the same reactions — because a second, simpler renderer is a
+second place for those rules to drift. The web client and Windows draw it too, as a panel beside the
+conversation rather than a sheet over it — a desktop window has the width for both, and the chat
+stays readable while the chain is open. Both keep the chain's rows OUT of the cached window unless
+that window already holds them, folding in only the copies of rows it does (their recomputed count
+and any edit), for the paging-cursor reason above.
 
 ### Editing
 
@@ -410,6 +711,64 @@ A poll dies with its message and nothing has to remember to take it: the retenti
 chat going, and a member deleting their account all remove messages, and the poll, its options and
 its votes go with them.
 
+#### Finding the open ones
+
+A poll is a message, which is what makes it cheap — and also what loses it. It is drawn where it was
+sent, in the scroll, and once a family has talked past it there is no way back but scrolling. A
+decision nobody can find is a decision nobody makes.
+
+So a chat can be asked for its **open polls**, as they stand:
+
+`GET /chats/{id}/polls/open` → `{messages: [Message]}`
+
+**It returns MESSAGES, not polls**, and that is the whole design. The question is the message body,
+so a list of bare `Poll` objects would draw vote buttons with nothing above them, and a client would
+then have to find each message in a history it may never have paged back to. Returning the message
+carries the question, the author, the timestamp, the reactions and the attachments — and needs no
+new object, because every client already decodes exactly this shape with a `poll` inside it. A
+client that has never heard of this endpoint loses a screen and nothing else.
+
+Ordered **oldest first, by message id**: creation order, and stable. NOT by `poll_seq`, which is the
+sequence of the last CHANGE — ordering by that would reshuffle the list under a reader every time
+anybody voted, which is the one thing a list of things still to decide must not do.
+
+It is a plain read and **not a cursor**. It takes no `after_seq`, it moves no chat cursor, and it is
+no part of catch-up: `GET /chats/{id}/polls?after_seq=` remains the only feed of poll changes and
+remains what a client syncs against. This answers a different question — "what is still open right
+now" — and a client may ask it whenever it opens the surface that shows them.
+
+Paging is the ordinary `limit` (the server's default and maximum page sizes) with no cursor. A
+family with more open polls than one page has a larger problem than pagination, and the honest shape
+for "there are a great many" is a page, not an endless scroll of undecided questions.
+
+Closed polls are absent. A closed poll is a result, and a result belongs in the scroll where it
+happened rather than on a list of things still to do.
+
+Access is the chat's, exactly as every other poll route: `chat_not_found` (404) for a chat this
+caller cannot see, `not_chat_member` (403) for one they are not in. Polls exist only in the family
+chat, so on any other chat this correctly answers an empty list rather than an error — there is
+nothing wrong with asking.
+
+**A blocked member's poll is a hidden row here too.** "Blocking a member" hides a blocked sender's
+messages behind a placeholder on every surface that draws a body — the thread, the chat-list preview,
+a reply's quote — and this surface draws bodies, so the same rule applies unchanged: a poll whose
+sender the reader has blocked draws the placeholder and the timestamp and nothing else — no question,
+no name, no options — and reveals on the same one tap, per row, per device, never on the wire. It
+does **not** count toward any badge the client draws: a badge is a claim that there is something for
+the reader to answer, and a question they have chosen not to see is not one. Both are the client's
+own rule, as every block rule is; the endpoint itself projects nothing per caller, exactly as
+`GET /chats/{id}/messages` does not.
+
+**What a client does with it.** It is a surface of its own, reached from the family chat, and not a
+banner in the scroll: a thread is a bounded render window, and a strip inserted above it moves the
+geometry the opening unread anchor was already decided against. Whether to badge the entry point is
+the client's business, but the useful number is **how many open polls this reader has not voted
+in**, which is derivable from the `votes` lists already on every poll and needs no server field. It
+is the same rule as "did I vote", for the same reason: a value that depends on who is reading cannot
+travel on a frame serialised once for everybody. It also self-clears when they vote, which a count
+of all open polls would not.
+
+
 ### Board
 
 Each family has exactly one board: a wall of sticker notes anyone in the family can add to and
@@ -504,6 +863,81 @@ rejected — a drag that ends past the edge should stick to the edge, not fail. 
 `yellow`, `pink`, `blue`, `green`, `orange`, `purple`; anything else is `invalid_note_color`.
 `text` is trimmed, non-empty and at most 280 characters.
 
+**A note may NAME MEMBERS**, and it works the way a message's mentions do
+(see "Mentioning a member"): `mentions: [{user_id, name}]` rides on the note and the `@name` is
+drawn highlighted in its text. Where the tap goes is the one thing that differs: **on the sticker
+the name is a highlight and nothing more, and it is tappable in the note somebody has OPENED.** A
+sticker's whole face is a drag handle and a tap on it opens the note; a name that took that tap
+would make a wall hard to tidy and a note hard to read, for the sake of a door that is one tap
+further on anyway. A name is a door only where there is somebody to open it with, which is the
+composer's own rule read the other way: **the reader's own name, a member they have blocked, and a
+member who has left or deleted their account are highlighted like any other and simply do not
+open** — the same set a client offers while an `@` is being typed. The same grammar decides what counts — the whole name at a boundary — and the same limits apply: at most 20 names on
+a note, each a member of THIS family, each named at most once, and each `name` a name the text
+actually says after an `@`. Anything else is `validation`.
+
+Three differences from a message, each for a reason:
+
+- **The list is re-decided on every EDIT.** A message fixes its list at send because a list that
+  could be rewritten would be a way to wake somebody twice; an edit to a note notifies nobody at
+  all (only creation does — see above), so re-reading the names off the new text cannot wake
+  anyone. A note is a living thing on a wall: an author who rewrites it to name somebody else
+  should get a note that names them. Omitting `mentions` from a `PATCH` that changes `text` clears
+  the list, exactly as it clears nothing else — the names are part of what the note says.
+- **Only CREATION notifies**, as with any note, and a named member's devices get the title
+  `"<Family> — <Author> mentioned you"` instead of `"<Family> — <Author>"`. The body is the note's
+  text or `"New note"`, under the same `include_message_body` switch. One push per device either
+  way: naming somebody does not add a second notification, it changes the title of the one that was
+  already going.
+- **`@ai` in a note is just text.** The assistant does not read the board — its two doors are its
+  own chat and a mention in the family chat — so a client draws no assistant token on a note and
+  the server acts on none. A member called by a name that happens to be `ai` is still a member
+  mention like any other, because that is decided by the roster and not by the token.
+
+A mention is drawn on every kind: a text note, a photo note's caption, an event's title. Blocking
+is unchanged — a hidden note's text is hidden, names included, and the placeholder says nothing
+about who it names.
+
+**The wall is TALLER than the window, and it scrolls.** `x` and `y` stay fractions of the WALL, so
+a note keeps its relative place; what changes is that the wall is not one screenful. A wall the size
+of the window is a wall that fills up, and a family whose wall is full has to delete something to
+say something. How much taller is each client's own, the way every other dimension here is — but
+the four use the same factor (`fc_text::board::WALL_SCREENS`), so a note two thirds of the way down
+is two thirds of the way down on the phone and on the Mac. Nothing about this is on the wire: a
+server that has never heard of scrolling sends the same fractions, and a client that does not scroll
+draws the same wall squashed, which is what every client did before.
+
+**A PHOTO with no caption is drawn as the bare picture** — no sticker behind it, no author line
+under it. A caption brings the card back: the words need paper to sit on, and the photo then shares
+the sticker with them, as it does today. This is a drawing rule and not a wire one, but it is
+written down because all four clients must agree — a wall where one device shows framed pictures and
+another bare ones is not the same wall. What the reader loses on a bare photo is the author's name,
+which is in the note when they open it, and nothing else: the pin, the tilt, the slot and the tap
+are the same.
+
+**A PHOTO IS DRAWN WHOLE.** A picture on the wall is FITTED into the space the note gives it — in
+both dimensions — and never cropped to fill it. Fitting the width alone and letting the height spill
+over the edge is what a picture box does by default in most toolkits, and it is wrong for the
+photograph a family actually pins: a portrait shot from a phone loses more than half its height, and
+the faces go with it. So the picture keeps its own proportions, sits centred in the space it is
+given, and whatever is left over shows what is behind it — a tall photo is drawn narrow, a wide one
+short. A BARE photo's space is the WHOLE note, so the note's box becomes the picture: it hugs the
+fitted photograph from the corner the fraction names, and the pin sits on the picture rather than
+over bare wall. A CAPTIONED one is fitted into the part of the sticker above the words, with the
+paper showing around it. A picture whose dimensions the server never recorded — an older row, an
+upload that lost them — is fitted into the whole space and centred there, which costs a margin and
+never a crop. Like the bare picture this is a drawing rule and not a wire one, and it is written
+down for the same reason — a wall where one device shows the whole photograph and another the middle
+third of it is not the same wall. Opening the note is not a second chance to see it either: the
+picture in the opened note is fitted too, and a photograph cropped on the wall is a photograph the
+family never knew was there.
+
+**The pin and the ground are the client's own.** A note may be drawn with a pin through it and the
+wall may have paper or cork behind it; both are decoration, neither is on the wire, and a client
+that draws neither is not wrong. They are mentioned here only so that nobody adds a `pin` field:
+where a pin sits is not a fact about the note, and a family that could choose one would be choosing
+per platform anyway.
+
 **A note has a size**, so the thing that matters this week can be made big enough to read from
 across the room and a passing remark can stay small. `size` is one of `small`, `medium`, `large`;
 anything else is `invalid_note_size`, and a note created without one is `medium` — the size every
@@ -517,6 +951,247 @@ speaks is the writer's call, and a size anyone could change is a size anyone cou
 nothing. Resizing takes a `board_seq` like any other mutation and does not notify, like a move —
 and, like a move, it leaves `content_seq` alone and raises no badge: a note that got bigger is not
 a note with something new in it.
+
+**A note has a KIND.** `kind` is `text`, `photo`, `event` or `tasks`; anything else is
+`invalid_note_kind`, and a
+note created without one is `text` — what every note on every wall was before the field existed. A
+`photo` note is a picture pinned to the wall, and it is a NOTE in every other respect: it takes a
+slot and a position anyone may move, it counts against the same ceiling, it rides the same change
+feed and the same `board_seq`, a block hides it the same way, and only its author may change or
+remove it. There is no second board and no second cursor, because a photo on the family's wall is
+not a different wall — and the same is true of an event.
+
+A photo note carries `attachment: {Attachment}` — a picture this caller uploaded and no message or
+note has claimed, named as `attachment_id` when the note is created. It must be a `photo`: a wall
+pins pictures, and a video or a voice message on a corkboard is a thing to play rather than a thing
+to look at (`invalid_attachment` otherwise). One picture per note; a set belongs in a message.
+The attachment is READABLE BY EVERY MEMBER of the family whose board holds it, which is a second
+way in beside chat membership — a board note belongs to no chat, and without it the family would
+see a wall of pictures none of them could fetch. A block never narrows that: the frame is not
+suppressed, only the push, exactly as in the family chat, and the hidden note reveals on one tap
+like any other.
+
+`text` on a photo note is its CAPTION and may be empty, the same relaxation a message carrying an
+attachment gets; on a `text` note it is required as before. The server always sends `text` on a
+live note, so a client that has never heard of `kind` draws a photo note as an ordinary sticker
+with its caption — and a caption-less one as a blank sticker in the right place. That is
+deliberate: the slot is the family's shared layout, and a hole in it would be worse than a blank
+while somebody's phone waits for an update.
+
+**An EVENT is the third kind**: something the family is doing, pinned where the family looks. Its
+`text` is the TITLE and is required, as a text note's is. It carries `starts_at` (RFC3339,
+required), an optional `ends_at` that may not be earlier, an optional `place` of at most 200
+characters, an optional picture behind it — claimed exactly as a photo note's is, and drawn as a
+backdrop rather than as the content — and `rsvps`, who is planning to come.
+
+`rsvps` is a list of `{user_id, answer}` with `answer` one of `going`, `maybe`, `no`. It is present
+on every event, `[]` when nobody has answered. ANYONE in the family may answer, and answering is
+not authorship: it is the same shared act as moving a note, for the same reason — an event is the
+family's, and a plan only one person may record is not a plan. One answer per member, replaced
+rather than added to, and retractable. The author's own answer is not assumed: somebody may pin an
+event they are not sure they can make.
+
+An answer takes a `board_seq` like every other change, so it reaches the other devices through the
+one feed. It does NOT notify and it leaves `content_seq` alone: the event says exactly what it said
+before, and a badge claiming there is something to READ would be a lie — the same rule a move, a
+resize, a recolour and a change of font follow. Clients draw who is coming on the card itself,
+which is where that news belongs.
+
+There is no calendar on this wire and no `.ics`. A client that can put an event in the system
+calendar builds it locally out of the title, the times and the place; the server neither generates
+one nor knows whether anybody kept it. That is deliberate — a calendar entry is a copy, and a copy
+the server maintained would be a second source of truth for something the family already has. Every
+client SHOULD offer it where the platform has somewhere to put it — the system calendar on a phone
+or a Mac, a downloaded `.ics` built in the browser on the web — and a client that cannot simply
+does not show the action. What it copies is the title, the start, the end and the place, and
+nothing else: not who is coming, which is the family's business and not the calendar's, and not the
+backdrop.
+
+**WHO IS COMING is a list once the event is OPEN, and a number on the sticker.** A card has room
+for the news and the note has room for the people, which is the same division the mention rule
+makes: the wall says how many are going and maybe, and the opened event names them — grouped by
+answer, in the roster's own order, with the reader among them if they have answered. Nothing new is
+on the wire for it: `rsvps` already carries the ids, names come from the roster as every other name
+does, and a member who has since left resolves exactly as their old messages do. A member who has
+not answered is not in any group; "nobody has answered yet" is a sentence, not an empty list of
+names.
+
+**An event is drawn as a CALENDAR ENTRY**, on the sticker and in the note: the date as a block — the
+day's number over its short month — and the time beside it, then the place under that, then the
+title. This is a drawing rule and not a wire one, and it is written down for the reason the bare
+photo is: a wall where one device shows a calendar page and another a paragraph of small print is
+not the same wall. A past event keeps its slot and its block, drawn quieter, exactly as before: the
+wall is the family's and clearing it is their call.
+
+**THE ASSISTANT CAN DRAW AN EVENT'S BACKDROP.** `POST /families/mine/board/notes/{id}/backdrop`
+asks the family's assistant for a picture to sit behind an event, and answers with the note that
+now carries it. The AUTHOR only, and an event only: the backdrop is part of what the note looks
+like, which is the author's, and the other kinds have nowhere to put one (a photo note IS its
+picture).
+
+**What leaves the server is the note's TITLE and nothing else** — not the place, not the times, not
+who is coming, not the family's history, not a language instruction. That is the `/draw` rule
+applied unchanged (see "Pictures"), and it is why this takes no prompt from the client: a request
+body would be a second way to send words to a model from a screen that is not the assistant's chat,
+and the words on the sticker are the ones the family already chose to put on their wall.
+
+It needs a server with an images deployment, which is the same `assistant.images` that `GET
+/families/mine` already reports, and which is what a client hangs the action on; a server without
+one answers `pictures_unavailable` (403) rather than drawing nothing. The picture is an ORDINARY
+attachment afterwards in every respect — claimed by that one note, served to the family, counted in
+statistics, swept with the note — and it is made the way a `/draw` picture is, by the server's own
+process with no upload and nobody to authenticate.
+
+Asking again REPLACES it: the note's picture is otherwise fixed at creation, and this is the one
+exception, because a family who dislikes what the model drew should not have to take the event down
+and lose the answers to get another one. The picture it replaces goes the way a deleted note's
+does — its row and its bytes — so an event holds one backdrop or none.
+
+**A BACKDROP IS DRAWN, AND IT FILLS ITS CARD.** It is the one picture on this wall that is NOT
+drawn whole: a backdrop is the note's GROUND — it stands in for the paper the event's card would
+otherwise be — so it covers the card, cropped to the card's shape, with the words over it and
+enough of a scrim under them that the ink stays readable. "A PHOTO IS DRAWN WHOLE" above is about a
+picture that IS the content, which somebody chose and pinned; this is decoration a model drew to sit
+behind words, and a letterboxed backdrop with paper showing around it would read as neither one
+thing nor the other. An event with no backdrop keeps its colour, exactly as it always did.
+
+It is drawn on the STICKER and in the opened note, for the reason every other drawing rule here is
+written down: a wall where one device shows the picture the family asked for and another shows a
+plain card is not the same wall. The two are not the same shape, and deliberately: on the sticker it
+is the GROUND, under the words; in the opened note it is a BANNER above them, because a screen of
+fields needs its own paper and because that is where the author who just asked for it wants to see
+it at a size worth looking at. And because asking again replaces the picture with a NEW
+attachment, a client that caches bytes by attachment id shows the new one without being told to
+drop anything — but a client that caches by NOTE must invalidate, or a redraw looks like nothing
+happening, which is exactly how this was found.
+
+It costs a picture and says so: one image against the family's count, with no tokens, exactly as a
+`/draw` does (see "Family statistics"). It takes a `board_seq` and reaches the other devices through
+the one feed, it does NOT notify — only creation notifies, and nobody should be woken because an
+event got a picture — and it leaves `content_seq` alone: the note says exactly what it said, and a
+badge claiming there is something to READ would be a lie.
+
+**A TASK LIST is the fourth kind**: something the family has to get done, on the wall where the
+family looks. Its `text` is the list's TITLE and is required, as an event's is, and it carries
+`items` — the things to do.
+
+`items` is a list of `{id, text, done, done_by?}`, in the author's order, present on every `tasks`
+note and `[]` on one whose author has not written anything into it yet (pinning "Saturday" and
+filling it in later is exactly how a list gets made). `id` is the SERVER's, stable for the life of
+the item, and it is what a tick refers to — a position would move under somebody's finger the
+moment the author inserted a line above it. `text` is trimmed, non-empty and at most 100
+characters; a list holds at most 20 items (`max_task_items`), and over either is `validation`.
+`done_by` is whoever ticked the item, and is absent while the item is not done.
+
+**The author writes the list; anyone ticks it.** This is the same split as an event's, for the same
+reason: a chore list only one person may tick is not a list the family can use, and a list anyone
+may rewrite is not the author's note. So `items` on a `POST` or a `PATCH` is the AUTHOR's — it
+REPLACES the list, which is how an item is added, rewritten, reordered or removed — and ticking is
+its own request that any member may send.
+
+A replacement carries back the ids it wants to keep: `items: [{id?, text}]`, where an entry with an
+`id` the note already holds is that item, rewritten and moved to wherever it now sits, and an entry
+without one is a new item. An item the author leaves out is gone. REORDERING is therefore on the
+wire — the order sent is the order kept — though no client offers it yet: today a list is written
+in the order it was typed, and an author who wants a different one rewrites the lines. **An item
+that keeps its id keeps
+its tick**, which is the whole point of sending ids at all: fixing a typo in "Bred" must not
+untick it and must not tell the family that nobody bought the bread. An `id` that is not this
+note's is `validation` — a client sending somebody else's item id has a bug, and silently treating
+it as new would hide it. A `done` sent here is IGNORED, the way every unknown field on this wire
+is: ticking is not authorship, and an author who could set it in a rewrite could untick what
+another member ticked without ever being the one to say so.
+
+A tick is `PUT /families/mine/board/notes/{id}/tasks/{item_id}` with `{done}` — an idempotent
+state-set, not a toggle, for exactly the reason the RSVP is one: two phones tapping the same item
+must not undo each other, and a client that has been offline is asking for a state rather than for
+a flip. Re-sending the state the item already holds is a no-op: no new seq, no fan-out.
+
+A tick takes a `board_seq` like every other change, so it reaches the other devices through the one
+feed. It does NOT notify and it leaves `content_seq` alone — the list says exactly what it said
+before, and a badge claiming there is something to READ would be a lie, the same rule an answer, a
+move, a resize, a recolour and a change of font follow. The author's own changes to `items` DO move
+`content_seq`, because they are what the note says: a line added to the shopping list is something
+to read, and it is the one thing on a task list worth a badge.
+
+`done_by` keeps the member's id, not their name, and it keeps it after they leave: a name comes
+from the roster like every other name on this wire, and a former member's resolves the way it does
+everywhere else. Ticking is not authorship, so an item ticked by somebody who has since left stays
+ticked — the milk was still bought.
+
+Mentions on a task list are read from its `text`, like any note's, and NOT from the items. The
+names rule is about what the note says in its own words; scanning twenty lines for names would
+make one note a way to wake the family twenty times, and the title is where a list says who it is
+for.
+
+**The sticker SHOWS what is done; the tick happens where the note is OPEN.** This is a drawing
+rule and not a wire one, but all four clients must agree about it for the same reason they agree
+about the bare photo: a sticker's whole face is a drag handle, and a row of small boxes on it would
+be a wall nobody could tidy — a tap would tick when it meant to move. So the wall draws the lines
+with their state, struck through or ticked, and the tap that ticks is one tap further on: in the
+note a member has opened, or — on a platform where a reader cannot open somebody else's note — in
+the sticker's own menu, beside the event's "Are you coming?", which is there for exactly this
+reason. Ticking is the shared act, so it must be reachable by every member on every client, and
+never only by the author.
+
+A sticker draws **at most the first five lines**, and then how many more there are
+(`fc_text::board::WALL_TASK_LINES`); the note itself has all of them. One number rather than "as
+many as fit" for the reason the wall's height is one factor: a list that ran to a different point
+on the phone and on the Mac would be a different list, and the type-fitting rule already scales
+what is drawn until it is inside the card. A list of five or fewer says nothing extra.
+
+A client that has never heard of `tasks` draws it as a text note with its title, which is the
+forgiveness `kind` already promises — the slot is the family's shared layout, and a hole in it
+would be worse than a sticker that says "Saturday" and nothing else.
+
+Deleting a photo note takes its picture with it. The note tombstones as any note does, and the
+attachment row and its bytes go — there is nothing left that could show them, and a picture no
+note points at is exactly what the unclaimed sweep exists to remove.
+
+**A note has a FONT**, because handwriting on a wall is part of what it says. `font` is one of
+`plain`, `serif`, `mono`, `casual`; anything else is `invalid_note_font`, and a note created
+without one is `plain` — the face every note had before the field existed, so nothing already on a
+wall changed when it arrived. It belongs to the AUTHOR, with text, colour and size.
+
+It is an INTENT, not a typeface. The wire never carries a family name, a weight or a point size:
+`plain` is the client's own interface face, `serif` the one with the strokes, `mono` the one whose
+letters all take the same width, and `casual` the most informal face the platform has to hand. Each
+client resolves those to real faces of its own, exactly as it resolves `large` to real points and
+`blue` to a real pastel — and for the same reason, since a family name on the wire would name a
+font one platform has and another does not, and would leave a note unreadable on the phone it was
+not written on. The four are the intents every platform can honour with a system face; nothing
+here is downloaded and nothing is bundled.
+
+`casual` is the one that looks most different between platforms, and deliberately so: it is
+whatever that system offers as its friendly face rather than a promise that two devices draw the
+same curves. A family choosing it is asking for "not the plain one", which is a thing every
+platform can keep.
+
+A font change is like a colour change and unlike an edit: it takes a `board_seq`, it does not
+notify, and it leaves `content_seq` where it was. Changing the face a note is written in does not
+change what the note says, so it raises no badge.
+
+**The text FITS the note.** A sticker shows all of what it says: a client scales the type down
+until the whole text is inside the note rather than cutting it off at a fixed number of lines. A
+note is a thing read at a glance from across a room, and a note that ends in an ellipsis is a note
+whose point may be the part nobody can see — the reader cannot even tell whether what is missing
+matters. Scaling has a FLOOR, because type small enough to be unreadable communicates no better
+than a cut: below it the text is truncated as before, and that is the one case a reader has to open
+the note for. The floor and the step from it up to the size's own type are each client's to choose,
+like every other dimension here.
+
+This is what the 280-character cap is for. It is not a storage limit — it is the number that lets
+the smallest sticker hold the longest note at a size a person can still read, so "the text fits"
+is a promise the wall can actually keep rather than an aspiration that fails on the one note that
+matters. A client refuses a longer text where the author is typing it, so the refusal arrives as a
+full field rather than as a rejected save.
+
+The size a note is drawn at stays the AUTHOR'S STEP and is never chosen for them by the length of
+what they wrote. A note that grew itself would move its neighbours around the wall on every edit,
+and the wall's layout is the family's shared work. What the author gets instead is the consequence
+made visible while they write: an editor shows the sticker as it will appear, at its real size and
+with its type already fitted, so picking `large` is a choice with a result in front of them rather
+than a name.
 
 Every board mutation — create, edit, move, delete — takes the next value of a third server-wide
 sequence and stamps it on the note as `board_seq`, with the family exposing its maximum as
@@ -532,6 +1207,44 @@ reaction feed carries a message's full reaction state rather than a delta.
 the change feed as `{"id": 12, "deleted": true, "board_seq": 91}` with no content. Without that a
 client who was offline when a note was removed would go on showing it forever — there is no other
 signal that it is gone. The full-board read never returns tombstones; only the change feed does.
+
+**A full read REPLACES what a client holds.** Because it never returns tombstones, a note the read
+did not return is a note that is gone, and a client that merely applied the notes it was given
+would keep drawing every note deleted while it was not listening — for as long as it kept its
+cache, since nothing else will ever mention that note again. So a client drops every note it holds
+that the read did not return, with one exception: a note held at a `board_seq` ABOVE the read's
+`max_board_seq` arrived after the read was taken — in a frame, or in the answer to the client's
+own change — and it stays. And because note ids are never reused, a note a client has seen deleted
+— by a tombstone, by a full read that left it out, or by its own `DELETE` — is never brought back by
+an older copy of itself arriving late, from a page, a frame or a reply that was already in flight.
+Two full reads in flight at once can land in either order, and an older one landing second must
+change nothing: a client ignores a full read whose `max_board_seq` is below one it has already
+applied.
+
+`max_board_seq` is read BEFORE the notes it accompanies, and the server makes a family's board
+changes COMMIT IN `board_seq` ORDER — it takes the family's row before drawing a seq and holds it to
+the commit, so a change can never become visible after a later one. Together those make the mark a
+promise: every change at or below it is in the notes that come with it, and a change the notes
+already show may be above it. A client that sets its cursor to the mark may therefore read a change
+twice, which the per-note guard makes harmless, and never skips one. Without both halves a note
+deleted between the two reads — or whose tombstone's seq was drawn before a later change committed
+— came back live beside a mark already past its tombstone, and no catch-up would ever fetch it.
+
+**The board cursor moves in three ways and no others**: a full read sets it to its
+`max_board_seq`, a catch-up page to the highest `board_seq` on the page, and a frame to its own
+`board_seq` — the frame only once this connection has caught up, since a frame that jumped the
+cursor before the catch-up read it would have the catch-up start past everything it was there to
+fetch. The note in the answer to a client's own create, edit, move or RSVP is NOT one of them, for
+exactly the reason a reply moves no chat cursor (see "Semantics"): it is applied under the per-note
+guard like any other copy, and it is evidence about that one note and none at all about another
+note's lower `board_seq`. REST goes on working while the socket is down, which is precisely when the
+frames carrying those lower values were missed: a move answered with `board_seq` 100 would carry the
+cursor past somebody else's 99, and the next catch-up would ask only for what came after it.
+
+**`board_full` is said to the person.** A wall at its ceiling refuses a new note with `409
+board_full`, and a client tells whoever was pinning it that the board is full, and leaves what they
+wrote where they can keep it — the ceiling is the family's, and a note that silently did not appear
+is a note its author will assume everyone has read.
 
 ### Starting a family
 
@@ -628,8 +1341,9 @@ matters, because `/me` is what a client bootstraps from.
 
 What it is FOR, today, is one thing: the assistant answers in it when it is asked in the family
 chat (see "Mentioning the assistant in the family chat"). It is deliberately NOT a display
-language — clients go on drawing their interface in whatever the device is set to, and a family
-setting that silently re-languaged somebody's phone would be a surprise nobody asked for. It is
+language — clients go on drawing their interface in whatever the device is set to, a browser in
+whatever it asks for (see "A browser is a client too"), and a family setting that silently
+re-languaged somebody's phone would be a surprise nobody asked for. It is
 also deliberately not applied to a member's private assistant thread, for the reason given there.
 
 ### Birthdays
@@ -740,7 +1454,9 @@ real user id and every foreign key, join and index over messages keeps working u
 in the `members` roster (`GET /families/mine` selects by family, and the assistant has none) and the
 username is refused at registration so nobody can impersonate it. It cannot be messaged directly:
 `POST /chats/direct` naming it answers `not_same_family`, because it is in no family. The only two
-ways to reach it are its own `ai` chat and a mention in the family chat.
+ways to reach it are its own `ai` chat and a mention in the family chat. Those are the two ways to
+*reach* it; there is one thing it says without being reached, and it is deliberately not a reply to
+anybody — see "The daily greeting".
 
 **The reserved account is permanent.** Being an ordinary `users` row is what keeps every foreign
 key working, and it is also what puts the row within reach of anything that removes users — so
@@ -758,11 +1474,21 @@ assistant outright when the server has one:
 
 ```json
 "assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai",
-              "draw": "/draw", "vision": true, "images": true}
+              "draw": "/draw", "vision": true, "images": true,
+              "processor": "Microsoft — Azure OpenAI (Sweden Central)"}
 ```
 
 `draw`, `vision` and `images` are about pictures and are described under "Pictures" below; the
 first three keys are the whole of what the family chat needs to name the assistant and offer `@ai`.
+
+**`processor` names who actually answers**, in the operator's own words, and a client must show it
+before anybody's words leave the family — see "Consenting to the assistant" below. It is
+`[ai] processor` in the server's config, free text up to 200 characters, and it is **required for
+the assistant to be offered at all**: a server with `[ai] enabled` and no `processor` advertises no
+`assistant` object, exactly as an unconfigured one does. That is deliberate and it is not a
+validation nicety. This product is self-hosted, so only the operator knows whose model the
+deployment points at, and an app that cannot say who receives a message must not send it — a rule
+Apple states outright in guideline 5.1.2(i) and one this protocol would want anyway.
 
 The field is **absent when the server is not configured for an assistant**, and that absence is the
 whole of the capability check: a client with no `assistant` must not offer `@ai` in the composer,
@@ -800,7 +1526,145 @@ The feature is OFF unless the server is configured for it (`[ai] enabled`, an en
 and a key). A server without it simply never creates the chat, and `POST` to one that does not exist
 is the usual `chat_not_found`.
 
-#### Mentioning the assistant in the family chat
+#### Consenting to the assistant
+
+**Nothing a member writes reaches the model until that member has said yes, once, knowing what is
+sent and who receives it.** The assistant is the only place in this product where a person's words
+leave the server they chose, so it is the only place that asks.
+
+The consent is the MEMBER's and never the owner's. `ai_history` and `ai_vision` are the owner's
+switches over what the family's chat exposes; they are not permission from the people whose words
+that history is made of, and a switch one person flips cannot speak for another.
+
+**What a client must say before it asks**, and it must say all of it on the screen where the
+person answers rather than only in a policy: the message they write goes to `processor`; in the
+family chat a mention takes the last 30 days or 200 messages with it when `ai_history` is on,
+including other members' words, display names and timestamps, and only the mention itself when it
+is off; a photo goes only where "Pictures" says it does, and only while `ai_vision` is on; and the
+answer comes back as a message in the chat. A client that cannot name `processor` does not offer
+the assistant at all, so there is no screen to write.
+
+**Recorded on the server, not on the device.** `GET /me` carries `assistant_consent_at`, a
+timestamp or null, and `POST /me/assistant-consent` sets it. Server-side for three reasons: the
+SERVER is what calls the model, so it is the only place a refusal cannot be bypassed by a client
+that forgot; a reinstall must not quietly re-ask and re-send; and a member who agreed on their
+phone has agreed, not agreed-on-that-phone.
+
+**Withdrawable, and withdrawal is not deletion.** `{"granted": false}` clears the timestamp and the
+assistant stops working for that member immediately. What was already sent cannot be recalled, and
+a client must not pretend otherwise: the sentence to show is that nothing further will be sent.
+Their existing `ai` chat and its history stay where they are — deleting a conversation nobody asked
+to lose would be its own surprise — and consenting again resumes from there.
+
+**Without consent the server refuses**, and refuses the same way everywhere it would otherwise
+call the model: a message to an `ai` chat, an `@ai` mention in the family chat, a picture for it to
+look at, a `/draw`. The answer is `assistant_consent_required` (403). It is a REFUSAL and not a
+silent drop, because a message that vanishes is a bug report; the client shows the consent screen
+and offers to send again.
+
+**`ai_history` carries only the words of members who have consented.** This is the half that is
+easy to miss and the one that matters most: a member who declined still writes in the family chat,
+and somebody else's `@ai` would otherwise send those words to the model. The server filters the
+history it builds by each sender's own consent, so declining protects that member's words wherever
+they are, not only when they are the one asking. Messages left out are left out silently — the
+model is told nothing about them, because "three messages were withheld" is itself information
+about who declined.
+
+**The daily greeting needs no consent** and asks for none: its prompt is a fixed instruction plus
+the star signs of the family's stored birthdays, with no name, no message and nothing anybody
+wrote. It is the one thing the assistant sends that is not made of somebody's words.
+
+#### Mentioning a member
+
+Writing **`@Anna`** in the family chat calls Anna's attention to a message in front of everyone —
+the way a group chat on any phone does it, and the one thing a family chat cannot do with a
+reply, which points at a message rather than at a person. A mention is three things and nothing
+more: a highlighted name in the bubble, a notification to the person named that says so, and a
+mark on their chat row until they have read it.
+
+**It is a list on the message, sent by the client.** `POST /chats/{id}/messages` and the `send`
+frame take `mentions: [{user_id, name}]`; the message then carries `"mentions": [Mention]`, in the
+order sent. The server does NOT parse the body for member names: a family of twelve has names that
+prefix each other, contain spaces and change, and a server guessing which `@Ann` meant which member
+is a server guessing at who gets woken. What the client resolved from the roster while the sender
+typed is the answer, and `name` is that name AS TYPED — so a client can find the token in the body
+to highlight it without knowing what the member is called today, and an old body goes on
+highlighting the name the sender used. A client that never heard of the field shows the plain text
+and loses only the highlight.
+
+**What the server checks, and refuses as `validation`:**
+
+- the chat is the FAMILY chat. A one-to-one chat has nobody else to name, and the assistant thread
+  is the assistant's;
+- every `user_id` is a member of this family now — never the assistant, whose `@ai` is its own
+  grammar (see "Mentioning the assistant in the family chat") and is untouched by any of this;
+  never somebody who has left; never a deleted account. The sender may name themself; it pushes
+  nobody and marks nothing;
+- no `user_id` twice, and at most **20** on one message;
+- `name` is non-empty, at most 64 characters, and the body contains **`@` followed by exactly that
+  name**, ending at a boundary — the assistant grammar's rule (a letter, digit or underscore after
+  it means it is a longer word): a mention nobody typed is a push nobody meant.
+
+Nothing is checked about blocks, deliberately: mentioning a member who has blocked you is ACCEPTED
+and then does nothing for them — it neither pushes them nor marks their row — because a refusal
+would tell the blocked person who blocked them, which is the one thing a block must never do (see
+"Blocking a member"). Mentioning somebody you have blocked is accepted too; the composer simply
+does not offer them.
+
+**Decided once.** Like a reply, the list is fixed at send time. An edit changes the body alone
+(see "Editing"): a body edited so that it no longer says `@Anna` has no highlight to draw and the
+list stays as it was — the notification has already gone, and a list that could be rewritten
+would be a way to wake somebody twice. Retention takes the list with the message.
+
+**Told, image by name.** A client draws each mention's `@name` in the body — found with the same
+boundary rule the assistant's token uses, over the text as drawn — highlighted like `@ai` and
+**tappable**: a tap opens the one-to-one chat with that member, creating it if there is none, on a
+client that has that door (the reader's own name, a member who has since left and a deleted
+account are highlighted and not tappable). A mention by a member the reader has blocked is inside
+a hidden row and draws as one.
+
+**Highlighted means BOLD, in the body's own colour.** Not a colour of its own, on any client: a
+mention sits inside a balloon whose background is the accent colour on the reader's own messages,
+so a mention drawn in that same accent is invisible exactly where somebody is most likely to read
+it back — and a link run is tinted by default on the Apple platforms, which is how one client got
+there without meaning to. Weight carries the same news and cannot collide with a background. The
+same holds for `@ai` and for `/draw`. A client that gives the mark a background or an underline is
+free to, as long as the text itself stays the colour of the words around it.
+
+**The notification.** A mention is not a seventh push event: it is the message's own push, with a
+different title for the people named. The mentioned member's devices get title
+**`"<Family> — <Sender> mentioned you"`** and the ordinary body (the message text, or `"New
+message"` under `include_message_body = false`); every other recipient gets the ordinary title. A
+member both named and a recipient is pushed exactly ONCE. `kind` stays `"message"` with the same
+`chat_id` and `message_id`, so nothing about routing or grouping changes — the newest push in a
+chat replaces the older one on the tray whichever title it carried. The block gate runs first,
+unchanged: a member is not woken by the mention of somebody they have blocked. There is no mute in
+this protocol (see "The daily greeting"), so there is nothing for a mention to override; the title
+is the whole difference.
+
+**The mark on the chat row.** `GET /chats` entries carry **`"mentioned": true`** when (and only
+when) a message newer than the caller's read marker, in that chat, from somebody the caller has
+not blocked, names the caller. Absent otherwise — never `false`. It is a FILTER over exactly the
+rows `unread_count` counts (the same `id > last_read_message_id` threshold), never a second
+definition of unread, so the two cannot drift: a chat with `mentioned` always has an unread count,
+and reading the chat clears both. A client draws an "@" mark beside the unread badge while it
+holds, and maintains it with the same four writers the count has — a live frame that names the
+reader sets it (unless they are looking, which reads it at once); reading clears it; the reader's
+own `read` frame from another device clears it there too; and the next `GET /chats` overwrites it.
+
+**What a client shows**, all three clients: typing `@` in the family chat's composer offers the
+roster — every current member but the reader, the blocked and the assistant — narrowed as the
+name is typed; picking one puts `@Name ` into the text. At send the client resolves the mentions
+FROM THE TEXT against the roster, so a name typed by hand mentions too, a name deleted after
+picking does not, and a draft parked across screens loses nothing. Names are tried longest first, and among
+equally long names the LOWER `user_id` first; a token once claimed is not offered again. So
+`@Anna Lee` names Anna Lee and not also Anna, even though the space after `@Anna` is a boundary —
+without the claim both would be named and both woken — and in a family with two members called
+Anna, one `@Anna` names the one with the lower id on every platform rather than whichever the
+roster happened to list first. A bubble marks the tokens by the same rule. The list rides on the pending row, so
+a retry re-sends it. The web client does all of it too; Windows is not asked to yet.
+
+### Mentioning the assistant in the family chat
 
 Writing **`@ai`** in the family chat asks the assistant a question in front of everyone. The answer
 arrives as an ordinary message in that chat, quoting the message that asked, and every member sees
@@ -862,7 +1726,11 @@ recently said in this family chat** — that, and nothing more:
   most recent photographs in that transcript, as pixels, filling whatever the mentioning message
   and the message it quotes left of the four a mention may carry. Without that switch the
   transcript's photographs are `[photo]` markers and nothing more, exactly as they always were.
-  The whole of it is under "Recent photos from the family chat".
+  The whole of it is under "Recent photos from the family chat";
+- and — added 2026-09-09 (#61), under a FIFTH switch that is off by default, `ai_faces` — the
+  **profile pictures** of the members whose lines are in that transcript, as pixels, after every
+  photograph and under a budget of their own, each named to the model as whose it is. Without
+  that switch no face travels, ever. The whole of it is under "Profile pictures of members".
 
 The transcript is given as a NOTE, the same mechanism the mention instruction already uses, and not
 as conversation turns. What the family said last Tuesday is context, not an instruction addressed to
@@ -1070,6 +1938,18 @@ rule holds: not from an earlier message, not one the assistant was not pointed a
 file or a location, and never by the server going looking. The paragraphs after the list below say
 why, against the rule as it was written; the mechanics are under "Showing the assistant a picture
 from the family chat".*
+
+*Amended 2026-09-09 (#61): there is one further case, and it is the first image in this protocol
+that is attached to no message at all — a member's own **profile picture**, under a fifth switch,
+`ai_faces`, off by default. The rule's last sentence — "nothing here makes the server go looking for
+an image somebody did not deliberately put in front of it" — is exactly what this is, so it has to
+be answered rather than stepped around: a profile picture is a photograph a member took of
+themselves and published to their family for the one purpose of being recognised by it; it is the
+only image on this server whose subject chose it, chose it for visibility, and can replace or remove
+it at any moment. And it travels only for a name the model has already been told — a member whose
+line is in the transcript — never for the roster and never for anybody who has left. Everything else
+in the rule holds, and the mechanics, the carve-out from the four-photo budget, and the objections
+this has to answer are under "Profile pictures of members".*
 
 That is the image half of the invariant the rest of this section rests on — "in an `ai` chat the
 assistant is only ever shown that member's own AI thread" — and it is drawn deliberately tighter
@@ -1518,6 +2398,119 @@ state:
   to do, at the moment it matters" applies to it most of all. It stays absent for a `@ai /draw …`
   draft, which sends no picture at any setting.
 
+##### Profile pictures of members
+
+Added 2026-09-09 (#61), on the product owner's request, widening a mention by exactly one thing: an
+`@ai` mention may also be shown **the profile pictures of the members whose lines are in the
+transcript it sends** — faces nobody attached to anything, on no message at all — when the family's
+owner has turned a **fifth switch** on. This is the case the rule under "Pictures" reads as its
+own last sentence, and it is let in here on purpose, behind its own switch, with the argument
+written down.
+
+**The switch: `ai_faces`.** A boolean on the `Family` object, always present, owner-only through
+`PATCH /families/mine`, family-wide with no per-member override, and **`false` by default** for
+families created after it and for every family that existed before it. Migration 0038 adds the
+column with that default and the same `CHECK` 0033 carries, for the same rule stated the same way:
+
+- it can only be `true` while `ai_vision` is `true`. A `PATCH` that sends `ai_faces: true` while
+  `ai_vision` is off — or would be off after that same request — is refused with `validation`
+  (400), and nothing in the request is written; a request that turns both on at once is fine;
+- turning `ai_vision` off **turns this off in the same write**, whether or not the request
+  mentioned it, for the reason "Recent photos from the family chat" gives for its own switch: a
+  face that reached a model because a switch quietly stayed on underneath another is a face that
+  reached a model without anybody choosing that a second time.
+
+**Why a fifth switch, and not `ai_history_photos` widened.** That switch's sentence, in nine
+languages, names "the most recent photos in the family chat". A profile picture is not in the chat.
+It is not on any message, it was never sent to anybody, and it is the one image on this server a
+member can change or remove without a message changing anywhere. Every owner who turned Recent
+photos on did so under a sentence about pictures the family had sent; widening it to a picture
+nobody sent would make that sentence false for every family that said yes to it. So this is a new
+one, off, with its own sentence.
+
+**It requires everything below it, and does nothing on its own.** The same three as the third
+switch, and the third one for a different reason: `[ai.vision]` configured (a client shows the
+switch disabled with the reason when `assistant.vision` is false), `ai_vision` on (enforced), and
+**`ai_history` on — because a face travels only for a NAME the model has been told, and with no
+transcript there are no names.** With any of them missing the switch is inert and nothing is
+refused; the mention is exactly the mention it would otherwise be, byte for byte.
+
+**Whose face, and whose never:**
+
+- **only members whose lines are in the transcript** — the same window, the same lines the model
+  can read, the names it has already been given. Not the roster: a family of twelve where three
+  people spoke this month sends three faces, and the other nine are neither fetched nor named. The
+  mentioning member's own face goes only if they, too, have a line in the transcript, because the
+  question is not part of it;
+- **only members of this chat's family, now.** A member who has left still has lines in the
+  transcript under their name and sends **no** face — and, whenever any face travels, is named
+  among those the model was not shown. A **scrubbed account** sends no face and is **not named either**: the scrub replaced its
+  name with the "Deleted account" placeholder, so the model was never given a real name to attach
+  a face to, and a note about the face of "Deleted account" would be a sentence about nobody. The
+  server reads `user_avatars` under the same predicate `GET /users/{id}/avatar` enforces, restated,
+  because one server hosts several families and a direct read of that table inherits none of the
+  endpoint's protections;
+- **never the assistant's own row**, which has no picture and is in no family;
+- **never with a name the model has not been told.** This is why the private `ai` thread is
+  untouched by every word of this section: that surface sends no member's name at all today, and
+  "here is a face" with no name to attach it to is a second disclosure this section does not
+  make. A direct chat never reaches the assistant, mention or not.
+
+**A budget of their own, and the carve-out written down.** "Showing the assistant a picture from
+the family chat" and "Recent photos from the family chat" both state, in terms, that a mention
+carries **at most four pictures under ONE budget across all of it**. That rule stands for
+photographs and this section does not touch it. Faces are **not counted against it**: they travel
+under a separate ceiling of **four**, after every photograph, and can never displace one. Two
+reasons, and both are stated here so that the one-budget rule's own argument is answered rather
+than ignored. First, the four was reasoned about photographs — "what leaves should be the least
+that answers the question" — and a face is not an answer to a question but a key to reading the
+names in front of the model; they are different currencies. Second, sharing the four would make the
+switch inert on exactly the families it is for: a mention over a chat that is mostly photographs
+would spend all four on photos, and on a family of six a face would almost never travel. A switch
+that does nothing is worse than no switch. **Most recently active first** — by the newest surviving
+line — so when the ceiling binds it is the people actually in the conversation whose faces go.
+
+**Told, image by image.** Faces are not attachments and get no `[photo N]` marker; the transcript's
+lines are unchanged. Instead the model is given a note, beside the one about photographs, saying
+that the last N images attached to the request are members' profile pictures and not photographs
+anybody sent, **which image is whose** by position ("image 3 is Anna's"), that they are the pictures
+those members chose for themselves, and — named — **whose face it was NOT given**: a member in the
+transcript with no picture, one who has left, or one beyond the ceiling. Told rather than left to
+infer, for the reason every note in this section exists: a model that is not told what is missing
+invents it, and a face is the worst thing to invent. The note exists **only when at least one face
+travels** — the NOT-given list rides inside it — because with no face attached there is nothing to
+pair a name to, and the request stays the one it always was (the route rule, next). And when the
+note about photographs has to say that nothing the member pointed at could be included, it says
+**no photograph** rather than "no picture" whenever faces follow it, and points at them: two
+adjacent notes must not disagree about whether anything is attached.
+
+**The route is the one pictures already decide.** When a face travels the request goes to the vision
+deployment, whether or not a photograph did; when none does, and no photograph did, it goes to the
+text deployment with the request it always was, byte for byte.
+
+**A block does not reach the assistant, here as everywhere.** The transcript is deliberately not
+filtered per asker (see above): a blocked member's words already reach the model with any mention,
+and under this switch their face does too, in an answer everybody in the chat reads. That is the
+same trade the transcript already makes, for the same reason — the transcript is the family's, not
+the asker's, and filtering it per asker would change the text everybody sees — and it is said here
+so the owner turning this on knows it.
+
+**The cost, said plainly.** A face is a small image, but with this on nearly every mention in a
+talkative family becomes a vision call carrying several: "@ai what time is the match" over a
+transcript naming four people sends four faces, to be looked at and billed for, for a question
+about football. That is the reason this is a switch an owner has to find and turn on, under a
+sentence that says so, and not something a family gets because it is convenient.
+
+**What a client shows**, all three clients, in every language they ship: the switch, beside the
+others on the same owner-only screen, off by default, **disabled with the reason** when `ai_vision`
+is off or `assistant.vision` is false, and reading as inert beside it when `ai_history` is off. Its
+copy carries these facts, in the register that screen already has: that with it on, **the profile
+pictures of the members named in the transcript, up to four, go to the model whenever anyone
+mentions `@ai`** in the family chat; that they are sent **to recognise who is who** and are not
+photos anybody attached; **never a member who has left, and never anyone outside this family**;
+that it **costs more**; and that with it off, **no face is ever sent**. Turning `ai_vision` off is
+reflected as this going off, because the server has turned it off.
+
 ##### Asking for a picture
 
 **`/draw`** at the start of a message asks the assistant to make one.
@@ -1782,6 +2775,86 @@ whether; it does not choose the provider, the question never reaches the images 
 what does reach it is one bounded string the server read out of the reply. `/draw` is still there,
 still five characters a reader can point at.*
 
+#### The daily greeting
+
+Once a day, at an hour the operator sets, the server may post one message into a family chat as the
+assistant. It is the only thing in this protocol the assistant says without having been asked, and
+everything below follows from that one fact.
+
+**It is off unless two separate people have said yes.** The operator turns it on for the server
+(`[greetings]`, with the hour and, optionally, a language), and the family's owner turns it on for
+the family — `ai_greeting` on the `Family` object, settable through `PATCH /families/mine`,
+**default false** for families created before this and after it. Both are required, and the `[ai]`
+section must be usable, or nothing is posted.
+
+The operator's half is readable: `GET /me` carries **`greetings_enabled`**, always present, true
+only when this server both has greetings switched on and has an assistant it could write one with.
+It exists for the reason `calls_enabled` does — an owner who turns their own half on and then sees
+nothing for a week must be able to tell a server that never posts from a switch that did not save.
+A client shows the family's switch either way, and says which of the two is missing. Two switches rather than one because one server can
+host several families: an operator who wants a greeting cannot decide that for a family that does
+not, and a family cannot conjure one on a server whose operator is paying the model bill.
+
+The owner switch is not a formality. A family has no other lever here: the assistant **cannot be
+blocked** (blocking requires the same family and the assistant is in none), there is no per-member
+mute, and there is no way to delete somebody else's message. Without `ai_greeting` a family that
+did not want a daily message would have no way to stop one.
+
+**It never pushes.** The message is fanned out to open sockets and written to history like any
+other, and no device is woken for it. This is not politeness, it is the only honest option: no
+timezone is stored for a family and none travels on the wire (see the transcript rules above), so
+the server cannot know that its configured hour is the middle of somebody's night, there are no
+quiet hours in this protocol, and — as above — the recipient has no mute to reach for. A greeting
+nobody asked for that wakes a phone at 04:00 with no off switch is an alarm clock, not a kindness.
+The family reads it when they next open the chat, which is what a good morning is for. The
+precedent is already here: a call record pushes only when it is a missed call, and is delivered
+silently otherwise.
+
+**What it may contain, and what it may never.** A short, warm note about the day, and the **zodiac
+signs** present in the family. Signs only:
+
+- **no names, and no roster.** A mention already refuses to send the family's roster to the model,
+  and a mention has a member's deliberate act behind it; a greeting has none at all. What travels
+  is at most twelve words — the distinct signs among the family's birthdays — and nothing that
+  identifies anybody. A family reading "Pisces and Leo" knows who that is; the model does not, and
+  does not need to.
+- **no birth dates.** The sign is computed on the server from `birthday_month` and `birthday_day`,
+  which the family already stores and already shows each other. The day and month themselves never
+  leave.
+- **members without a birthday are simply absent** from the set, with no special case and nothing
+  said about them. A family where nobody has set one gets the note about the day and no signs,
+  which is a perfectly good message and needs no separate code path.
+- **no factual claims about the date.** No "on this day in history", no anniversaries, no news. The
+  model has no retrieval of any kind, so an on-this-day line is a daily opportunity for a confident
+  falsehood posted unattended into a family chat that nobody reviews — and one that then feeds back
+  into the transcript every later mention reads. The instruction says so rather than hoping.
+
+**The language is the family's**, exactly as a family-chat mention's answer is. A greeting has no
+asking device, so the usual fallback to the device's `Accept-Language` has nothing to fall back to,
+and the instruction that would remain — answer in the language of the message you were sent — is
+meaningless when there is no message. If the family has not set a language the operator's
+configured greeting language is used; if the operator has not set one either, **nothing is posted
+for that family**. Not English by default: this document already spends a paragraph on why an unset
+language is not English, and a greeting that silently picked one would contradict it.
+
+**At most one per family per UTC day, whatever happens.** The message carries a `client_msg_id`
+derived from the chat and the date, so the ordinary send-deduplication rule makes a second attempt
+— a restart, a redeploy, an overlapping tick, two processes against one database — a no-op that
+inserts nothing and delivers nothing. There is no bookkeeping table and no "last run" row to fall
+out of step with the messages themselves.
+
+**A failure posts nothing at all.** Unlike an answer to a mention, which creates its row first and
+streams into it, the greeting is composed in full before anything is written. If the model is
+unreachable or answers with nothing usable, the family simply has no greeting that day. The
+alternative — the mention path's shape — would leave an empty message in the family chat that every
+client draws as an assistant still thinking, for ever, with no member's action to explain it and no
+way to remove it.
+
+**It is an ordinary message.** It has a body and nothing else: no new field, no new frame, no new
+sequence. Reactions, replies, editing, retention, catch-up and unread all work on it because it is
+not special, and a client that knows nothing about greetings draws it as what it is — a message
+from the assistant in the family chat, which every client can already draw.
+
 ### Photos, videos, audio, files and locations
 
 A message may carry attachments — up to ten of them: photos, videos, audio, files, in any mix.
@@ -1927,9 +3000,10 @@ mutation path and a sequence cursor of its own, and would be a new section here.
 
 An attachment belongs to whoever uploaded it until a message claims it, and to that message's chat
 afterwards. Before it is claimed only the uploader may read it; after, every member of the chat may.
-An attachment can be claimed once — by one message, alongside up to nine others: a second message
-naming it is `attachment_already_used`, and the same id twice in one `attachment_ids` array is
-`invalid_attachment`.
+An attachment can be claimed once — by one message, alongside up to nine others, OR by one board
+note (see "Board"): a second message naming it, or a message naming a picture already pinned to the
+board, is `attachment_already_used`, and the same id twice in one `attachment_ids` array is
+`invalid_attachment`. One owner per upload is what lets deleting either one take the bytes with it.
 **Unclaimed attachments are deleted after 24 hours** — a send the user abandoned must not leave
 100 MB on the server forever. The id is remembered for a further 30 days, without the bytes, so a
 client coming back with it is answered `attachment_expired` rather than `attachment_not_found` and
@@ -2082,9 +3156,11 @@ departing member can take with them without taking somebody else's. The other pe
 it go too; that is the honest reading of a private conversation ending. The member's private
 assistant thread goes the same way.
 
-Attachments the member uploaded are removed from the server's disk, subject to the one rule
-attachment deletion always obeys: a file is removed only once no row still names those bytes (see
-"One copy per family"). Their votes are retracted from any poll still open, which re-stamps that
+Uploads the member never USED — on no message and pinned to no note — are removed from the
+server's disk, subject to the one rule attachment deletion always obeys: a file is removed only
+once no row still names those bytes (see "One copy per family"). A picture on a message, or pinned
+to the board as a photo note or an event's backdrop, is part of what the family said and stays
+with it, exactly like the words. Their votes are retracted from any poll still open, which re-stamps that
 poll and fans out its new state — a tally must not go on counting somebody who no longer exists.
 
 **A deleted account is still resolvable, and that is what `former_members` is for.** Their messages
@@ -2167,9 +3243,11 @@ may become a fact another device or another person can read. A revealed row stay
 long as it lives in that client's list, including when newer messages arrive after it and when a
 `message_edited` frame rewrites its body. A hidden row draws the placeholder and the timestamp and
 nothing else: no display name, no avatar, no attachment thumbnail, no reaction chips — all of them
-come back with the reveal. And revealing changes nothing on the wire: no frame, no request, and no
-movement of the read marker, which advances THROUGH hidden rows as they scroll past whether they
-were revealed or not. A client that held its marker at an unrevealed row would rebuild oracle (c)
+come back with the reveal. The same row, the same reveal and the same nothing-else on every surface
+that draws a body — the thread, the chat-list preview, a reply's quote, and the open-polls list
+(see "Finding the open ones", which also says such a poll counts toward no badge). And revealing
+changes nothing on the wire: no frame, no request, and no movement of the read marker, which
+advances THROUGH hidden rows as they scroll past whether they were revealed or not. A client that held its marker at an unrevealed row would rebuild oracle (c)
 below on its own side, one layer above the server.
 
 **A hidden row still fetches, and draws none of it.** A client resolves a hidden message's link
@@ -2367,11 +3445,66 @@ Blocking and reporting are independent. Reporting does not block, blocking does 
 owner's inbox NEVER shows who blocked whom — a family owner is often a parent and the blocked person
 is often in the same house, which is the exact case the silence exists for.
 
+### Reporting the assistant
+
+The assistant writes new text, and a member has to be able to say that what it wrote was wrong.
+That is a product duty and also a store one: Microsoft Store policy 11.16 requires a product with
+generative AI to give people a way to report what the AI generated, and 1.1 was held in
+certification for the want of it.
+
+**It is not a member report, and `POST /families/reports` still refuses it.** The assistant sends
+under a reserved account that belongs to no family, so that endpoint answers `not_same_family`, and
+it goes on doing so: the member-report path is about a PERSON in your family and the owner's power
+over them, neither of which applies to a model. This is a separate path with a separate reader.
+
+**The operator reads it, never the family owner.** Two reasons, and the first is the invariant in
+"The assistant": a private `ai` thread belongs to that member alone and no other member can read
+it, so handing a reply from it to the owner would break the one guarantee that thread has — and the
+owner is very often the parent the member might least want reading it. The second is that there is
+nothing an owner could DO: they cannot edit a model's answer, and the deployment's own switches
+(`ai`, `ai_history`, `ai_vision`, `greetings`) are the operator's. So an assistant report is stored
+for the operator and logged at WARN, exactly as a report ABOUT the owner already is, and it is
+absent from `GET /families/reports`. A client SAYS, where it offers the affordance, that the reply
+and the words around it go to the people who run the server — the same disclosure rule as reporting
+a message from a direct chat.
+
+**Both surfaces the assistant speaks on can be reported**: a reply in the member's private `ai`
+chat, and an `@ai` answer in the family chat. The second carries a reply the whole family could
+already read; the first carries one only that member could, which is exactly why the disclosure is
+part of the screen rather than a line in a policy.
+
+`reason` is one of the same four — `spam`, `harassment`, `inappropriate`, `other` — so the vocabulary
+is the product's one vocabulary. Unlike a member report it may also carry a free-text `note`, up to
+1,000 characters: the reader here is the one operator of this deployment rather than a
+nine-language owner, and "it invented a person" is not any of four words. The note is the
+reporter's own text and is stored verbatim.
+
+The assistant's reply is FROZEN into the row, the same inversion "Reporting a member" makes and for
+the same reason: retention deletes messages, and a report whose evidence has been swept is a reason
+word and a timestamp. `message_id` is kept beside it while it lasts.
+
+A report is identified by `(reporter, message_id)`: a second tap on the same reply returns the
+stored row and creates nothing, whatever `reason` came with it. There is no cap and no rate limit
+beyond that, because the bound is natural — a member can only report replies that exist, and each
+of them once.
+
+No push and no frame: the operator is not a user of this protocol, and nobody in the family is told
+that a report was made.
+
+**Every client draws it**: iOS and iPadOS in the bubble's Safety page, macOS in the row's Safety
+submenu, Android on its own Safety page, Windows in the right-click Safety submenu and the web in
+the bubble's menu — all of them worded "Report this reply…", all of them showing one Safety row and
+no Block for a reply, and all of them saying who reads it before anything is sent. Windows drew it
+first because that is the client whose store asked; the web drew it last and needed no store to
+ask.
+
 ### Voice calls
 
-Two members can talk. A call is **one to one, voice only, and peer to peer**: the audio travels
-directly between the two devices over WebRTC (Opus over DTLS-SRTP), and the server never carries,
-hears or stores a single frame of it. What the server does is what it already does for everything
+Two members can talk. A call is **one to one, voice or video, and peer to peer**: the audio — and
+the picture, when it is a video call — travels directly between the two devices over WebRTC (Opus
+over DTLS-SRTP), and the server never carries, hears or stores a single frame of it. A video call
+is this same call with a picture track alongside the sound, negotiated in the same frames and
+refusable on its own by the operator; everything this section says holds for both. What the server does is what it already does for everything
 else — it passes small JSON frames between two people over the socket they already hold, wakes a
 phone that has no socket open, and writes one message into the direct chat afterwards so that a
 call is part of the history like anything else that happened between those two people.
@@ -2459,7 +3592,9 @@ active call when one socket drops, because a momentary network change would othe
 perfectly good conversation. Clients report a dead call themselves, from the peer connection's own
 failure, with `reason: "failed"`.
 
-**A client keeps its socket open for the life of a call**, ringing phase included. That is a change
+**A client keeps its socket open for the life of a call**, ringing phase included — and a browser,
+which sends its signalling on that socket and cannot suspend it, has no other way to be on a call at
+all (see "A browser is a client too"). That is a change
 from the ordinary iOS and Android behaviour of suspending or closing the socket in the background:
 a call's `call_end`, its candidates and an ICE restart all arrive over it, and the platform
 permissions a call runs under (an active audio session; a foreground service of the call type) are
@@ -2579,7 +3714,7 @@ carries the flag so the incoming UI is a camera one — see "Incoming calls".
 | `PUT /me/birthday` | (auth) `{month, day}` → `200 {user: User}`. Your own birthday: a day and a month, no year (see "Birthdays"). Replaces whatever was there. Errors: `validation` (a month outside 1–12, or a day that month does not have). |
 | `DELETE /me/birthday` | (auth) → `204`. Clears it. Idempotent — clearing a birthday nobody set is still `204`. |
 | `POST /families/members/{id}/password` | (owner) `{new_password}` → `204`. The owner resets a member's password WITHOUT knowing the current one — the whole point is that the member has forgotten it. ALL of that member's sessions are revoked and their sockets closed, so every device they are signed in on returns to login; that is what makes a reset a recovery rather than a convenience. The owner cannot target themselves here (`POST /me/password` is for that), and a user outside the family is `not_same_family` whether or not they exist. Errors: `not_family_owner` (403), `not_same_family` (403), `validation`. |
-| `GET /me` | (auth) → `200 {user: User, family: Family\|null, role: "owner"\|"member"\|null, pending_join_request: {family_id, family_name, created_at}\|null, calls_enabled: bool, video_calls_enabled: bool, max_family_members: 50}`. `pending_join_request` is the caller's live join request, if any — a client that was waiting and sees neither `family` nor `pending_join_request` knows the request was rejected. `calls_enabled` is ALWAYS present and says whether this server signals calls at all (`[calls] enabled`); a client hides its call button when it is false — see "Voice calls". `video_calls_enabled` is ALWAYS present too and gates the video-call button alone (`[calls] video_enabled`) — see "Video". `max_family_members` is ALWAYS present too and is the operator's ceiling on a family's size, so an owner's cap picker draws its range from it instead of discovering `validation` at the moment somebody tries to set one — the same reason `calls_enabled` is there instead of `calls_disabled` arriving when somebody wants to talk. Plus `blocked_user_ids: [11, 14]`, the caller's own block list, ALWAYS present and `[]` when they have blocked nobody — the one read in this protocol where absence is not allowed to mean "leave what you hold alone", for the same reason reactions stay present as `[]`: a list that vanished when it emptied would never tell a second device about the last unblock, and the standing rule everywhere else is that an absent field clears nothing. It is a complete state-set and never a delta, so a client replaces what it stores with what arrives. It rides here as well as on `GET /families/mine` because a block is a pair and not a membership: a caller with no family at all is answered `not_in_family` by that endpoint and still holds blocks, and `/me` is step 1 of the documented resync — which is what makes the list a step-1 fact and the `member_blocked` frame a latency optimisation rather than the only delivery path. Plus `support_contact: "…"`, the operator's published contact (`[server] support_contact`), absent when unset; clients show it on the report screen — see "Reporting a member". It is free text, at most 256 characters, in whatever form the operator configured; clients draw it VERBATIM, selectable and copyable, and never linkify it — an operator may write an address, a URL or a sentence, and three apps guessing differently about which it is would be worse than three apps showing the same text. Plus `family_registration_enabled: bool`, ALWAYS present: whether this server takes NEW families at all (`[families] registration`; `true` by default, and `true` is what a client assumes when the key is absent, which is every server that predates it). A client that reads `false` shows how to run a server of one's own instead of a Create button — see "Starting a family"; the flag is here for the reason `calls_enabled` is, so a shut door is shown shut rather than met as a 403 after somebody has typed a name. Plus `familyless_account_ttl_days: 7`, ALWAYS present: how many days an account may go without a family before the server removes it, `0` when it never does (and what a client assumes when the key is absent) — see "Accounts without a family"; a client that reads a positive number says so on the family gate. |
+| `GET /me` | (auth) → `200 {user: User, family: Family\|null, role: "owner"\|"member"\|null, pending_join_request: {family_id, family_name, created_at}\|null, calls_enabled: bool, video_calls_enabled: bool, max_family_members: 50}`. `pending_join_request` is the caller's live join request, if any — a client that was waiting and sees neither `family` nor `pending_join_request` knows the request was rejected. `calls_enabled` is ALWAYS present and says whether this server signals calls at all (`[calls] enabled`); a client hides its call button when it is false — see "Voice calls". `video_calls_enabled` is ALWAYS present too and gates the video-call button alone (`[calls] video_enabled`) — see "Video". `max_family_members` is ALWAYS present too and is the operator's ceiling on a family's size, so an owner's cap picker draws its range from it instead of discovering `validation` at the moment somebody tries to set one — the same reason `calls_enabled` is there instead of `calls_disabled` arriving when somebody wants to talk. Plus `blocked_user_ids: [11, 14]`, the caller's own block list, ALWAYS present and `[]` when they have blocked nobody — the one read in this protocol where absence is not allowed to mean "leave what you hold alone", for the same reason reactions stay present as `[]`: a list that vanished when it emptied would never tell a second device about the last unblock, and the standing rule everywhere else is that an absent field clears nothing. It is a complete state-set and never a delta, so a client replaces what it stores with what arrives. It rides here as well as on `GET /families/mine` because a block is a pair and not a membership: a caller with no family at all is answered `not_in_family` by that endpoint and still holds blocks, and `/me` is step 1 of the documented resync — which is what makes the list a step-1 fact and the `member_blocked` frame a latency optimisation rather than the only delivery path. Plus `assistant_consent_at: "2026-09-19T08:12:04Z"|null`, ALWAYS present: when the caller agreed that their words may go to the model, and null both when they have not and when this server has no assistant to agree to — which a client never has to tell apart, since a server without one offers no `ai` chat (see "Consenting to the assistant"). A client reads it at step 1 of the resync, so it knows before drawing an `ai` chat whether the next thing it must show is the consent screen. Plus `support_contact: "…"`, the operator's published contact (`[server] support_contact`), absent when unset; clients show it on the report screen — see "Reporting a member". It is free text, at most 256 characters, in whatever form the operator configured; clients draw it VERBATIM, selectable and copyable, and never linkify it — an operator may write an address, a URL or a sentence, and three apps guessing differently about which it is would be worse than three apps showing the same text. Plus `family_registration_enabled: bool`, ALWAYS present: whether this server takes NEW families at all (`[families] registration`; `true` by default, and `true` is what a client assumes when the key is absent, which is every server that predates it). A client that reads `false` shows how to run a server of one's own instead of a Create button — see "Starting a family"; the flag is here for the reason `calls_enabled` is, so a shut door is shown shut rather than met as a 403 after somebody has typed a name. Plus `familyless_account_ttl_days: 7`, ALWAYS present: how many days an account may go without a family before the server removes it, `0` when it never does (and what a client assumes when the key is absent) — see "Accounts without a family"; a client that reads a positive number says so on the family gate. Plus `greetings_enabled: bool`, ALWAYS present: whether this server posts the assistant's daily greeting at all — true only when `[greetings]` is on AND the assistant is usable, since the greeting is written by that deployment. It is the operator's half of the two-key arrangement in "The daily greeting"; the family's half is `ai_greeting` on the `Family` object. |
 
 ### Profile pictures
 
@@ -2604,7 +3739,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). A family whose policy is `closed` admits nobody: the invite code answers `invalid_invite_code` (404), byte-identical to a code that never existed, so a shut door tells a stranger nothing — the same non-enumeration reasoning the avatar and password-reset endpoints follow. A family that is full answers `family_full` (409) — full meaning at its own `max_members`, or at the operator's ceiling when it has set none, because a valve that limited only what an owner may TYPE would hold nothing shut. The checks run in order — closed, then already in a family, then a pending request, then full — so a closed family answers `invalid_invite_code` whatever else is true of it, and under policy `approval` this door is where the REQUEST is created and the cap is read there too, then read again at approval. `family_full` does admit that the code is real, and that is the one thing this endpoint tells a stranger: the alternative is telling an invited member their code is invalid on the day the family filled up, which costs a real person a real join, where a closed family's code may be years old and in anybody's hands. Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`, `family_full` (409). |
 | `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, assistant: {user_id, display_name, mention, draw, vision, images}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. Its `vision` and `images` booleans say whether this SERVER can look at a picture and make one — a client offers to attach a picture in an `ai` chat only when `vision` and the family's own `ai_vision` are both true, and offers `draw` (the `/draw` token) only when `images` is true (see "Pictures"). `family.invite_code` present for the owner only. Plus `blocked_user_ids: [11, 14]` as on `GET /me`, always present and `[]` when empty, and a complete state-set there too. Plus `next_owner_user_id: 11`, present for the OWNER only, naming the member who would inherit the family if the owner left right now — the same rule as "Deleting an account", computed once server-side so the leave dialog can say who it is instead of two clients computing it and eventually disagreeing (the roster does not carry join times, so no client could compute it anyway); omitted when the owner is the sole member. It is a PREDICTION and takes no frame of its own: any `member_joined` or `member_left` can change the answer, so a client re-reads `GET /families/mine` immediately before it shows the leave dialog and never names a successor from a cached value. Absence on that fresh read means the owner is the last member and leaving DELETES the family, which is a different dialog and a different confirmation. Error: `not_in_family`. |
 | `POST /families/invite-code/rotate` | (owner) → `200 {invite_code}`. Old code stops working; pending requests survive. |
-| `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval"\|"closed", max_members?: int\|null, language?: "ru"\|null, ai_history?: true\|false, ai_vision?: true\|false, ai_history_photos?: true\|false}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language and `"max_members": null` CLEARS the cap, while leaving either key out entirely leaves it alone — these are **the two places** in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"); `ai_vision` is a second boolean of exactly that shape, differing only in defaulting to FALSE (see "Pictures"); `ai_history_photos` is a third, defaulting to FALSE, and the one with a rule between it and its neighbour: it may only be `true` while `ai_vision` is — sending `true` for it while `ai_vision` is off, or would be off after this same request, is `validation`, and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Recent photos from the family chat"). A cap must be between 1 and the operator's ceiling (`limits.max_family_members`). A cap BELOW the family's current size is ACCEPTED and acts as a freeze — nobody new until people leave — rather than being refused: an owner who inherits a large family must still be able to shut the door, and the cap is read at the door and never enforced over the room. Errors: `not_family_owner` (403), `validation` (a `join_policy` that is none of the three, a `max_members` outside 1..ceiling, or `ai_history_photos: true` without `ai_vision`), `invalid_language`. |
+| `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval"\|"closed", max_members?: int\|null, language?: "ru"\|null, ai_history?: true\|false, ai_vision?: true\|false, ai_history_photos?: true\|false, ai_greeting?: true\|false, ai_faces?: true\|false}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language and `"max_members": null` CLEARS the cap, while leaving either key out entirely leaves it alone — these are **the two places** in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"); `ai_vision` is a second boolean of exactly that shape, differing only in defaulting to FALSE (see "Pictures"); `ai_history_photos` is a third, defaulting to FALSE, and the one with a rule between it and its neighbour: it may only be `true` while `ai_vision` is — sending `true` for it while `ai_vision` is off, or would be off after this same request, is `validation`, and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Recent photos from the family chat"). A cap must be between 1 and the operator's ceiling (`limits.max_family_members`). A cap BELOW the family's current size is ACCEPTED and acts as a freeze — nobody new until people leave — rather than being refused: an owner who inherits a large family must still be able to shut the door, and the cap is read at the door and never enforced over the room. `ai_greeting` is a FOURTH boolean of the same shape, defaulting to FALSE, and it is the one with no rule between it and any neighbour: it is about whether the assistant speaks unprompted, not about what it may be shown, so it may be set true or false regardless of the other three and it is never cleared by any of them (see "The daily greeting"). `ai_faces` is a FIFTH, defaulting to FALSE, under exactly `ai_history_photos`'s rule: it may only be `true` while `ai_vision` is — `true` while `ai_vision` is off, or would be off after this same request, is `validation` — and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Profile pictures of members"). Errors: `not_family_owner` (403), `validation` (a `join_policy` that is none of the three, a `max_members` outside 1..ceiling, or `ai_history_photos: true` or `ai_faces: true` without `ai_vision`), `invalid_language`. |
 | `GET /families/join-requests` | (owner) → `200 {requests: [JoinRequest]}` (pending only). |
 | `POST /families/join-requests/{id}/approve` | (owner) → `200 {member: Member}`. The cap is re-checked here, because the roster can fill between a request and the decision: `family_full` (409), which leaves the request PENDING — a full family is a temporary condition and not a decision, and the owner may approve it again once a seat frees. The cap counts the rows in `members`, the owner included; `former_members` do not count, and a pending request reserves nothing — three members, a cap of four and two pending requests means the first approval succeeds and the second is `family_full`. Closing the family does NOT touch requests that were already pending, and the owner may still approve them — closing is about the invite code, and an approval is the deliberate act of the person who closed it. Errors: `join_request_not_pending`, `user_already_in_family`, `family_full` (409). |
 | `POST /families/join-requests/{id}/reject` | (owner) → `204`. Error: `join_request_not_pending`. |
@@ -2617,6 +3752,8 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /families/reports` | `{reported_user_id, reason, message_id?}` → `201 {report: Report}`, or `200 {report: Report}` when an open report by this caller against this member already exists. `reason` is one of `spam`, `harassment`, `inappropriate`, `other`. `message_id` must name a message in a chat the caller is in AND have been sent by `reported_user_id`; anything else — including a real message in a chat the caller cannot see — is `message_not_found`, so the endpoint never confirms an id exists elsewhere, exactly as `reply_to_message_id` does not. A report is identified by `(reporter, reported, message_id)`, with a null `message_id` for one that names a person rather than a message; raising one that matches an OPEN row returns that row and creates nothing, whatever `reason` was sent — the stored reason is not overwritten. So a double tap is not two rows in the owner's list, while reporting a second message of the same member IS a second report, which is what a moderator needs in order to see a pattern. The excerpt is frozen here (see "Reporting a member"). Errors: `not_in_family` (409), `cannot_report_self` (400), `not_same_family` (403), `message_not_found` (404), `validation`. |
 | `GET /families/reports` | (owner) → `200 {reports: [Report]}`, open only, oldest first — shaped exactly as `GET /families/join-requests`. Reports naming the owner themselves are NOT listed (see "Reporting a member"). Open reports are capped per family at the page maximum (200); the oldest are what the owner sees, and a family that has hit the ceiling has a moderation problem rather than a pagination problem. Error: `not_family_owner` (403). |
 | `POST /families/reports/{id}/resolve` | (owner) → `204`. Takes it off the list; what "dealt with" MEANS is the owner's business. Idempotent for the owner's own inbox: resolving a report they have already resolved is still `204`, because a double tap and a retry after a timeout that actually worked are the same request twice and neither is an error. `report_not_pending` (409) is kept for what the owner may not see at all — a report of another family, or one that names the owner — one answer for both, so the endpoint never confirms an id exists elsewhere. Errors: `not_family_owner` (403), `report_not_pending` (409). |
+| `POST /reports/assistant` | `{message_id, reason, note?}` → `201 {report: AssistantReport}`, or `200 {report: AssistantReport}` when this caller has already reported that message. Deliberately NOT under `/families`: it needs no family, because it is about the assistant rather than about anybody's member. `message_id` must name a message in a chat the caller is in AND have been sent by the assistant; anything else — a member's message, or a real message in a chat the caller cannot see — is `message_not_found`, the same non-enumeration rule `POST /families/reports` follows. `reason` is one of `spam`, `harassment`, `inappropriate`, `other`; `note` is optional free text, at most 1,000 characters. The reply is frozen into the row. The row is the OPERATOR's: it is logged at WARN and appears in no client read, `GET /families/reports` included (see "Reporting the assistant"). Errors: `message_not_found` (404), `validation`. |
+| `POST /me/assistant-consent` | `{granted: bool}` → `200 {assistant_consent_at: "…"|null}`. The caller's own permission for their words to go to the model named by `assistant.processor`, and nobody else's — an owner cannot grant it for a member (docs/protocol.md, "Consenting to the assistant"). Idempotent both ways: granting twice keeps the FIRST timestamp, because when somebody agreed is a fact and not a counter, and withdrawing twice is `200` with null. Withdrawing deletes nothing: the member's `ai` chat and its history stay, and consenting again resumes from there. `404 not_found` when the server has no assistant, so a client cannot use this endpoint to discover whether one is configured. Errors: `validation`. |
 
 ### Attachments
 
@@ -2631,26 +3768,32 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `GET /families/mine/board` | → `200 {notes: [Note], max_board_seq: 88}`. The whole board as it now stands, tombstones excluded, newest `board_seq` first. `max_board_seq` is `0` for a board nothing has ever been written to. Error: `not_in_family`. |
+| `GET /families/mine/board` | → `200 {notes: [Note], max_board_seq: 88}`. The whole board as it now stands, tombstones excluded, newest `board_seq` first. `max_board_seq` is `0` for a board nothing has ever been written to, and is read BEFORE the notes, so it is never above a change they missed; a client REPLACES what it holds with this read (see "Board"). Error: `not_in_family`. |
 | `GET /families/mine/board/changes` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {notes: [Note]}` ordered by `board_seq` ascending, INCLUDING tombstones — the board catch-up, looped until a short page. Errors: `not_in_family`, `invalid_pagination`. |
-| `POST /families/mine/board/notes` | `{text, color, x, y, size?}` → `201 {note: Note}`. Caller becomes the author. `size` defaults to `medium` when absent. Errors: `validation` (text empty or > 280), `invalid_note_color`, `invalid_note_size`, `board_full` (409, over the note ceiling), `not_in_family`. |
-| `PATCH /families/mine/board/notes/{id}` | `{text?, color?, size?, x?, y?}` → `200 {note: Note}`. Any member may send `x`/`y`; only the author may send `text`, `color` or `size` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `invalid_note_size`, `validation`, `not_in_family`. |
-| `DELETE /families/mine/board/notes/{id}` | → `204`. Author only. Idempotent: deleting an already-deleted note is still `204` and takes no new seq. Errors: `note_not_found`, `not_note_author`, `not_in_family`. |
+| `POST /families/mine/board/notes` | `{text, color, x, y, size?, font?, kind?, attachment_id?, starts_at?, ends_at?, place?, mentions?, items?}` → `201 {note: Note}`. `mentions: [{user_id, name}]` names members of this family, at most 20, each once, each a name the `text` says after an `@` — the same rules and the same grammar as a message's (`validation` otherwise, see "Board"). Caller becomes the author. `size` defaults to `medium`, `font` to `plain` and `kind` to `text` when absent. `attachment_id` claims one photo this caller uploaded: REQUIRED by `kind: "photo"` (whose `text` may then be empty), optional on `kind: "event"` (the backdrop), refused on a text note. `starts_at` is required by — and only accepted on — an event, with `ends_at` and `place` optional there and nowhere else. Errors: `validation` (text empty on a text note or > 280; an `attachment_id` without the kind, or the kind without one), `invalid_note_kind`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `invalid_attachment` (not a photo), `attachment_not_found`, `attachment_already_used`, `attachment_expired`, `board_full` (409, over the note ceiling), `not_in_family`. An event also answers `validation` for a missing or unparseable `starts_at`, an `ends_at` before it, a `place` over 200 characters, or any of the three on a note that is not an event. `items: [{text}]` is the TASK LIST's lines, accepted on — and only on — `kind: "tasks"`, whose `text` is its title: at most 20, each trimmed, non-empty and at most 100 characters, `validation` otherwise. An `id` on a created item is refused: ids are the server's. |
+| `PATCH /families/mine/board/notes/{id}` | `{text?, color?, size?, font?, x?, y?, starts_at?, ends_at?, place?, mentions?, items?}` → `200 {note: Note}`. `mentions` REPLACES the list — a note's names are re-decided on every edit, unlike a message's, because an edit to a note notifies nobody (see "Board"); sending `text` without `mentions` clears them. A note's KIND and its picture are fixed at creation: neither is patchable, and a photo note's caption may be set to empty here. An event's `starts_at`, `ends_at` and `place` are the AUTHOR'S, like its title — `place` may be sent empty to clear it, `ends_at` null to clear it — and are refused on any other kind. `items` REPLACES a task list's lines and is the author's too (refused on any other kind): an entry `{id, text}` whose `id` the note holds is that item, rewritten and moved, and KEEPS ITS TICK; an entry `{text}` is new; an item left out is gone; an `id` that is not this note's is `validation`, and a `done` sent here is ignored (see "Board"). Any member may send `x`/`y`; only the author may send `text`, `color`, `size` or `font` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `validation`, `not_in_family`. |
+| `PUT /families/mine/board/notes/{id}/rsvp` | `{answer}` → `200 {note: Note}`. Records the caller as `going`, `maybe` or `no` on an event — an idempotent state-set, not a toggle, and ANY member may send it. Re-sending the answer already held is a no-op: no new seq, no fan-out. Errors: `invalid_rsvp` (400 — not one of the three, or the note is not an event), `note_not_found` (404), `not_in_family`. |
+| `POST /families/mine/board/notes/{id}/backdrop` | → `200 {note: Note}`. Asks the assistant for a picture to sit behind an EVENT, drawn from the note's TITLE and nothing else; the AUTHOR only. No request body: the prompt is the title (see "Board"). Replaces the backdrop it has, taking the old picture's row and bytes with it — the one way a note's picture changes after creation. Costs one image against the family's count, takes a `board_seq`, notifies nobody and leaves `content_seq` alone. Errors: `pictures_unavailable` (403 — this server has no images deployment; `assistant.images` on `GET /families/mine` is what a client checks first), `note_not_found` (404), `not_note_author` (403), `validation` (the note is not an event), `storage_full`, `not_in_family`. |
+| `PUT /families/mine/board/notes/{id}/tasks/{item_id}` | `{done}` → `200 {note: Note}`. Ticks or unticks one line of a task list — an idempotent state-set, not a toggle, and ANY member may send it; the server records who. Re-sending the state already held is a no-op: no new seq, no fan-out. Errors: `invalid_task` (400 — the note is not a task list, or the item is not one of its lines), `note_not_found` (404), `not_in_family`. |
+| `DELETE /families/mine/board/notes/{id}/rsvp` | → `200 {note: Note}`. Retracts the caller's answer; idempotent (retracting nothing returns the event unchanged and burns no seq). Errors: `invalid_rsvp` (the note is not an event), `note_not_found`, `not_in_family`. |
+| `DELETE /families/mine/board/notes/{id}` | → `204`. Author only. Idempotent: deleting an already-deleted note is still `204` and takes no new seq. A photo note's picture goes with it. Errors: `note_not_found`, `not_note_author`, `not_in_family`. |
 
 ### Chats & messages
 
 | Method & path | Body → Response |
 |---|---|
-| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, last_read_message_id: 1337, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `last_read_message_id` is the CALLER'S OWN read marker for this chat — the value `POST /chats/{id}/read` and the `read` frame maintain, monotonic and shared across all of that user's devices. It is the other half of `unread_count` and comes from the same row, and unlike the three `max_*_seq` cursors it is ALWAYS present: `0` means the caller has never reported reading anything here, which is a real answer rather than an absent one. It is an id THRESHOLD and not a reference — retention may already have swept the message it names, so a client must never assume it can fetch that id, only compare against it. Clients apply it monotonically into whatever they store (`max(stored, received)`), for the same reason the server does: a response still in flight while the reader is reading must never walk a local marker backwards. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachments` (and the legacy `attachment`), trimmed exactly as before — kind and name, no dimensions, no coordinates — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. A direct chat with somebody the caller has blocked is NOT listed, for the blocker alone, and comes back whole on unblock — nothing about it is deleted (see "Blocking a member"); it contributes nothing to `unread_count` anywhere and nothing to the APNs `badge`, because there is nothing here for a client to count. Nothing else on this row is projected per caller: in the family chat a blocked member's message still moves `unread_count` and may still BE `last_message`, because the count is the other half of the read marker and projecting one without the other desynchronises them — and a count that changed when you blocked somebody is a quantity the blocked person's own behaviour can be tested against. A client draws such a preview as the hidden row rather than as text, with no sender name, and it is not revealable from the list. |
+| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, last_read_message_id: 1337, max_reaction_seq: 123, mentioned: true}]}`. `mentioned` rides only when an unread message in the chat names the caller (absent otherwise, never `false` — see "Mentioning a member"). Family chat included always; direct chats once they exist. `last_read_message_id` is the CALLER'S OWN read marker for this chat — the value `POST /chats/{id}/read` and the `read` frame maintain, monotonic and shared across all of that user's devices. It is the other half of `unread_count` and comes from the same row, and unlike the three `max_*_seq` cursors it is ALWAYS present: `0` means the caller has never reported reading anything here, which is a real answer rather than an absent one. It is an id THRESHOLD and not a reference — retention may already have swept the message it names, so a client must never assume it can fetch that id, only compare against it. Clients apply it monotonically into whatever they store (`max(stored, received)`), for the same reason the server does: a response still in flight while the reader is reading must never walk a local marker backwards. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachments` (and the legacy `attachment`), trimmed exactly as before — kind and name, no dimensions, no coordinates — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. A direct chat with somebody the caller has blocked is NOT listed, for the blocker alone, and comes back whole on unblock — nothing about it is deleted (see "Blocking a member"); it contributes nothing to `unread_count` anywhere and nothing to the APNs `badge`, because there is nothing here for a client to count. Nothing else on this row is projected per caller: in the family chat a blocked member's message still moves `unread_count` and may still BE `last_message`, because the count is the other half of the read marker and projecting one without the other desynchronises them — and a count that changed when you blocked somebody is a quantity the blocked person's own behaviour can be tested against. A client draws such a preview as the hidden row rather than as text, with no sender name, and it is not revealable from the list. |
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self` (400), `not_in_family` (409, the caller belongs to no family), `not_same_family` (409), `user_not_found` (404). Plus `blocked` (409) when the CALLER has blocked this member. Only that direction refuses: somebody who has been blocked may go on opening and sending into the chat exactly as before, and it is the blocker who no longer sees it (see "Blocking a member"). |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
-| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?}` → `201 {message: Message}`. In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"), and a body that begins `/draw ` — after one leading `@ai` there, or at the very start in an `ai` chat — asks it for a picture instead of an answer (see "Pictures"). In an `ai` chat `attachment_ids` naming photos is how a member shows the assistant a picture; whether the pixels leave the server depends on `ai_vision` and on the server having a vision deployment, and nothing about that is refused here. In the family chat, photos on an `@ai` message — or on the message it replies to through `reply_to_message_id` — reach it the same way, under the same two locks (see "Showing the assistant a picture from the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_ids: [34, 61]` claims 1–10 attachments this caller uploaded, in the order given; `attachment_id` (one id) is the legacy spelling of a one-element array, still accepted — sending BOTH is `validation`. A message carrying any may have an empty body. A location id must be the array's only element, and one id may not appear twice (`invalid_attachment`). `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
+| `GET /chats/{id}/messages/{message_id}/thread` | Query: `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}` — the chain `message_id` belongs to, resolved to its ROOT whether the id named is the root or any reply in it: the root first — the oldest in its chain, so any `after_id` at or past it leaves it off — then every message whose `thread_root_id` is that root, ordered by id ASCENDING, oldest first; `after_id` is strictly newer, looped until a short page. A message that is neither a reply nor answered comes back as a chain of one. Not a cursor and no part of catch-up. Errors: `chat_not_found`, `not_chat_member`, `message_not_found` (no such message in THIS chat), `invalid_pagination`. See "Threads". |
+| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?, mentions?}` → `201 {message: Message}`. `mentions: [{user_id, name}]` names members, family chat only — see "Mentioning a member" for what is checked (`validation` otherwise). In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"), and a body that begins `/draw ` — after one leading `@ai` there, or at the very start in an `ai` chat — asks it for a picture instead of an answer (see "Pictures"). In an `ai` chat `attachment_ids` naming photos is how a member shows the assistant a picture; whether the pixels leave the server depends on `ai_vision` and on the server having a vision deployment, and nothing about that is refused here. In the family chat, photos on an `@ai` message — or on the message it replies to through `reply_to_message_id` — reach it the same way, under the same two locks (see "Showing the assistant a picture from the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_ids: [34, 61]` claims 1–10 attachments this caller uploaded, in the order given; `attachment_id` (one id) is the legacy spelling of a one-element array, still accepted — sending BOTH is `validation`. A message carrying any may have an empty body. A location id must be the array's only element, and one id may not appear twice (`invalid_attachment`). `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. `assistant_consent_required` (403) when the chat is the caller's `ai` chat, or the body mentions the assistant, and they have not agreed that their words may go to the model — the message is REFUSED and not silently dropped, so the client can show the consent screen and offer to send it again ("Consenting to the assistant"). Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
 | `PATCH /chats/{id}/messages/{mid}` | `{body}` → `200 {message: Message}`. Author only. Replaces the body, stamps `edited_at` and the next `edit_seq`, and fans out `message_edited`. Body rules are the send rules: trimmed, non-empty, ≤ 4000 chars. Re-sending the body it already has is a no-op: no new seq, no fan-out. Errors: `message_empty`, `message_too_long`, `not_message_author` (403), `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `GET /chats/{id}/edits` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {messages: [Message]}` ordered by `edit_seq` ascending — the edit catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `PUT /chats/{id}/messages/{mid}/vote` | `{option_id: 5}` → `200 {message_id, poll: {Poll}}`. Sets the caller's choice on a poll — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or clear). One choice per member; there is no multiple choice. Re-PUT of the option already held is a no-op: no seq bump, no fan-out. Errors: `invalid_poll` (400 — no such option on this poll), `poll_closed` (409), `message_not_found` (404 — no such poll *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `DELETE /chats/{id}/messages/{mid}/vote` | → `200 {message_id, poll: {Poll}}`. Retracts the caller's vote; idempotent (retracting nothing returns the current state unchanged and burns no seq). Errors: `poll_closed` (409), `message_not_found`, `not_chat_member`, `chat_not_found`. |
 | `POST /chats/{id}/messages/{mid}/poll/close` | → `200 {message_id, poll: {Poll}}`. Author only, one-way. Closing a closed poll is a no-op with no seq bump. Errors: `not_message_author` (403), `message_not_found`, `not_chat_member`, `chat_not_found`. |
 | `GET /chats/{id}/polls` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {polls: [{message_id, poll: {Poll}}]}` ordered by `poll_seq` ascending — the poll catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
+| `GET /chats/{id}/polls/open` | Query: `limit` (default 50, max 200) → `200 {messages: [Message]}` — the chat's OPEN polls as they now stand, each as the whole message that carries it (the question is the body), ordered by message id ASCENDING, oldest first. Not a cursor and not catch-up: it takes no `after_seq`, moves no chat cursor, and is the answer to "what is still open", where `GET /chats/{id}/polls` is the feed of what changed. Closed polls are absent. On a chat that can hold no polls it answers `{"messages": []}` rather than an error. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. See "Finding the open ones". |
 | `POST /chats/{id}/read` | `{last_read_message_id}` → `204`. Monotonic — the server keeps the max ever reported. Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `chat_not_found`, `not_chat_member`. |
 | `PUT /chats/{id}/messages/{mid}/reaction` | `{emoji}` → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Sets or replaces the caller's reaction on the message — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or remove). One reaction per user per message. Emoji: trimmed, non-empty, ≤ 32 bytes UTF-8. Re-PUT of the current emoji is a no-op: no seq bump, no fan-out. Errors: `invalid_emoji`, `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `DELETE /chats/{id}/messages/{mid}/reaction` | → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Removes the caller's reaction; idempotent (deleting nothing returns the current state unchanged). Same errors minus `invalid_emoji`. |
@@ -2677,8 +3820,10 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 ## WebSocket protocol
 
-Connect with `Authorization: Bearer <token>` on the upgrade request. A bad token fails the
-upgrade with `401`. The server closes with code `4401` when the session expires mid-connection.
+Connect with `Authorization: Bearer <token>` on the upgrade request — or, from a browser, offer the
+subprotocols `family-connect` and `bearer.<token>` and expect `family-connect` echoed back (see "A
+browser is a client too"). A bad token fails the upgrade with `401`; a token in the query string
+is not a token at all. The server closes with code `4401` when the session expires mid-connection.
 
 Frames are JSON text messages tagged by `"type"`.
 
@@ -2692,6 +3837,8 @@ Frames are JSON text messages tagged by `"type"`.
                    "attachment_ids": [34, 35, 36]}
 {"type": "send",   "chat_id": 42, "client_msg_id": "5b2e0c14-…", "body": "Pizza or pasta?",
                    "poll": {"options": ["Pizza", "Pasta"]}}
+{"type": "send",   "chat_id": 42, "client_msg_id": "e7a1d9c3-…", "body": "@Anna are you in?",
+                   "mentions": [{"user_id": 9, "name": "Anna"}]}
 {"type": "read",   "chat_id": 42, "last_read_message_id": 1337}
 {"type": "typing", "chat_id": 42}
 {"type": "ping"}
@@ -2819,6 +3966,20 @@ apply it under the same rule the board catch-up uses: a note is written only whe
   with an error per keystroke, and answering only for chats that exist would turn the indicator into
   a way to enumerate chat ids. The membership check runs AFTER the throttle, so a client sending a
   chat id it has no business with cannot turn every keystroke into a database round trip.
+  **A `read` frame also goes back to the reader's OWN other devices.** The read marker has always
+  been per-USER and never per-device — one `chat_reads` row per `(chat, user)`, monotonic, and
+  `GET /chats` reports it as `last_read_message_id` — but until this the only way a second device
+  learned of it was to fetch that endpoint again. So a family member who read on their laptop
+  watched the badge on their phone sit there until something else made it resync, which is a badge
+  that is simply wrong for as long as it lasts. The frame carries `user_id`, so a receiving client
+  can already tell the two cases apart: a frame naming SOMEBODY ELSE is the roster fact below, and
+  one naming YOURSELF is your own marker, to be applied `max(stored, received)` exactly as the
+  endpoint's value is, and to be followed by recounting whatever unread figure that client draws.
+  **The originating connection is skipped**, exactly as it is for a new message: the device that
+  reported the read already knows, and the REST path — which has no connection to skip — passes
+  none and therefore reaches every one of that user's connections. That difference is deliberate
+  and is what makes the WS path cost the reporting device nothing.
+
   A client folds an incoming `read` into a displayed "seen" marker only in a DIRECT chat, where
   there is exactly one peer and the marker means one person. In the family chat a `read` frame is
   roster data that no bubble draws: a per-member seen state over N members is a row of faces nobody
@@ -2889,20 +4050,50 @@ apply it under the same rule the board catch-up uses: a note is written only whe
      instead lets a live message arriving mid-loop jump the cursor to its id, and every message
      between the last page and it is skipped — permanently, because `after_id` can never look
      back and history paging only ever goes older than the OLDEST row held.
+     **`max(id)` is of what was delivered IN SEQUENCE — a page (catch-up or history) or a frame on
+     the open connection — and of nothing else.** Not a step-2 preview: a client that stores
+     `last_message` beside the messages it pages must keep it out of the max, or `after_id` becomes the
+     server's newest id, the pages come back empty, and every message between what the device held and
+     that preview is never asked for — a hole nothing later repairs, which is how the Windows client
+     lost a day of a family chat. Nor the REST answer to a send or an edit, a copy from the edits feed,
+     or a thread read: each is one message that says nothing about the ones before it, and a send
+     answered while the socket was reconnecting opens the same hole. Such a row is held and drawn, and
+     counts once its frame or a page delivers it again. A chat that holds nothing in sequence has no
+     hole to fill: a client may leave it to history paging when it is opened (the newest page down), or
+     page it from `after_id=0`, which is correct and merely expensive.
+     **And the max is taken when the connection OPENS**, before any frame on it is applied — not when
+     step 3 is reached, several round trips later. A live message landing in between would otherwise
+     become the cursor, and everything missed while the socket was down would be skipped the same way;
+     a connection that opens again while a pass is waiting keeps the EARLIER of the two, and a pass that
+     could not finish hands its starting cursors to the next one.
      Then, when the chat's `max_reaction_seq` from step 2 exceeds the locally stored reaction
      cursor: `GET /chats/{id}/reactions?after_seq=<stored cursor>` looped until a short page,
      applied per message under the `reaction_seq` guard. The stored cursor advances with every
      page **even for messages the client does not hold** (states for unknown messages are
      dropped; history paging re-delivers them embedded on the `Message` objects).
+     Then, when the chat's `max_edit_seq` from step 2 exceeds the locally stored edit cursor:
+     `GET /chats/{id}/edits?after_seq=<stored cursor>` looped until a short page, applied through
+     exactly the same path as a page of history — the feed answers whole `Message` objects — and
+     under the `edit_seq` guard, with the cursor advancing per page as the reaction one does.
+     This is the only step that learns of a change to a message the client ALREADY HOLDS: step 3's
+     own `after_id` is `WHERE id > cursor` and can never look at an older row, so without this a
+     device that slept through an edit shows the old words until something else happens to that
+     message. It is a third feed and not a variation on the first two: the edit sequence is its
+     own, and the answer is a message rather than a state.
      Then, when the chat's `max_poll_seq` from step 2 exceeds the locally stored poll cursor:
      `GET /chats/{id}/polls?after_seq=<stored cursor>` looped until a short page, applied per
      message under the `poll_seq` guard, with the cursor advancing exactly as the reaction one
      does.
-     **Only a live frame and a catch-up page may move either chat cursor.** A reaction or poll
+     **The three cursors above are the CLIENT'S, and a `GET /chats` row's `max_*_seq` is the
+     SERVER'S — same names, different numbers.** The gate is "the server's mark exceeds what I
+     have applied", so a client that stores the list's mark as its own cursor makes that test
+     false for ever and silently stops catching up. Keep them apart: the marks arrive with step 2
+     and are read from the answer; the cursors live where the applied states are.
+     **Only a live frame and a catch-up page may move any of them.** A reaction, edit or poll
      state that reaches a client by any other route — embedded on a fetched `Message`, or in the
-     HTTP response to that client's own reaction, vote, retraction or close — is applied under
-     the per-message guard and must NOT advance the chat cursor. Such a state is evidence about
-     one message and none at all about another message's lower value, and REST goes on working
+     HTTP response to that client's own reaction, edit, vote, retraction or close — is applied
+     under the per-message guard and must NOT advance the chat cursor. Such a state is evidence
+     about one message and none at all about another message's lower value, and REST goes on working
      while the socket is down, which is precisely when the frames carrying those lower values
      were missed: a vote answered with `poll_seq` 100 would push the cursor past somebody else's
      99, step 2's `max_poll_seq > cursor` test would then ask for nothing, and that state would
@@ -2959,6 +4150,18 @@ client keeps trying.
   server still holds the upload it names — unclaimed uploads are swept after
   `limits.attachment_grace_hours` — so a client that has thrown its copy away has no way to
   recover, and the message can never be sent.
+- **An upload may be handed to the system, and may land while the app is not running.** A phone
+  suspends or kills an app that is not in front of somebody, and a 90 MB video does not finish in
+  the seconds a departing app is given — so a client gives the remaining uploads to whatever its
+  platform has for work that outlives the app (a background `URLSession`, a `WorkManager` job) and
+  reads the results back when it next runs. Two consequences, both the client's to hold:
+  **a landed upload whose answer was lost is invisible** — the id never reached anybody, so the
+  bytes are re-uploaded and the first copy is left for the sweep, which is what
+  `limits.attachment_grace_hours` is for; and **the same send must not run twice at once**, because
+  two passes over one row would each upload the remainder. Nothing here changes the wire: an upload
+  is still `POST /attachments`, still unclaimed until a message names it, and the message is still
+  posted only once every id is in hand. A client that cannot do any of this is not broken — it
+  finishes on its next foreground, which is the floor this section already sets.
 - **`attachment_expired` means upload it again, not give up.** A send naming an upload the sweep
   has already taken is answered `attachment_expired` (404) rather than `attachment_not_found`, and
   only for an upload the CALLER made: the two are different situations and only one of them has a
@@ -3059,8 +4262,10 @@ the OS rotates the token — the launch re-POST is also what keeps the session l
 any of the sign-outs above it is what brings the device back at all. A push rejected as
 unregistered (APNs `410`/`BadDeviceToken`, FCM `UNREGISTERED`) deletes the device row.
 
-Titles: direct chat → sender's display name; family chat → `"<Family> — <Sender>"`. Body: the
-message text, or `"New message"` when the server's `[push] include_message_body = false`.
+Titles: direct chat → sender's display name; family chat → `"<Family> — <Sender>"`, or
+`"<Family> — <Sender> mentioned you"` on the devices of a member the message names (see
+"Mentioning a member" — the same push, a different title, never a second one). Body: the message
+text, or `"New message"` when the server's `[push] include_message_body = false`.
 
 A new board note pushes with `"kind": "board_note"` and `family_id` + `note_id` instead of chat and
 message ids. Title `"<Family> — <Author>"`, body the note's text (or `"New note"` when
@@ -3139,7 +4344,11 @@ it is the fact of the call, and the device does the ringing itself.
 Who is woken: the callee's devices that have no live socket of their own — the same per-device
 rule as everything above — that can present a call: an `ios` device with a `voip_token`, and an
 `android` device with a push token. An iOS device that never registered a VoIP token is not woken;
-a Mac is never woken, because a Mac that is not running is not a phone in a pocket. What a woken
+a Mac is never woken, because a Mac that is not running is not a phone in a pocket — and neither is
+Windows, for the same reason and because it registers no device: a running window holds its socket
+and rings on it, and a closed one hears nothing. A browser is
+never woken either, for that reason and one more: it registers no device to wake (see "A browser is
+a client too"), so a closed tab hears nothing and the call is missed. What a woken
 device does next is connect its socket, and the server's registration-time replay ("Late arrivals")
 hands it the offer — or the `call_end`, if the call is already over.
 
@@ -3200,6 +4409,7 @@ unregistered deletes the row, as an ordinary push would.
 | Poll option text | 100 chars |
 | Family-chat history sent with a mention | 30 days / 200 messages / 40 000 chars, whichever binds first (fixed) |
 | Photos shown to the assistant with one question | 4 — from that one message in a private thread; in the family chat, from the `@ai` message and the message it replies to together, and — only with `ai_history_photos` on — the transcript's newest photos filling whatever those two left of the same four (fixed) |
+| Profile pictures shown to the assistant with one mention | 4 — only with `ai_faces` on, only the members whose lines are in the transcript, most recently active first, under a budget SEPARATE from the four photographs above and never displacing one (fixed) |
 | A picture prompt the assistant writes for itself (`draw_picture`) | the message-body ceiling, 4000 chars by default; over it is `ai_error`, never cut |
 | Largest photo shown to the assistant | 5 MiB after preferring the preview; a larger one is left out and the assistant is told so (fixed) |
 | Attachment size | 100 MB (`limits.max_attachment_bytes`; keep nginx in step) |

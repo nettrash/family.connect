@@ -72,6 +72,21 @@ enum MacFilePicker {
     /// somebody reads afterwards. Multi-select stays on: choosing four at
     /// once is the normal case, and the composer's own ten-per-message cap
     /// still applies underneath.
+    /// One picture for the family board (docs/protocol.md, "Board": a wall
+    /// pins pictures). The Mac's own door, like the composer's: the board
+    /// used to offer only the Photos library, and the pictures a Mac holds
+    /// live in the file system as often as in Photos — an open panel reaches
+    /// both, the library through its Media sidebar (issue #69).
+    static func pickPhotoToPin() -> URL? {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.image]
+        panel.prompt = String(localized: "Pin a Photo")
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
     static func pickPictures(limit: Int = AssistantPictureLimits.maxPerQuestion) -> [URL] {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true

@@ -5,32 +5,29 @@
 //  Keeps the app alive long enough to finish an attachment upload that was
 //  already started when the person left.
 //
-//  WHY THIS EXISTS. `sendMedia` uploads every attachment and only then
-//  enqueues the message row, which is deliberate — the row claims the whole
-//  set at once, so a half-finished upload must leave nothing behind rather
-//  than an empty bubble. The cost of that ordering is that a send in flight
-//  exists ONLY as a running Task: nothing is persisted, so `sweepOutbox()`
-//  has nothing to retry after a relaunch, unlike a text message. Suspend
-//  the app mid-upload and the send is simply gone.
+//  WHY THIS EXISTS. Somebody presses Send and immediately switches apps.
+//  The seconds a departing app is given are usually enough for a photo,
+//  and finishing an upload already in progress beats starting it again
+//  later on a colder cache.
 //
-//  A background task buys the seconds an upload already in progress needs
-//  to land, which covers the case that actually happens: someone presses
-//  send and immediately switches apps.
-//
-//  BE CLEAR ABOUT WHAT THIS DOES NOT DO. If the allowance runs out first —
-//  a large video on a slow connection — the send is lost exactly as before:
-//  nothing is persisted, so there is nothing for `sweepOutbox()` to retry,
-//  and the prepared files are orphaned in tmp with no owner. Making a media
-//  send survive that needs the send represented in the model rather than in
-//  a running Task, which is a larger design than this file. What is here
-//  narrows the window; it does not close it.
+//  WHAT IT IS NOT, ANY MORE. This file used to be the only thing standing
+//  between a backgrounded app and a lost send, because a media send lived
+//  nowhere but a running Task. Both halves of that are gone: a send is a
+//  row plus staged bytes before the first byte leaves (`sendMedia`,
+//  `PendingMediaItemEntity`), and the uploads a departing app still owes
+//  are handed to the system itself (`BackgroundUploads`), which keeps
+//  going while the app is suspended or dead. So losing the allowance now
+//  postpones nothing that matters: the system is carrying the bytes, and
+//  the ordinary outbox finishes the message on whatever trigger comes
+//  next (docs/protocol.md, "Sending on an unreliable network").
 //
 //  iOS only. macOS does not suspend an app for being in the background, so
 //  there is nothing to hold open; the no-op keeps `sendMedia` free of
 //  platform conditionals.
 //
-//  Android counterpart: none needed — uploads there run in a coroutine on
-//  an application-scoped repository, not tied to a screen.
+//  Android counterpart: MediaUploadWorker.kt — WorkManager plays the part
+//  `BackgroundUploads` plays here, and a coroutine on the application
+//  scope plays this one.
 //
 
 import Foundation

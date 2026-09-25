@@ -10,14 +10,14 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::{PgConnection, Row};
 use time::OffsetDateTime;
 
 use crate::auth::{self, AuthUser};
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
-use crate::models::{Family, PendingJoinRequest, User};
+use crate::models::{AssistantConsentRequest, Family, PendingJoinRequest, User};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -687,14 +687,17 @@ pub async fn scrub_account(
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
-    // An upload NO message ever claimed is a half-finished action of an
+    // An upload NOTHING ever claimed is a half-finished action of an
     // account that no longer exists, and nothing else would remove it for
-    // hours. A CLAIMED one is not touched: its message is part of the
-    // shared record and keeps its picture.
-    sqlx::query("DELETE FROM attachments WHERE uploader_id = $1 AND message_id IS NULL")
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?;
+    // hours. A CLAIMED one is not touched: its message — or the board note
+    // it is pinned to, which survives the account like the message does —
+    // is part of the shared record and keeps its picture.
+    sqlx::query(
+        "DELETE FROM attachments WHERE uploader_id = $1 AND message_id IS NULL AND note_id IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
 
     // (e) The scrub itself.
     //
@@ -905,7 +908,7 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 f.id AS family_id, f.name AS family_name, f.join_policy,
                 f.created_at AS family_created_at, f.owner_user_id, f.invite_code,
                 f.language, f.max_members, f.ai_history, f.ai_vision,
-                f.ai_history_photos
+                f.ai_history_photos, f.ai_greeting, f.ai_faces
          FROM users u
          LEFT JOIN families f ON f.id = u.family_id
          WHERE u.id = $1",
@@ -944,6 +947,13 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 // And the third, which decides whether they may leave
                 // without anybody pointing the assistant at them.
                 ai_history_photos: row.get("ai_history_photos"),
+                // And the fourth, which is not about their words or pictures
+                // at all: whether the assistant greets the family each
+                // morning without being asked.
+                ai_greeting: row.get("ai_greeting"),
+                // And the fifth, which decides whether a member's own FACE
+                // may leave the server with a mention.
+                ai_faces: row.get("ai_faces"),
             };
             let role = if is_owner { "owner" } else { "member" };
             (Some(family), Some(role))
@@ -1019,6 +1029,34 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             // honest escalation path for when the family's moderator is
             // the problem (protocol.md, "Reporting a member").
             "support_contact": state.cfg.server.support_contact,
+            // WHEN THIS CALLER AGREED that their words may go to the
+            // model (protocol.md, "Consenting to the assistant"). ALWAYS
+            // present; null both when they have not agreed and when this
+            // server has no assistant to agree to, which a client never
+            // has to tell apart — without an assistant there is no `ai`
+            // chat to draw. Read at step 1 of the resync, so a client
+            // knows before it draws that chat whether the next thing to
+            // show is the consent screen rather than a composer.
+            "assistant_consent_at": if state.cfg.ai.is_usable() {
+                crate::handlers_ai::consent_stamp(
+                    crate::handlers_ai::assistant_consent_at(&state, auth.user_id).await?,
+                )
+            } else {
+                Value::Null
+            },
+            // Whether this server posts the assistant's daily greeting at
+            // all. ALWAYS present, for exactly `calls_enabled`'s reason: the
+            // family's own `ai_greeting` switch is one half of a two-key
+            // arrangement, and without this an owner who turned their half on
+            // and saw nothing for a week would have no way to tell a server
+            // that never posts from a switch that did not save.
+            //
+            // ANDed with the assistant's own usability, like
+            // `video_calls_enabled` is with `calls_enabled`: the greeting is
+            // written by that deployment, so a server with `[greetings]` on
+            // and no usable `[ai]` posts nothing and says so here rather than
+            // promising otherwise (protocol.md, "The daily greeting").
+            "greetings_enabled": state.cfg.greetings.is_usable() && state.cfg.ai.is_usable(),
         })),
     )
         .into_response())
@@ -1046,6 +1084,63 @@ fn validate_username(username: &str) -> Result<(), ApiError> {
         return Err(ApiError::validation("that username is reserved"));
     }
     Ok(())
+}
+
+/// `POST /me/assistant-consent` — the caller's own permission for their words
+/// to go to the model (docs/protocol.md, "Consenting to the assistant").
+///
+/// THE MEMBER'S AND NOBODY ELSE'S. `ai_history` and `ai_vision` are the
+/// owner's switches over what the family's chat exposes; neither is
+/// permission from the people whose words that history is made of, and this
+/// endpoint takes no user id for exactly that reason — there is no shape of
+/// request in which one person grants it for another.
+///
+/// Granting twice keeps the FIRST timestamp: when somebody agreed is a fact,
+/// not a counter, and an operator asked when a member consented should not
+/// be answered with the date they last reinstalled. Withdrawing sets it back
+/// to null and deletes nothing — the `ai` chat and its history stay, because
+/// consent going away is not a request to lose a conversation.
+pub async fn set_assistant_consent(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    AppJson(req): AppJson<AssistantConsentRequest>,
+) -> Result<Response, ApiError> {
+    // No assistant, nothing to consent to — and answering anything else
+    // would let this endpoint report whether one is configured.
+    if !state.cfg.ai.is_usable() {
+        return Err(ApiError::not_found(codes::NOT_FOUND, "no such endpoint"));
+    }
+    let at: Option<OffsetDateTime> = if req.granted {
+        sqlx::query_scalar(
+            "UPDATE users
+                SET assistant_consent_at = coalesce(assistant_consent_at, now())
+              WHERE id = $1
+              RETURNING assistant_consent_at",
+        )
+        .bind(auth.user_id)
+        .fetch_one(&state.pool)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            "UPDATE users SET assistant_consent_at = NULL WHERE id = $1
+              RETURNING assistant_consent_at",
+        )
+        .bind(auth.user_id)
+        .fetch_one(&state.pool)
+        .await?
+    };
+    tracing::info!(
+        user_id = auth.user_id,
+        granted = req.granted,
+        "assistant consent set"
+    );
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "assistant_consent_at": crate::handlers_ai::consent_stamp(at),
+        })),
+    )
+        .into_response())
 }
 
 /// Names the server itself uses and nobody may register.

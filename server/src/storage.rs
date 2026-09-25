@@ -55,6 +55,7 @@ impl Storage {
     /// treated by callers as "do not refuse": a server that stopped
     /// accepting photos because a syscall failed would be a worse failure
     /// than the one this guards against.
+    #[cfg(unix)]
     pub fn free_bytes(&self) -> Option<u64> {
         use std::os::unix::ffi::OsStrExt;
 
@@ -73,6 +74,16 @@ impl Storage {
         // f_bsize is the preferred I/O block size and is NOT the same
         // number on every filesystem.
         (stats.f_bavail as u64).checked_mul(stats.f_frsize as u64)
+    }
+
+    /// Off Unix the filesystem is not interrogated, which callers already
+    /// read as "do not refuse". The server ships for Linux; this exists so
+    /// a developer can run it on Windows for a local fixture (the Microsoft
+    /// Store screenshots, `win/store/seed-store-screenshots.ps1`), where a
+    /// full disk is not the failure being guarded against.
+    #[cfg(not(unix))]
+    pub fn free_bytes(&self) -> Option<u64> {
+        None
     }
 
     /// Would accepting `incoming` more bytes leave less than `floor` free?

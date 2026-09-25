@@ -106,6 +106,7 @@ struct MyBirthdayView: View {
                     }
                 }
             }
+            .macSheetForm()
             .navigationTitle("Birthday")
             .inlineNavigationTitle()
             .toolbar {
@@ -123,6 +124,7 @@ struct MyBirthdayView: View {
                 if isSaving { ProgressView() }
             }
         }
+        .macSheetFrame(MacSheetSize.myBirthday)
         .interactiveDismissDisabled(isSaving)
         .onAppear {
             // Clamped on the way in: what a roster row says is not
@@ -228,6 +230,7 @@ struct MemberBirthdayView: View {
                     }
                 }
             }
+            .macSheetForm()
             .navigationTitle("Birthday")
             .inlineNavigationTitle()
             .toolbar {
@@ -245,6 +248,7 @@ struct MemberBirthdayView: View {
                 if isSaving { ProgressView() }
             }
         }
+        .macSheetFrame(MacSheetSize.memberBirthday)
         .interactiveDismissDisabled(isSaving)
         .onAppear {
             // Clamped on the way in, for the reason MyBirthdayView says.

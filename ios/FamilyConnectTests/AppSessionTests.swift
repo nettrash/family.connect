@@ -22,7 +22,7 @@ struct SessionLogicTests {
     private static let user = UserDTO(id: 7, username: "anna", displayName: "Anna", createdAt: nil)
     private static let family = FamilyDTO(
         id: 3, name: "The Smiths", joinPolicy: "open", createdAt: nil, inviteCode: nil,
-        aiVision: false, aiHistoryPhotos: false, maxMembers: nil)
+        aiVision: false, aiHistoryPhotos: false, aiGreeting: false, aiFaces: false, maxMembers: nil)
     private static let pending = PendingJoinRequestDTO(familyID: 3, familyName: "The Smiths", createdAt: nil)
 
     @Test("family present → active (regardless of prior waiting)")
@@ -96,7 +96,7 @@ struct AppSessionTransitionTests {
     private static let user = UserDTO(id: 7, username: "anna", displayName: "Anna", createdAt: nil)
     private static let family = FamilyDTO(
         id: 3, name: "The Smiths", joinPolicy: "open", createdAt: nil, inviteCode: nil,
-        aiVision: false, aiHistoryPhotos: false, maxMembers: nil)
+        aiVision: false, aiHistoryPhotos: false, aiGreeting: false, aiFaces: false, maxMembers: nil)
 
     /// Spy-instrumented session against a never-hit API client.
     @MainActor
@@ -233,6 +233,29 @@ struct AppSessionTransitionTests {
         session.apply(me: MeResponse(user: Self.user, family: nil, role: nil, pendingJoinRequest: nil))
         #expect(session.familyRegistrationEnabled)
         #expect(session.familylessAccountTTLDays == 0)
+    }
+
+    /// The operator's half of the daily greeting is stored, not held on the
+    /// session, because the family's switch is drawn against it before the
+    /// first /me of a session answers — and dropping this line would disable
+    /// that switch on every device for ever with every other test green.
+    @Test("apply: whether the server posts greetings reaches the stored flag")
+    func applyCarriesGreetingsEnabled() {
+        resetGlobals()
+        defer { resetGlobals() }
+        let (session, _) = makeSession()
+        #expect(!AppSettings.greetingsEnabled)
+
+        session.apply(me: MeResponse(
+            user: Self.user, family: Self.family, role: "owner", pendingJoinRequest: nil,
+            greetingsEnabled: true
+        ))
+        #expect(AppSettings.greetingsEnabled)
+
+        // And off again: a server that stopped is a server that stopped.
+        session.apply(me: MeResponse(
+            user: Self.user, family: Self.family, role: "owner", pendingJoinRequest: nil))
+        #expect(!AppSettings.greetingsEnabled)
     }
 
     @Test("apply: pending request → pendingApproval, persists the waiting bit")

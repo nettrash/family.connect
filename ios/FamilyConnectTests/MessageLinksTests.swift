@@ -103,16 +103,21 @@ struct MessageLinksTests {
 
     /// Every run this body draws with the assistant's own mark on it.
     ///
-    /// Selected by the ACCENT COLOUR, not by the emphasis: markdown's own
-    /// bold carries `.stronglyEmphasized` too, so a body like a `/draw`
+    /// Selected by the COLOUR ATTRIBUTE, not by the emphasis: markdown's
+    /// own bold carries `.stronglyEmphasized` too, so a body like a `/draw`
     /// wrapped in asterisks would answer "marked" on the strength of its
-    /// own markup and this test would pass whatever the grammar did. The
-    /// colour is applied by `highlightMentions` and by nothing else on a
-    /// bubble that is not mine.
+    /// own markup and this test would pass whatever the grammar did.
+    ///
+    /// A mention is drawn bold in the body's own colour (docs/protocol.md,
+    /// "Mentioning a member"), so on a bubble that is not mine the mark's
+    /// colour is `.primary` — the label colour said out loud, which
+    /// changes nothing on screen and is set by `highlightMentions` and by
+    /// nothing else. If that ever stops being true, this needs a mark of
+    /// its own rather than a looser guard.
     private func marked(_ body: String) -> [String] {
         let attributed = MessageLinks.attributedBody(body, isMine: false)
         return attributed.runs.compactMap { run in
-            guard run.foregroundColor == .accentColor else { return nil }
+            guard run.foregroundColor == .primary else { return nil }
             return String(attributed[run.range].characters)
         }
     }
@@ -158,7 +163,7 @@ struct MessageLinksTests {
         let marks: [String] = blocks.flatMap { block -> [String] in
             guard case .text(let attributed) = block else { return [] }
             return attributed.runs.compactMap { run in
-                guard run.foregroundColor == .accentColor else { return nil }
+                guard run.foregroundColor == .primary else { return nil }
                 return String(attributed[run.range].characters)
             }
         }

@@ -45,10 +45,27 @@ struct MacMessageRow: View {
     var isRead: Bool = false
     var onReply: () -> Void = {}
     var onEdit: () -> Void = {}
+    /// The chain (docs/protocol.md, "Threads"): "N replies" under a root,
+    /// "View thread" in the menu of any member of one.
+    var replyCount: Int64 = 0
+    var canViewThread: Bool = false
+    var onOpenThread: () -> Void = {}
     /// Ask the conversation to open the report sheet for this message's
     /// sender. The row does not own the sheet: on the Mac it belongs to the
     /// window, not to a row that scrolls away under it.
     var onReport: () -> Void = {}
+    /// Report an ASSISTANT reply — a separate closure from `onReport`
+    /// because it is a separate endpoint with a separate reader
+    /// (docs/protocol.md, "Reporting the assistant").
+    var onReportAssistant: () -> Void = {}
+    /// Whether this row is in the reader's own assistant chat, where
+    /// anybody who is not the reader is the assistant.
+    var isAssistantChat: Bool = false
+    /// Whether this surface can act on Edit and Report: the chat can, the
+    /// thread sheet cannot, and a menu row that silently does nothing is
+    /// worse than none (docs/protocol.md, "Threads").
+    var canEdit: Bool = true
+    var canReport: Bool = true
     /// This row's sender is blocked. Decided by the conversation through
     /// `MessagePresentation.isHiddenByBlock`.
     var isHiddenByBlock: Bool = false
@@ -66,6 +83,9 @@ struct MacMessageRow: View {
     /// `onTapQuote`, ported with the same best-effort contract: the
     /// receiver may do nothing when the target is not cached.
     var onTapQuote: (Int64) -> Void = { _ in }
+    /// A click on a member the message names (docs/protocol.md,
+    /// "Mentioning a member").
+    var onTapMention: (Int64) -> Void = { _ in }
     var onOpenAttachment: (AttachmentDTO) -> Void = { _ in }
     /// A drag out to the Finder found nothing to hand over — offline, a
     /// 404, or retention swept the attachment. The WINDOW says so, not this
@@ -273,6 +293,11 @@ struct MacMessageRow: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 2)
                 }
+                // The chain's affordance, with the message; never on a
+                // hidden row.
+                if replyCount > 0, !isHidden {
+                    threadChip
+                }
             }
             if !isMine { Spacer(minLength: 80) }
         }
@@ -427,7 +452,10 @@ struct MacMessageRow: View {
                 Button("See who reacted") { showsReactors = true }
             }
             Button("Reply", action: onReply)
-            if isMine, !message.body.isEmpty {
+            if canViewThread {
+                Button("View thread", action: onOpenThread)
+            }
+            if canEdit, isMine, !message.body.isEmpty {
                 Button("Edit", action: onEdit)
             }
             Divider()
@@ -455,13 +483,25 @@ struct MacMessageRow: View {
         // React / See who reacted / Try Again / Delete and no Share, and
         // porting the iOS row set wholesale would smuggle a Share item
         // onto the Mac that nobody asked for.
-        if isOtherMember {
+        // THE ASSISTANT'S REPLY, which has a Safety row of its own and only
+        // the one: a reply can be reported — to the people who run the
+        // server, never to the family owner — and there is nothing to
+        // block, because the assistant is not a member (docs/protocol.md,
+        // "Reporting the assistant").
+        if isAssistantSender, canReport, message.serverID != nil {
+            Divider()
+            Menu("Safety") {
+                Button("Report this reply…") { onReportAssistant() }
+            }
+        } else if isOtherMember {
             Divider()
             // Grouped under Safety, matching the phone and the roster. A
             // native submenu here, unlike iOS's paged custom panel: an
             // AppKit context menu nests on its own.
             Menu("Safety") {
-                Button("Report…") { onReport() }
+                if canReport {
+                    Button("Report…") { onReport() }
+                }
                 if coordinator.blockedUserIDs.contains(message.senderID) {
                     Button("Unblock") {
                         let userID = message.senderID
@@ -482,7 +522,15 @@ struct MacMessageRow: View {
     /// server would refuse a block naming it.
     private var isOtherMember: Bool {
         message.senderID != coordinator.currentUserID
-            && message.senderID != AppSettings.assistantUserID
+            && !isAssistantSender
+    }
+
+    /// The assistant, by its account or by the chat it is speaking in — the
+    /// same belt and braces the phone uses, because a client that has not
+    /// read the assistant's id yet still knows whose chat this is.
+    private var isAssistantSender: Bool {
+        message.senderID != coordinator.currentUserID
+            && (isAssistantChat || message.senderID == AppSettings.assistantUserID)
     }
 
     @ViewBuilder
@@ -842,7 +890,7 @@ struct MacMessageRow: View {
     /// take something away.
     private var bodyBlocks: [MessageMarkdown.Block] {
         guard !isEmojiOnly else { return [.text(AttributedString(message.body))] }
-        return MessageLinks.blocks(message.body, isMine: isMine)
+        return MessageLinks.blocks(message.body, isMine: isMine, mentions: message.mentions)
     }
 
     /// A table sets the balloon's width, so the text around it wraps
@@ -881,6 +929,10 @@ struct MacMessageRow: View {
     /// pause before a page opens, which is the price of the heart working
     /// everywhere rather than only over the padding.
     private func handleLinkClick(_ url: URL) {
+        if let userID = MemberMentions.userID(from: url) {
+            onTapMention(userID)
+            return
+        }
         if pendingLinkOpen != nil {
             pendingLinkOpen?.cancel()
             pendingLinkOpen = nil
@@ -921,6 +973,25 @@ struct MacMessageRow: View {
     /// macOS's default body size over iOS's. One constant to change if the
     /// Mac's emoji ever want to be bigger or smaller.
     fileprivate static let macBodyRatio: CGFloat = 13.0 / 17.0
+
+    /// "N replies ›" under a root somebody answered — the phone's chip,
+    /// ported (docs/protocol.md, "Threads").
+    private var threadChip: some View {
+        Button(action: onOpenThread) {
+            HStack(spacing: 4) {
+                Image(systemName: "arrowshape.turn.up.left.2")
+                Text("\(replyCount) replies")
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.tint)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 2)
+        .accessibilityLabel(Text("\(replyCount) replies"))
+        .accessibilityHint(Text("Opens the thread"))
+    }
 
     /// The phone's delivery ladder (MessageBubbleView.statusGlyph), ported:
     /// clock while pending, checkmark when the server has it, a tinted

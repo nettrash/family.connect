@@ -137,6 +137,23 @@ final class AttachmentStore {
         return nil
     }
 
+    /// A PHOTO's preview — or, once the server has said it has none, the
+    /// photo itself. Safe to call from a view body, like `image`.
+    ///
+    /// For the one caller that cannot know better up front: a board note
+    /// keeps its picture's id and nothing else (NoteEntity stores no
+    /// `has_preview`), and the pin that made it may have lost its preview
+    /// upload — both apps treat that upload as best effort. Asking for the
+    /// preview alone left such a note a spinner for good; asking for both at
+    /// once would fetch every full photo on the wall. So the full bytes are
+    /// asked for only after the preview's 404 has settled — which bumps
+    /// `generation`, so a view reading it asks again and gets here.
+    func previewOrPhoto(id: Int64) -> Image? {
+        if let preview = image(id: id, preview: true) { return preview }
+        guard missing.contains(key(id, preview: true)) else { return nil }
+        return image(id: id, preview: false)
+    }
+
     private func fetch(id: Int64, preview: Bool, key: String, mayArriveLate: Bool) {
         inFlight.insert(key)
         Task { [weak self] in
