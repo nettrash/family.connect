@@ -4,13 +4,21 @@ Every text the App Store listing needs, written against the shipped 1.1 feature 
 line by line against the code. Fill every `[PLACEHOLDER]` before submission — they mark the demo
 accounts and support address, which live on the server and not in this repository.
 
-**This file describes an iOS-only submission.** macOS ships from the same target and the same
-bundle id, is held for a later release, and has its own section at the end. Nothing in the
-listing copy or the review notes below is written to be true of the Mac.
+**1.1 goes out on three platforms: iPhone, iPad and Mac.** iPhone and iPad share this listing
+and one binary — the iPad screenshots ARE uploaded (the earlier decision to hold iPad was
+reversed, see the checklist) — and the Mac ships from the same target and bundle id with its own
+copy, screenshots and review notes in the macOS section at the end. Nothing in the iOS listing
+copy or the iOS review notes is written to be true of the Mac, and the Mac's own notes carry the
+`com.apple.security.network.server` explanation the 2026-09-04 automated query asked for.
 
-Character limits are stated in each heading and were measured, not estimated. App Store Connect
-enforces them at entry: a Description over 4,000 characters cannot be saved, and App Review
-Information notes over 4,000 are truncated mid-sentence.
+Character limits are stated in each heading and were measured, not estimated — by
+`ios/docs/count-appstore.py`, which measures every field TWICE: as written, and with each
+`[PLACEHOLDER]` at the length its real value has. **The second number is the one App Store
+Connect counts.** Both review-notes blocks were written to within a dozen characters of the limit
+and both went OVER once filled (4,004 and 4,027), because `[AI_PROCESSOR]` alone is 27 characters
+longer than its placeholder; what falls off the end of notes App Store Connect truncates without
+saying so is the AI-consent paragraph and the privacy-policy URL — the two things guideline
+5.1.1(i) asks for. They are trimmed to fit filled, and the script guards them.
 
 ## Subtitle (29/30 chars)
 
@@ -105,7 +113,7 @@ chat,messenger,private,self-hosted,server,calls,video,voice,photos,relatives,gra
 
 *("family" and "connect" are left out on purpose — the app name is meant to carry them. Confirm the App Store Connect name first: the icon and the app itself are called "Family", and if the store listing is named that too, "connect" is indexed nowhere and should take "group"'s place here; the five free characters are held for exactly that. "kids" is dropped deliberately — a keyword implying a child audience invites a Guideline 1.3 and age-rating question this app cannot answer.)*
 
-## Notes for App Review (paste verbatim — 3988/4000 chars)
+## Notes for App Review (paste verbatim — 3977 as written, 3993 with the placeholders filled / 4000)
 
 DEMO SERVER: https://fc.nettrash.me — compiled in, so there is nothing to configure.
 
@@ -116,19 +124,19 @@ DEMO ACCOUNTS.
 
 NEW IN 1.1, WHERE TO FIND IT. Threads: "N replies" under an answered message opens the chain. Mentions: type @ in the composer. Open polls: the chart icon in the family chat's toolbar. The board holds an event (date, place, who is going, add to calendar) and a task list anyone may tick.
 
-WHAT IT IS. A client for a small open-source (MIT, Rust) chat server. No vendor cloud: each installation talks to one server, and a family's messages live in its database and on the family's devices. On the device the app is named Family; the store record is Family Connect. Two modes: (1) the default server above, online for the whole review — launch and sign in; (2) "Change server…" points the app at a self-hosted one. Review needs mode 1. These notes are for iOS.
+WHAT IT IS. A client for a small open-source (MIT, Rust) chat server. No vendor cloud: each installation talks to one server, and a family's messages live in its database and on the family's devices. On the device the app is named Family; the store record is Family Connect. Two modes: (1) the default server above, online for the whole review — launch and sign in; (2) "Change server…" points the app at a self-hosted one. Review needs mode 1. These notes cover iOS.
 
-CONTACT IS CONTAINED (guideline 1.2). No public feed, no discovery, no directory, no user search — nothing is posted publicly. Registration is open (username, display name, password; no email, no phone), but an account in no family can start nothing: one-to-one chats, reports, blocks and calls are refused server-side unless both share a family. The only ways in are creating a family or presenting an 8-character invite code; a new family defaults to "Need approval", so the owner admits each member, may rotate the code, cap it, close joining, or remove anyone.
+CONTACT IS CONTAINED (guideline 1.2). No public feed, no discovery, no directory, no user search — nothing is posted publicly. Registration is open (username, display name, password; no email, no phone), but an account in no family can start nothing: one-to-one chats, reports, blocks and calls are refused server-side unless both share a family. The only ways in are creating a family or presenting an 8-character invite code; a new family defaults to "Need approval", so the owner admits each member, may rotate the code, cap it, close joining or remove anyone.
 
 REPORT AND BLOCK. Long-press a message → "Safety" → "Report…" or "Block"; a person can also be reported or blocked from their Manage Family row the same way. Four fixed reasons. The moderator is the family owner: reports arrive in Settings → Family → Manage Family → Reports, and push them. A report naming the owner is never listed to them; that sheet shows the server's support contact instead — [SUPPORT_EMAIL], monitored by us.
 
-DELETE ACCOUNT (5.1.1(v)). Settings → last section, beside Log Out. It asks for the account password (a live session is not proof) and a second confirmation, then runs at once, irreversibly. It erases the username (freeing it), display name, password, avatar, birthday, sessions and push tokens. One-to-one chats go for both people; family-chat messages, notes and reactions stay as "Deleted account". Ownership passes to the longest-standing member. It works on the demo accounts.
+DELETE ACCOUNT (5.1.1(v)). Settings → last section, beside Log Out. It asks for the account password (a live session is not proof) and a confirmation, then runs at once, irreversibly. It erases the username (freeing it), display name, password, avatar, birthday, sessions and push tokens. One-to-one chats go for both people; family-chat messages, notes and reactions stay as "Deleted account". Ownership passes to the longest-standing member. It works on the demo accounts.
 
 NOT END-TO-END ENCRYPTED, and the app does not claim to be. Message text, photos, files and locations are stored readable in the chosen server's database and filesystem; on the default server the developer is the operator. Call media (WebRTC, DTLS-SRTP) is peer to peer, or goes via a relay that forwards the encrypted stream without reading it.
 
 AI ASSISTANT — CONSENT (5.1.1(i), 5.1.2(i)). The optional assistant is the only feature sending anything to a third party: [AI_PROCESSOR]. Before a member's first message reaches it, a screen names that recipient and all that travels — the message; in the family chat only an @ai message, with the last 30 days / 200 messages (others' words, names, times) while history is on; a photo only when attached and allowed; the reply appears in that chat. Nothing is sent until "I Agree", the server refuses (403) until then, and Settings → Assistant withdraws it. [DEMO_USER] has NOT agreed, so the screen appears on its first message; [DEMO_USER_2] has. Policy: nettrash.me/appstore/familyconnect/privacy.html
 
-LOCAL NETWORK PROMPT. With both devices on one Wi-Fi, iOS asks for Local Network permission as a call connects — please allow it, or a same-network call cannot connect. Please test calls on two real devices: the Simulator has no APNs, no camera.
+LOCAL NETWORK PROMPT. With both devices on one Wi-Fi, iOS asks for Local Network permission as a call connects — please allow it, or a same-network call cannot connect. Please test calls on two real devices: the Simulator has no APNs or camera.
 
 *Before 1.1 is filed, rebuild the DEMO ACCOUNTS block above from master's copy. The 2.1(a)
 rejection of 1.0 build 121 (2026-09-21) was caused by demo DATA, not by a build: the member
@@ -841,7 +849,7 @@ chat,messenger,private,self-hosted,server,calls,video,voice,photos,relatives,gra
 
 *("family" and "connect" are left out for the same reason as on iOS — the app name carries them, and if the record is named "Family" rather than "Family Connect", "connect" belongs here in place of "desktop". The iOS list's "group" is dropped: on a Mac the search that matters is for a desktop messenger, and there are no group calls to index. "mac" is deliberately absent — every app in this store is a Mac app, so the word buys nothing. "kids" stays out on both platforms: a keyword implying a child audience invites a Guideline 1.3 and age-rating question this app cannot answer.)*
 
-## macOS — Notes for App Review (paste verbatim — 3999/4000 chars)
+## macOS — Notes for App Review (paste verbatim — 3959 as written, 3987 with the placeholders filled / 4000)
 
 DEMO SERVER: [DEMO_SERVER_URL] — compiled in; nothing to configure.
 
@@ -852,13 +860,13 @@ DEMO ACCOUNTS.
 
 NEW IN 1.1, WHERE TO FIND IT. Threads: "N replies" under an answered message. Mentions: @ in the composer. Open polls: the chart button in a chat's toolbar. Events and task lists: the Board.
 
-WHAT IT IS. The macOS build of Family Connect (named Family on the Mac): native, macOS 14+, not Catalyst, same app and bundle id as iOS. A client for a small open-source chat server; each installation talks to one server, no vendor cloud. We keep that server online throughout the review; "Change server…" is for self-hosting families. Navigation: the window toolbar — Board, Family, Settings (a window, also on the App menu and Command-comma).
+WHAT IT IS. The macOS build (named Family on the Mac): native, macOS 14+, not Catalyst, same app and bundle id as iOS. A client for a small open-source chat server; each installation talks to one server, no vendor cloud. We keep it online throughout the review; "Change server…" is for self-hosting families. Navigation: the window toolbar — Board, Family, Settings (a window, also on the App menu and Command-comma).
 
-CONTACT IS CONTAINED (guideline 1.2). No public feed, no discovery, no directory, no user search. Registration is open (username, display name, password; no email, no phone), but an account in no family can start nothing: one-to-one chats, reports, blocks and calls are refused server-side unless both share a family. The only ways in are creating a family or an 8-character invite code; a new family defaults to "Need approval", so the owner admits each member, may rotate the code, cap it, close joining, or remove anyone.
+CONTACT IS CONTAINED (guideline 1.2). No public feed, no discovery, no directory, no user search. Registration is open (username, display name, password; no email, no phone), but an account in no family can start nothing: one-to-one chats, reports, blocks and calls are refused server-side unless both share a family. The only ways in are creating a family or an 8-character invite code; a new family defaults to "Need approval", so the owner admits each member, may rotate the code, cap it, close joining or remove anyone.
 
 REPORT AND BLOCK. Right-click a message → "Safety", or "Safety" on a member's row in the Family sheet. Four fixed reasons. The moderator is the family owner: reports arrive in that sheet, under Reports, and push them. A report naming the owner is never listed to them: the sheet shows [SUPPORT_EMAIL], which we monitor.
 
-DELETE ACCOUNT (5.1.1(v)). Settings in the toolbar → last section, beside Log Out. It asks for the account password (a live session is not proof) and a second confirmation, then runs at once, irreversibly, erasing the username (freeing it), display name, password, avatar, birthday and every token. One-to-one chats go for both people; family-chat messages, notes and reactions stay as "Deleted account".
+DELETE ACCOUNT (5.1.1(v)). Settings in the toolbar → last section, beside Log Out. It asks for the account password (a live session is not proof) and a confirmation, then runs at once, irreversibly, erasing the username (freeing it), display name, password, avatar, birthday and every token. One-to-one chats go for both people; family-chat messages, notes and reactions stay as "Deleted account".
 
 NOT END-TO-END ENCRYPTED, and the app does not claim to be. Message text, photos, files and locations are stored readable on the chosen server; on the default server the developer is the operator. Call media (WebRTC, DTLS-SRTP) is peer to peer, or goes via a relay on our server that forwards the encrypted stream without reading it.
 
@@ -866,7 +874,7 @@ com.apple.security.network.server. Calls are peer to peer: the WebRTC connection
 
 AI ASSISTANT — CONSENT (5.1.1(i), 5.1.2(i)). The optional assistant is the only feature sending anything to a third party: [AI_PROCESSOR]. Before a member's first message reaches it, a screen names that recipient and all that travels — the message; in the family chat only an @ai message, with the last 30 days / 200 messages (others' words, names, times) while history is on; a photo only when attached and allowed; the reply appears in that chat. Nothing is sent until "I Agree", the server refuses (403) until then, and Settings → Assistant withdraws it. [DEMO_USER] has NOT agreed, so it appears on its first message. Policy: nettrash.me/appstore/familyconnect/privacy.html
 
-PLEASE LEAVE THE APP OPEN. The Mac notifies and rings only while running: banners come from its own live connection, and a call arrives as a Notification Center alert with Answer and Decline. A quit Mac is never woken — deliberate, not a defect, so test calls with both apps open. On one Wi-Fi network macOS asks for Local Network permission as the call connects: please allow it.
+PLEASE LEAVE THE APP OPEN. The Mac notifies and rings only while running: banners come from its own live connection, and a call arrives as a Notification Center alert with Answer and Decline. A quit Mac is never woken — deliberate, not a defect, so test calls with both open. On one Wi-Fi network macOS asks for Local Network permission as the call connects: please allow it.
 
 ## macOS — Reviewer walkthrough (supporting detail — not pasted into App Store Connect)
 

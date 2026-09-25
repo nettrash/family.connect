@@ -3236,7 +3236,11 @@ async fn a_direct_chat_and_the_private_thread_are_unaffected_by_the_switch() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     };
-    assert_eq!(written.len(), 2, "the two messages, and nothing the assistant added");
+    assert_eq!(
+        written.len(),
+        2,
+        "the two messages, and nothing the assistant added"
+    );
     // And now that they are both stored, a provider call would have had to
     // happen by now to be this test's failure.
     tokio::time::sleep(Duration::from_millis(600)).await;
