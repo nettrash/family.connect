@@ -2903,6 +2903,75 @@ they made and re-send it — a bounded number of times, from what they still hol
 when the first attempt did not land. The server still decodes nothing; poster generation is
 deliberately not its job, for the same reason avatars are downscaled client-side.
 
+#### Preparing media before upload
+
+**Clients prepare media before they upload it.** The server stores what it is given and never
+transcodes, so the size of a family's history is decided on the sending device. A client SHOULD bring
+a video to the profile below before uploading it, and audio where the rules below say so. The profile
+is a target for SENDERS only: the server accepts every listed type at any resolution, and every client
+MUST still play anything it receives, including uploads from clients that predate this section.
+
+**The format is fixed by what every client can PLAY**, not by what one of them can encode. H.264 video
+and AAC-LC audio in an MP4 container play in every browser and on every platform this protocol has a
+client on, and every one of those platforms can encode them in hardware. HEVC does not play in Firefox;
+AV1 does not decode on Apple hardware older than A17 Pro and M3; AVFoundation has no Ogg reader. A
+cheaper codec that one member cannot play is not a saving.
+
+| | Profile |
+|---|---|
+| Container | MP4 (`video/mp4`), `moov` before `mdat` — so a player can start on the first bytes of a `Range` read |
+| Video | H.264, High profile (Main where an encoder offers nothing else), 8-bit SDR — HDR is tone-mapped, not passed through |
+| Size | the SHORT side at most **720**, the other in proportion, both even; never upscaled |
+| Frame rate | at most **30**; never raised |
+| Video bitrate | **2 000 000 bit/s at 1280×720, 30 fps**, scaled by pixels and frame rate (below); never above the source's |
+| Audio in a video | AAC-LC, **128 000 bit/s stereo, 64 000 mono**; never above the source's |
+| Audio alone | M4A (`audio/mp4`), AAC-LC, the same two bitrates — only when the audio rules below say to re-encode |
+| Voice note | M4A (`audio/mp4`), AAC-LC, mono, 44.1 or 48 kHz, **64 000 bit/s** |
+
+The rules are exact, because four codebases have to reach the same answer for the same file. All
+arithmetic is on integers except where a frame rate enters it; a bitrate is rounded to the nearest
+1 000 bit/s at the end, which absorbs any difference in the last bit of a floating-point product.
+
+**A video.** Let `W × H` be the source as it is DISPLAYED (after its rotation), `F` its frame rate, `V`
+its video bitrate. Where the container does not state `V`, estimate it as
+`size × 8 × 1000 / duration_ms − audio bitrate`; where it cannot be estimated either, it is unknown.
+
+1. `short = min(W, H)`, `long = max(W, H)`. The target short side is `ts = min(720, short)`; the target
+   long side is `tl = (2 × long × ts + short) ÷ (2 × short)` in integer division (round half up), then
+   both are made even by dropping one if odd. The target keeps the source's orientation.
+2. The target frame rate `tf` is 30 when `F` is above 30.5 or unknown, and `F` otherwise — 29.97, 25
+   and 24 are kept as they are.
+3. The target bitrate is `2 000 000 × (tw × th ÷ 921 600) × (tf ÷ 30)`, clamped to
+   `[250 000, 2 000 000]`, rounded to the nearest 1 000 — and then, if `V` is known, no higher than `V`.
+4. **Rule A — leave it alone.** The source is uploaded untouched when it is ALREADY within the profile:
+   its type is `video/mp4`, its video is H.264, its audio is AAC or absent, `short ≤ 720`, `F` is known
+   and at most 30.5, and `V` is known and at most `1.25 ×` the target bitrate step 3 computes for it.
+   Re-encoding a file that already meets the profile would only cost it quality. (`video/quicktime` is
+   never "within" the profile, even holding H.264: Firefox will not play the container.)
+5. Otherwise the client transcodes to the targets. Audio in the video follows the audio-in-video row.
+
+**Audio alone** (a picked file — never a voice note, which is recorded to the profile directly):
+
+- Uncompressed or lossless audio — PCM/WAV, AIFF, FLAC, ALAC — is re-encoded.
+- Ogg audio (Vorbis or Opus) is re-encoded wherever the platform can decode it, because an Ogg file
+  does not play on iOS or macOS.
+- MP3 or AAC above 192 000 bit/s is re-encoded; at or below 192 000 it is uploaded untouched — a
+  second lossy generation costs more than the few megabytes it saves. An MP3 or AAC whose bitrate
+  cannot be read or estimated is left untouched too.
+
+**Rule B — never raise anything.** No re-encode may increase a resolution, a frame rate or a bitrate
+over the source's.
+
+**Rule C — a failure sends what would have been sent without this section.** A transcode that fails,
+or a platform that cannot transcode this source at all, falls back to uploading the original exactly
+as before: untouched when it is an accepted type within the ceiling, as a `file` or refused otherwise.
+Preparing media is an optimisation; it may never turn a send that would have worked into one that does
+not.
+
+**Rule D — a result bigger than its source is thrown away**, and the source is uploaded instead,
+provided the source is itself sendable as that kind (an accepted type, honest bytes, within the
+ceiling). Otherwise the result is used, since it is the only thing that can be sent.
+
 #### Audio
 
 `kind=audio` covers both halves of the same thing: a sound file picked from disk, and a voice note
@@ -2914,8 +2983,11 @@ It carries `duration_ms` like a video, and **no preview**: `has_preview` is alwa
 client draws a play control, the duration, and a scrubber — deliberately not a waveform, which
 would be a second artefact to generate, upload and version for something the ear does not need.
 
-The magic-number check applies, as it does to photos and video: the declared type must match what
-the bytes are. A recording that a client cannot encode into a checkable container should be sent as
+The accepted types for `kind=audio` are `audio/mp4`, `audio/m4a`, `audio/mpeg`, `audio/wav` and
+`audio/ogg`, and the magic-number check applies, as it does to photos and video: the declared type must
+match what the bytes are. A client SHOULD NOT send `audio/ogg` for something it expects every member to
+play — AVFoundation has no Ogg reader, so an Ogg recording does not play on iOS or macOS (see
+"Preparing media before upload"). A recording that a client cannot encode into a checkable container should be sent as
 `kind=file` instead, where nothing is verified.
 
 `name` is optional for audio, unlike a file: a voice note has no name worth showing (its duration

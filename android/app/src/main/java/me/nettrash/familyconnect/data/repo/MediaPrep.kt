@@ -15,10 +15,17 @@
  * The server never decodes an image or a video (docs/protocol.md), which
  * is exactly why the preview is made here.
  *
- * VIDEO POLICY: re-encode only when the original is over the ceiling.
- * Keep what the sender shot when it fits, compress when it does not, and
- * refuse only if compression was not enough — nettrash's call, and the
- * reason media3-transformer is in the build at all.
+ * VIDEO AND AUDIO POLICY (1.2, issue #74): bring every picked video to the
+ * profile in docs/protocol.md, "Preparing media before upload" — H.264 and
+ * AAC-LC in an MP4 with its `moov` first, short side at most 720, at most
+ * 30 fps, about 2 Mbit/s at 720p30 — and picked audio where the audio rules
+ * say so. This REVERSES 1.1's "re-encode only when the original is over the
+ * ceiling", which was nettrash's call and is again: the recommendations in
+ * docs/media-upload-2026-09-28.md were accepted as written. What is decided
+ * is MediaPlan's (the shared reference, held to its vectors); what the file
+ * is, MediaProbe's; what Media3 is told, MediaTranscode's. This file is the
+ * order they run in, and rules C and D around them: a transcode that fails
+ * sends what 1.1 would have sent, and one that grew loses to its source.
  *
  * iOS counterpart: ios/FamilyConnect/Core/MediaPrep.swift
  */
@@ -34,6 +41,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
 import androidx.annotation.OptIn
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.scale
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
@@ -145,6 +153,16 @@ class MediaPrep @Inject constructor(
     // -- Videos ------------------------------------------------------------
 
     /**
+     * Bring a picked video to the profile (docs/protocol.md, "Preparing
+     * media before upload"), in MediaPlan's order:
+     *
+     *  - Rule A: already within it — the original goes, untouched.
+     *  - Otherwise it is transcoded to MediaPlan's target, and rule D keeps
+     *    the source instead if the result came out BIGGER and the source
+     *    could have gone as it is.
+     *  - Rule C: a transcode that fails, or a source with no size to scale
+     *    to, sends what 1.1 would have sent ([videoAsBefore]).
+     *
      * @param declaredMime what the SOURCE said this is, for a Uri whose
      *   provider will not answer `getType` — a clipboard item, typically.
      *   Ignored when the provider does answer, which is the picker's case.
@@ -154,88 +172,212 @@ class MediaPrep @Inject constructor(
         limit: Long = SIZE_LIMIT,
         declaredMime: String? = null,
     ): Prepared {
-        val declared = declaredSize(uri)
         // The protocol accepts exactly two video types, and the server
         // verifies the bytes against the type declared. A .webm or .mkv is
-        // neither — so re-encoding it is not about SIZE, it is the only way
-        // it can be sent at all. Sending it as-is under the limit meant
-        // labelling it video/mp4 and being refused, forever, with a message
-        // that said "try again".
-        val sourceMime = providerType(uri) ?: declaredMime.orEmpty()
-        val mustTranscode = sourceMime !in SENDABLE_VIDEO_TYPES
-        val file = if (mustTranscode || (declared != null && declared > limit)) {
-            compress(uri, limit)
-        } else {
-            // Unknown length is treated as "probably fits": copy first,
-            // then compress if the copy turns out to be over.
-            val copy = withContext(Dispatchers.IO) { copyToCache(uri) }
-            if (copy.length() > limit) {
-                copy.delete()
-                compress(uri, limit)
-            } else {
-                copy
+        // neither — so for one of those the transcode is not about SIZE, it
+        // is the only way it can be sent at all. MediaPlan sees that too:
+        // rule A asks for "video/mp4" exactly, so it is never "kept".
+        val sourceMime = MediaProbe.essence(providerType(uri) ?: declaredMime)
+        val declared = declaredSize(uri)
+        // A source that might go as it is — by rule A, C or D — is copied
+        // first: the picker's grant does not outlive the activity result
+        // (see prepareFile). One over the ceiling can never go as itself,
+        // so it is read where it is and never copied. Unknown length is
+        // treated as "probably fits": copy, then look.
+        var copy: File? = if (declared == null || declared <= limit) {
+            // Named before the copy starts, so a cancellation that lands as
+            // it finishes still knows which file to take with it.
+            val file = cacheFile("mp4")
+            try {
+                withContext(Dispatchers.IO) { copyInto(uri, file) }
+            } catch (e: Throwable) {
+                file.delete()
+                throw e
             }
+            file
+        } else {
+            null
         }
-        // What was actually produced: the transcoder writes MP4; an
-        // untouched original keeps whichever accepted type it already was.
-        val mime = if (mustTranscode) "video/mp4" else sourceMime.ifEmpty { "video/mp4" }
+        val sizeBytes = copy?.length() ?: declared ?: 0L
+        if (copy != null && sizeBytes > limit) {
+            copy.delete()
+            copy = null
+        }
+        val source = copy
+        val input = source?.let(Uri::fromFile) ?: uri
 
-        return withContext(Dispatchers.IO) {
-            val meta = readVideoMetadata(file)
-            Prepared(
-                file = file,
-                mime = mime,
+        val chosen = try {
+            // "Sendable as that kind": an accepted type, honest bytes, within
+            // the ceiling. What rules C and D may fall back on.
+            val sendable = source != null && MediaPlan.sendable(
                 kind = AttachmentDto.KIND_VIDEO,
-                width = meta.width,
-                height = meta.height,
-                durationMs = meta.durationMs,
-                previewJpeg = meta.poster,
+                container = sourceMime,
+                honest = withContext(Dispatchers.IO) { Magic.honest(source, sourceMime) },
+                sizeBytes = sizeBytes,
+                ceilingBytes = limit,
             )
+            val read = withContext(Dispatchers.IO) {
+                MediaProbe.video(context, input, sourceMime, sizeBytes)
+            }
+            val original = if (sendable) Chosen(checkNotNull(source), sourceMime) else null
+            when (val plan = MediaPlan.planVideo(read)) {
+                // Rule A names no ceiling: a clip within the profile but over
+                // 100 MB is "kept" — and cannot be sent as it is. A kept
+                // source that cannot go as the original is rule C's, which
+                // sends it the way 1.1 did (compressed), rather than an
+                // upload the server is certain to refuse.
+                MediaPlan.VideoPlan.Keep -> videoAfterFailure(
+                    original, uri, source, sourceMime, sizeBytes, limit,
+                )
+                is MediaPlan.VideoPlan.Transcode -> {
+                    val result = transcodeOrNull(input, TranscodeSettings.forVideo(plan.target, read))
+                    when {
+                        result == null -> videoAfterFailure(
+                            original, uri, source, sourceMime, sizeBytes, limit,
+                        )
+                        MediaPlan.keepSmaller(sizeBytes, sendable, result.length()) ==
+                            MediaPlan.Upload.SOURCE -> {
+                            result.delete()
+                            checkNotNull(original)
+                        }
+                        else -> Chosen(fitting(result, limit), "video/mp4")
+                    }
+                }
+                MediaPlan.VideoPlan.Fallback -> videoAfterFailure(
+                    original, uri, source, sourceMime, sizeBytes, limit,
+                )
+            }
+        } catch (e: Throwable) {
+            // Cancellation included: nothing staged under this prepare
+            // outlives it.
+            source?.delete()
+            throw e
+        }
+        if (chosen.file != source) source?.delete()
+
+        return try {
+            withContext(Dispatchers.IO) {
+                val meta = readVideoMetadata(chosen.file)
+                Prepared(
+                    file = chosen.file,
+                    mime = chosen.mime,
+                    kind = AttachmentDto.KIND_VIDEO,
+                    width = meta.width,
+                    height = meta.height,
+                    durationMs = meta.durationMs,
+                    previewJpeg = meta.poster,
+                )
+            }
+        } catch (e: CancellationException) {
+            chosen.file.delete()
+            throw e
+        }
+    }
+
+    /** The bytes a prepare settled on, and the type they go up as. */
+    private data class Chosen(val file: File, val mime: String)
+
+    /**
+     * Rule C: the original when it can go as it is, and otherwise
+     * [videoAsBefore].
+     */
+    private suspend fun videoAfterFailure(
+        original: Chosen?,
+        uri: Uri,
+        source: File?,
+        sourceMime: String,
+        sizeBytes: Long,
+        limit: Long,
+    ): Chosen = when (MediaPlan.onFailure(sourceSendable = original != null)) {
+        MediaPlan.OnFailure.ORIGINAL -> checkNotNull(original)
+        MediaPlan.OnFailure.TODAYS_PATH -> videoAsBefore(uri, source, sourceMime, sizeBytes, limit)
+    }
+
+    /**
+     * Rule C's "today's path": exactly what 1.1 did with this video. An
+     * accepted type within the ceiling went untouched — even with bytes
+     * that did not match it, which is how 1.1 sent them and why this does
+     * too — and anything else went through [compressAsBefore], whose own
+     * failures are the ones 1.1 showed.
+     */
+    private suspend fun videoAsBefore(
+        uri: Uri,
+        source: File?,
+        sourceMime: String,
+        sizeBytes: Long,
+        limit: Long,
+    ): Chosen {
+        if (source != null && sourceMime in SENDABLE_VIDEO_TYPES && sizeBytes <= limit) {
+            return Chosen(source, sourceMime)
+        }
+        return Chosen(compressAsBefore(source?.let(Uri::fromFile) ?: uri, limit), "video/mp4")
+    }
+
+    /**
+     * A transcode's result, provided it can be sent — the only failure after
+     * a transcode that the sender can do something about.
+     */
+    private fun fitting(result: File, limit: Long): File {
+        val size = result.length()
+        if (size > limit) {
+            result.delete()
+            throw TooLargeAfterCompression(size)
+        }
+        return result
+    }
+
+    /**
+     * Run MediaPlan's transcode, or null when it failed — which is rule C's
+     * business, not a reason to fail the send. Cancellation is not a
+     * failure: it propagates, and takes the partial output with it.
+     */
+    @OptIn(UnstableApi::class)
+    private suspend fun transcodeOrNull(input: Uri, settings: TranscodeSettings): File? {
+        val output = cacheFile(if (settings.audioOnly) "m4a" else "mp4")
+        return try {
+            export(output) { listener, path ->
+                val composition =
+                    TranscodeRecipe.composition(TranscodeRecipe.editedMediaItem(input, settings), settings)
+                TranscodeRecipe.transformer(context, settings, listener).also { it.start(composition, path) }
+            }
+            withContext(Dispatchers.IO) { faststart(output) }
+            output
+        } catch (e: CancellationException) {
+            output.delete()
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "transcode failed, sending what 1.1 would have: ${e.message}")
+            output.delete()
+            null
         }
     }
 
     /**
-     * Re-encode to 720p, then insist the result fits.
+     * 1.1's compress, kept UNCHANGED for rule C: re-encode to a short side
+     * of 720 with Media3's default settings, then insist the result fits.
      *
-     * Transformer must be built and driven from a thread with a Looper and
-     * calls back on that same thread — the main one here, which is safe
-     * because every frame of the actual work happens on its own threads.
+     * Unchanged on purpose, including what rule B would object to — it
+     * scales a 480p .webm UP to 720p, and leaves HDR to Media3's default.
+     * It runs only when the planned transcode failed or had no size to aim
+     * at, and rule C's promise is that no send that worked in 1.1 stops
+     * working: "improving" this path could turn one that 1.1 managed into
+     * one that is too large.
      */
     @OptIn(UnstableApi::class)
-    private suspend fun compress(uri: Uri, limit: Long): File {
+    private suspend fun compressAsBefore(input: Uri, limit: Long): File {
         val output = cacheFile("mp4")
         try {
-            withContext(Dispatchers.Main) {
-                suspendCancellableCoroutine<Unit> { continuation ->
-                    val transformer = Transformer.Builder(context)
-                        .setVideoMimeType(MimeTypes.VIDEO_H264)
-                        .setAudioMimeType(MimeTypes.AUDIO_AAC)
-                        .addListener(object : Transformer.Listener {
-                            override fun onCompleted(
-                                composition: Composition,
-                                result: ExportResult,
-                            ) {
-                                continuation.resume(Unit)
-                            }
-
-                            override fun onError(
-                                composition: Composition,
-                                result: ExportResult,
-                                exception: ExportException,
-                            ) {
-                                continuation.resumeWithException(exception)
-                            }
-                        })
-                        .build()
-
-                    val scale: Effect = Presentation.createForShortSide(COMPRESSED_SHORT_SIDE)
-                    val item = EditedMediaItem.Builder(MediaItem.fromUri(uri))
-                        .setEffects(Effects(emptyList(), listOf(scale)))
-                        .build()
-
-                    continuation.invokeOnCancellation { transformer.cancel() }
-                    transformer.start(item, output.absolutePath)
-                }
+            export(output) { listener, path ->
+                val scale: Effect = Presentation.createForShortSide(COMPRESSED_SHORT_SIDE)
+                val item = EditedMediaItem.Builder(MediaItem.fromUri(input))
+                    .setEffects(Effects(emptyList(), listOf(scale)))
+                    .build()
+                Transformer.Builder(context)
+                    .setVideoMimeType(MimeTypes.VIDEO_H264)
+                    .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                    .addListener(listener)
+                    .build()
+                    .also { it.start(item, path) }
             }
         } catch (e: CancellationException) {
             output.delete()
@@ -244,13 +386,64 @@ class MediaPrep @Inject constructor(
             output.delete()
             throw UnreadableMedia()
         }
+        withContext(Dispatchers.IO) { faststart(output) }
+        return fitting(output, limit)
+    }
 
-        val size = output.length()
-        if (size > limit) {
-            output.delete()
-            throw TooLargeAfterCompression(size)
+    /**
+     * One Transformer export into [output], suspended until it finishes.
+     *
+     * Transformer must be built and driven from a thread with a Looper and
+     * calls back on that same thread — the main one here, which is safe
+     * because every frame of the actual work happens on its own threads.
+     * CANCEL goes through the main Looper too: a coroutine can be cancelled
+     * from any thread, and Transformer.cancel() throws on any but its own.
+     */
+    @OptIn(UnstableApi::class)
+    private suspend fun export(
+        output: File,
+        start: (listener: Transformer.Listener, path: String) -> Transformer,
+    ) {
+        withContext(Dispatchers.Main) {
+            suspendCancellableCoroutine<Unit> { continuation ->
+                val transformer = start(
+                    object : Transformer.Listener {
+                        override fun onCompleted(composition: Composition, result: ExportResult) {
+                            Log.d(
+                                TAG,
+                                "exported ${result.width}x${result.height} " +
+                                    "${result.videoMimeType ?: "-"} ${result.averageVideoBitrate} bit/s, " +
+                                    "${result.audioMimeType ?: "-"} ${result.averageAudioBitrate} bit/s, " +
+                                    "${result.fileSizeBytes} bytes",
+                            )
+                            continuation.resume(Unit)
+                        }
+
+                        override fun onError(
+                            composition: Composition,
+                            result: ExportResult,
+                            exception: ExportException,
+                        ) {
+                            continuation.resumeWithException(exception)
+                        }
+                    },
+                    output.absolutePath,
+                )
+                continuation.invokeOnCancellation {
+                    ContextCompat.getMainExecutor(context).execute { transformer.cancel() }
+                }
+            }
         }
-        return output
+    }
+
+    /**
+     * `moov` before `mdat` (the protocol's Container row). Media3 only
+     * attempts it; a file it could not fix still plays, from its tail.
+     */
+    private fun faststart(output: File) {
+        if (!Mp4Faststart.apply(output)) {
+            Log.w(TAG, "could not move the moov box to the front; the file plays, but not from its first bytes")
+        }
     }
 
     private data class VideoMetadata(
@@ -344,18 +537,27 @@ class MediaPrep @Inject constructor(
     /**
      * Prepare a piece of audio — a recording, or a track off a disk.
      *
-     * Nothing is re-encoded. A voice note is already recorded straight into
-     * the container the server checks (AAC in MP4), and re-encoding
-     * someone's music to save a few megabytes would be a worse trade than
-     * refusing it. No preview: audio has nothing to look at, so a bubble
-     * draws a play control, the duration and a scrubber (protocol.md,
-     * "Audio").
+     * A VOICE NOTE is never re-encoded: VoiceRecorder records it straight
+     * into the protocol's voice-note row (AAC-LC in MP4, mono, 44.1 kHz,
+     * 64 kbit/s), and the audio rules are for picked files only.
+     *
+     * A PICKED file follows the audio rules (docs/protocol.md, "Preparing
+     * media before upload"; [audioToProfile]): WAV, FLAC and ALAC, anything
+     * in Ogg, and MP3 or AAC above 192 kbit/s become an AAC-LC M4A; MP3 and
+     * AAC at or below it are untouched — a second lossy generation costs more
+     * than it saves, which is 1.1's objection kept where it is right.
+     *
+     * No preview: audio has nothing to look at, so a bubble draws a play
+     * control, the duration and a scrubber (protocol.md, "Audio").
+     *
+     * @param voiceNote true for a recording VoiceRecorder just made.
      */
     suspend fun prepareAudio(
         uri: Uri,
         limit: Long = SIZE_LIMIT,
         declaredMime: String? = null,
         fallbackName: String? = null,
+        voiceNote: Boolean = false,
     ): Prepared =
         withContext(Dispatchers.IO) {
             val name = displayName(uri, fallbackName)
@@ -370,27 +572,26 @@ class MediaPrep @Inject constructor(
                 throw UnreadableMedia()
             }
 
+            if (!voiceNote) {
+                val reencoded = try {
+                    audioToProfile(destination, audioMime(uri, destination, declaredMime), limit, name)
+                } catch (e: Throwable) {
+                    destination.delete()
+                    throw e
+                }
+                if (reencoded != null) return@withContext reencoded
+            }
+
+            // What 1.1 did with every sound file, and still does with one the
+            // audio rules leave alone — or whose re-encode failed (rule C) or
+            // grew (rule D).
             val size = destination.length()
             if (size > limit) {
                 destination.delete()
                 throw TooLargeAfterCompression(size)
             }
 
-            // NOT `use {}`: MediaMetadataRetriever only became AutoCloseable
-            // in API 29 and minSdk here is 26, so the implicit cast would
-            // crash on older devices. Lint catches this; the explicit
-            // release is the fix, not a baseline entry.
-            val retriever = MediaMetadataRetriever()
-            val durationMs = try {
-                runCatching {
-                    retriever.setDataSource(destination.absolutePath)
-                    retriever
-                        .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                        ?.toIntOrNull()
-                }.getOrNull()
-            } finally {
-                runCatching { retriever.release() }
-            }
+            val durationMs = audioDurationMs(destination)
 
             val mime = audioMime(uri, destination, declaredMime)
             if (!Magic.honest(destination, mime)) {
@@ -424,6 +625,83 @@ class MediaPrep @Inject constructor(
                 name = name.takeIf { it.isNotBlank() },
             )
         }
+
+    /**
+     * The audio rules for a picked sound file already copied to [copy]: the
+     * re-encoded M4A when MediaPlan says to re-encode and the result is
+     * worth sending, or null for "send it the way 1.1 did".
+     *
+     * Null covers three answers that are one path here: MediaPlan's Keep;
+     * rule C after a failed re-encode (its ORIGINAL — a sendable source,
+     * which 1.1's path sends as audio — and its TODAYS_PATH — 1.1's path
+     * again, which sends an unsendable source as a file or refuses it); and
+     * rule D, when the M4A came out bigger than a source that could go.
+     *
+     * Ogg is re-encoded here because Android CAN decode Vorbis and Opus, and
+     * an Ogg file does not play on iOS or macOS.
+     */
+    private suspend fun audioToProfile(copy: File, mime: String, limit: Long, name: String): Prepared? {
+        val container = MediaProbe.essence(mime)
+        val size = copy.length()
+        val source = MediaProbe.audio(copy, container, size)
+        val plan = MediaPlan.planAudio(source) as? MediaPlan.AudioPlan.Transcode ?: return null
+        val sendable = MediaPlan.sendable(
+            kind = AttachmentDto.KIND_AUDIO,
+            container = container,
+            honest = Magic.honest(copy, mime),
+            sizeBytes = size,
+            ceilingBytes = limit,
+        )
+        val result = transcodeOrNull(Uri.fromFile(copy), TranscodeSettings.forAudio(plan.bitrate, source))
+        if (result == null) {
+            Log.w(TAG, "re-encoding picked audio failed; rule C: ${MediaPlan.onFailure(sendable)}")
+            return null
+        }
+        if (MediaPlan.keepSmaller(size, sendable, result.length()) == MediaPlan.Upload.SOURCE) {
+            result.delete()
+            return null
+        }
+        val file = fitting(result, limit)
+        copy.delete()
+        return Prepared(
+            file = file,
+            mime = "audio/mp4",
+            kind = AttachmentDto.KIND_AUDIO,
+            width = null,
+            height = null,
+            durationMs = audioDurationMs(file),
+            previewJpeg = null,
+            name = m4aName(name).takeIf { it.isNotBlank() },
+        )
+    }
+
+    /**
+     * A re-encoded track keeps its name and loses its old extension:
+     * "Song.flac" is now an M4A, and a family member who saves it should get
+     * a file that says so. A name with no extension is left as it is.
+     */
+    private fun m4aName(name: String): String =
+        if (looksLikeFileName(name)) "${name.substringBeforeLast('.')}.m4a".take(MAX_NAME_LEN) else name
+
+    /**
+     * A sound file's length, or null.
+     *
+     * NOT `use {}`: MediaMetadataRetriever only became AutoCloseable in API
+     * 29 and minSdk here is 26, so the implicit cast would crash on older
+     * devices. Lint catches this; the explicit release is the fix, not a
+     * baseline entry.
+     */
+    private fun audioDurationMs(file: File): Int? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            runCatching {
+                retriever.setDataSource(file.absolutePath)
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toIntOrNull()
+            }.getOrNull()
+        } finally {
+            runCatching { retriever.release() }
+        }
+    }
 
     /**
      * The server's own magic-number check, on this side of the wire.
@@ -622,8 +900,7 @@ class MediaPrep @Inject constructor(
         }
     }.getOrNull()
 
-    private fun copyToCache(uri: Uri): File {
-        val file = cacheFile("mp4")
+    private fun copyInto(uri: Uri, file: File) {
         val copied = runCatching {
             contentResolver.openInputStream(uri)?.use { input ->
                 file.outputStream().use { output -> input.copyTo(output) }
@@ -633,7 +910,6 @@ class MediaPrep @Inject constructor(
             file.delete()
             throw UnreadableMedia()
         }
-        return file
     }
 
     /** Bounded read — a picked photo has no business being huge. */
@@ -708,7 +984,22 @@ class MediaPrep @Inject constructor(
             "audio/ogg",
         )
 
-        /** 1280x720-ish: small enough to fit, big enough to watch. */
+        /**
+         * Audio the server would NOT take as it is, but which the audio rules
+         * re-encode into an M4A it does ("uncompressed or lossless audio …
+         * is re-encoded"), so it is prepared as audio rather than going
+         * straight to the file path. Only FLAC: WAV is already sendable, ALAC
+         * arrives as an .m4a, and Android has no AIFF reader at all. A device
+         * that cannot decode it fails the re-encode, and rule C sends it the
+         * way 1.1 did — as a file.
+         */
+        val TRANSCODABLE_AUDIO_TYPES = setOf("audio/flac", "audio/x-flac")
+
+        /**
+         * 1.1's short side, kept for rule C's [compressAsBefore]. The planned
+         * transcode takes its size from MediaPlan (MAX_SHORT_SIDE, also 720,
+         * but never above the source's).
+         */
         const val COMPRESSED_SHORT_SIDE = 720
 
         /** Poster candidates, in order: half a second in, then the start. */

@@ -75,8 +75,12 @@ class VoiceRecorder @Inject constructor(
                 // Mono: a voice note gains nothing from stereo and doubles
                 // for free.
                 setAudioChannels(1)
+                // The protocol's voice-note row exactly: AAC-LC (AudioEncoder.AAC
+                // is LC; HE_AAC and AAC_ELD are separate constants), mono, 44.1
+                // kHz, 64 kbit/s — which is why a voice note never passes through
+                // the audio rules that re-encode picked files.
                 setAudioSamplingRate(44_100)
-                setAudioEncodingBitRate(64_000)
+                setAudioEncodingBitRate(MediaPlan.VOICE_NOTE_BITRATE.toInt())
                 setMaxDuration(MAX_DURATION_MS)
                 setOutputFile(file.absolutePath)
                 prepare()

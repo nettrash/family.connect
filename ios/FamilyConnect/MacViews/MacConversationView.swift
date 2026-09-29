@@ -2391,8 +2391,11 @@ struct MacConversationView: View {
             do {
                 // No name: a voice note's identity is its length, and the
                 // scratch file it was recorded into is called
-                // `fc-voice-<UUID>.m4a`.
-                stage(try await MediaPrep.prepareAudio(from: url, limit: MediaPrep.sizeLimit))
+                // `fc-voice-<UUID>.m4a`. And a voice note: recorded to the
+                // profile already, so the audio rules for picked files do
+                // not apply to it.
+                stage(try await MediaPrep.prepareAudio(
+                    from: url, limit: MediaPrep.sizeLimit, isVoiceNote: true))
             } catch MediaPrep.PrepError.tooLargeAfterCompression {
                 mediaNotice = .failed(String(localized: "That file is over the 100 MB limit."))
                 try? FileManager.default.removeItem(at: url)

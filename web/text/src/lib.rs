@@ -21,6 +21,9 @@
 //! - [`excerpt`] — the server's 120-character quote cut.
 //! - [`media`] — attachments: which kind a picked file goes as, its name and
 //!   type, the server's magic-number check, and how a bubble lays one out.
+//! - [`media_plan`] — what a picked video or sound file becomes before it is
+//!   uploaded: kept, or transcoded to the protocol's profile and to exactly
+//!   which numbers — the rules every port is held to by the oracle's vectors.
 //! - [`wav`] — a voice note as WAV, for browsers that cannot record MP4.
 //! - [`account`] — usernames, passwords, names, invite codes, birthdays, the
 //!   family's languages and the owner's member cap, by the server's rules.
@@ -55,7 +58,12 @@ pub mod i18n;
 pub mod links;
 pub mod markdown;
 pub mod media;
+pub mod media_plan;
+pub mod media_probe;
+pub mod mp4;
+pub mod mp4_read;
 pub mod mentions;
 pub mod notify;
 pub mod reactions;
+pub mod transcode;
 pub mod wav;

@@ -117,15 +117,18 @@ jobs:
           # The Windows client's oracles are GENERATED from web/text, so a change there is a
           # change to what the C# port is held to — the fixture in win/ is only right while the
           # Rust it was printed from says the same thing, and no other job would notice.
-          if echo "$files" | grep -q -E '^web/text/'; then
-            echo "The shared text crate changed -- the Windows oracles are generated from it."
+          # The media-plan vectors have a copy beside the iOS and Android tests as well, and the
+          # check that every copy still says what the oracle says runs in that same job — so an
+          # edit to either of those copies on its own has to run it too, or it is not a check.
+          if echo "$files" | grep -q -E '^(web/text/|(ios/FamilyConnectTests/Fixtures|android/app/src/test/resources)/media-plan-vectors\.json$)'; then
+            echo "The shared text crate, or a copy of an oracle fixture, changed -- the Windows job checks them against the oracle."
             echo "win=true" >> "$GITHUB_OUTPUT"
-            web_text_changed=true
+            oracle_changed=true
           else
-            web_text_changed=false
+            oracle_changed=false
           fi
           for stack in server android ios win; do
-            if [ "$stack" = win ] && [ "$web_text_changed" = true ]; then
+            if [ "$stack" = win ] && [ "$oracle_changed" = true ]; then
               continue  # already decided above
             fi
             if echo "$files" | grep -q -E "^$stack/"; then
@@ -734,19 +737,34 @@ jobs:
         # --check, so a stale table FAILS rather than being quietly rewritten under CI's feet.
         run: python3 win/i18n/generate.py . --check
 
-      # And the two ORACLE fixtures are printed by a Rust program that depends on web/text BY
+      # And the ORACLE fixtures are printed by a Rust program that depends on web/text BY
       # PATH: "an oracle built on one machine proves nothing" (float-pow10-portability). If the
       # shared crate has moved, the fixture the C# suite is held to has to move with it, and the
       # only way to know is to print it again and look.
+      #
+      # The media-plan vectors (issue #74) are the one fixture held by three ports, so they live
+      # in three places: beside the C# tests, in the iOS test bundle, and on Android's JVM test
+      # classpath. Each copy is compared byte for byte with a fresh print — not `git diff`, which
+      # says nothing about a copy that was never committed — and every mismatch is named before
+      # the step fails, so one run shows all of them.
       - name: The oracles still say what the fixtures say
         if: matrix.os == 'ubuntu-24.04'
         run: |
           cd win/tools/board-oracle
           cargo run --quiet > ../../tests/FamilyConnect.Core.Tests/Fixtures/board-vectors.json
           cargo run --quiet -- chat > ../../tests/FamilyConnect.Core.Tests/Fixtures/chat-vectors.json
+          cargo run --quiet -- media-plan > "$RUNNER_TEMP/media-plan-vectors.json"
           cd ../../..
           git diff --exit-code -- win/tests/FamilyConnect.Core.Tests/Fixtures \
             || { echo "::error::the oracle fixtures are out of date -- regenerate them (win/README.md)"; exit 1; }
+          stale=0
+          for copy in win/tests/FamilyConnect.Core.Tests/Fixtures/media-plan-vectors.json \
+                      ios/FamilyConnectTests/Fixtures/media-plan-vectors.json \
+                      android/app/src/test/resources/media-plan-vectors.json; do
+            cmp -s "$RUNNER_TEMP/media-plan-vectors.json" "$copy" \
+              || { echo "::error::$copy is not what the oracle prints -- regenerate it (win/tools/board-oracle/Cargo.toml)"; stale=1; }
+          done
+          exit $stale
 
       # The WinUI app cannot build here (its XAML compiler is a .NET Framework executable), but
       # everything short of that compiler can be checked: every XAML element, attribute and handler

@@ -124,6 +124,9 @@ android {
         versionCode = storedVersionCode
         versionName = resolvedVersionName
 
+        // Only MediaPrepDeviceTest uses it: a transcode needs a real encoder.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         // Read by the manifest's com.google.android.geo.API_KEY meta-data.
         // Empty is fine: the map is never drawn without HAS_MAPS_KEY, so an
         // unkeyed build shows the pin card and asks Google for nothing.
@@ -331,6 +334,14 @@ dependencies {
     testImplementation(platform(libs.androidx.compose.bom))
     testImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.test.manifest)
+
+    // Instrumented tests — MediaPrepDeviceTest only (issue #74): the one
+    // thing Robolectric cannot do is run MediaCodec, so the transcode itself
+    // (size, frame rate, codecs, moov first) is asserted on a device or an
+    // emulator. Not run by CI, which has no emulator lane.
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.truth)
 }
 
 // ---- IDE compatibility: legacy aggregate test-class tasks --------------

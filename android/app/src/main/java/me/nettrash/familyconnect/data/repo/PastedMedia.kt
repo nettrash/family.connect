@@ -75,6 +75,10 @@ object PastedMedia {
             // .webm can be sent at all.
             type.startsWith("video/") -> AttachmentDto.KIND_VIDEO
             type in MediaPrep.SENDABLE_AUDIO_TYPES -> AttachmentDto.KIND_AUDIO
+            // Not a type the server takes, but one the audio rules re-encode
+            // into one it does (MediaPrep.prepareAudio) — and back to a file
+            // if that fails.
+            type in MediaPrep.TRANSCODABLE_AUDIO_TYPES -> AttachmentDto.KIND_AUDIO
             // Everything else — an unknown type, no type at all, a GIF,
             // a PDF, a spreadsheet. A file accepts anything.
             else -> AttachmentDto.KIND_FILE
