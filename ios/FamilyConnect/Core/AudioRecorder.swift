@@ -72,6 +72,27 @@ final class AudioRecorder {
     /// listener, not the disk.
     static let maxDuration: TimeInterval = 5 * 60
 
+    /// The protocol's voice-note row (docs/protocol.md, "Preparing media
+    /// before upload"): M4A, AAC-LC, mono, 44.1 kHz, 64 000 bit/s.
+    ///
+    /// AAC in an MP4 container: `ftyp` at offset 4, which is exactly what
+    /// the server checks for `audio/mp4`. Mono — a voice note gains nothing
+    /// from stereo and doubles for free.
+    ///
+    /// The bitrate is SAID, not implied. It used to be
+    /// `AVEncoderAudioQuality.medium`, which leaves the rate to the encoder,
+    /// and a number four recorders are meant to agree on cannot be left to
+    /// each platform's idea of "medium". Constant, so the recording is the
+    /// rate the protocol names; and a voice note is the one audio the upload
+    /// path never re-encodes, so this is the only place it is decided.
+    nonisolated static let settings: [String: any Sendable] = [
+        AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+        AVSampleRateKey: 44_100.0,
+        AVNumberOfChannelsKey: 1,
+        AVEncoderBitRateKey: MediaPlan.voiceNoteBitrate,
+        AVEncoderBitRateStrategyKey: AVAudioBitRateStrategy_Constant,
+    ]
+
     /// What to tell the composer when a recording did not start.
     ///
     /// Lives here rather than in each view so the two cannot drift, and so
@@ -107,16 +128,6 @@ final class AudioRecorder {
             .appendingPathComponent("fc-voice-\(UUID().uuidString)")
             .appendingPathExtension("m4a")
 
-        // AAC in an MP4 container: `ftyp` at offset 4, which is exactly what
-        // the server checks for `audio/mp4`. Mono at 44.1k — a voice note
-        // gains nothing from stereo and doubles for free.
-        let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 44_100.0,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
-        ]
-
         do {
             #if os(iOS)
             // Without this the recorder is silent when anything else has
@@ -125,7 +136,7 @@ final class AudioRecorder {
             try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
             try session.setActive(true)
             #endif
-            let recorder = try AVAudioRecorder(url: url, settings: settings)
+            let recorder = try AVAudioRecorder(url: url, settings: Self.settings)
             recorder.record(forDuration: Self.maxDuration)
             self.recorder = recorder
             isRecording = true

@@ -1546,7 +1546,9 @@ class ChatViewModel @Inject constructor(
         _mediaState.value = MediaSendState.Preparing
         appScope.launch {
             val prepared = try {
-                mediaPrep.prepareAudio(Uri.fromFile(file))
+                // A voice note is already the protocol's voice-note row; the
+                // audio rules that re-encode are for picked files only.
+                mediaPrep.prepareAudio(Uri.fromFile(file), voiceNote = true)
             } catch (_: Exception) {
                 file.delete()
                 _mediaState.value =
@@ -1582,9 +1584,13 @@ class ChatViewModel @Inject constructor(
                 val declared = providerType(uri).orEmpty()
                 val prepared = try {
                     // Audio the server's magic check knows gets a player rather
-                    // than a document row; anything else it would refuse falls
-                    // through to the file path, where nothing is verified.
-                    if (declared in MediaPrep.SENDABLE_AUDIO_TYPES) {
+                    // than a document row, and so does audio the audio rules
+                    // re-encode into a type it knows (FLAC); anything else it
+                    // would refuse falls through to the file path, where
+                    // nothing is verified.
+                    if (declared in MediaPrep.SENDABLE_AUDIO_TYPES ||
+                        declared in MediaPrep.TRANSCODABLE_AUDIO_TYPES
+                    ) {
                         mediaPrep.prepareAudio(uri)
                     } else {
                         mediaPrep.prepareFile(uri)

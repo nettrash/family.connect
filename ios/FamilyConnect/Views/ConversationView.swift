@@ -1959,7 +1959,10 @@ struct ConversationView: View {
         mediaState = .preparing
         Task {
             do {
-                stage(try await MediaPrep.prepareAudio(from: url, limit: MediaPrep.sizeLimit))
+                // A voice note: recorded to the profile already, so the
+                // audio rules for picked files do not apply to it.
+                stage(try await MediaPrep.prepareAudio(
+                    from: url, limit: MediaPrep.sizeLimit, isVoiceNote: true))
             } catch MediaPrep.PrepError.tooLargeAfterCompression {
                 mediaState = .failed(String(localized: "That file is over the 100 MB limit."))
                 try? FileManager.default.removeItem(at: url)

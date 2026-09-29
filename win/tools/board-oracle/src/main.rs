@@ -7,7 +7,8 @@
 //! agreed with each other and were all wrong about `pow(10, n)`.
 //!
 //! Output goes to `win/tests/FamilyConnect.Core.Tests/Fixtures/board-vectors.json` — see
-//! Cargo.toml for the one command.
+//! Cargo.toml for the one command. `media-plan` is the exception to "the Windows port": its file
+//! is copied to the iOS and Android test resources too, because all three ports implement it.
 use fc_text::board as b;
 use fc_text::{calendar, call_record, media, notify};
 
@@ -20,6 +21,12 @@ fn main() {
     // chat-line vectors instead — the same idea for the words a chat row is drawn with.
     // `markdown <corpus.json>` prints what fc_text::markdown and fc_text::links make of every body in the corpus;
     // `unicode` prints the Rust standard library's own character properties, which those two modules decide by.
+    // `media-plan` prints what fc_text::media_plan decides for a picked video or sound file — the one file of
+    // vectors the Apple, Android and Windows ports are ALL held to, so it is copied beside each port's tests.
+    if std::env::args().nth(1).as_deref() == Some("media-plan") {
+        media_plan_vectors();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("markdown") {
         markdown_vectors(std::env::args().nth(2).expect("the corpus path"));
         return;
@@ -1267,4 +1274,690 @@ fn unicode_tables() {
         "grapheme_prepends": ranges(|c| format!("{c}a").graphemes(true).count() == 1),
     });
     println!("{}", serde_json::to_string(&tables).unwrap());
+}
+
+// --- media plan: what a picked video or sound file becomes before upload (fc_text::media_plan) ------------
+
+/// A frame rate as JSON. A whole one is written as an integer (`30`, not `30.0`), so that every
+/// number in the file that IS an integer reads as one in all four languages; anything else is the
+/// shortest decimal that round-trips, which every port's parser turns back into the same `f64`.
+fn rate(value: f64) -> serde_json::Value {
+    if value.is_finite() && value.fract() == 0.0 && value.abs() < 9.0e15 {
+        serde_json::json!(value as i64)
+    } else {
+        serde_json::json!(value)
+    }
+}
+
+fn video_input(source: &fc_text::media_plan::VideoSource) -> serde_json::Value {
+    serde_json::json!({
+        "width": source.width,
+        "height": source.height,
+        "frame_rate": source.frame_rate.map(rate),
+        "container": source.container,
+        "video_codec": source.video_codec,
+        "audio_codec": source.audio_codec,
+        "audio_channels": source.audio_channels,
+        "video_bitrate": source.video_bitrate,
+        "audio_bitrate": source.audio_bitrate,
+        "size_bytes": source.size_bytes,
+        "duration_ms": source.duration_ms,
+    })
+}
+
+/// Every intermediate as well as the plan, so a port that disagrees finds out WHICH step it
+/// disagrees on: V, the target (computed for a kept source too — rule A is judged against it) and
+/// rule A's verdict.
+fn video_expected(source: &fc_text::media_plan::VideoSource) -> serde_json::Value {
+    use fc_text::media_plan::{self as mp, VideoPlan};
+    let target = mp::video_target(source);
+    let plan = match mp::plan_video(source) {
+        VideoPlan::Keep => "keep",
+        VideoPlan::Transcode(transcode) => {
+            assert_eq!(Some(transcode), target, "a transcode is to the target");
+            "transcode"
+        }
+        VideoPlan::Fallback => "fallback",
+    };
+    serde_json::json!({
+        "plan": plan,
+        "within_profile": mp::within_profile(source),
+        "source_video_bitrate": mp::source_video_bitrate(source),
+        "target": target.map(|target| serde_json::json!({
+            "width": target.width,
+            "height": target.height,
+            "frame_rate": rate(target.frame_rate),
+            "video_bitrate": target.video_bitrate,
+            "audio_bitrate": target.audio_bitrate,
+        })),
+    })
+}
+
+fn audio_input(source: &fc_text::media_plan::AudioSource) -> serde_json::Value {
+    serde_json::json!({
+        "container": source.container,
+        "codec": source.codec,
+        "channels": source.channels,
+        "bitrate": source.bitrate,
+        "size_bytes": source.size_bytes,
+        "duration_ms": source.duration_ms,
+    })
+}
+
+fn audio_expected(source: &fc_text::media_plan::AudioSource) -> serde_json::Value {
+    use fc_text::media_plan::{self as mp, AudioPlan};
+    let bitrate = mp::source_audio_bitrate(source);
+    let target = mp::target_audio_bitrate(source.channels, bitrate);
+    let plan = match mp::plan_audio(source) {
+        AudioPlan::Keep => "keep",
+        AudioPlan::Transcode { bitrate } => {
+            assert_eq!(bitrate, target, "a transcode is to the target");
+            "transcode"
+        }
+    };
+    serde_json::json!({"plan": plan, "source_bitrate": bitrate, "target_bitrate": target})
+}
+
+/// The vectors for `fc_text::media_plan` (docs/protocol.md, "Preparing media before upload"): one
+/// case per line, each `{"name", "function", "input", "expected"}`, where `function` names the
+/// module's function the case is for and the input and expected fields are its arguments and
+/// answers under the module's own names. Hand-picked cases for every rule and edge first, then a
+/// sweep across sizes, turns, frame rates, bitrate situations and containers that nobody picked.
+fn media_plan_vectors() {
+    use fc_text::media_plan::{self as mp, AudioSource, OnFailure, Upload, VideoSource};
+    use serde_json::json;
+
+    let mut cases: Vec<serde_json::Value> = Vec::new();
+    let mut case = |name: &str, function: &str, input: serde_json::Value, expected: serde_json::Value| {
+        cases.push(json!({"name": name, "function": function, "input": input, "expected": expected}));
+    };
+
+    // --- the steps on their own ------------------------------------------------------------
+    for (width, height) in [
+        (1920, 1080), (1080, 1920), (3840, 2160), (2160, 3840), (1440, 1080), (1080, 1440),
+        (1080, 1080), (2560, 1080), (854, 480), (480, 854), (640, 360), (176, 144),
+        (1280, 720), (720, 1280), (1282, 721), (721, 1282), (1281, 721), (853, 481),
+        (1279, 719), (641, 361), (360, 641), (1000, 800), (1001, 800), (2025, 1080),
+        (1443, 1440), (1441, 1440), (720, 2560), (1, 1080), (1080, 1), (1, 1), (2, 2),
+        (0, 1080), (1920, 0), (0, 0),
+    ] {
+        let (target_width, target_height) = mp::target_size(width, height);
+        case(
+            &format!("target size {width}x{height}"),
+            "target_size",
+            json!({"width": width, "height": height}),
+            json!({"width": target_width, "height": target_height}),
+        );
+    }
+    for frame_rate in [
+        Some(24.0), Some(24_000.0 / 1001.0), Some(25.0), Some(29.97), Some(30_000.0 / 1001.0),
+        Some(30.0), Some(30.5), Some(30.51), Some(50.0), Some(59.94), Some(60_000.0 / 1001.0),
+        Some(60.0), Some(120.0), Some(240.0), Some(15.0), Some(0.0), Some(-1.0), None,
+    ] {
+        case(
+            &format!("target frame rate {}", frame_rate.map_or("unknown".to_string(), |rate| rate.to_string())),
+            "target_frame_rate",
+            json!({"frame_rate": frame_rate.map(rate)}),
+            json!({"frame_rate": rate(mp::target_frame_rate(frame_rate))}),
+        );
+    }
+    for (width, height, frame_rate, why) in [
+        (1280, 720, 30.0, "the reference point"),
+        (720, 1280, 30.0, "turned"),
+        (1280, 720, 25.0, "1666.67 thousand"),
+        (1280, 720, 24.0, ""),
+        (1280, 720, 29.97, ""),
+        (1280, 720, 30_000.0 / 1001.0, ""),
+        (1280, 720, 30.5, "2033.33 thousand, over the ceiling"),
+        (960, 720, 30.0, ""),
+        (854, 480, 30.0, "889.58 thousand"),
+        (852, 480, 24_000.0 / 1001.0, ""),
+        (640, 360, 30.0, ""),
+        (720, 720, 30.0, ""),
+        (320, 240, 15.0, "under the floor"),
+        (176, 144, 30.0, "under the floor"),
+        (720, 2560, 30.0, "a panorama, over the ceiling"),
+        (0, 1080, 30.0, "no pixels at all"),
+        (404, 288, 30.0, "exactly 252.5 thousand: half up, where half-even says 252"),
+        (484, 360, 24.0, "exactly 302.5 thousand: half up, where half-even says 302"),
+        (960, 540, 25.0, "exactly 937.5 thousand"),
+        (3618, 128, 25.0, "exactly 837.5 thousand; left to right as written it is 837.4999"),
+        (644, 360, 24.0, "exactly 402.5 thousand; left to right as written it is 402.50000000000006"),
+    ] {
+        case(
+            &format!("profile bitrate {width}x{height} at {frame_rate}{}{why}", if why.is_empty() { "" } else { ": " }),
+            "profile_video_bitrate",
+            json!({"width": width, "height": height, "frame_rate": rate(frame_rate)}),
+            json!({"bitrate": mp::profile_video_bitrate(width, height, frame_rate)}),
+        );
+    }
+    for (source_bitrate, why) in [
+        (None, "no V: the profile's"),
+        (Some(0), "a stated 0 is no V"),
+        (Some(9_000_000), "V above: the profile's"),
+        (Some(2_000_000), "V equal"),
+        (Some(800_000), "V below: V"),
+        (Some(1_234_567), "the cap comes after the rounding"),
+        (Some(100_000), "below the floor, still V"),
+    ] {
+        case(
+            &format!("target bitrate 1280x720 at 30, {why}"),
+            "target_video_bitrate",
+            json!({"width": 1280, "height": 720, "frame_rate": 30, "source_bitrate": source_bitrate}),
+            json!({"bitrate": mp::target_video_bitrate(1280, 720, 30.0, source_bitrate)}),
+        );
+    }
+    for (channels, source_bitrate, why) in [
+        (Some(2), None, "stereo"),
+        (Some(1), None, "mono"),
+        (Some(6), None, "5.1 takes the stereo rate"),
+        (None, None, "a count nobody gave is not mono"),
+        (Some(0), None, "0 channels is not mono either"),
+        (Some(2), Some(96_000), "stereo, never above the source's"),
+        (Some(1), Some(48_000), "mono, never above the source's"),
+        (Some(1), Some(96_000), "mono under a higher source"),
+        (Some(2), Some(0), "a stated 0 is no rate"),
+        (Some(2), Some(1_411_200), "CD audio"),
+    ] {
+        case(
+            &format!("target audio bitrate: {why}"),
+            "target_audio_bitrate",
+            json!({"channels": channels, "source_bitrate": source_bitrate}),
+            json!({"bitrate": mp::target_audio_bitrate(channels, source_bitrate)}),
+        );
+    }
+    for (size_bytes, duration_ms, audio_bitrate, why) in [
+        (1_000_000u64, Some(3_000u64), 128_000u64, "2 666 666.67 truncates, less the audio"),
+        (1_000_000, Some(3_000), 0, "nothing to take off"),
+        (1_000_000, None, 0, "no duration"),
+        (1_000_000, Some(0), 0, "a duration of 0 is none"),
+        (0, Some(1_000), 0, "an empty file"),
+        (16_000, Some(1_000), 128_000, "the audio is the whole file"),
+        (16_000, Some(1_000), 127_999, "one bit a second left"),
+        (16_000, Some(1_000), 200_000, "more audio than file"),
+        (3_285_000, Some(10_000), 128_000, "exactly 2 500 000"),
+        (3_285_001, Some(10_000), 128_000, "truncates back to 2 500 000"),
+        (3_285_002, Some(10_000), 128_000, "2 500 001"),
+        (7_200_000, Some(180_000), 0, "a three-minute MP3 at 320k"),
+        (31_752_000, Some(180_000), 0, "three minutes of CD audio"),
+        (95_000_000, Some(95_000), 128_000, "a 95 MB phone clip"),
+    ] {
+        case(
+            &format!("estimated bitrate: {why}"),
+            "estimated_bitrate",
+            json!({"size_bytes": size_bytes, "duration_ms": duration_ms, "audio_bitrate": audio_bitrate}),
+            json!({"bitrate": mp::estimated_bitrate(size_bytes, duration_ms, audio_bitrate)}),
+        );
+    }
+
+    // --- a video, by hand --------------------------------------------------------------------
+    // A 1080p H.264 phone clip with stereo AAC, every number stated; each case changes it.
+    let clip = VideoSource {
+        width: 1920,
+        height: 1080,
+        frame_rate: Some(30.0),
+        container: "video/mp4".into(),
+        video_codec: "h264".into(),
+        audio_codec: Some("aac".into()),
+        audio_channels: Some(2),
+        video_bitrate: Some(8_000_000),
+        audio_bitrate: Some(128_000),
+        size_bytes: 20_000_000,
+        duration_ms: Some(19_000),
+    };
+    // 720p30 H.264 at 1.5 Mbit/s: within the profile (the design's test fixture 2).
+    let within = VideoSource {
+        width: 1280,
+        height: 720,
+        video_bitrate: Some(1_500_000),
+        size_bytes: 2_035_000,
+        duration_ms: Some(10_000),
+        ..clip.clone()
+    };
+    let hevc = |source: &VideoSource| VideoSource { video_codec: "hevc".into(), ..source.clone() };
+    let sized = |width: u32, height: u32, base: &VideoSource| VideoSource { width, height, ..base.clone() };
+    let silent = |source: &VideoSource| VideoSource {
+        audio_codec: None,
+        audio_channels: None,
+        audio_bitrate: None,
+        ..source.clone()
+    };
+
+    let mut videos: Vec<(String, VideoSource)> = vec![
+        ("1080p landscape".into(), clip.clone()),
+        ("1080p portrait".into(), sized(1080, 1920, &clip)),
+        (
+            "4K60 HEVC portrait from a phone (the design's test fixture 1)".into(),
+            VideoSource {
+                width: 2160,
+                height: 3840,
+                frame_rate: Some(59.94),
+                container: "video/quicktime".into(),
+                video_codec: "hevc".into(),
+                video_bitrate: Some(40_000_000),
+                size_bytes: 150_000_000,
+                duration_ms: Some(29_000),
+                ..clip.clone()
+            },
+        ),
+        ("4K landscape".into(), sized(3840, 2160, &clip)),
+        ("within the profile: kept".into(), within.clone()),
+        ("within the profile, portrait: kept".into(), sized(720, 1280, &within)),
+        ("within the profile, no audio: kept".into(), silent(&within)),
+        (
+            "within the profile, 320k audio: kept (rule A does not ask the audio's rate)".into(),
+            VideoSource { audio_bitrate: Some(320_000), ..within.clone() },
+        ),
+        (
+            "within the profile, V estimated: kept".into(),
+            VideoSource { video_bitrate: None, ..within.clone() },
+        ),
+        ("short side exactly 720, V too high".into(), VideoSource { video_bitrate: Some(8_000_000), ..within.clone() }),
+        ("short side 721: scaled".into(), sized(1282, 721, &within)),
+        ("short side 721, portrait".into(), sized(721, 1282, &within)),
+        ("short side 721, odd long side".into(), sized(1281, 721, &within)),
+        ("odd sides under the cap, HEVC".into(), hevc(&sized(853, 481, &within))),
+        (
+            "odd sides under the cap, H.264: kept (even sides are not in rule A)".into(),
+            VideoSource { video_bitrate: Some(1_000_000), ..sized(1279, 719, &within) },
+        ),
+        ("odd sides under the cap, HEVC, transcoded".into(), hevc(&sized(1279, 719, &within))),
+        ("480p stays 480p".into(), hevc(&sized(854, 480, &within))),
+        ("480p portrait stays 480p".into(), hevc(&sized(480, 854, &within))),
+        ("360p stays 360p".into(), hevc(&sized(640, 360, &within))),
+        ("QCIF stays QCIF, bitrate at the floor".into(), hevc(&sized(176, 144, &within))),
+        ("square".into(), sized(1080, 1080, &clip)),
+        (
+            "square 720 at 1M: kept".into(),
+            VideoSource { video_bitrate: Some(1_000_000), ..sized(720, 720, &within) },
+        ),
+        ("square 720 at 1.5M, 1.33 times its smaller target: transcoded".into(), sized(720, 720, &within)),
+        ("QuickTime holding H.264 is never within the profile".into(), VideoSource {
+            container: "video/quicktime".into(),
+            ..within.clone()
+        }),
+        ("HEVC at 900k: transcoded, never above V".into(), VideoSource { video_bitrate: Some(900_000), ..hevc(&within) }),
+        ("an unnamed video codec".into(), VideoSource { video_codec: "unknown".into(), ..within.clone() }),
+        ("AV1".into(), VideoSource { video_codec: "av1".into(), ..within.clone() }),
+        ("MP3 audio in MP4".into(), VideoSource { audio_codec: Some("mp3".into()), ..within.clone() }),
+        ("an unnamed audio codec is not absent".into(), VideoSource {
+            audio_codec: Some("unknown".into()),
+            ..within.clone()
+        }),
+        ("no audio, transcoded: no audio target".into(), silent(&clip)),
+        ("mono audio".into(), VideoSource { audio_channels: Some(1), audio_bitrate: Some(64_000), ..clip.clone() }),
+        ("mono audio under 64k".into(), VideoSource { audio_channels: Some(1), audio_bitrate: Some(48_000), ..clip.clone() }),
+        ("stereo audio under 128k".into(), VideoSource { audio_bitrate: Some(96_000), ..clip.clone() }),
+        ("5.1 audio".into(), VideoSource { audio_channels: Some(6), audio_bitrate: Some(384_000), ..clip.clone() }),
+        ("channels unknown".into(), VideoSource { audio_channels: None, ..clip.clone() }),
+        ("channels 0".into(), VideoSource { audio_channels: Some(0), ..clip.clone() }),
+        ("audio rate not stated, V stated".into(), VideoSource { audio_bitrate: None, ..clip.clone() }),
+        (
+            "audio rate not stated, V not stated: V unknown".into(),
+            VideoSource { audio_bitrate: None, video_bitrate: None, ..within.clone() },
+        ),
+        (
+            "no audio track, V estimated from the whole file".into(),
+            VideoSource { video_bitrate: None, ..silent(&within) },
+        ),
+        ("V stated as 0 is estimated".into(), VideoSource { video_bitrate: Some(0), ..within.clone() }),
+        (
+            "V unknown: no duration".into(),
+            VideoSource { video_bitrate: None, duration_ms: None, ..within.clone() },
+        ),
+        (
+            "V unknown: duration 0".into(),
+            VideoSource { video_bitrate: None, duration_ms: Some(0), ..within.clone() },
+        ),
+        (
+            "V unknown: the stated audio is more than the file".into(),
+            VideoSource {
+                video_bitrate: None,
+                size_bytes: 100_000,
+                audio_bitrate: Some(128_000),
+                ..within.clone()
+            },
+        ),
+        ("rule A: exactly 1.25 times".into(), VideoSource { video_bitrate: Some(2_500_000), ..within.clone() }),
+        ("rule A: one bit over".into(), VideoSource { video_bitrate: Some(2_500_001), ..within.clone() }),
+        ("rule A at 360p: exactly 1.25 times".into(), VideoSource { video_bitrate: Some(625_000), ..sized(640, 360, &within) }),
+        ("rule A at 360p: one bit over".into(), VideoSource { video_bitrate: Some(625_001), ..sized(640, 360, &within) }),
+        (
+            "rule A at 24 fps: exactly 1.25 times".into(),
+            VideoSource { frame_rate: Some(24.0), video_bitrate: Some(2_000_000), ..within.clone() },
+        ),
+        (
+            "rule A at 24 fps: one bit over".into(),
+            VideoSource { frame_rate: Some(24.0), video_bitrate: Some(2_000_001), ..within.clone() },
+        ),
+        (
+            "rule A, V estimated exactly 1.25 times".into(),
+            VideoSource { video_bitrate: None, size_bytes: 3_285_000, ..within.clone() },
+        ),
+        (
+            "rule A, V estimated: the truncation keeps it at 1.25 times".into(),
+            VideoSource { video_bitrate: None, size_bytes: 3_285_001, ..within.clone() },
+        ),
+        (
+            "rule A, V estimated one bit over".into(),
+            VideoSource { video_bitrate: None, size_bytes: 3_285_002, ..within.clone() },
+        ),
+        ("the floor".into(), VideoSource { video_bitrate: Some(500_000), frame_rate: Some(15.0), ..hevc(&sized(320, 240, &within)) }),
+        (
+            "the floor, then capped by V".into(),
+            VideoSource { video_bitrate: Some(200_000), frame_rate: Some(15.0), ..hevc(&sized(320, 240, &within)) },
+        ),
+        (
+            "the ceiling: 720p at 30.5".into(),
+            VideoSource { frame_rate: Some(30.5), video_bitrate: Some(8_000_000), ..hevc(&within) },
+        ),
+        ("the ceiling: a panorama".into(), hevc(&sized(2560, 720, &clip))),
+        ("the ceiling: a portrait panorama".into(), hevc(&sized(720, 2560, &clip))),
+        ("never above V".into(), VideoSource { video_bitrate: Some(1_200_000), ..hevc(&clip) }),
+        ("never above V, to the bit".into(), VideoSource { video_bitrate: Some(1_234_567), ..hevc(&clip) }),
+        ("a tie at 404x288, 30 fps".into(), VideoSource { video_bitrate: None, duration_ms: None, ..hevc(&sized(404, 288, &within)) }),
+        ("a tie at 484x360, 24 fps".into(), VideoSource {
+            frame_rate: Some(24.0),
+            video_bitrate: None,
+            duration_ms: None,
+            ..hevc(&sized(484, 360, &within))
+        }),
+        ("a tie at 960x540, 25 fps".into(), VideoSource {
+            frame_rate: Some(25.0),
+            video_bitrate: None,
+            duration_ms: None,
+            ..hevc(&sized(960, 540, &within))
+        }),
+        ("a tie at 3618x128, 25 fps".into(), VideoSource {
+            frame_rate: Some(25.0),
+            video_bitrate: None,
+            duration_ms: None,
+            ..hevc(&sized(3618, 128, &within))
+        }),
+        (
+            "within the profile but over the 100 MB ceiling: kept (rule A names no ceiling)".into(),
+            VideoSource {
+                video_bitrate: Some(2_000_000),
+                size_bytes: 160_000_000,
+                duration_ms: Some(600_000),
+                ..within.clone()
+            },
+        ),
+        ("no width: the fallback".into(), sized(0, 1080, &clip)),
+        ("no height: the fallback".into(), sized(1920, 0, &clip)),
+        ("no size at all: the fallback".into(), sized(0, 0, &clip)),
+        ("one pixel wide: no even width, the fallback".into(), sized(1, 1080, &clip)),
+        ("one pixel high: the fallback".into(), sized(1080, 1, &clip)),
+        (
+            "one pixel wide but within the profile: kept, the original goes".into(),
+            VideoSource { video_bitrate: Some(200_000), ..sized(1, 1080, &within) },
+        ),
+        ("two by two".into(), hevc(&sized(2, 2, &within))),
+    ];
+    // Every frame rate the task names, on a clip that is otherwise within the profile (so rule A
+    // turns on the rate alone) and on a 1080p HEVC clip (so the target's rate and bitrate show).
+    for (label, frame_rate) in [
+        ("24", Some(24.0)),
+        ("23.976", Some(24_000.0 / 1001.0)),
+        ("25", Some(25.0)),
+        ("29.97", Some(29.97)),
+        ("30000/1001", Some(30_000.0 / 1001.0)),
+        ("30", Some(30.0)),
+        ("30.5", Some(30.5)),
+        ("30.51", Some(30.51)),
+        ("50", Some(50.0)),
+        ("59.94", Some(59.94)),
+        ("60000/1001", Some(60_000.0 / 1001.0)),
+        ("60", Some(60.0)),
+        ("120", Some(120.0)),
+        ("240", Some(240.0)),
+        ("unknown", None),
+        ("0, which is unknown", Some(0.0)),
+        ("-1, which is unknown", Some(-1.0)),
+    ] {
+        videos.push((format!("{label} fps, otherwise within the profile"), VideoSource { frame_rate, ..within.clone() }));
+        videos.push((format!("{label} fps, 1080p HEVC"), VideoSource { frame_rate, ..hevc(&clip) }));
+    }
+    for (name, source) in &videos {
+        case(name, "plan_video", video_input(source), video_expected(source));
+    }
+
+    // --- a video, swept ----------------------------------------------------------------------
+    // Sizes × turns × frame rates, with the bitrate situation and the container/codecs rotating
+    // through them so that every pairing turns up without a cross product nobody could read: the
+    // situation steps with k + group and the variant with 2k + group, which between them meet
+    // every situation with every variant, and every frame rate with both.
+    let resolutions: [(u32, u32); 12] = [
+        (3840, 2160), (2560, 1440), (1920, 1080), (1440, 1080), (1280, 720), (1080, 1080),
+        (960, 540), (854, 480), (640, 480), (640, 360), (426, 240), (1281, 721),
+    ];
+    let rates: [(&str, Option<f64>); 8] = [
+        ("24", Some(24.0)),
+        ("25", Some(25.0)),
+        ("30000/1001", Some(30_000.0 / 1001.0)),
+        ("30", Some(30.0)),
+        ("50", Some(50.0)),
+        ("60000/1001", Some(60_000.0 / 1001.0)),
+        ("60", Some(60.0)),
+        ("unknown", None),
+    ];
+    // (container, video codec, audio as (codec, channels, stated bitrate) or none)
+    type Variant = (&'static str, &'static str, Option<(&'static str, u32, u64)>);
+    let variants: [Variant; 6] = [
+        ("video/mp4", "h264", Some(("aac", 2, 128_000))),
+        ("video/quicktime", "hevc", Some(("aac", 2, 128_000))),
+        ("video/mp4", "h264", None),
+        ("video/mp4", "hevc", Some(("aac", 1, 64_000))),
+        ("video/mp4", "h264", Some(("aac", 1, 48_000))),
+        ("video/quicktime", "h264", Some(("aac", 2, 160_000))),
+    ];
+    let situations = ["V stated high", "V stated low", "V estimated", "V unknown"];
+    let mut group = 0usize;
+    for (width, height) in resolutions {
+        for turned in [false, true] {
+            if turned && width == height {
+                continue;
+            }
+            let (width, height) = if turned { (height, width) } else { (width, height) };
+            let pixels = u64::from(width) * u64::from(height);
+            for (k, (rate_label, frame_rate)) in rates.iter().enumerate() {
+                let situation = (k + group) % situations.len();
+                let (container, video_codec, audio) = variants[(2 * k + group) % variants.len()];
+                let audio_rate = audio.map_or(0, |(_, _, bitrate)| bitrate);
+                // Consistent files: the size is what the rates make over the duration.
+                let (video_bitrate, size_bytes, duration_ms) = match situation {
+                    0 => (Some(pixels * 6), (pixels * 6 + audio_rate) * 5 / 4, Some(10_000)),
+                    1 => (Some(pixels * 2), (pixels * 2 + audio_rate) * 5 / 4, Some(10_000)),
+                    2 => (None, (pixels * 5 / 2 + audio_rate) * 9 / 8, Some(9_000)),
+                    _ => (None, (pixels * 3 + audio_rate) * 5 / 4, None),
+                };
+                let source = VideoSource {
+                    width,
+                    height,
+                    frame_rate: *frame_rate,
+                    container: container.into(),
+                    video_codec: video_codec.into(),
+                    audio_codec: audio.map(|(codec, _, _)| codec.to_string()),
+                    audio_channels: audio.map(|(_, channels, _)| channels),
+                    video_bitrate,
+                    audio_bitrate: audio.map(|(_, _, bitrate)| bitrate),
+                    size_bytes,
+                    duration_ms,
+                };
+                let audio_label = match audio {
+                    Some((codec, channels, bitrate)) => {
+                        format!("{codec} {} {}k", if channels == 1 { "mono" } else { "stereo" }, bitrate / 1000)
+                    }
+                    None => "no audio".into(),
+                };
+                let name = format!(
+                    "sweep {width}x{height}{} at {rate_label} fps, {}, {container} {video_codec} + {audio_label}",
+                    if turned { " (turned 90°)" } else { "" },
+                    situations[situation],
+                );
+                case(&name, "plan_video", video_input(&source), video_expected(&source));
+            }
+            group += 1;
+        }
+    }
+
+    // --- audio alone ---------------------------------------------------------------------------
+    // Three minutes, stereo, with a size that estimates to 222 222 bit/s unless a case says otherwise.
+    let song = |container: &str, codec: &str, bitrate: Option<u64>| AudioSource {
+        container: container.into(),
+        codec: codec.into(),
+        channels: Some(2),
+        bitrate,
+        size_bytes: 5_000_000,
+        duration_ms: Some(180_000),
+    };
+    let mono = |source: AudioSource| AudioSource { channels: Some(1), ..source };
+    let by_size = |source: AudioSource, size_bytes: u64| AudioSource { bitrate: None, size_bytes, ..source };
+    let audios: Vec<(&str, AudioSource)> = vec![
+        ("MP3 128k: kept", song("audio/mpeg", "mp3", Some(128_000))),
+        ("MP3 at exactly 192 000: kept", song("audio/mpeg", "mp3", Some(192_000))),
+        ("MP3 at 192 001: re-encoded", song("audio/mpeg", "mp3", Some(192_001))),
+        ("MP3 320k: re-encoded", song("audio/mpeg", "mp3", Some(320_000))),
+        ("MP3 256k mono: re-encoded to 64k", mono(song("audio/mpeg", "mp3", Some(256_000)))),
+        ("MP3 192 001 mono", mono(song("audio/mpeg", "mp3", Some(192_001)))),
+        ("AAC 128k: kept", song("audio/mp4", "aac", Some(128_000))),
+        ("AAC at exactly 192 000: kept", song("audio/mp4", "aac", Some(192_000))),
+        ("AAC at 192 001: re-encoded", song("audio/mp4", "aac", Some(192_001))),
+        ("AAC 256k as audio/m4a", song("audio/m4a", "aac", Some(256_000))),
+        ("HE-AAC 48k: kept", song("audio/mp4", "aac", Some(48_000))),
+        (
+            "MP3 of unknown bitrate: kept",
+            AudioSource { duration_ms: None, ..song("audio/mpeg", "mp3", None) },
+        ),
+        (
+            "AAC of unknown bitrate: kept",
+            AudioSource { duration_ms: Some(0), ..song("audio/mp4", "aac", Some(0)) },
+        ),
+        ("MP3 estimated at 320k: re-encoded", by_size(song("audio/mpeg", "mp3", None), 7_200_000)),
+        ("MP3 estimated at exactly 192 000: kept", by_size(song("audio/mpeg", "mp3", None), 4_320_000)),
+        (
+            "MP3 estimated at 192 000.49, truncated to 192 000: kept",
+            by_size(song("audio/mpeg", "mp3", None), 4_320_011),
+        ),
+        (
+            "MP3 estimated at 192 001.02, truncated to 192 001: re-encoded",
+            by_size(song("audio/mpeg", "mp3", None), 4_320_023),
+        ),
+        (
+            "MP3 estimated at 192 001.96, truncated to 192 001: re-encoded",
+            by_size(song("audio/mpeg", "mp3", None), 4_320_044),
+        ),
+        (
+            "MP3 stated 128k in a file that estimates at 320k: the stated rate wins",
+            AudioSource { size_bytes: 7_200_000, ..song("audio/mpeg", "mp3", Some(128_000)) },
+        ),
+        ("WAV, estimated at CD rate", by_size(song("audio/wav", "pcm", None), 31_752_000)),
+        ("WAV mono", mono(by_size(song("audio/wav", "pcm", None), 15_876_000))),
+        ("WAV mono 8 kHz 8-bit: exactly 64k", mono(by_size(song("audio/wav", "pcm", None), 1_440_000))),
+        ("WAV mono at 32k: never raised", mono(by_size(song("audio/wav", "pcm", None), 720_000))),
+        (
+            "WAV of unknown channels",
+            AudioSource { channels: None, ..by_size(song("audio/wav", "pcm", None), 31_752_000) },
+        ),
+        (
+            "WAV of 0 channels",
+            AudioSource { channels: Some(0), ..by_size(song("audio/wav", "pcm", None), 31_752_000) },
+        ),
+        ("WAV holding ADPCM: no rule names it, kept", song("audio/wav", "adpcm", None)),
+        ("AIFF", song("audio/aiff", "pcm", Some(1_411_200))),
+        ("FLAC, estimated", song("audio/flac", "flac", None)),
+        ("FLAC mono", mono(song("audio/flac", "flac", Some(700_000)))),
+        (
+            "FLAC of unknown bitrate: re-encoded at the profile's",
+            AudioSource { duration_ms: None, ..song("audio/flac", "flac", None) },
+        ),
+        ("ALAC in M4A", song("audio/mp4", "alac", Some(900_000))),
+        ("5.1 FLAC", AudioSource { channels: Some(6), ..song("audio/flac", "flac", Some(2_000_000)) }),
+        ("Ogg Vorbis 160k", song("audio/ogg", "vorbis", Some(160_000))),
+        ("Ogg Vorbis, unknown bitrate", AudioSource { duration_ms: None, ..song("audio/ogg", "vorbis", None) }),
+        ("Ogg Opus 96k: never raised", song("audio/ogg", "opus", Some(96_000))),
+        ("Ogg Opus mono 32k", mono(song("audio/ogg", "opus", Some(32_000)))),
+        ("Ogg Opus mono estimated at 24k", mono(by_size(song("audio/ogg", "opus", None), 540_000))),
+        ("Ogg of an unnamed codec", song("audio/ogg", "unknown", None)),
+        ("FLAC in Ogg", song("audio/ogg", "flac", None)),
+        ("Opus in MP4: no rule names it, kept", song("audio/mp4", "opus", Some(256_000))),
+        ("AC-3: no rule names it, kept", song("audio/mp4", "ac3", Some(448_000))),
+        ("an unnamed codec in MP4: kept", song("audio/mp4", "unknown", Some(900_000))),
+        ("Vorbis outside Ogg: kept", song("audio/mpeg", "vorbis", None)),
+    ];
+    for (name, source) in &audios {
+        case(name, "plan_audio", audio_input(source), audio_expected(source));
+    }
+
+    // --- sendable, rule C, rule D -------------------------------------------------------------
+    let ceiling = media::SIZE_LIMIT;
+    for (kind, container, honest, size_bytes, why) in [
+        ("video", "video/mp4", true, 1_000u64, "an MP4"),
+        ("video", "video/quicktime", true, 1_000, "a QuickTime movie"),
+        ("video", "video/webm", true, 1_000, "not an accepted video type"),
+        ("video", "audio/mp4", true, 1_000, "a type of the other kind"),
+        ("video", "video/mp4", false, 1_000, "the bytes say otherwise"),
+        ("video", "video/mp4", true, ceiling, "at the ceiling is within it"),
+        ("video", "video/mp4", true, ceiling + 1, "a byte over the ceiling"),
+        ("audio", "audio/mp4", true, 1_000, "M4A"),
+        ("audio", "audio/m4a", true, 1_000, "audio/m4a"),
+        ("audio", "audio/mpeg", true, 1_000, "MP3"),
+        ("audio", "audio/wav", true, 1_000, "WAV"),
+        ("audio", "audio/ogg", true, 1_000, "Ogg"),
+        ("audio", "audio/aiff", true, 1_000, "AIFF is not accepted"),
+        ("audio", "audio/flac", true, 1_000, "FLAC is not accepted"),
+        ("audio", "audio/wav", false, 1_000, "dishonest WAV"),
+        ("audio", "audio/wav", true, ceiling + 1, "a WAV over the ceiling"),
+        ("file", "video/mp4", true, 1_000, "a file is not a kind these rules are about"),
+        ("photo", "image/jpeg", true, 1_000, "nor is a photo"),
+    ] {
+        case(
+            &format!("sendable: {why}"),
+            "sendable",
+            json!({"kind": kind, "container": container, "honest": honest, "size_bytes": size_bytes, "ceiling_bytes": ceiling}),
+            json!({"sendable": mp::sendable(kind, container, honest, size_bytes, ceiling)}),
+        );
+    }
+    // A server configured lower than the default: the ceiling is an input, not a constant.
+    case(
+        "sendable: under a 50 MB server ceiling",
+        "sendable",
+        json!({"kind": "video", "container": "video/mp4", "honest": true, "size_bytes": 60_000_000, "ceiling_bytes": 50_000_000}),
+        json!({"sendable": mp::sendable("video", "video/mp4", true, 60_000_000, 50_000_000)}),
+    );
+    for source_sendable in [true, false] {
+        let send = match mp::on_failure(source_sendable) {
+            OnFailure::Original => "original",
+            OnFailure::TodaysPath => "todays_path",
+        };
+        case(
+            &format!("rule C: the source is {}sendable", if source_sendable { "" } else { "not " }),
+            "on_failure",
+            json!({"source_sendable": source_sendable}),
+            json!({"send": send}),
+        );
+    }
+    for (source_bytes, source_sendable, result_bytes, why) in [
+        (10_000_000u64, true, 12_000_000u64, "bigger, and the source can go: the source"),
+        (10_000_000, false, 12_000_000, "bigger, but the source cannot go: the result"),
+        (10_000_000, true, 4_000_000, "smaller: the result"),
+        (10_000_000, false, 4_000_000, "smaller, source unsendable: the result"),
+        (10_000_000, true, 10_000_000, "equal is not bigger: the result"),
+        (10_000_000, true, 10_000_001, "one byte bigger: the source"),
+        (150_000_000, false, 90_000_000, "a source over the ceiling, made to fit: the result"),
+    ] {
+        let upload = match mp::keep_smaller(source_bytes, source_sendable, result_bytes) {
+            Upload::Source => "source",
+            Upload::Result => "result",
+        };
+        case(
+            &format!("rule D: {why}"),
+            "keep_smaller",
+            json!({"source_bytes": source_bytes, "source_sendable": source_sendable, "result_bytes": result_bytes}),
+            json!({"upload": upload}),
+        );
+    }
+
+    let lines: Vec<String> = cases.iter().map(|case| serde_json::to_string(case).unwrap()).collect();
+    println!("[\n  {}\n]", lines.join(",\n  "));
 }

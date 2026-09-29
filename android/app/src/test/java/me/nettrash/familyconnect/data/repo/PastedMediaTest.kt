@@ -72,9 +72,14 @@ class PastedMediaTest {
         assertThat(kind("audio/mp4")).isEqualTo(AttachmentDto.KIND_AUDIO)
         assertThat(kind("audio/wav")).isEqualTo(AttachmentDto.KIND_AUDIO)
         assertThat(kind("audio/ogg")).isEqualTo(AttachmentDto.KIND_AUDIO)
-        // Not in the server's list: a file, where nothing is verified.
-        assertThat(kind("audio/flac")).isEqualTo(AttachmentDto.KIND_FILE)
+        // Not in the server's list, but re-encoded into an M4A that is (docs/protocol.md,
+        // "Preparing media before upload": lossless audio is re-encoded) — and sent as a file,
+        // as before, when that fails.
+        assertThat(kind("audio/flac")).isEqualTo(AttachmentDto.KIND_AUDIO)
+        assertThat(kind("audio/x-flac")).isEqualTo(AttachmentDto.KIND_AUDIO)
+        // Neither: a file, where nothing is verified.
         assertThat(kind("audio/midi")).isEqualTo(AttachmentDto.KIND_FILE)
+        assertThat(kind("audio/aiff")).isEqualTo(AttachmentDto.KIND_FILE)
     }
 
     @Test

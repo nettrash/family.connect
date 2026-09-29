@@ -3,10 +3,17 @@
 //  FamilyConnect
 //
 //  Turning what the picker hands over into something worth uploading: a
-//  downscaled JPEG for a photo, a re-encoded MP4 for a video that would
-//  otherwise be too big, and in both cases a small preview the bubble can
+//  downscaled JPEG for a photo, an MP4 brought to the protocol's profile for
+//  a video that is not already within it, an M4A for a sound file the audio
+//  rules say to re-encode, and for pictures a small preview the bubble can
 //  draw before the full file has been fetched. A FILE is not touched at
 //  all — it is copied where we own it and sent as it is.
+//
+//  What a video or a sound file becomes is DECIDED by `MediaPlan` (the port
+//  of docs/protocol.md's "Preparing media before upload" that every client
+//  shares), from what `MediaProbe` reads, and DONE by `MediaTranscoder`.
+//  This file only chooses which bytes go up — including, when anything goes
+//  wrong, exactly the bytes 1.1 would have sent (rule C).
 //
 //  Everything here produces a FILE ON DISK, never a Data in memory. A
 //  100 MB video read into a Data is 100 MB of resident memory on a phone
@@ -136,8 +143,8 @@ nonisolated enum MediaPrep {
     /// refused past the ten-item cap, or a board pin that is over.
     ///
     /// The file goes ONLY if MediaPrep wrote it. `prepareVideo` hands back
-    /// the ORIGINAL url when a clip already fits the ceiling, and a picked
-    /// or dropped file is the person's own — deleting `fileURL` without
+    /// the ORIGINAL url when a clip goes as it is (rule A, C or D), and a
+    /// picked or dropped file is the person's own — deleting `fileURL` without
     /// asking deleted their video from wherever they kept it. The same
     /// ownership test `PendingMediaStaging.adopt` uses to copy instead of
     /// move.
@@ -221,15 +228,138 @@ nonisolated enum MediaPrep {
 
     // MARK: - Videos
 
-    /// Re-encode only when the original is over the ceiling — nettrash's
-    /// choice: keep what the sender shot when it fits, compress when it
-    /// does not, and refuse only if compression was not enough.
-    static func prepareVideo(from sourceURL: URL, limit: Int) async throws -> Prepared {
-        let asset = AVURLAsset(url: sourceURL)
-        let originalSize = fileSize(of: sourceURL)
+    /// How a planned transcode is carried out. The app passes nothing and
+    /// gets AVFoundation (`MediaTranscoder`); a test passes one that fails,
+    /// or one whose result is bigger than its source — the only way to reach
+    /// rules C and D on demand, since a working encoder does neither on cue.
+    /// The same seam idea as `APIClient`'s injected `URLSession`.
+    nonisolated struct Transcoder: Sendable {
+        var video: @Sendable (_ source: URL, _ target: MediaPlan.VideoTarget, _ output: URL) async throws -> Void
+        var audio: @Sendable (_ source: URL, _ bitrate: Int, _ output: URL) async throws -> Void
 
-        let uploadURL: URL
-        if originalSize <= limit {
+        static let avFoundation = Transcoder(
+            video: { try await MediaTranscoder.transcodeVideo(from: $0, to: $1, writingTo: $2) },
+            audio: { try await MediaTranscoder.transcodeAudio(from: $0, bitrate: $1, writingTo: $2) })
+    }
+
+    /// Bring a video to the protocol's profile — or leave it alone, or send
+    /// it the way 1.1 did (docs/protocol.md, "Preparing media before upload").
+    ///
+    /// THIS REVERSES A DECISION, and says so. 1.1 re-encoded only a clip
+    /// over the ceiling — nettrash's choice: keep what the sender shot when
+    /// it fits, compress when it does not. Issue #74 reverses it, because the
+    /// server keeps whatever it is given for good and so the size of a
+    /// family's history is decided here: a minute of an iPhone's 1080p HEVC
+    /// is about 60 MB, the same minute at the profile's 720p H.264 about 16,
+    /// and HEVC in a QuickTime file does not even play in Firefox. What
+    /// survives of the old choice is rule A — a clip ALREADY within the
+    /// profile goes exactly as shot, because re-encoding it would only cost
+    /// it quality.
+    ///
+    /// In the protocol's order:
+    ///
+    ///   * rule A — within the profile: the original, untouched;
+    ///   * otherwise a transcode to the planner's target (`MediaTranscoder`);
+    ///   * rule D — a result bigger than a sendable source is thrown away;
+    ///   * rule C — a transcode that fails, or a source with nothing to
+    ///     transcode, goes exactly as it went in 1.1 (`videoAfterFailure`).
+    ///
+    /// `@concurrent`, because this target builds with
+    /// NonisolatedNonsendingByDefault: a plain `nonisolated async` function
+    /// runs on its CALLER's actor, and every caller is a composer on the main
+    /// actor. Seconds of probing, copying and waiting on an encoder belong
+    /// on the cooperative pool, where the old comment on `preparePhoto`
+    /// assumed every function in this type already ran.
+    @concurrent
+    static func prepareVideo(
+        from sourceURL: URL, limit: Int, transcoder: Transcoder = .avFoundation
+    ) async throws -> Prepared {
+        let originalSize = fileSize(of: sourceURL)
+        // The type is read off the bytes, as the server will read it. A file
+        // with no `ftyp` at all (Matroska, AVI, an old QuickTime movie) is
+        // not sendable as a video just as it is — but AVFoundation may still
+        // read it, and then it can be MADE into one.
+        let container = MediaProbe.videoContainer(of: sourceURL)
+        let sourceSendable = MediaPlan.sendable(
+            kind: "video", container: container ?? "", honest: container != nil,
+            sizeBytes: originalSize, ceilingBytes: limit)
+        let source = await MediaProbe.video(
+            at: sourceURL, container: container ?? mimeType(for: sourceURL), sizeBytes: originalSize)
+
+        switch MediaPlan.planVideo(source) {
+        case .keep:
+            // Rule A names no ceiling, but "untouched" is the one thing the
+            // server refuses for a clip over it — so the plan cannot be
+            // carried out, and that is rule C: the way 1.1 sent it.
+            guard sourceSendable else {
+                return try await videoAfterFailure(from: sourceURL, sourceSendable: false, limit: limit)
+            }
+            return await preparedVideo(at: sourceURL)
+
+        case .fallback:
+            return try await videoAfterFailure(
+                from: sourceURL, sourceSendable: sourceSendable, limit: limit)
+
+        case .transcode(let target):
+            let output = temporaryURL(extension: "mp4")
+            do {
+                try await transcoder.video(sourceURL, target, output)
+            } catch {
+                try? FileManager.default.removeItem(at: output)
+                // Somebody took it off the strip, or left: not a failure to
+                // recover from, and nothing to send.
+                if error is CancellationError || Task.isCancelled { throw CancellationError() }
+                AppLog.sync.error(
+                    "A video transcode failed (\(String(describing: error), privacy: .public)); sending it the way 1.1 did")
+                return try await videoAfterFailure(
+                    from: sourceURL, sourceSendable: sourceSendable, limit: limit)
+            }
+            let resultSize = fileSize(of: output)
+            switch MediaPlan.keepSmaller(
+                sourceBytes: originalSize, sourceSendable: sourceSendable, resultBytes: resultSize) {
+            case .source:
+                try? FileManager.default.removeItem(at: output)
+                return await preparedVideo(at: sourceURL)
+            case .result:
+                // A result the server would still refuse — over the ceiling
+                // for a very long clip — has not produced anything sendable,
+                // which is a failure like any other.
+                guard MediaPlan.sendable(
+                    kind: "video", container: "video/mp4",
+                    honest: Magic.honest(url: output, mime: "video/mp4"),
+                    sizeBytes: resultSize, ceilingBytes: limit)
+                else {
+                    try? FileManager.default.removeItem(at: output)
+                    return try await videoAfterFailure(
+                        from: sourceURL, sourceSendable: sourceSendable, limit: limit)
+                }
+                return await preparedVideo(at: output)
+            }
+        }
+    }
+
+    /// Rule C — a plan that could not be carried out sends what 1.1 would
+    /// have sent: the original when it can go as it is, and otherwise
+    /// 1.1's own path for it (`videoAsBefore`).
+    private static func videoAfterFailure(
+        from sourceURL: URL, sourceSendable: Bool, limit: Int
+    ) async throws -> Prepared {
+        switch MediaPlan.onFailure(sourceSendable: sourceSendable) {
+        case .original:
+            return await preparedVideo(at: sourceURL)
+        case .todaysPath:
+            return try await videoAsBefore(from: sourceURL, limit: limit)
+        }
+    }
+
+    /// EXACTLY what 1.1 did with a video, kept whole as rule C's "what would
+    /// have been sent without this section": untouched when it is an honest
+    /// MP4 or QuickTime file within the ceiling, sent as a FILE when it is
+    /// not one of those, and over the ceiling squeezed through the 1080p
+    /// export preset — refused only if even that does not fit. Preparing
+    /// media is an optimisation; a clip that went up in 1.1 must still go up.
+    private static func videoAsBefore(from sourceURL: URL, limit: Int) async throws -> Prepared {
+        guard fileSize(of: sourceURL) > limit else {
             // UNCHANGED, which means the bytes have to be what this path is about to call them.
             // A container the server does not take as video — Matroska, AVI, WebM, all of which
             // conform to `public.movie` and so arrive here — was uploaded as `video/mp4` and
@@ -240,25 +370,31 @@ nonisolated enum MediaPrep {
             else {
                 return try await prepareFile(from: sourceURL, name: nil, limit: limit)
             }
-            uploadURL = sourceURL
-        } else {
-            uploadURL = try await export(asset: asset)
-            let compressed = fileSize(of: uploadURL)
-            if compressed > limit {
-                try? FileManager.default.removeItem(at: uploadURL)
-                throw PrepError.tooLargeAfterCompression(bytes: compressed)
-            }
+            return await preparedVideo(at: sourceURL)
         }
+        let exported = try await export(asset: AVURLAsset(url: sourceURL))
+        let compressed = fileSize(of: exported)
+        if compressed > limit {
+            try? FileManager.default.removeItem(at: exported)
+            throw PrepError.tooLargeAfterCompression(bytes: compressed)
+        }
+        return await preparedVideo(at: exported)
+    }
 
-        let exported = AVURLAsset(url: uploadURL)
-        let duration = (try? await exported.load(.duration)).map { CMTimeGetSeconds($0) } ?? 0
-        let track = try? await exported.loadTracks(withMediaType: .video).first
+    /// The upload for a video file that has been chosen: its TURNED size,
+    /// its duration and a poster frame, read off the file that will go.
+    private static func preparedVideo(at uploadURL: URL) async -> Prepared {
+        let asset = AVURLAsset(url: uploadURL)
+        let duration = (try? await asset.load(.duration)).map { CMTimeGetSeconds($0) } ?? 0
+        let track = try? await asset.loadTracks(withMediaType: .video).first
         var width: Int?
         var height: Int?
         if let track, let size = try? await track.load(.naturalSize) {
             // naturalSize ignores the track's rotation; a portrait video
             // would otherwise report itself as landscape and the bubble
-            // would lay out the wrong shape.
+            // would lay out the wrong shape. (A transcoded clip has its
+            // rotation baked in and an identity transform, so this is a
+            // no-op for it — and still right.)
             let transform = (try? await track.load(.preferredTransform)) ?? .identity
             let oriented = size.applying(transform)
             width = Int(abs(oriented.width))
@@ -272,18 +408,26 @@ nonisolated enum MediaPrep {
             width: width,
             height: height,
             durationMS: Int(duration * 1000),
-            previewJPEG: await posterFrame(of: exported))
+            previewJPEG: await posterFrame(of: asset))
     }
 
     private static func export(asset: AVURLAsset) async throws -> URL {
-        // 1080p rather than "highest": the point is to fit, and a family
-        // chat on a home server does not need a 4K master.
+        // 1.1's re-encode, kept only as rule C's fallback: 1080p rather than
+        // "highest", because the point was to fit, and a family chat on a
+        // home server does not need a 4K master.
         let preset = AVAssetExportPreset1920x1080
         guard let session = AVAssetExportSession(asset: asset, presetName: preset) else {
             throw PrepError.unreadable
         }
         let url = temporaryURL(extension: "mp4")
-        try await session.export(to: url, as: .mp4)
+        do {
+            try await session.export(to: url, as: .mp4)
+        } catch {
+            // A half-written export is nobody's to upload, and nothing else
+            // would ever sweep it out of tmp.
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
         return url
     }
 
@@ -359,20 +503,133 @@ nonisolated enum MediaPrep {
             name: name)
     }
 
-    /// Prepare a piece of audio — a recording, or a track off a disk.
+    /// Prepare a piece of audio — a voice note, or a track off a disk.
     ///
-    /// Nothing is re-encoded. A voice note is already recorded straight
-    /// into the container the server checks (AAC in MP4), and re-encoding
-    /// someone's music to save a few megabytes would be a worse trade than
-    /// refusing it. There is no preview: audio has nothing to look at, so a
-    /// bubble draws a play control, the duration and a scrubber
-    /// (docs/protocol.md, "Audio").
+    /// A VOICE NOTE is never touched: it is recorded straight into the
+    /// profile's own format (AAC-LC, mono, 64 000 bit/s, in MP4 —
+    /// `AudioRecorder`), and the protocol's audio rules are for PICKED files
+    /// only. The recorder's callers say which it is.
+    ///
+    /// A picked file follows those rules (docs/protocol.md, "Preparing media
+    /// before upload"), and they REVERSE 1.1 IN PART. 1.1 never re-encoded
+    /// audio, on nettrash's reasoning that re-encoding someone's music to
+    /// save a few megabytes would be a worse trade than refusing it — and for
+    /// music that is already compressed that still stands: MP3 and AAC at or
+    /// below 192 000 bit/s go untouched, because a second lossy generation
+    /// costs more than the megabytes it saves. What changed is audio with no
+    /// first generation to lose: a WAV (and anything else uncompressed or
+    /// lossless) becomes an M4A of AAC-LC at 128 000 bit/s, 64 000 mono,
+    /// about a tenth of the size — and so does lossy audio above 192 000.
+    /// Rules C and D apply as they do to a video: a failure sends the file
+    /// exactly as 1.1 did, and a result bigger than its source is dropped.
+    ///
+    /// There is no preview: audio has nothing to look at, so a bubble draws a
+    /// play control, the duration and a scrubber (docs/protocol.md, "Audio").
+    /// `@concurrent` for `prepareVideo`'s reason.
+    @concurrent
     static func prepareAudio(
-        from sourceURL: URL, name: String? = nil, limit: Int
+        from sourceURL: URL,
+        name: String? = nil,
+        limit: Int,
+        isVoiceNote: Bool = false,
+        transcoder: Transcoder = .avFoundation
     ) async throws -> Prepared {
         let scoped = sourceURL.startAccessingSecurityScopedResource()
         defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
 
+        if isVoiceNote {
+            return try await audioAsBefore(from: sourceURL, name: name, limit: limit)
+        }
+        return try await preparePickedAudio(
+            from: sourceURL, name: name, limit: limit, transcoder: transcoder,
+            todaysPath: { try await audioAsBefore(from: sourceURL, name: name, limit: limit) })
+    }
+
+    /// Audio the server will NOT take as it is — an AIFF, a FLAC, a CAF, a
+    /// raw ADTS `.aac` — which 1.1 sent as a `file`. The audio rules re-encode
+    /// the uncompressed and lossless ones, and those AVFoundation can read
+    /// come out as an M4A a bubble can play; everything else, and every
+    /// failure, is still the file 1.1 sent.
+    @concurrent
+    private static func prepareUnacceptedAudio(
+        from sourceURL: URL, name: String?, limit: Int, transcoder: Transcoder
+    ) async throws -> Prepared {
+        let scoped = sourceURL.startAccessingSecurityScopedResource()
+        defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
+
+        return try await preparePickedAudio(
+            from: sourceURL, name: name, limit: limit, transcoder: transcoder,
+            todaysPath: { try await prepareFile(from: sourceURL, name: name, limit: limit) })
+    }
+
+    /// The audio rules for a picked file. `todaysPath` is what 1.1 did with
+    /// it at the door it came through — as audio, or as a file — which is
+    /// rule C's fallback for anything that cannot go up as it is.
+    private static func preparePickedAudio(
+        from sourceURL: URL,
+        name: String?,
+        limit: Int,
+        transcoder: Transcoder,
+        todaysPath: () async throws -> Prepared
+    ) async throws -> Prepared {
+        let mime = audioMIME(for: sourceURL)
+        let size = fileSize(of: sourceURL)
+        let sourceSendable = MediaPlan.sendable(
+            kind: "audio", container: mime, honest: Magic.honest(url: sourceURL, mime: mime),
+            sizeBytes: size, ceilingBytes: limit)
+        let source = await MediaProbe.audio(at: sourceURL, container: mime, sizeBytes: size)
+
+        switch MediaPlan.planAudio(source) {
+        case .keep:
+            // Untouched — as audio when it can go that way, and otherwise the
+            // way it went before (rule C).
+            switch MediaPlan.onFailure(sourceSendable: sourceSendable) {
+            case .original: return try await audioAsBefore(from: sourceURL, name: name, limit: limit)
+            case .todaysPath: return try await todaysPath()
+            }
+
+        case .transcode(let bitrate):
+            let output = temporaryURL(extension: "m4a")
+            do {
+                try await transcoder.audio(sourceURL, bitrate, output)
+            } catch {
+                try? FileManager.default.removeItem(at: output)
+                if error is CancellationError || Task.isCancelled { throw CancellationError() }
+                // AVFoundation has no Ogg reader, so every Ogg file lands
+                // here — the protocol's "wherever the platform can decode it".
+                AppLog.sync.error(
+                    "An audio transcode failed (\(String(describing: error), privacy: .public)); sending it the way 1.1 did")
+                switch MediaPlan.onFailure(sourceSendable: sourceSendable) {
+                case .original: return try await audioAsBefore(from: sourceURL, name: name, limit: limit)
+                case .todaysPath: return try await todaysPath()
+                }
+            }
+            let resultSize = fileSize(of: output)
+            let resultSendable = MediaPlan.sendable(
+                kind: "audio", container: "audio/mp4",
+                honest: Magic.honest(url: output, mime: "audio/mp4"),
+                sizeBytes: resultSize, ceilingBytes: limit)
+            let upload = MediaPlan.keepSmaller(
+                sourceBytes: size, sourceSendable: sourceSendable, resultBytes: resultSize)
+            guard upload == .result, resultSendable else {
+                try? FileManager.default.removeItem(at: output)
+                switch MediaPlan.onFailure(sourceSendable: sourceSendable) {
+                case .original: return try await audioAsBefore(from: sourceURL, name: name, limit: limit)
+                case .todaysPath: return try await todaysPath()
+                }
+            }
+            // The name follows the bytes: a recipient saving "Take 3.wav"
+            // would get AAC under a WAV name.
+            let renamed = name.map { ($0 as NSString).deletingPathExtension + ".m4a" }
+            return await preparedAudio(at: output, name: renamed)
+        }
+    }
+
+    /// EXACTLY what 1.1 did with a piece of audio: copy it somewhere we own,
+    /// refuse it over the ceiling, and read its duration. Nothing re-encoded.
+    private static func audioAsBefore(
+        from sourceURL: URL, name: String?, limit: Int
+    ) async throws -> Prepared {
         let destination = temporaryURL(extension: sourceURL.pathExtension)
         do {
             try FileManager.default.copyItem(at: sourceURL, to: destination)
@@ -385,8 +642,12 @@ nonisolated enum MediaPrep {
             try? FileManager.default.removeItem(at: destination)
             throw PrepError.tooLargeAfterCompression(bytes: size)
         }
+        return await preparedAudio(at: destination, name: name)
+    }
 
-        let asset = AVURLAsset(url: destination)
+    /// The upload for an audio file that has been chosen.
+    private static func preparedAudio(at uploadURL: URL, name: String?) async -> Prepared {
+        let asset = AVURLAsset(url: uploadURL)
         let duration = (try? await asset.load(.duration)).map {
             Int(CMTimeGetSeconds($0) * 1000)
         }
@@ -400,8 +661,8 @@ nonisolated enum MediaPrep {
         // reading the file name here put a scratch file name on the wire
         // and in the composer's chip. A recorder passes nothing.
         return Prepared(
-            fileURL: destination,
-            mime: audioMIME(for: destination),
+            fileURL: uploadURL,
+            mime: audioMIME(for: uploadURL),
             kind: "audio",
             durationMS: duration,
             name: sanitizedName(name))
@@ -450,13 +711,15 @@ nonisolated enum MediaPrep {
     /// The Mac has one picker rather than the phone's two, so the KIND is
     /// read from the file's type rather than from which button was
     /// pressed: an image goes through the photo path (downscaled, with a
-    /// preview), a movie through the video path (re-encoded only if it has
-    /// to be), and everything else is a file, sent as it is.
+    /// preview), a movie through the video path (brought to the profile
+    /// unless it is already within it), audio through the audio rules, and
+    /// everything else is a file, sent as it is.
     static func prepare(
         fileAt url: URL,
         type explicitType: UTType? = nil,
         name: String? = nil,
-        limit: Int
+        limit: Int,
+        transcoder: Transcoder = .avFoundation
     ) async throws -> Prepared {
         // The clipboard KNOWS the type; a picked file only has an
         // extension to go on. Trust the caller when it has something
@@ -473,15 +736,23 @@ nonisolated enum MediaPrep {
             return try await preparePhoto(from: data, limit: limit)
         }
         if type?.conforms(to: .movie) == true {
-            return try await prepareVideo(from: url, limit: limit)
+            return try await prepareVideo(from: url, limit: limit, transcoder: transcoder)
         }
         // Audio the server will actually accept goes as audio, so it gets a
         // player instead of a document row. Anything else claiming to be
-        // audio (a codec the magic-number check does not know) falls
-        // through to the file path rather than earning a 400.
-        if type?.conforms(to: .audio) == true, isSupportedAudio(url) {
-            return try await prepareAudio(
-                from: url, name: name ?? url.lastPathComponent, limit: limit)
+        // audio (a type the magic-number check does not know) is re-encoded
+        // to one it does when the audio rules say to and AVFoundation can —
+        // an AIFF, a FLAC — and otherwise falls through to the file path
+        // rather than earning a 400, exactly as it did in 1.1.
+        if type?.conforms(to: .audio) == true {
+            if isSupportedAudio(url) {
+                return try await prepareAudio(
+                    from: url, name: name ?? url.lastPathComponent, limit: limit,
+                    transcoder: transcoder)
+            }
+            return try await prepareUnacceptedAudio(
+                from: url, name: name ?? url.lastPathComponent, limit: limit,
+                transcoder: transcoder)
         }
         return try await prepareFile(from: url, name: name, limit: limit)
     }
@@ -508,8 +779,9 @@ nonisolated enum MediaPrep {
             let prepared = try await prepare(
                 fileAt: scratch, type: type, name: name, limit: limit)
             // Every path but one copies or re-encodes; `prepareVideo` hands
-            // back the source itself when it already fits, so only delete
-            // the scratch file when it is not the thing being uploaded.
+            // back the source itself when it goes as it is (rules A, C and
+            // D), so only delete the scratch file when it is not the thing
+            // being uploaded.
             if prepared.fileURL != scratch {
                 try? FileManager.default.removeItem(at: scratch)
             }
@@ -595,7 +867,7 @@ nonisolated enum MediaPrep {
 /// PhotosPicker hands a movie over as a file whose lifetime ends when the
 /// import closure returns, so it is copied out rather than referenced. The
 /// copy is the caller's to delete — `MediaPrep.prepareVideo` may return it
-/// unchanged as the upload file when the original already fits.
+/// unchanged as the upload file when the original goes as it is.
 nonisolated struct PickedMovie: Transferable {
     let url: URL
 

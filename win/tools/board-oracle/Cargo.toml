@@ -11,6 +11,12 @@
 # The second command prints the words a chat ROW is drawn with — a call record's line, what an
 # attachment is called when it has no name, and the notification sentences — from the same crate.
 #
+#     cd win/tools/board-oracle && cargo run --quiet -- media-plan > ../../tests/FamilyConnect.Core.Tests/Fixtures/media-plan-vectors.json
+#
+# The third prints fc_text::media_plan — what a picked video or sound file becomes before upload
+# (issue #74). Three ports are held to it, so copy the SAME file, byte for byte, to
+# ios/FamilyConnectTests/Fixtures/ and android/app/src/test/resources/ as well; CI compares all three.
+#
 # and the C# suite (OracleTests) will fail on anything the port no longer matches. Its own
 # workspace on purpose: joining web/'s would put a native binary in the wasm crate's tree.
 [package]

@@ -25,7 +25,8 @@ win/
     Store/      Database + Migrations (numbered), ChatStore, BoardStore, OutboxStore, Times
     Board/      NoteText, NoteLook, BoardWall, BoardTasks, BoardPicture, NoteFitting, BoardBadge
     Text/       StringCatalog (the apps' English string IS the key), CallRecordText,
-                AttachmentText, NotifyText, Calendar (the .ics a client writes itself)
+                AttachmentText, NotifyText, Calendar (the .ics a client writes itself),
+                MediaPlan (what a picked video or sound file becomes before upload)
   src/FamilyConnect.App.Logic/
                 AppSession — which screen the app is on, and the three ways a session ends
                 LiveConnection — the socket, the resync, the outbox and the router under one policy
@@ -33,6 +34,8 @@ win/
                 Conversation — one open chat: the window, paging back, the read marker, typing
                 Board — the wall: the stickers on it, the badge over it, the writes that change it
                 MediaOutbox — the uploads a queued message owes, and the bytes waiting for them
+                MediaEncoding — the numbers a Media Foundation profile is given for a plan
+                Faststart — an MP4's index moved in front of its media data
                 AttachmentCache — downloaded bytes, kept, with the preview rule in ONE place
                 Family — the door, the owner's console, and the numbers everybody may see
                 Notifications — when this client speaks up, and what it says when it does
@@ -103,6 +106,24 @@ from could only give up. Every landing is remembered as it happens, so a crash h
 four-photo message costs the remaining three; a file this device can no longer find fails the row
 outright (an id cannot recover a picture); and a flush PUSHES what is owed before it posts
 anything, because the pipeline passes over a row that still owes a byte.
+
+**A picked video is brought to the protocol's profile before it is staged, and a sound file where
+the audio rules say** ("Preparing media before upload", issue #74). What to do is `MediaPlan` — a
+port of `fc_text::media_plan` held to it by `MediaPlanOracleTests`, case for case, because four
+clients must reach the same answer for the same file. What Media Foundation is asked for is
+`MediaEncoding`, and three things about it are not obvious. **Its AAC encoder documents four rates
+— 96, 128, 160 and 192 kbit/s — and the protocol's 64 000 is not one**, so every encode (a voice
+note's too) asks for the exact number first and then for the nearest documented one that keeps
+rule B. **A portrait clip is encoded in its STORED orientation with the source's turn carried as
+metadata** (`MF_MT_VIDEO_ROTATION`), and **every result is read back and checked** — sides, turn,
+codec, audio kept or not — because nothing on the Mac can watch Media Foundation run; one that came
+out wrong is a failed transcode, and rule C sends what 1.1 sent. **The `moov` is moved to the front
+in C#** (`Faststart`), not asked of the MP4 sink, so it is the same on every Windows and tested
+here (and checked once, by hand, on a real moov-at-end file from `AVAssetWriter`: every sample of
+both tracks decoded identically before and after). What only Windows can show has not been run
+yet: that the encoder takes these profiles and keeps the turn (both checked, and a refusal logged
+to `diagnostics.log`), that it drops 60 fps to 30 (logged when it does not), and that it tone-maps
+HDR rather than clipping it (nothing here can tell — it needs an HDR clip and eyes).
 
 **A preview is only asked for when the attachment says it has one.** The server generates none for
 a picture the assistant drew, and none at all for a file, audio or a location — so `has_preview` is
@@ -302,7 +323,7 @@ load-bearing, and now a test says so.
 CI runs this lane on **ubuntu AND windows** (`.github/workflows/ci.yml`, job `win`): the portable
 half is worth nothing unless something actually runs it on the target, and what that catches is not
 compile errors but SQLite's locking, path separators, line endings in the fixtures and the reader's
-own culture. The same lane re-prints both oracle fixtures from `web/text` and fails on a diff.
+own culture. The same lane re-prints the oracle fixtures from `web/text` and fails on a diff.
 
 .NET 10 (`global.json` pins the SDK band). Nothing here references a Windows API, on purpose: a
 WinUI **app** cannot be built on macOS at all — its XAML compiler is .NET Framework — so a port
@@ -408,6 +429,19 @@ name, the notification sentences). `tests/.../Fixtures/board-vectors.json` is no
 cd win/tools/board-oracle
 cargo run --quiet > ../../tests/FamilyConnect.Core.Tests/Fixtures/board-vectors.json
 cargo run --quiet -- chat > ../../tests/FamilyConnect.Core.Tests/Fixtures/chat-vectors.json
+```
+
+A third, `media-plan-vectors.json`, is `fc_text::media_plan` — what a picked video or sound file
+becomes before upload (docs/protocol.md, "Preparing media before upload"; issue #74). Unlike the
+other two it is held by THREE ports, so the same bytes are copied into the iOS test bundle and onto
+Android's JVM test classpath, and CI fails if any copy differs from a fresh print:
+
+```bash
+cd win/tools/board-oracle
+cargo run --quiet -- media-plan > ../../tests/FamilyConnect.Core.Tests/Fixtures/media-plan-vectors.json
+cd ../../..
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/media-plan-vectors.json ios/FamilyConnectTests/Fixtures/
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/media-plan-vectors.json android/app/src/test/resources/
 ```
 
 Four implementations of one rule need an oracle, not four readings. This repo has been bitten by a
