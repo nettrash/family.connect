@@ -480,6 +480,17 @@ const REFUSAL_PHRASES: &[&str] = &[
     "content management policy",
 ];
 
+/// The error object of a provider's error body. Every Azure and OpenAI
+/// surface wraps it in `error`; a bare object is read as the error itself
+/// rather than as nothing.
+fn error_object(parsed: &Value) -> &Value {
+    if parsed["error"].is_object() {
+        &parsed["error"]
+    } else {
+        parsed
+    }
+}
+
 /// Did the provider's filter refuse this request? Decided from an HTTP error
 /// answer: its status and its body, as the provider sent them.
 ///
@@ -497,13 +508,7 @@ pub fn refused_by_provider(status: reqwest::StatusCode, body: &str) -> bool {
     let Ok(parsed) = serde_json::from_str::<Value>(body) else {
         return false;
     };
-    // Every Azure and OpenAI surface wraps it in `error`; a bare object is
-    // read as the error itself rather than as nothing.
-    let error = if parsed["error"].is_object() {
-        &parsed["error"]
-    } else {
-        &parsed
-    };
+    let error = error_object(&parsed);
     let is_one_of = |value: &Value, set: &[&str]| {
         value
             .as_str()
@@ -542,7 +547,8 @@ pub fn finish_is_refusal(finish_reason: &str) -> bool {
     finish_reason.eq_ignore_ascii_case("content_filter")
 }
 
-/// A provider's error body as ONE log line, bounded.
+/// Text for the log as ONE line, bounded — what [`loggable_detail`] kept of
+/// a provider's error body.
 ///
 /// Azure pretty-prints its errors, and journald cuts a record at every
 /// newline — so the part of the detail that says WHICH filter tripped was
@@ -557,6 +563,109 @@ fn one_line(detail: &str) -> String {
         .chars()
         .take(400)
         .collect()
+}
+
+/// A provider's error body as the log may keep it: the fields that NAME the
+/// failure, and nothing that can carry the member's words.
+///
+/// **The body itself is never logged.** An error answer can repeat what it
+/// was sent: a DALL·E 3 refusal may carry the model's `revised_prompt` of
+/// the member's description, a pydantic-style 422 echoes the request under
+/// `detail[].input`, and a validation `message` can quote the value it
+/// rejected. So this is an allow-list, not a filter — `error.code`,
+/// `error.type`, `error.param`, the inner error's `code`, the content-filter
+/// categories that tripped (with their severity), and a 422's `loc`/`type`
+/// pairs — each kept only while it looks like the identifier it is, and
+/// everything else, `message` included, counted and withheld. What is left
+/// is folded by [`one_line`], so it keeps the 400-character bound.
+fn loggable_detail(body: &str) -> String {
+    let bytes = body.len();
+    let Ok(parsed) = serde_json::from_str::<Value>(body) else {
+        return format!("{bytes}-byte body, not JSON, withheld");
+    };
+    let error = error_object(&parsed);
+    let inner = if error["innererror"].is_object() {
+        &error["innererror"]
+    } else {
+        &error["inner_error"]
+    };
+    let mut parts = Vec::new();
+    for (label, value) in [
+        ("code", &error["code"]),
+        ("type", &error["type"]),
+        ("param", &error["param"]),
+        ("inner", &inner["code"]),
+    ] {
+        if let Some(token) = log_token(value) {
+            parts.push(format!("{label}={token}"));
+        }
+    }
+    // Which of the filter's categories said no — Azure spells the key both
+    // ways, and puts it under the inner error or beside the code.
+    let mut filtered = Vec::new();
+    for holder in [inner, error] {
+        for key in ["content_filter_result", "content_filter_results"] {
+            let Some(categories) = holder[key].as_object() else {
+                continue;
+            };
+            for (category, result) in categories {
+                if result["filtered"] != Value::Bool(true) {
+                    continue;
+                }
+                let Some(category) = log_token(&Value::from(category.as_str())) else {
+                    continue;
+                };
+                filtered.push(match log_token(&result["severity"]) {
+                    Some(severity) => format!("{category}:{severity}"),
+                    None => category,
+                });
+            }
+        }
+    }
+    if !filtered.is_empty() {
+        parts.push(format!("filtered={}", filtered.join(",")));
+    }
+    // A pydantic-style 422 names the field and the rule, and echoes the
+    // input beside them; the first two are kept.
+    if let Some(items) = parsed["detail"].as_array() {
+        let invalid: Vec<String> = items
+            .iter()
+            .take(4)
+            .filter_map(|item| {
+                let loc = item["loc"]
+                    .as_array()?
+                    .iter()
+                    .map(log_token)
+                    .collect::<Option<Vec<_>>>()?
+                    .join(".");
+                let rule = log_token(&item["type"]).unwrap_or_else(|| "?".to_string());
+                Some(format!("{loc}:{rule}"))
+            })
+            .collect();
+        if !invalid.is_empty() {
+            parts.push(format!("invalid={}", invalid.join(",")));
+        }
+    }
+    parts.push(format!("{bytes}-byte body, other fields withheld"));
+    one_line(&parts.join(" "))
+}
+
+/// One field of a provider's error, if it is shaped like an identifier —
+/// a short run of ASCII letters, digits and `_-.[]:` — or a number. A
+/// value of any other shape is prose, and prose is where a provider
+/// repeats what it was sent, so it is not kept.
+fn log_token(value: &Value) -> Option<String> {
+    let text = match value {
+        Value::String(text) => text.trim().to_string(),
+        Value::Number(number) => number.to_string(),
+        _ => return None,
+    };
+    let identifier = !text.is_empty()
+        && text.len() <= 64
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-.[]:".contains(c));
+    identifier.then_some(text)
 }
 
 /// The error a failed provider call becomes: the context line the log
@@ -612,13 +721,14 @@ where
         // it is secret — the key is only ever a header.
         // The body is read for WHY as well as for the log: a refusal by
         // the provider's filter is the one failure the member is told about
-        // differently (protocol.md, "The assistant").
+        // differently (protocol.md, "The assistant"). Only its identifying
+        // fields reach the log: an error can echo the question it refused.
         let detail = response.text().await.unwrap_or_default();
         return Err(provider_error(
             status,
             format!(
                 "assistant returned {status} for {url}: {}",
-                one_line(&detail)
+                loggable_detail(&detail)
             ),
             &detail,
         ));
@@ -731,14 +841,15 @@ pub async fn generate_image(
         // `stream_reply`: a bare 404 or 400 from an images endpoint cannot
         // say whether the endpoint, the deployment, the api-version or a
         // body field this deployment does not implement was the wrong one.
-        // None of it is secret — the key is only ever a header.
+        // None of it is secret — the key is only ever a header. The body
+        // is not logged whole: a refusal can repeat the description.
         let detail = response.text().await.unwrap_or_default();
         return Err(provider_error(
             status,
             format!(
                 "image generation returned {status} for {}: {}",
                 route.url,
-                one_line(&detail)
+                loggable_detail(&detail)
             ),
             &detail,
         ));
@@ -1565,5 +1676,124 @@ mod tests {
         let folded = one_line(&long);
         assert_eq!(folded.chars().count(), 400);
         assert!(!folded.contains('\n'));
+    }
+
+    /// A refused picture: the log names the refusal and the category that
+    /// tripped, and never the description — not the `revised_prompt` a
+    /// DALL·E 3 refusal can carry, not a message that quotes it.
+    #[test]
+    fn a_refused_description_never_reaches_the_log() {
+        let body = r#"{
+          "error": {
+            "code": "contentFilter",
+            "message": "Your task failed as a result of our safety system: 'a purple giraffe'",
+            "inner_error": {
+              "code": "ResponsibleAIPolicyViolation",
+              "content_filter_results": {
+                "hate": {"filtered": false, "severity": "safe"},
+                "violence": {"filtered": true, "severity": "medium"},
+                "jailbreak": {"filtered": true, "detected": true}
+              },
+              "revised_prompt": "A purple giraffe wearing a hat, in watercolour"
+            }
+          }
+        }"#;
+        let line = format!(
+            "{:#}",
+            provider_error(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "image generation returned 400 for https://example.test/images: {}",
+                    loggable_detail(body)
+                ),
+                body,
+            )
+        );
+        assert!(!line.to_lowercase().contains("giraffe"), "{line}");
+        assert!(!line.contains("safety system"), "{line}");
+        assert!(line.contains("code=contentFilter"), "{line}");
+        assert!(
+            line.contains("inner=ResponsibleAIPolicyViolation"),
+            "{line}"
+        );
+        assert!(
+            line.contains("filtered=jailbreak,violence:medium"),
+            "{line}"
+        );
+        assert!(!line.contains("hate"), "{line}");
+        assert!(!line.contains('\n'));
+        assert!(
+            line.ends_with("the provider's content filter refused it"),
+            "{line}"
+        );
+    }
+
+    /// A 422 that echoes the request under `detail[].input` keeps the field
+    /// and the rule, and drops the echo.
+    #[test]
+    fn a_validation_echo_never_reaches_the_log() {
+        let body = r#"{"detail": [
+            {"type": "string_too_long", "loc": ["body", "prompt"],
+             "msg": "String should have at most 4000 characters",
+             "input": "Grandma's secret birthday cake with seven candles"},
+            {"type": "extra_forbidden", "loc": ["body", "size"], "input": "1024x1024"}
+        ]}"#;
+        let line = loggable_detail(body);
+        assert!(!line.contains("Grandma"), "{line}");
+        assert!(!line.contains("1024x1024"), "{line}");
+        assert!(
+            line.starts_with("invalid=body.prompt:string_too_long,body.size:extra_forbidden "),
+            "{line}"
+        );
+    }
+
+    /// The chat completions' shape: the identifiers are kept, the message is
+    /// not — an ordinary 400's message can quote the value it rejected.
+    #[test]
+    fn only_identifiers_are_kept_from_an_ordinary_error() {
+        let body = r#"{"error": {"message": "Invalid value: 'tell me about Aunt Vera'",
+            "type": "invalid_request_error", "param": "messages[1].content", "code": null}}"#;
+        let line = loggable_detail(body);
+        assert!(!line.contains("Vera"), "{line}");
+        assert_eq!(
+            line,
+            format!(
+                "type=invalid_request_error param=messages[1].content {}-byte body, other fields withheld",
+                body.len()
+            )
+        );
+        // A "code" that is prose is prose, whichever field it sits in.
+        let prose = r#"{"error": {"code": "draw a cat for Vera", "message": "x"}}"#;
+        assert!(!loggable_detail(prose).contains("Vera"));
+        // Azure's 404 keeps its numeric code.
+        assert!(
+            loggable_detail(r#"{"error": {"code": "404", "message": "Resource not found"}}"#)
+                .starts_with("code=404 ")
+        );
+        // Not JSON: nothing structured to keep, so nothing but its size.
+        assert_eq!(
+            loggable_detail("<html>bad gateway for 'a cat'</html>"),
+            "36-byte body, not JSON, withheld"
+        );
+        assert_eq!(loggable_detail(""), "0-byte body, not JSON, withheld");
+    }
+
+    /// However many categories a body lists, the line stays one line within
+    /// the 400-character bound.
+    #[test]
+    fn the_loggable_detail_keeps_the_bound() {
+        let categories: Vec<String> = (0..200)
+            .map(|n| format!(r#""category_{n}": {{"filtered": true, "severity": "high"}}"#))
+            .collect();
+        let body = format!(
+            r#"{{"error": {{"code": "content_filter", "innererror": {{"content_filter_result": {{{}}}}}}}}}"#,
+            categories.join(",")
+        );
+        let line = loggable_detail(&body);
+        assert!(line.chars().count() <= 400);
+        assert!(
+            line.starts_with("code=content_filter filtered=category_"),
+            "{line}"
+        );
     }
 }
