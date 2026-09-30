@@ -8,9 +8,16 @@
  * then parameters, not a file somebody has to regenerate with a tool this
  * repo does not depend on.
  *
- * NOISE, by default, is what makes a clip expensive: an encoder cannot
- * squeeze random luma, so a clip asked for at 20 Mbit/s really is about
- * 20 Mbit/s — and rule D will not keep it over a 2 Mbit/s transcode.
+ * A SCENE, NOT NOISE. Each frame is a smooth picture panning sideways under
+ * a little grain — what a phone camera hands over: structure an encoder can
+ * predict, and sensor noise it keeps only while it has bits to spare. Asked
+ * for at 20 Mbit/s, the grain is kept and the clip really is expensive; asked
+ * for at 2, it is the first thing to go. The first version of this file fed
+ * the encoder pure random luma instead, and the run on a device showed what
+ * that proves: nothing. Random luma has no rate at which it fits — the
+ * platform's H.264 encoder, asked for 2 Mbit/s, returned 15, and a
+ * "300 kbit/s" fixture of hard-edged bars came out at 9 — so a test of
+ * whether a requested bitrate governs could only fail, whatever the code did.
  */
 
 package me.nettrash.familyconnect.data.repo
@@ -19,6 +26,8 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.os.Build
+import androidx.annotation.RequiresApi
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
@@ -42,11 +51,12 @@ object TestClips {
         frames: Int,
         bitrate: Int,
         rotation: Int = 0,
-        noise: Boolean = true,
+        /** The grain's amplitude in luma steps; 0 is a clean picture that costs almost nothing. */
+        grain: Int = 6,
         audioChannels: Int? = 2,
         audioBitrate: Int = 128_000,
     ) {
-        val video = encodeVideo(width, height, fps, frames, bitrate, noise)
+        val video = encodeVideo(width, height, fps, frames, bitrate, grain)
         val durationUs = frames * 1_000_000L / fps
         val audio = audioChannels?.let { encodeAudio(it, audioBitrate, durationUs) }
         val muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
@@ -68,7 +78,12 @@ object TestClips {
         }
     }
 
-    /** A 16-bit PCM WAV of a sine tone: what a picked lossless file looks like to the probe. */
+    /**
+     * A 16-bit PCM WAV of a sine tone: what a picked lossless file looks like
+     * to the probe. [channels] up to six (a plain PCM header, which is how a
+     * 5.1 export from an editor arrives) and any [sampleRate] — 96 000 is the
+     * hi-res download an AAC encoder cannot take as it is.
+     */
     fun wav(file: File, seconds: Int, channels: Int, sampleRate: Int = 44_100) {
         val frames = seconds * sampleRate
         val data = ByteBuffer.allocate(frames * channels * 2).order(ByteOrder.LITTLE_ENDIAN)
@@ -90,10 +105,89 @@ object TestClips {
         }
     }
 
-    private class Sample(val data: ByteArray, val presentationUs: Long, val flags: Int)
-    private class Encoded(val format: MediaFormat, val samples: List<Sample>)
+    /**
+     * A FLAC file of a tone under a little hiss, stereo: the platform's own
+     * FLAC encoder, whose stream header (`fLaC` and STREAMINFO) and frames,
+     * written one after the other, ARE the file format — there is no
+     * container to mux into.
+     *
+     * [broken] keeps that header and replaces every frame with noise: a file
+     * the probe still calls FLAC, and that nothing can decode.
+     */
+    fun flac(file: File, seconds: Int, sampleRate: Int = 44_100, broken: Boolean = false) {
+        val channels = 2
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_FLAC, sampleRate, channels).apply {
+            setInteger(MediaFormat.KEY_FLAC_COMPRESSION_LEVEL, 5)
+        }
+        val framesPerBuffer = 1_024
+        val random = Random(74)
+        val audio = encode(format, seconds * sampleRate / framesPerBuffer) { codec, index, buffer ->
+            val input = checkNotNull(codec.getInputBuffer(index)).order(ByteOrder.LITTLE_ENDIAN)
+            input.clear()
+            for (frame in 0 until framesPerBuffer) {
+                val t = (buffer * framesPerBuffer + frame).toDouble() / sampleRate
+                val value = (sin(2 * PI * 330.0 * t) * 8_000).toInt() + random.nextInt(-200, 201)
+                repeat(channels) { input.putShort(value.toShort()) }
+            }
+            framesPerBuffer * channels * 2 to buffer * framesPerBuffer * 1_000_000L / sampleRate
+        }
+        check(audio.config.size >= 4 && String(audio.config, 0, 4, Charsets.US_ASCII) == "fLaC") {
+            "this device's FLAC encoder did not hand over a stream header"
+        }
+        file.outputStream().use { out ->
+            out.write(audio.config)
+            for (sample in audio.samples) {
+                out.write(if (broken) random.nextBytes(sample.data.size) else sample.data)
+            }
+        }
+    }
 
-    private fun encodeVideo(width: Int, height: Int, fps: Int, frames: Int, bitrate: Int, noise: Boolean): Encoded {
+    /** How far the picture travels: its wavelength, and its speed — a slow pan. */
+    private const val PAN_PERIOD = 480
+    private const val PAN_PIXELS_PER_FRAME = 2
+
+    /**
+     * An Ogg file of Opus, mono, 48 kHz — what a browser's voice recording
+     * is, and what Android can read and an iPhone cannot. API 29+, which is
+     * when MediaMuxer learnt to write the container.
+     */
+    @RequiresApi(Build.VERSION_CODES.Q)
+    fun oggOpus(file: File, seconds: Int, bitrate: Int) {
+        val sampleRate = 48_000
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, sampleRate, 1).apply {
+            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+        }
+        // 20 ms a buffer: an Opus frame.
+        val framesPerBuffer = 960
+        val random = Random(74)
+        val audio = encode(format, seconds * sampleRate / framesPerBuffer) { codec, index, buffer ->
+            val input = checkNotNull(codec.getInputBuffer(index)).order(ByteOrder.LITTLE_ENDIAN)
+            input.clear()
+            // Hiss, not a tone: Opus spends almost nothing on a sine, and a
+            // fixture asked for at 96 kbit/s has to BE about 96 kbit/s.
+            repeat(framesPerBuffer) { input.putShort(random.nextInt(-6_000, 6_001).toShort()) }
+            framesPerBuffer * 2 to buffer * framesPerBuffer * 1_000_000L / sampleRate
+        }
+        val muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_OGG)
+        try {
+            val track = muxer.addTrack(audio.format)
+            muxer.start()
+            val info = MediaCodec.BufferInfo()
+            for (sample in audio.samples) {
+                info.set(0, sample.data.size, sample.presentationUs, sample.flags)
+                muxer.writeSampleData(track, ByteBuffer.wrap(sample.data), info)
+            }
+            muxer.stop()
+        } finally {
+            muxer.release()
+        }
+    }
+
+    private class Sample(val data: ByteArray, val presentationUs: Long, val flags: Int)
+    /** [config] is the codec's own header bytes — what a muxer takes from the format instead. */
+    private class Encoded(val format: MediaFormat, val samples: List<Sample>, val config: ByteArray)
+
+    private fun encodeVideo(width: Int, height: Int, fps: Int, frames: Int, bitrate: Int, grain: Int): Encoded {
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
             setInteger(
                 MediaFormat.KEY_COLOR_FORMAT,
@@ -103,21 +197,35 @@ object TestClips {
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
-        // A pool of noise twice a frame's size, read from a different offset each
-        // frame: every frame differs, and filling one is a row of bulk copies.
-        val pool = ByteArray(width * height * 2).also { Random(74).nextBytes(it) }
+        // The picture: two slow waves, one along each axis, so there is
+        // something in every block and nothing an encoder cannot follow.
+        val across = IntArray(PAN_PERIOD) { (56 * sin(2 * PI * it / PAN_PERIOD)).toInt() }
+        val down = IntArray(height) { 128 + (40 * sin(2 * PI * it / 211.0)).toInt() }
+        // The grain: a pool read from a different offset each row and frame,
+        // so no two frames share it — which is what makes it cost bits.
+        val random = Random(74)
+        val pool = IntArray(width * 3) { if (grain == 0) 0 else random.nextInt(-grain, grain + 1) }
+        val row = ByteArray(width)
         return encode(format, frames) { codec, index, frame ->
             val image = checkNotNull(codec.getInputImage(index))
             val luma = image.planes[0]
             val buffer = luma.buffer
-            for (row in 0 until height) {
-                buffer.position(row * luma.rowStride)
-                if (noise) {
-                    buffer.put(pool, (frame * 7_919 + row * width) % (pool.size - width), width)
-                } else {
-                    // Bars drifting sideways: motion an encoder predicts almost for free.
-                    buffer.put(ByteArray(width) { ((it + frame * 4) and 0xFF).toByte() })
+            val pan = frame * PAN_PIXELS_PER_FRAME
+            for (y in 0 until height) {
+                val base = down[y]
+                val from = (frame * 7_919 + y * 131) % (pool.size - width)
+                for (x in 0 until width) {
+                    row[x] = (base + across[(x + pan) % PAN_PERIOD] + pool[from + x]).coerceIn(16, 235).toByte()
                 }
+                buffer.position(y * luma.rowStride)
+                buffer.put(row)
+            }
+            // Grey, written every frame: an input buffer comes back holding
+            // whatever it held last, and chroma nobody wrote is not "none".
+            for (plane in listOf(image.planes[1], image.planes[2])) {
+                val chroma = plane.buffer
+                chroma.position(0)
+                chroma.put(ByteArray(chroma.remaining()) { 128.toByte() })
             }
             width * height * 3 / 2 to frame * 1_000_000L / fps
         }
@@ -158,6 +266,7 @@ object TestClips {
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             codec.start()
             val samples = mutableListOf<Sample>()
+            var header = ByteArray(0)
             var outputFormat: MediaFormat? = null
             val info = MediaCodec.BufferInfo()
             var submitted = 0
@@ -182,10 +291,12 @@ object TestClips {
                 } else if (out >= 0) {
                     val buffer = checkNotNull(codec.getOutputBuffer(out))
                     val config = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
-                    if (!config && info.size > 0) {
-                        val bytes = ByteArray(info.size)
-                        buffer.position(info.offset)
-                        buffer.get(bytes)
+                    val bytes = ByteArray(info.size)
+                    buffer.position(info.offset)
+                    buffer.get(bytes)
+                    if (config) {
+                        header += bytes
+                    } else if (info.size > 0) {
                         val flags = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM.inv()
                         samples += Sample(bytes, info.presentationTimeUs, flags)
                     }
@@ -194,7 +305,7 @@ object TestClips {
                 }
             }
             codec.stop()
-            return Encoded(checkNotNull(outputFormat), samples)
+            return Encoded(checkNotNull(outputFormat), samples, header)
         } finally {
             codec.release()
         }

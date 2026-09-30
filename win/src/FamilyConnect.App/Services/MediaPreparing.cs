@@ -26,9 +26,10 @@ namespace FamilyConnect.App.Services;
 /// <b>A VIDEO IS BROUGHT TO THE PROTOCOL'S PROFILE, OR LEFT ALONE WHEN IT IS ALREADY THERE</b>
 /// (docs/protocol.md, "Preparing media before upload"; issue #74). What Media Foundation and the shell
 /// read of it goes into the planner; a transcode is <see cref="MediaTranscoder"/> with the numbers
-/// <see cref="MediaEncoding"/> works out, hardware first; what comes out is read back and CHECKED, its
-/// index moved to the front (<see cref="Faststart"/>), and thrown away when it is bigger than what it
-/// came from (rule D). Everything read for the bubble — its size, its length, its poster — is still what
+/// <see cref="MediaEncoding"/> works out, hardware first, asked one way after another
+/// (<see cref="TranscodeAttempts"/>); what comes out is read back and CHECKED — its numbers, and a frame of
+/// it beside the same frame of its source (<see cref="FrameTurn"/>) — its index moved to the front
+/// (<see cref="Faststart"/>), and thrown away when it is bigger than what it came from (rule D). Everything read for the bubble — its size, its length, its poster — is still what
 /// Windows can read of the source.
 /// </para>
 /// <para>
@@ -41,6 +42,12 @@ namespace FamilyConnect.App.Services;
 /// anything that fails — a stream Windows cannot read, a codec it does not have (HEVC without its
 /// extension, Ogg without the web media one), a transcode that throws, stalls or comes out wrong — sends
 /// what 1.1 sent: the original when it is within the ceiling, refused or as a file otherwise.
+/// </para>
+/// <para>
+/// <b>THE ONE THING THAT IS NOT A FAILURE IS BEING TOLD TO STOP.</b> A transcode can take minutes, so the token
+/// <see cref="PrepareAsync"/> is given reaches Media Foundation itself, and a cancel comes out as
+/// <see cref="OperationCanceledException"/> — never as rule C, which would read in and stage the very file the
+/// person has just taken back.
 /// </para>
 /// <para>
 /// The previews are made here and never by the server (docs/protocol.md, "Previews").
@@ -68,7 +75,7 @@ internal static class MediaPreparing
     private const string ShellAudioChannels = "System.Audio.ChannelCount";
     private const string ShellAudioSampleRate = "System.Audio.SampleRate";
 
-    public static async Task<PrepOutcome> PrepareAsync(StorageFile file)
+    public static async Task<PrepOutcome> PrepareAsync(StorageFile file, CancellationToken cancel = default)
     {
         var name = file.Name;
         var size = (long)(await file.GetBasicPropertiesAsync()).Size;
@@ -79,10 +86,10 @@ internal static class MediaPreparing
         return routed.Route switch
         {
             MediaRoute.Photo => await PhotoAsync(file),
-            MediaRoute.Video => await VideoAsync(file, declared, size, head),
-            MediaRoute.Audio => await AudioAsync(file, declared, routed.AudioMime ?? "audio/mp4", asAudio: true, size, head),
+            MediaRoute.Video => await VideoAsync(file, declared, size, head, cancel),
+            MediaRoute.Audio => await AudioAsync(file, declared, routed.AudioMime ?? "audio/mp4", asAudio: true, size, head, cancel),
             _ when MediaEncoding.PickedAudioType(declared, name) is { } sound =>
-                await AudioAsync(file, declared, sound, asAudio: false, size, head),
+                await AudioAsync(file, declared, sound, asAudio: false, size, head, cancel),
             _ => await AsFileAsync(file, declared, size),
         };
     }
@@ -137,9 +144,18 @@ internal static class MediaPreparing
     /// <summary>What a bubble is drawn from — read of the SOURCE whichever bytes go, as it always was.</summary>
     private sealed record Shown(int? Width, int? Height, int? DurationMs, ReadOnlyMemory<byte>? Preview);
 
-    /// <summary>What Windows read of a video's streams: the planner's input, and what a profile needs besides.</summary>
+    /// <summary>
+    /// What Windows read of a video's streams: the planner's input, and what a profile needs besides — the audio track's
+    /// own type among it, which is what is handed back when that track is to be passed through untouched.
+    /// </summary>
     private sealed record VideoReading(
-        VideoSource Source, uint Rotation, uint RateNumerator, uint RateDenominator, long? AudioSampleRate, bool Hdr);
+        VideoSource Source,
+        uint Rotation,
+        uint RateNumerator,
+        uint RateDenominator,
+        long? AudioSampleRate,
+        bool Hdr,
+        AudioEncodingProperties? Audio);
 
     /// <summary>
     /// A transcode that ran and came out as asked: how long it is, its bytes when it is within the ceiling (one over it is
@@ -148,7 +164,7 @@ internal static class MediaPreparing
     /// </summary>
     private sealed record Transcoded(long Length, byte[]? Bytes, bool MoovFirst);
 
-    private static async Task<PrepOutcome> VideoAsync(StorageFile file, string declared, long size, byte[] head)
+    private static async Task<PrepOutcome> VideoAsync(StorageFile file, string declared, long size, byte[] head, CancellationToken cancel)
     {
         var container = declared == "video/quicktime" ? declared : "video/mp4";
         var sendable = MediaPlan.Sendable("video", container, MediaPrep.MatchesMagic(container, head), size, MediaPrep.SizeLimit);
@@ -181,13 +197,14 @@ internal static class MediaPreparing
         }
         if (reading is not null && plan is { Kind: VideoPlanKind.Transcode, Target: { } target })
         {
+            cancel.ThrowIfCancellationRequested();
             Diagnostics.Write($"transcoding a video to {target.Width}x{target.Height}, {target.FrameRate:0.###} fps, {target.VideoBitrate} bit/s");
             // Off the window's thread: the transcode is Media Foundation's, but reading it back and moving its index are ours.
-            var result = await Task.Run(() => TranscodeVideoAsync(file, reading, target));
+            var result = await Task.Run(() => TranscodeVideoAsync(file, reading, target, cancel), cancel);
             if (result is not null)
             {
                 return await ChosenAsync(
-                    result, size, sendable,
+                    result, size, sendable, video: true,
                     async () => PrepOutcome.Staged(await OriginalVideoAsync(file, container, shown)),
                     bytes => new StagedMedia(
                         "video", "video/mp4", bytes, (int)target.Width, (int)target.Height, shown.DurationMs, Preview: shown.Preview));
@@ -210,7 +227,8 @@ internal static class MediaPreparing
     /// <summary>
     /// What the planner is given for a video: Media Foundation's own view of its streams — the transcoder's view — and the
     /// shell's numbers where that leaves one out. Null when Media Foundation cannot open it at all, which is also a source
-    /// it cannot transcode.
+    /// it cannot transcode — and for the two sources whose transcode would come out WRONG with every number right: one
+    /// whose pixels are not square, and one with sound Media Foundation does not show.
     /// </summary>
     private static async Task<VideoReading?> ReadVideoAsync(
         StorageFile file, VideoProperties? shell, string container, long size, int? durationMs)
@@ -223,7 +241,21 @@ internal static class MediaPreparing
                 Diagnostics.Write("a video has no stream Media Foundation reads as video");
                 return null;
             }
+            if (!MediaEncoding.SquarePixels(video.PixelAspectRatio?.Numerator ?? 0, video.PixelAspectRatio?.Denominator ?? 0))
+            {
+                Diagnostics.Write("a video's pixels are not square; its stored sides are not the size it is shown at, so it is left as it is");
+                return null;
+            }
             var stated = await StatedAsync(file);
+            if (MediaEncoding.HidesAudio(
+                    profile.Audio is not null,
+                    Number(stated, ShellAudioChannels),
+                    Number(stated, ShellAudioSampleRate),
+                    Number(stated, ShellAudioBitrate)))
+            {
+                Diagnostics.Write("a video has sound the shell reads and Media Foundation does not; transcoding it would lose the sound, so it is left as it is");
+                return null;
+            }
             var (storedWidth, storedHeight, rotation) = Geometry(video, shell);
             var (width, height) = MediaEncoding.Displayed(storedWidth, storedHeight, rotation);
             var numerator = video.FrameRate?.Numerator ?? 0;
@@ -248,7 +280,8 @@ internal static class MediaPreparing
                 numerator,
                 denominator,
                 audio is null ? null : MediaEncoding.FirstKnown(audio.SampleRate, Number(stated, ShellAudioSampleRate)),
-                MediaEncoding.IsHdr(Number(video.Properties, TransferFunction), Number(video.Properties, VideoPrimaries)));
+                MediaEncoding.IsHdr(Number(video.Properties, TransferFunction), Number(video.Properties, VideoPrimaries)),
+                audio);
         }
         catch (Exception e)
         {
@@ -266,7 +299,8 @@ internal static class MediaPreparing
          MediaEncoding.FirstKnown(video.Height, shell?.Height) ?? 0,
          MediaEncoding.Rotation(Number(video.Properties, VideoRotation), shell is null ? null : (long)shell.Orientation));
 
-    private static Task<Transcoded?> TranscodeVideoAsync(StorageFile file, VideoReading reading, VideoTarget target)
+    private static Task<Transcoded?> TranscodeVideoAsync(
+        StorageFile file, VideoReading reading, VideoTarget target, CancellationToken cancel)
     {
         var attempts = MediaEncoding.VideoAttempts(
             target,
@@ -276,15 +310,24 @@ internal static class MediaPreparing
             reading.Source.AudioChannels,
             reading.AudioSampleRate,
             reading.Source.AudioBitrate,
-            reading.Hdr);
-        return TranscodeAsync(file, ".mp4", "video/mp4", attempts, VideoProfile, VideoCameOutAsync, reading.Source.DurationMs);
+            reading.Hdr,
+            audioIsAac: reading.Source.AudioCodec == "aac");
+        return TranscodeAsync(
+            file,
+            ".mp4",
+            "video/mp4",
+            attempts,
+            encoding => VideoProfile(encoding, reading.Audio),
+            (output, asked, token) => VideoCameOutAsync(file, reading.Source.DurationMs, output, asked, token),
+            reading.Source.DurationMs,
+            cancel);
     }
 
     /// <summary>
     /// The protocol's profile, at exactly the planner's numbers. CreateMp4 is only the starting point — its container and
     /// its defaults for what is not set here; every number the protocol names is set explicitly.
     /// </summary>
-    private static MediaEncodingProfile VideoProfile(VideoEncoding encoding)
+    private static MediaEncodingProfile VideoProfile(VideoEncoding encoding, AudioEncodingProperties? sourceAudio)
     {
         var profile = MediaEncodingProfile.CreateMp4(VideoEncodingQuality.HD720p);
         var video = profile.Video;
@@ -307,28 +350,36 @@ internal static class MediaPreparing
             video.Properties[VideoPrimaries] = Bt709Primaries;
             video.Properties[YuvMatrix] = Bt709Matrix;
         }
-        // No audio track in, none out: a transcode does not invent silence.
-        profile.Audio = encoding.Audio is { } aac ? AudioEncodingProperties.CreateAac(aac.SampleRate, aac.Channels, aac.Bitrate) : null;
+        // No audio track in, none out: a transcode does not invent silence. And a track that is to be passed through is
+        // asked for as the very type it was read as — asked for what it already is, a transcoder that is not told to
+        // re-encode everything (AlwaysReencode, off) copies the stream.
+        profile.Audio = encoding.Audio is not { } aac ? null
+            : encoding.KeepAudio && sourceAudio is not null ? sourceAudio
+            : AudioEncodingProperties.CreateAac(aac.SampleRate, aac.Channels, aac.Bitrate);
         return profile;
     }
 
     /// <summary>
     /// Whether the transcode made what was asked for: H.264, its audio track kept or left out as asked, the encoded sides
-    /// and the SAME turn (<see cref="MediaEncoding.Matches"/>). Anything else is a video that would play sideways, squashed
-    /// or silent, and is a failed transcode.
+    /// and the SAME turn (<see cref="MediaEncoding.Matches"/>), a frame rate no higher than asked, SDR where SDR was asked
+    /// for — and a picture that is still its source's, the same way up (<see cref="LooksLikeItsSourceAsync"/>). Anything
+    /// else is a video that would play sideways, squashed, silent or grey, and is a failed transcode. Only an audio
+    /// track that came out some other way than asked leaves the next way of asking worth trying.
     /// </summary>
-    private static async Task<bool> VideoCameOutAsync(StorageFile output, VideoEncoding asked)
+    private static async Task<AttemptEnd> VideoCameOutAsync(
+        StorageFile source, long? durationMs, StorageFile output, VideoEncoding asked, CancellationToken cancel)
     {
         var profile = await MediaEncodingProfile.CreateFromFileAsync(output);
         if (profile.Video is not { } video || VideoCodec(video.Subtype) != "h264")
         {
             Diagnostics.Write($"a transcode came out as {profile.Video?.Subtype ?? "no video"}, not H.264");
-            return false;
+            return AttemptEnd.Wrong;
         }
         if (profile.Audio is null != asked.Audio is null)
         {
             Diagnostics.Write("a transcode came out with its audio track added or lost");
-            return false;
+            // A track that was to be passed through and was dropped instead may still be encoded.
+            return asked.KeepAudio ? AttemptEnd.Refused : AttemptEnd.Wrong;
         }
         VideoProperties? shell = null;
         try
@@ -343,21 +394,122 @@ internal static class MediaPreparing
         if (!MediaEncoding.Matches(asked, (uint)Math.Clamp(width, 0, uint.MaxValue), (uint)Math.Clamp(height, 0, uint.MaxValue), rotation))
         {
             Diagnostics.Write($"a transcode came out {width}x{height} turned {rotation}; asked {asked.Width}x{asked.Height} turned {asked.Rotation}");
+            return AttemptEnd.Wrong;
+        }
+        var rate = MediaEncoding.FrameRate(video.FrameRate?.Numerator ?? 0, video.FrameRate?.Denominator ?? 0, 0);
+        if (!MediaEncoding.FrameRateCameOut(asked, rate))
+        {
+            // The bitrate was worked out for the rate asked for: this many frames share it, and the profile says "at most 30".
+            Diagnostics.Write($"a transcode came out at {rate:0.###} fps; asked {asked.FrameRateNumerator}/{asked.FrameRateDenominator}");
+            return AttemptEnd.Wrong;
+        }
+        if (asked.ToSdr && MediaEncoding.IsHdr(Number(video.Properties, TransferFunction), Number(video.Properties, VideoPrimaries)))
+        {
+            Diagnostics.Write("a transcode of an HDR source still says it is HDR");
+            return AttemptEnd.Wrong;
+        }
+        if (asked.Audio is { } aac && profile.Audio is { } audio && !MediaEncoding.AudioRateCameOut(aac.Bitrate, audio.Bitrate))
+        {
+            Diagnostics.Write($"a transcode's audio came out at {audio.Bitrate} bit/s; asked {aac.Bitrate}");
+            return AttemptEnd.Refused;
+        }
+        return await LooksLikeItsSourceAsync(source, durationMs, output, asked, cancel) ? AttemptEnd.Taken : AttemptEnd.Wrong;
+    }
+
+    /// <summary>
+    /// Whether a frame of the result is the same picture as that frame of the source, the same way up
+    /// (<see cref="FrameTurn"/>) — what the numbers above cannot say. Both are read by ONE reader, at one size, at the
+    /// moments a poster is looked for, until one says something. A source no frame can be read from cannot be judged
+    /// and is let through; a RESULT no frame can be read from, beside a source that gave one, is not a video to send.
+    /// </summary>
+    private static async Task<bool> LooksLikeItsSourceAsync(
+        StorageFile source, long? durationMs, StorageFile output, VideoEncoding asked, CancellationToken cancel)
+    {
+        var (shownWidth, shownHeight) = MediaEncoding.Displayed(asked.Width, asked.Height, asked.Rotation);
+        var (width, height) = MediaPrep.FitWithin((uint)Math.Max(shownWidth, 1), (uint)Math.Max(shownHeight, 1), MediaPrep.PreviewEdge);
+        MediaComposition was;
+        try
+        {
+            was = await CompositionAsync(source);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"opening a source to compare a transcode with: {e.GetType().Name}");
+            return true;
+        }
+        MediaComposition came;
+        try
+        {
+            came = await CompositionAsync(output);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"opening a transcode to look at it: {e.GetType().Name}");
             return false;
         }
-        var asksFor = (double)asked.FrameRateNumerator / asked.FrameRateDenominator;
-        if (MediaEncoding.FrameRate(video.FrameRate?.Numerator ?? 0, video.FrameRate?.Denominator ?? 0, 0) is { } rate
-            && rate > asksFor + (MediaPlan.FrameRateTolerance - MediaPlan.MaxFrameRate))
+        List<FrameVerdict> frames = [];
+        foreach (var seconds in MediaPrep.PosterSeekSeconds)
         {
-            // Said, not refused: it plays everywhere and a transcoder cannot invent frames the source never had (rule B).
-            // It is outside the profile's 30, though, and worth knowing about.
-            Diagnostics.Write($"a transcode came out at {rate:0.###} fps; asked {asksFor:0.###}");
+            cancel.ThrowIfCancellationRequested();
+            var at = durationMs is > 0 ? Math.Min(seconds, Math.Max((durationMs.Value / 1000.0) - 0.05, 0)) : seconds;
+            if (await GridAsync(was, at, width, height) is not { } before)
+            {
+                frames.Add(FrameVerdict.CannotTell);
+                continue;
+            }
+            var verdict = await GridAsync(came, at, width, height) is { } after ? FrameTurn.Judge(before, after) : FrameVerdict.Unlike;
+            frames.Add(verdict);
+            if (verdict is FrameVerdict.Same or FrameVerdict.Turned)
+            {
+                break;
+            }
         }
-        return true;
+        if (FrameTurn.LooksRight(frames))
+        {
+            if (!frames.Contains(FrameVerdict.Same))
+            {
+                Diagnostics.Write("no frame of a transcode could be compared with its source; it goes on its numbers alone");
+            }
+            return true;
+        }
+        Diagnostics.Write($"a transcode does not look like its source ({string.Join(", ", frames)})");
+        return false;
+    }
+
+    private static async Task<MediaComposition> CompositionAsync(StorageFile file)
+    {
+        var composition = new MediaComposition();
+        composition.Clips.Add(await MediaClip.CreateFromFileAsync(file));
+        return composition;
+    }
+
+    /// <summary>One frame as <see cref="FrameTurn"/>'s grid of brightness, or null when it cannot be read.</summary>
+    private static async Task<double[]?> GridAsync(MediaComposition composition, double at, uint width, uint height)
+    {
+        try
+        {
+            using var frame = await composition.GetThumbnailAsync(
+                TimeSpan.FromSeconds(at), (int)width, (int)height, VideoFramePrecision.NearestFrame);
+            var decoder = await BitmapDecoder.CreateAsync(frame);
+            // Squashed to a square on purpose: a square grid can be turned and compared cell for cell.
+            using var bitmap = await DecodeAsync(decoder, FrameTurn.Side, FrameTurn.Side);
+            if (bitmap.PixelWidth != FrameTurn.Side || bitmap.PixelHeight != FrameTurn.Side)
+            {
+                return null;
+            }
+            var pixels = new byte[4 * FrameTurn.Side * FrameTurn.Side];
+            bitmap.CopyToBuffer(pixels.AsBuffer());
+            return FrameTurn.Grid(pixels);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a frame at {at:0.##}s to compare: {e.GetType().Name}");
+            return null;
+        }
     }
 
     private static async Task<PrepOutcome> AudioAsync(
-        StorageFile file, string declared, string container, bool asAudio, long size, byte[] head)
+        StorageFile file, string declared, string container, bool asAudio, long size, byte[] head, CancellationToken cancel)
     {
         // A track's title is worth showing; the server checks the bytes against the type named here.
         var name = MediaPrep.SanitizedName(file.Name);
@@ -379,13 +531,16 @@ internal static class MediaPreparing
         var plan = MediaPlan.PlanAudio(source);
         if (plan.Kind == AudioPlanKind.Transcode)
         {
+            cancel.ThrowIfCancellationRequested();
             Diagnostics.Write($"re-encoding a sound file ({source.Codec}) at {plan.Bitrate} bit/s");
             var attempts = MediaEncoding.AudioAttempts(plan.Bitrate, source.Channels, sampleRate, MediaPlan.SourceAudioBitrate(source));
-            var result = await Task.Run(() => TranscodeAsync(file, ".m4a", "audio/mp4", attempts, M4aProfile, AudioCameOutAsync, source.DurationMs));
+            var result = await Task.Run(
+                () => TranscodeAsync(file, ".m4a", "audio/mp4", attempts, M4aProfile, AudioCameOutAsync, source.DurationMs, cancel),
+                cancel);
             if (result is not null)
             {
                 return await ChosenAsync(
-                    result, size, sendable,
+                    result, size, sendable, video: false,
                     () => OriginalAudioAsync(file, container, name, durationMs),
                     bytes => new StagedMedia("audio", "audio/mp4", bytes, DurationMs: durationMs, Name: MediaEncoding.M4aName(name)));
             }
@@ -452,126 +607,146 @@ internal static class MediaPreparing
         return profile;
     }
 
-    /// <summary>Whether a re-encode made AAC with the channels asked for.</summary>
-    private static async Task<bool> AudioCameOutAsync(StorageFile output, AacEncoding asked)
+    /// <summary>
+    /// Whether a re-encode made AAC with the channels asked for, at the rate asked for. One that came out at some other
+    /// rate — the encoder's own, in place of a number it does not have — leaves the next way of asking to try.
+    /// </summary>
+    private static async Task<AttemptEnd> AudioCameOutAsync(StorageFile output, AacEncoding asked, CancellationToken cancel)
     {
         var profile = await MediaEncodingProfile.CreateFromFileAsync(output);
-        if (profile.Audio is not { } audio
-            || AudioCodec(audio.Subtype) != "aac"
-            || (audio.ChannelCount > 0 && audio.ChannelCount != asked.Channels))
+        if (profile.Audio is not { } audio || !MediaEncoding.AacCameOut(asked, AudioCodec(audio.Subtype), audio.ChannelCount))
         {
             Diagnostics.Write($"a re-encode came out as {profile.Audio?.Subtype ?? "no audio"}, {profile.Audio?.ChannelCount} channel(s)");
-            return false;
+            return AttemptEnd.Wrong;
         }
-        return true;
+        if (!MediaEncoding.AudioRateCameOut(asked.Bitrate, audio.Bitrate))
+        {
+            Diagnostics.Write($"a re-encode came out at {audio.Bitrate} bit/s; asked {asked.Bitrate}");
+            return AttemptEnd.Refused;
+        }
+        return AttemptEnd.Taken;
     }
 
     /// <summary>
-    /// Rule D, and what faststart could not do. A result bigger than a sendable source is thrown away; a result whose
-    /// index could not be moved to the front does not go where the source can go instead; and a result over the ceiling
-    /// is refused, as the source would have been. Otherwise the result is sent — the only thing that can be.
+    /// What goes once a transcode has come out as asked: <see cref="MediaEncoding.Choose"/> decides — rule D, and what
+    /// faststart could not do — and this reads in whichever it named.
     /// </summary>
     private static async Task<PrepOutcome> ChosenAsync(
-        Transcoded result, long size, bool sendable, Func<Task<PrepOutcome>> original, Func<byte[], StagedMedia> staged)
+        Transcoded result, long size, bool sendable, bool video, Func<Task<PrepOutcome>> original, Func<byte[], StagedMedia> staged)
     {
-        if (MediaPlan.KeepSmaller(size, sendable, result.Length) == Upload.Source)
+        switch (MediaEncoding.Choose(size, sendable, result.Length, result.MoovFirst, needsMoovFirst: video, MediaPrep.SizeLimit))
         {
-            Diagnostics.Write($"a transcode came out bigger than its source ({result.Length} > {size} bytes); the original goes instead");
-            return await original();
+            case Chosen.Original:
+                Diagnostics.Write(result.Length > size
+                    ? $"a transcode came out bigger than its source ({result.Length} > {size} bytes); the original goes instead"
+                    : "a transcode's index could not be moved to the front; the original goes instead");
+                return await original();
+            // Within the ceiling is exactly when its bytes were read in.
+            case Chosen.Result when result.Bytes is { } bytes:
+                if (!result.MoovFirst)
+                {
+                    Diagnostics.Write(video
+                        ? "a transcode goes with its index at the end: the original could not have gone at all"
+                        : "a re-encode goes with its index at the end: the profile asks for it in front of a video only");
+                }
+                return PrepOutcome.Staged(staged(bytes));
+            default:
+                Diagnostics.Write($"a transcode is still over the ceiling ({result.Length} bytes)");
+                return TooLarge;
         }
-        if (!result.MoovFirst && sendable)
-        {
-            Diagnostics.Write("a transcode's index could not be moved to the front; the original goes instead");
-            return await original();
-        }
-        if (result.Bytes is not { } bytes)
-        {
-            Diagnostics.Write($"a transcode is still over the ceiling ({result.Length} bytes)");
-            return TooLarge;
-        }
-        if (!result.MoovFirst)
-        {
-            Diagnostics.Write("a transcode goes with its index at the end: the original could not have gone at all");
-        }
-        return PrepOutcome.Staged(staged(bytes));
     }
 
     /// <summary>
-    /// <paramref name="source"/> through Media Foundation's transcoder, one profile after another until one is taken, into
-    /// a file of its own that is gone again when this returns. Null for anything but a result that came out as asked: no
-    /// profile taken, a transcode that threw or ran past its ceiling, one <paramref name="cameOut"/> does not recognise, or
-    /// bytes the server's check would refuse.
+    /// <paramref name="source"/> through Media Foundation's transcoder, one profile after another until one is taken
+    /// (<see cref="TranscodeAttempts"/>, which also holds the ceiling on all of them together). Null for anything but a
+    /// result that came out as asked: no profile taken, every transcode failed, the ceiling passed, one
+    /// <paramref name="cameOut"/> does not recognise, or bytes the server's check would refuse.
     /// </summary>
+    /// <exception cref="OperationCanceledException"><paramref name="cancel"/> was cancelled: the person took the file back.</exception>
     private static async Task<Transcoded?> TranscodeAsync<T>(
         StorageFile source,
         string extension,
         string mime,
         IReadOnlyList<T> attempts,
         Func<T, MediaEncodingProfile> profileFor,
-        Func<StorageFile, T, Task<bool>> cameOut,
-        long? durationMs)
+        Func<StorageFile, T, CancellationToken, Task<AttemptEnd>> cameOut,
+        long? durationMs,
+        CancellationToken cancel)
     {
         var folder = Path.Combine(Path.GetTempPath(), "FamilyConnect", "prepared");
-        var path = Path.Combine(folder, $"{Guid.NewGuid():N}{extension}");
         try
         {
             Directory.CreateDirectory(folder);
             SweepStale(folder);
-            await File.WriteAllBytesAsync(path, []);
-            var output = await StorageFile.GetFileFromPathAsync(path);
-            foreach (var attempt in attempts)
-            {
-                var transcoder = new MediaTranscoder
-                {
-                    HardwareAccelerationEnabled = true,
-                    VideoProcessingAlgorithm = MediaVideoProcessingAlgorithm.Default,
-                };
-                PrepareTranscodeResult prepared;
-                try
-                {
-                    prepared = await transcoder.PrepareFileTranscodeAsync(source, output, profileFor(attempt));
-                }
-                catch (Exception e)
-                {
-                    Diagnostics.Write($"a transcode profile was refused: {e.GetType().Name} ({attempt})");
-                    continue;
-                }
-                if (!prepared.CanTranscode)
-                {
-                    Diagnostics.Write($"a transcode profile was refused: {prepared.FailureReason} ({attempt})");
-                    continue;
-                }
-                using (var ceiling = new CancellationTokenSource(MediaEncoding.TranscodeCeiling(durationMs)))
-                {
-                    await prepared.TranscodeAsync().AsTask(ceiling.Token);
-                }
-                GC.KeepAlive(transcoder);
-                if (!await cameOut(output, attempt))
-                {
-                    return null;
-                }
-                var length = new FileInfo(path).Length;
-                if (length > MediaPrep.SizeLimit)
-                {
-                    // Where its index is, nobody needs to know: rule D sends the source, or nothing.
-                    return new Transcoded(length, null, MoovFirst: false);
-                }
-                var bytes = await File.ReadAllBytesAsync(path);
-                if (!MediaPrep.MatchesMagic(mime, bytes))
-                {
-                    Diagnostics.Write("a transcode's bytes are not the type they are sent as");
-                    return null;
-                }
-                var arranged = Faststart.MoovFirst(bytes);
-                return new Transcoded(length, arranged ?? bytes, arranged is not null);
-            }
-            Diagnostics.Write("no transcode profile was taken");
-            return null;
         }
         catch (Exception e)
         {
-            Diagnostics.Write($"transcoding: {e.GetType().Name}");
+            Diagnostics.Write($"making room for a transcode: {e.GetType().Name}");
             return null;
+        }
+        return await TranscodeAttempts.FirstTakenAsync(
+            attempts,
+            (attempt, token) => AttemptAsync(source, Path.Combine(folder, $"{Guid.NewGuid():N}{extension}"), mime, attempt, profileFor, cameOut, token),
+            MediaEncoding.TranscodeCeiling(durationMs),
+            Diagnostics.Write,
+            cancel);
+    }
+
+    /// <summary>
+    /// One way of asking, into a file of ITS OWN that is gone again when this returns — so what a failed attempt wrote
+    /// before it failed is never underneath the next one's result. Whatever throws here — a profile refused when it is
+    /// prepared, or only once the transcode has started — is the loop's to catch, and means "try the next".
+    /// </summary>
+    private static async Task<Attempted<Transcoded>> AttemptAsync<T>(
+        StorageFile source,
+        string path,
+        string mime,
+        T attempt,
+        Func<T, MediaEncodingProfile> profileFor,
+        Func<StorageFile, T, CancellationToken, Task<AttemptEnd>> cameOut,
+        CancellationToken cancel)
+    {
+        try
+        {
+            await File.WriteAllBytesAsync(path, [], cancel);
+            var output = await StorageFile.GetFileFromPathAsync(path);
+            var transcoder = new MediaTranscoder
+            {
+                HardwareAccelerationEnabled = true,
+                VideoProcessingAlgorithm = MediaVideoProcessingAlgorithm.Default,
+            };
+            var prepared = await transcoder.PrepareFileTranscodeAsync(source, output, profileFor(attempt)).AsTask(cancel);
+            if (!prepared.CanTranscode)
+            {
+                Diagnostics.Write($"a transcode profile was refused: {prepared.FailureReason} ({attempt})");
+                return Attempted<Transcoded>.Refused;
+            }
+            // The token is the person's cancel and the ceiling both: either one stops Media Foundation itself.
+            await prepared.TranscodeAsync().AsTask(cancel);
+            GC.KeepAlive(transcoder);
+            switch (await cameOut(output, attempt, cancel))
+            {
+                case AttemptEnd.Taken:
+                    break;
+                case AttemptEnd.Wrong:
+                    return Attempted<Transcoded>.Wrong;
+                default:
+                    return Attempted<Transcoded>.Refused;
+            }
+            var length = new FileInfo(path).Length;
+            if (length > MediaPrep.SizeLimit)
+            {
+                // Where its index is, nobody needs to know: rule D sends the source, or nothing.
+                return Attempted<Transcoded>.Taken(new Transcoded(length, null, MoovFirst: false));
+            }
+            var bytes = await File.ReadAllBytesAsync(path, cancel);
+            if (!MediaPrep.MatchesMagic(mime, bytes))
+            {
+                Diagnostics.Write("a transcode's bytes are not the type they are sent as");
+                return Attempted<Transcoded>.Wrong;
+            }
+            var arranged = Faststart.MoovFirst(bytes);
+            return Attempted<Transcoded>.Taken(new Transcoded(length, arranged ?? bytes, arranged is not null));
         }
         finally
         {
@@ -627,7 +802,7 @@ internal static class MediaPreparing
         : "unknown";
 
     /// <summary>A sound stream's codec as the planner names it: WAV and AIFF are both PCM, integer or float.</summary>
-    private static string AudioCodec(string? subtype) =>
+    internal static string AudioCodec(string? subtype) =>
         Is(subtype, MediaEncodingSubtypes.Aac) || Is(subtype, MediaEncodingSubtypes.AacAdts) ? "aac"
         : Is(subtype, MediaEncodingSubtypes.Mp3) ? "mp3"
         : Is(subtype, MediaEncodingSubtypes.Pcm) || Is(subtype, MediaEncodingSubtypes.Float) ? "pcm"

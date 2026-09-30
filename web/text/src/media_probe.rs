@@ -72,15 +72,22 @@ pub fn video_source(movie: &Movie, container: &str, size_bytes: u64) -> Option<V
     })
 }
 
-/// A sound entry's channel count: as the entry states it, or as its
-/// AudioSpecificConfig does when the entry says 0.
+/// A sound entry's channel count. For AAC that is what its
+/// AudioSpecificConfig says, ahead of the entry: an `mp4a` entry's own
+/// field is a template many muxers leave at 2 whatever the stream holds —
+/// the same reason the config's RATE is read ahead of the entry's (see
+/// [`audio_from_movie`]). A mono stream read as stereo would be planned at
+/// the stereo row's 128 000 and not the mono row's 64 000. The entry's
+/// count is what is left when the config names none, and for every other
+/// format.
 fn channels_of(entry: &mp4_read::SampleEntry) -> Option<u32> {
-    if entry.channels > 0 {
-        return Some(entry.channels);
+    let stated = (entry.channels > 0).then_some(entry.channels);
+    if mp4_read::audio_codec_name(entry) != "aac" {
+        return stated;
     }
     mp4_read::audio_config(&entry.config)
-        .map(|config| u32::from(config.channels))
-        .filter(|&channels| channels > 0)
+        .and_then(|config| config.channel_count())
+        .or(stated)
 }
 
 // --- sound --------------------------------------------------------------------------------------
@@ -350,10 +357,18 @@ fn mp3(bytes: &[u8]) -> Option<Header> {
         [22_050, 24_000, 16_000], // MPEG 2
         [44_100, 48_000, 32_000], // MPEG 1
     ];
-    const V1_L1: [u32; 15] = [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448];
-    const V1_L2: [u32; 15] = [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384];
-    const V1_L3: [u32; 15] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
-    const V2_L1: [u32; 15] = [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256];
+    const V1_L1: [u32; 15] = [
+        0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448,
+    ];
+    const V1_L2: [u32; 15] = [
+        0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384,
+    ];
+    const V1_L3: [u32; 15] = [
+        0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+    ];
+    const V2_L1: [u32; 15] = [
+        0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256,
+    ];
     const V2_L23: [u32; 15] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
 
     struct Frame {
@@ -460,9 +475,8 @@ fn mp3(bytes: &[u8]) -> Option<Header> {
         }
     }
     let frames = frames.filter(|&count| count > 0);
-    let seconds_ms = frames.map(|count| {
-        u64::from(count) * u64::from(frame.samples) * 1000 / u64::from(frame.rate)
-    });
+    let seconds_ms = frames
+        .map(|count| u64::from(count) * u64::from(frame.samples) * 1000 / u64::from(frame.rate));
     let bitrate = if variable {
         match (frames, total_bytes) {
             (Some(count), Some(bytes)) if bytes > 0 => Some(
@@ -641,11 +655,100 @@ mod tests {
             other => panic!("{other:?}"),
         }
         let as_mp4 = video_source(&movie, "video/mp4", QUICKTIME.len() as u64).unwrap();
-        assert_eq!(plan_video(&as_mp4), VideoPlan::Keep, "only the container stood in the way");
+        assert_eq!(
+            plan_video(&as_mp4),
+            VideoPlan::Keep,
+            "only the container stood in the way"
+        );
     }
 
     fn probe_mp4(file: &[u8]) -> AudioProbe {
         audio_from_movie(&movie(file), "audio/mp4", file.len() as u64)
+    }
+
+    /// An `mp4a` entry that says two channels over a stream whose own
+    /// configuration says one — the template value older muxers leave — is
+    /// MONO: planned at the mono row's 64 000, in a video and on its own.
+    #[test]
+    fn an_aac_streams_own_channel_count_wins_over_its_entrys() {
+        use crate::mp4::{self, Brand, Media, Sample, Track};
+        let sound = |entry_channels: u16, asc: Vec<u8>| Track {
+            timescale: 48_000,
+            media: Media::Audio {
+                sample_rate: 48_000,
+                channels: entry_channels,
+                asc,
+                avg_bitrate: 0,
+                max_bitrate: 0,
+            },
+            // 94 frames of 256 bytes: 96 000 bit/s.
+            samples: vec![
+                Sample {
+                    size: 256,
+                    duration: 1024,
+                    composition_offset: 0,
+                    sync: true,
+                };
+                94
+            ],
+            skip: 0,
+            lead: 0,
+        };
+        let picture = Track {
+            timescale: 600,
+            media: Media::Video {
+                width: 640,
+                height: 360,
+                avcc: vec![1, 0x64, 0x00, 0x1E, 0xFF, 0xE1, 0, 0, 1, 0],
+                colour: None,
+            },
+            samples: vec![
+                Sample {
+                    size: 2_000,
+                    duration: 20,
+                    composition_offset: 0,
+                    sync: true,
+                };
+                60
+            ],
+            skip: 0,
+            lead: 0,
+        };
+        let written = |tracks: &[Track]| {
+            let payloads: Vec<Vec<Vec<u8>>> = tracks
+                .iter()
+                .map(|track| {
+                    track
+                        .samples
+                        .iter()
+                        .map(|sample| vec![0u8; sample.size as usize])
+                        .collect()
+                })
+                .collect();
+            mp4::write(tracks, &payloads, Brand::Mp4)
+        };
+        let mono = mp4::audio_specific_config(mp4::AAC_LC, 48_000, 1);
+        let file = written(&[picture.clone(), sound(2, mono.clone())]);
+        let source = video_source(&movie(&file), "video/quicktime", file.len() as u64).unwrap();
+        assert_eq!(source.audio_channels, Some(1), "the stream says one");
+        let VideoPlan::Transcode(target) = plan_video(&source) else {
+            panic!("a QuickTime movie is transcoded");
+        };
+        assert_eq!(target.audio_bitrate, Some(64_000), "the mono row");
+        let alone = written(&[sound(2, mono)]);
+        assert_eq!(probe_mp4(&alone).source.channels, Some(1));
+        // A configuration that names no layout (0) leaves the entry's count
+        // standing, and an honest entry reads as it always did.
+        let unnamed = mp4::audio_specific_config(mp4::AAC_LC, 48_000, 0);
+        assert_eq!(
+            probe_mp4(&written(&[sound(2, unnamed)])).source.channels,
+            Some(2)
+        );
+        let stereo = mp4::audio_specific_config(mp4::AAC_LC, 48_000, 2);
+        assert_eq!(
+            probe_mp4(&written(&[sound(2, stereo)])).source.channels,
+            Some(2)
+        );
     }
 
     #[test]
@@ -656,13 +759,20 @@ mod tests {
         assert_eq!(aac.source.codec, "aac");
         assert_eq!(aac.source.channels, Some(2));
         assert_eq!(aac.sample_rate, Some(44_100));
-        assert!(aac.source.bitrate.unwrap() > 192_000, "{:?}", aac.source.bitrate);
+        assert!(
+            aac.source.bitrate.unwrap() > 192_000,
+            "{:?}",
+            aac.source.bitrate
+        );
         // 24 frames of 1024: the index's own length. afconvert states the
         // 0.5 s it was made from only in iTunes' gapless atom, not in an edit
         // list, and the planner needs the length only when no rate can be
         // read — never for an MP4, whose index always gives one.
         assert_eq!(aac.source.duration_ms, Some(557));
-        assert_eq!(plan_audio(&aac.source), AudioPlan::Transcode { bitrate: 128_000 });
+        assert_eq!(
+            plan_audio(&aac.source),
+            AudioPlan::Transcode { bitrate: 128_000 }
+        );
         // At 128 it is left as it is.
         let kept = probe_mp4(include_bytes!("../fixtures/aac-128k.m4a"));
         assert!(kept.source.bitrate.unwrap() <= 192_000);
@@ -671,25 +781,42 @@ mod tests {
         let alac = probe_mp4(include_bytes!("../fixtures/lossless-alac.m4a"));
         assert_eq!(alac.source.codec, "alac");
         assert_eq!(alac.source.channels, Some(1));
-        assert_eq!(plan_audio(&alac.source), AudioPlan::Transcode { bitrate: 64_000 });
+        assert_eq!(
+            plan_audio(&alac.source),
+            AudioPlan::Transcode { bitrate: 64_000 }
+        );
         // FLAC and AIFF, which the server does not take as audio at all.
         let flac_file: &[u8] = include_bytes!("../fixtures/lossless.flac");
         let flac = audio_from_header("audio/flac", flac_file, flac_file.len() as u64);
         assert_eq!(flac.source.codec, "flac");
         assert_eq!(
-            (flac.source.channels, flac.sample_rate, flac.source.duration_ms),
+            (
+                flac.source.channels,
+                flac.sample_rate,
+                flac.source.duration_ms
+            ),
             (Some(1), Some(44_100), Some(500))
         );
-        assert_eq!(plan_audio(&flac.source), AudioPlan::Transcode { bitrate: 64_000 });
+        assert_eq!(
+            plan_audio(&flac.source),
+            AudioPlan::Transcode { bitrate: 64_000 }
+        );
         let aiff_file: &[u8] = include_bytes!("../fixtures/uncompressed.aiff");
         let aiff = audio_from_header("audio/aiff", aiff_file, aiff_file.len() as u64);
         assert_eq!(aiff.source.codec, "pcm");
         assert_eq!(
-            (aiff.source.channels, aiff.sample_rate, aiff.source.duration_ms),
+            (
+                aiff.source.channels,
+                aiff.sample_rate,
+                aiff.source.duration_ms
+            ),
             (Some(1), Some(44_100), Some(500))
         );
         assert_eq!(aiff.source.bitrate, Some(705_600));
-        assert_eq!(plan_audio(&aiff.source), AudioPlan::Transcode { bitrate: 64_000 });
+        assert_eq!(
+            plan_audio(&aiff.source),
+            AudioPlan::Transcode { bitrate: 64_000 }
+        );
     }
 
     #[test]
@@ -702,7 +829,10 @@ mod tests {
         assert_eq!(probe.sample_rate, Some(16_000));
         assert_eq!(probe.source.bitrate, Some(256_000));
         assert_eq!(probe.source.duration_ms, Some(1_000));
-        assert_eq!(plan_audio(&probe.source), AudioPlan::Transcode { bitrate: 64_000 });
+        assert_eq!(
+            plan_audio(&probe.source),
+            AudioPlan::Transcode { bitrate: 64_000 }
+        );
         // ADPCM in a WAV is no rule's business: kept.
         let mut adpcm = file.clone();
         adpcm[20] = 0x11;
@@ -714,8 +844,9 @@ mod tests {
     /// A Layer III frame header of `kbps` at 44.1 kHz stereo, and the silent
     /// frame it heads, `count` times.
     fn mp3_frames(bitrate_index: u8, count: usize, tag: Option<&[u8]>) -> Vec<u8> {
-        let kbps = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320]
-            [bitrate_index as usize];
+        let kbps = [
+            0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+        ][bitrate_index as usize];
         let length = 144 * kbps * 1000 / 44_100;
         let mut file = Vec::new();
         for index in 0..count {
@@ -745,7 +876,10 @@ mod tests {
         let loud = mp3_frames(14, 5, None);
         let probe = audio_from_header("audio/mpeg", &loud, loud.len() as u64);
         assert_eq!(probe.source.bitrate, Some(320_000));
-        assert_eq!(plan_audio(&probe.source), AudioPlan::Transcode { bitrate: 128_000 });
+        assert_eq!(
+            plan_audio(&probe.source),
+            AudioPlan::Transcode { bitrate: 128_000 }
+        );
         // Behind an ID3 tag, which is skipped, not read as audio.
         let mut tagged = vec![b'I', b'D', b'3', 4, 0, 0, 0, 0, 0, 20];
         tagged.extend_from_slice(&[0xFF; 20]);
@@ -792,7 +926,10 @@ mod tests {
         assert_eq!(probe.source.codec, "opus");
         assert_eq!(probe.source.channels, Some(2));
         assert_eq!(probe.sample_rate, Some(48_000));
-        assert!(matches!(plan_audio(&probe.source), AudioPlan::Transcode { .. }));
+        assert!(matches!(
+            plan_audio(&probe.source),
+            AudioPlan::Transcode { .. }
+        ));
         let mut vorbis = b"\x01vorbis".to_vec();
         vorbis.extend_from_slice(&0u32.to_le_bytes());
         vorbis.push(1);
@@ -805,17 +942,35 @@ mod tests {
         assert_eq!(probe.source.codec, "vorbis");
         assert_eq!(probe.source.bitrate, Some(96_000));
         // Mono: the mono rate, which is below what it states.
-        assert_eq!(plan_audio(&probe.source), AudioPlan::Transcode { bitrate: 64_000 });
+        assert_eq!(
+            plan_audio(&probe.source),
+            AudioPlan::Transcode { bitrate: 64_000 }
+        );
         let odd = ogg_page(b"Speex   ");
         let probe = audio_from_header("audio/ogg", &odd, 1000);
         assert_eq!(probe.source.codec, "unknown");
-        assert!(matches!(plan_audio(&probe.source), AudioPlan::Transcode { .. }));
+        assert!(matches!(
+            plan_audio(&probe.source),
+            AudioPlan::Transcode { .. }
+        ));
     }
 
     #[test]
     fn a_header_that_is_not_one_is_unknown_never_a_panic() {
-        for container in ["audio/wav", "audio/aiff", "audio/flac", "audio/mpeg", "audio/ogg"] {
-            for garbage in [&b""[..], b"RIFF", b"FORM\0\0\0\0AIFF", b"fLaC\0", &[0xFF; 3][..]] {
+        for container in [
+            "audio/wav",
+            "audio/aiff",
+            "audio/flac",
+            "audio/mpeg",
+            "audio/ogg",
+        ] {
+            for garbage in [
+                &b""[..],
+                b"RIFF",
+                b"FORM\0\0\0\0AIFF",
+                b"fLaC\0",
+                &[0xFF; 3][..],
+            ] {
                 let probe = audio_from_header(container, garbage, 10);
                 let _ = plan_audio(&probe.source);
             }

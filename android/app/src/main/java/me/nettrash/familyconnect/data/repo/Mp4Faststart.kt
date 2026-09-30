@@ -20,9 +20,19 @@
  * outgrow the reservation. So the transcoder's output is checked, and moved
  * when it has to be: the same thing `qt-faststart` does.
  *
- * Moving `moov` forward shifts every byte of `mdat` by the same amount, and
- * the `stco`/`co64` tables inside `moov` hold absolute file offsets into
- * `mdat` — so each one is shifted by that amount too. That is the whole
+ * AND THE RESERVATION ITSELF IS TAKEN BACK OUT. When the `moov` DID fit, what
+ * is left of the 400 000 bytes stays in the file as a `free` box of zeros —
+ * found on a device, not in the documentation: a three-second WAV came out as
+ * a 449 093-byte M4A holding 48 000 bytes of AAC. That is nearly half a
+ * megabyte on every upload, in a change whose whole point is the size of a
+ * family's history — and it made rule D throw away the re-encode of any short
+ * clip, because the result really was bigger than its source. So padding in
+ * front of the `mdat` is dropped whichever side the `moov` was on.
+ *
+ * Either change shifts every byte of `mdat` by one amount — forward past a
+ * `moov` that moved in front of it, back over padding that went — and the
+ * `stco`/`co64` tables inside `moov` hold absolute file offsets into `mdat`,
+ * so each one is shifted by that amount too. That is the whole
  * algorithm. Anything it does not understand leaves the file EXACTLY as it
  * was: a file with `moov` at the end still plays everywhere, and a
  * half-rewritten one plays nowhere.
@@ -59,53 +69,71 @@ object Mp4Faststart {
     }.getOrNull()
 
     /**
-     * Rewrite [file] so its `moov` comes first.
+     * Rewrite [file] so its `moov` comes first and nothing but boxes that
+     * mean something sits in front of its `mdat`.
      *
      * @return true when the file IS moov-first afterwards (including when it
-     *   already was); false when it was left exactly as it was — not an MP4
-     *   this understands, an offset that points somewhere it cannot follow,
-     *   or an I/O failure. Never throws: this is an optimisation on top of a
-     *   file that is already valid.
+     *   already was, padded or not); false when the `moov` is still behind
+     *   the `mdat` and the file is exactly as it was — not an MP4 this
+     *   understands, an offset that points somewhere it cannot follow, or an
+     *   I/O failure. Never throws: this is an optimisation on top of a file
+     *   that is already valid.
      */
-    fun apply(file: File): Boolean = runCatching { rewrite(file) }.getOrDefault(false)
+    fun apply(file: File): Boolean =
+        runCatching { rewrite(file) }.getOrElse { moovFirst(file) == true }
 
     private fun rewrite(file: File): Boolean {
         val temp = File(file.parentFile, "${file.name}.faststart")
+        var moovWasFirst = false
         val rewritten = RandomAccessFile(file, "r").use { access ->
             val channel = access.channel
             val top = topLevel(channel) ?: return false
             val moovIndex = top.indexOfFirst { it.type == "moov" }
             val mdatIndex = top.indexOfFirst { it.type == "mdat" }
             if (moovIndex < 0 || mdatIndex < 0) return false
-            if (moovIndex < mdatIndex) return true
+            moovWasFirst = moovIndex < mdatIndex
 
-            // Only padding may follow the `moov` — that is what a muxer that
-            // wrote it last leaves. Anything else after it would move by a
-            // different amount than `mdat` does, and this does not chase that.
-            if (top.drop(moovIndex + 1).any { it.type !in PADDING }) return false
-            val moov = top[moovIndex]
-            if (moov.size > MAX_MOOV_BYTES) return false
-
-            // Everything before the first `mdat` except padding (the 400 000
-            // bytes Media3 reserved for a `moov` that did not fit are dropped
-            // here), then the `moov`, then the block from the first `mdat` up
-            // to where the `moov` was — which moves as ONE block, so every
-            // offset into it moves by one amount.
+            // Everything before the first `mdat` except padding — what Media3
+            // reserved for the `moov` and did not use, all 400 000 bytes of it
+            // when the `moov` did not fit and whatever was left over when it
+            // did. With the `moov` already in front and no padding, there is
+            // nothing to do.
             val head = top.subList(0, mdatIndex).filter { it.type !in PADDING }
+            if (moovWasFirst && head.size == mdatIndex) return true
+
+            // Behind the `mdat`, only padding may follow the `moov` — that is
+            // what a muxer that wrote it last leaves. Anything else after it
+            // would move by a different amount than `mdat` does, and this
+            // does not chase that.
+            if (!moovWasFirst && top.drop(moovIndex + 1).any { it.type !in PADDING }) {
+                return false
+            }
+            val moov = top[moovIndex]
+            if (moov.size > MAX_MOOV_BYTES) return moovWasFirst
+
+            // What moves is ONE block, so every offset into it moves by one
+            // amount: from the first `mdat` up to where the `moov` was, or —
+            // with the `moov` already in front — to the end of the file.
             val movedStart = top[mdatIndex].offset
-            val movedEnd = moov.offset
-            val delta = head.sumOf { it.size } + moov.size - movedStart
+            val movedEnd = if (moovWasFirst) channel.size() else moov.offset
+            val front = head.sumOf { it.size } + if (moovWasFirst) 0 else moov.size
+            val delta = front - movedStart
 
             val index = ByteBuffer.allocate(moov.size.toInt())
             readFully(channel, index, moov.offset)
             val shifter = OffsetShifter(delta, movedStart, movedEnd)
-            if (!shifter.container(index, 0, index.capacity())) return false
+            if (!shifter.container(index, 0, index.capacity())) return moovWasFirst
 
             try {
                 FileOutputStream(temp).channel.use { out ->
-                    head.forEach { copy(channel, it.offset, it.size, out) }
-                    index.rewind()
-                    while (index.hasRemaining()) out.write(index)
+                    val writeIndex = {
+                        index.rewind()
+                        while (index.hasRemaining()) out.write(index)
+                    }
+                    // The `moov` goes where it already was among the boxes in
+                    // front, or — brought from the back — after the last of them.
+                    head.forEach { if (it == moov) writeIndex() else copy(channel, it.offset, it.size, out) }
+                    if (!moovWasFirst) writeIndex()
                     copy(channel, movedStart, movedEnd - movedStart, out)
                 }
                 true
@@ -119,7 +147,8 @@ object Mp4Faststart {
         // original is either untouched or fully replaced, never half of each.
         if (!rewritten || !temp.renameTo(file)) {
             temp.delete()
-            return false
+            // Still a padded file with its `moov` in front, if that is what it was.
+            return moovWasFirst
         }
         return true
     }

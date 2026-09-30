@@ -127,6 +127,72 @@ public sealed class ComposerStagingTests
         Assert.Null(staging.BusyReason(editing: false, Say));
     }
 
+    /// <summary>
+    /// A ten-minute clip dropped by mistake: Cancel reaches the preparer through its token, nothing of the rest is
+    /// started, nothing is said, and the composer is free again at once — not after the transcode.
+    /// </summary>
+    [Fact]
+    public async Task ABatchCalledOffStopsThePreparerAndStartsNothingMore()
+    {
+        var staging = new ComposerStaging();
+        var asked = new List<string>();
+        var started = new TaskCompletionSource();
+        async Task<PrepOutcome> Prepare(string name, CancellationToken cancel)
+        {
+            asked.Add(name);
+            if (name == "clip.mov")
+            {
+                started.SetResult();
+                await Task.Delay(Timeout.Infinite, cancel);
+            }
+            return PrepOutcome.Staged(new StagedMedia("file", "text/plain", new byte[] { 1 }, Name: name));
+        }
+
+        var batch = staging.IngestAsync(["a.txt", "clip.mov", "c.txt"], Prepare, () => true, Say);
+        await started.Task;
+        Assert.True(staging.Preparing);
+        staging.CancelPreparing();
+
+        // Bounded: a cancel that never reached the preparer must FAIL here, not hang the suite on its endless clip.
+        Assert.Null(await batch.WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.Equal(["a.txt", "clip.mov"], asked);
+        // What was staged before the cancel stays: it has a chip of its own to remove it by.
+        Assert.Equal(["a.txt"], staging.Items.Select(item => item.Name));
+        Assert.False(staging.Preparing);
+        Assert.Null(staging.BusyReason(editing: false, Say));
+    }
+
+    /// <summary>A preparer that did not notice the cancel and came back with the file anyway: it is still not staged.</summary>
+    [Fact]
+    public async Task ABatchCalledOffStagesNothingThatCameBackAnyway()
+    {
+        var staging = new ComposerStaging();
+        var gate = new TaskCompletionSource<PrepOutcome>();
+
+        var batch = staging.IngestAsync(["a", "b"], (_, _) => gate.Task, () => true, Say);
+        staging.CancelPreparing();
+        gate.SetResult(PrepOutcome.Staged(Photo()));
+
+        Assert.Null(await batch);
+        Assert.Empty(staging.Items);
+    }
+
+    /// <summary>Cancel is for the batch in hand: with none running it does nothing, and the next batch is untouched by it.</summary>
+    [Fact]
+    public async Task CallingOffNothingLeavesTheNextBatchAlone()
+    {
+        var staging = new ComposerStaging();
+        staging.CancelPreparing();
+
+        var said = await staging.IngestAsync(["a"], Preparer([]), () => true, Say);
+        staging.CancelPreparing();
+
+        Assert.Null(said);
+        Assert.Equal(["a"], staging.Items.Select(item => item.Name));
+        Assert.Null(await staging.IngestAsync(["b"], Preparer([]), () => true, Say));
+        Assert.Equal(["a", "b"], staging.Items.Select(item => item.Name));
+    }
+
     [Fact]
     public void TakingEmptiesTheStripAndRestoringPutsItBackInFront()
     {

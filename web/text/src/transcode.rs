@@ -261,19 +261,37 @@ mod tests {
 
     #[test]
     fn the_level_is_the_lowest_that_holds_the_frame() {
-        assert_eq!(h264_codec(H264Profile::High, 1280, 720, 30.0), "avc1.64001f");
-        assert_eq!(h264_codec(H264Profile::High, 720, 1280, 30.0), "avc1.64001f");
-        assert_eq!(h264_codec(H264Profile::Main, 1280, 720, 30.0), "avc1.4d401f");
+        assert_eq!(
+            h264_codec(H264Profile::High, 1280, 720, 30.0),
+            "avc1.64001f"
+        );
+        assert_eq!(
+            h264_codec(H264Profile::High, 720, 1280, 30.0),
+            "avc1.64001f"
+        );
+        assert_eq!(
+            h264_codec(H264Profile::Main, 1280, 720, 30.0),
+            "avc1.4d401f"
+        );
         assert_eq!(h264_codec(H264Profile::High, 640, 360, 30.0), "avc1.64001e");
         assert_eq!(h264_codec(H264Profile::High, 176, 144, 15.0), "avc1.64001e");
         // 107 × 45 macroblocks is past 3.1's 3 600.
-        assert_eq!(h264_codec(H264Profile::High, 1706, 720, 30.0), "avc1.640020");
+        assert_eq!(
+            h264_codec(H264Profile::High, 1706, 720, 30.0),
+            "avc1.640020"
+        );
         // 720 × 720 at 30: 2 025 macroblocks, past 3.0's 1 620.
         assert_eq!(h264_codec(H264Profile::High, 720, 720, 30.0), "avc1.64001f");
         // A panorama: 45 × 250 macroblocks — too long a side below 5.0.
-        assert_eq!(h264_codec(H264Profile::High, 720, 4000, 30.0), "avc1.640032");
+        assert_eq!(
+            h264_codec(H264Profile::High, 720, 4000, 30.0),
+            "avc1.640032"
+        );
         // Past everything: 5.2 all the same.
-        assert_eq!(h264_codec(H264Profile::High, 720, 20000, 30.0), "avc1.640034");
+        assert_eq!(
+            h264_codec(H264Profile::High, 720, 20000, 30.0),
+            "avc1.640034"
+        );
     }
 
     fn kept(rate: f64, times: impl Iterator<Item = f64>) -> Vec<f64> {
@@ -291,15 +309,23 @@ mod tests {
         }
         // 59.94 keeps EVERY other frame too — two minutes of it, not one
         // hiccup where the clocks drift apart.
-        let times: Vec<f64> = (0..7_200).map(|frame| f64::from(frame * 1001) / 60_000.0).collect();
+        let times: Vec<f64> = (0..7_200)
+            .map(|frame| f64::from(frame * 1001) / 60_000.0)
+            .collect();
         let kept = self::kept(30.0, times.iter().copied());
         assert_eq!(kept.len(), 3_600);
         for (index, time) in kept.iter().enumerate() {
             assert_eq!(*time, times[2 * index]);
         }
         // 120 and 240 keep every fourth and every eighth.
-        assert_eq!(self::kept(30.0, (0..480).map(|f| f64::from(f) / 120.0)).len(), 120);
-        assert_eq!(self::kept(30.0, (0..960).map(|f| f64::from(f) / 240.0)).len(), 120);
+        assert_eq!(
+            self::kept(30.0, (0..480).map(|f| f64::from(f) / 120.0)).len(),
+            120
+        );
+        assert_eq!(
+            self::kept(30.0, (0..960).map(|f| f64::from(f) / 240.0)).len(),
+            120
+        );
     }
 
     #[test]
@@ -320,13 +346,21 @@ mod tests {
             let seconds = times.last().unwrap();
             let source_rate = f64::from(timescale) / f64::from(ticks);
             // Over the whole clip: at most 30 a second (and the first frame).
-            assert!(kept.len() as f64 <= seconds * 30.0 + 1.0, "{ticks}/{timescale}: {}", kept.len());
+            assert!(
+                kept.len() as f64 <= seconds * 30.0 + 1.0,
+                "{ticks}/{timescale}: {}",
+                kept.len()
+            );
             // And never starved: at least every n-th frame, for the
             // smallest n that brings the source to 30 — all of them, for a
             // source at 30 or below.
             let every = (source_rate / 30.0 - 1e-9).ceil().max(1.0);
             let floor = (times.len() as f64 / every).floor() - 1.0;
-            assert!(kept.len() as f64 >= floor, "{ticks}/{timescale}: {} of {floor}", kept.len());
+            assert!(
+                kept.len() as f64 >= floor,
+                "{ticks}/{timescale}: {} of {floor}",
+                kept.len()
+            );
             // In any one second, never more than a single frame over.
             for window in kept.windows(32) {
                 assert!(window[31] - window[0] >= 1.0, "{ticks}/{timescale}");
@@ -352,7 +386,10 @@ mod tests {
         assert!(frame_gate(Some(24.0), 24.0).is_none());
         assert!(frame_gate(Some(60.0), 30.0).is_some());
         assert!(frame_gate(Some(30.51), 30.0).is_some());
-        assert!(frame_gate(None, 30.0).is_some(), "an unknown rate is held to 30");
+        assert!(
+            frame_gate(None, 30.0).is_some(),
+            "an unknown rate is held to 30"
+        );
         assert!(frame_gate(Some(f64::NAN), 30.0).is_some());
     }
 
@@ -373,7 +410,11 @@ mod tests {
         assert_eq!(land(&turned, 0.0, 720.0), (0.0, 0.0));
         assert_eq!(land(&turned, 1280.0, 720.0), (0.0, 1280.0));
         let back = placement(270, 720, 1280);
-        assert_eq!(land(&back, 0.0, 0.0), (0.0, 1280.0), "top-left to bottom-left");
+        assert_eq!(
+            land(&back, 0.0, 0.0),
+            (0.0, 1280.0),
+            "top-left to bottom-left"
+        );
         assert_eq!(land(&back, 1280.0, 0.0), (0.0, 0.0));
         let over = placement(180, 1280, 720);
         assert_eq!(land(&over, 0.0, 0.0), (1280.0, 720.0));
@@ -397,26 +438,41 @@ mod tests {
     #[test]
     fn a_videos_sound_is_copied_only_when_it_is_already_on_the_row() {
         // Stereo AAC-LC at 128 000 or below: copied.
-        assert_eq!(audio_route(Some(2), Some(2), Some(125_000), 125_000), Some(AudioRoute::Copy));
+        assert_eq!(
+            audio_route(Some(2), Some(2), Some(125_000), 125_000),
+            Some(AudioRoute::Copy)
+        );
         // At 192 000 the planner's target is 128 000: re-encoded.
         assert_eq!(
             audio_route(Some(2), Some(2), Some(192_000), 128_000),
-            Some(AudioRoute::Encode { bitrate: 128_000, channels: 2 })
+            Some(AudioRoute::Encode {
+                bitrate: 128_000,
+                channels: 2
+            })
         );
         // HE-AAC is not AAC-LC, whatever its rate.
         assert_eq!(
             audio_route(Some(5), Some(2), Some(48_000), 48_000),
-            Some(AudioRoute::Encode { bitrate: 48_000, channels: 2 })
+            Some(AudioRoute::Encode {
+                bitrate: 48_000,
+                channels: 2
+            })
         );
         // Not AAC at all (PCM in a QuickTime movie): re-encoded.
         assert_eq!(
             audio_route(None, Some(1), Some(705_600), 64_000),
-            Some(AudioRoute::Encode { bitrate: 64_000, channels: 1 })
+            Some(AudioRoute::Encode {
+                bitrate: 64_000,
+                channels: 1
+            })
         );
         // A rate the index could not give: re-encoded at the target.
         assert_eq!(
             audio_route(Some(2), Some(2), None, 128_000),
-            Some(AudioRoute::Encode { bitrate: 128_000, channels: 2 })
+            Some(AudioRoute::Encode {
+                bitrate: 128_000,
+                channels: 2
+            })
         );
         // Surround, or a count nobody could tell: rule C.
         assert_eq!(audio_route(Some(2), Some(6), Some(384_000), 128_000), None);

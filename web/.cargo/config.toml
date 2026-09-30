@@ -1,0 +1,13 @@
+# The browser tests (`wasm-pack test --headless --chrome`) encode real video
+# with the browser's own codecs (src/encode.rs), which takes longer than the
+# 20 seconds wasm-bindgen's test runner gives a whole run by default. Past
+# that it reports a run that was still going as one that never started.
+[env]
+WASM_BINDGEN_TEST_TIMEOUT = "300"
+
+# The same run is started with `webdriver.json`, which wasm-bindgen's test
+# runner reads from this directory: it gives the test browser a microphone
+# that is not one (Chrome's fake capture device, its permission prompt
+# already answered) and lets an audio context run on a page nobody has
+# clicked in. The voice-note tests (src/recorder.rs) record through both —
+# without them the first of those tests says so by name.

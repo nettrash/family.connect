@@ -5,8 +5,9 @@
  * `moov` before `mdat` (docs/protocol.md, "Preparing media before upload"),
  * on MP4s built box by box here rather than recorded: what matters is the
  * box LAYOUT a muxer leaves — `ftyp`, the `free` Media3 reserved, `mdat`,
- * then a `moov` that did not fit — and the one invariant a move has to keep,
- * which is that every chunk offset still points at the same bytes.
+ * then a `moov` that did not fit; or the `moov` in front with what was left
+ * of the reservation behind it — and the one invariant a rewrite has to
+ * keep, which is that every chunk offset still points at the same bytes.
  *
  * Plain JVM: Mp4Faststart is java.io and java.nio only.
  */
@@ -101,6 +102,50 @@ class Mp4FaststartTest {
         assertThat(Mp4Faststart.moovFirst(file)).isTrue()
         assertThat(Mp4Faststart.apply(file)).isTrue()
         assertThat(file.readBytes()).isEqualTo(bytes)
+    }
+
+    /**
+     * What Media3 leaves when the moov DID fit its reservation: the moov in
+     * front, then the rest of the 400 000 bytes as a `free` box. The file is
+     * already moov-first, and nearly half a megabyte bigger than it need be —
+     * so the padding goes, and the chunks move BACK by exactly that much.
+     */
+    @Test
+    fun `padding left behind a moov that fitted is taken out`() {
+        val ftyp = box("ftyp", "isom".ascii() + ByteArray(4))
+        val padding = box("free", ByteArray(392))
+        val probe = moov(stco(chunks.map { 0L }))
+        val payloadAt = (ftyp.size + probe.size + padding.size + 16).toLong()
+        val before = ftyp + moov(stco(chunks.map { payloadAt + it })) + padding + largeBox("mdat", samples)
+        val file = File(directory, "padded.mp4").apply { writeBytes(before) }
+        val offsetsBefore = chunkOffsets(before)
+        assertThat(Mp4Faststart.moovFirst(file)).isTrue()
+
+        assertThat(Mp4Faststart.apply(file)).isTrue()
+
+        val after = file.readBytes()
+        assertThat(types(file)).containsExactly("ftyp", "moov", "mdat").inOrder()
+        assertThat(after.size).isEqualTo(before.size - 400)
+        val offsetsAfter = chunkOffsets(after)
+        assertThat(offsetsAfter).isEqualTo(offsetsBefore.map { it - 400 })
+        assertSameChunks(before, offsetsBefore, after, offsetsAfter)
+        assertThat(directory.list()!!.toList()).containsExactly(file.name)
+    }
+
+    /**
+     * A padded, moov-first file whose table points somewhere this cannot
+     * follow keeps its padding: bigger than it need be, and still playable
+     * from its first bytes — which is what the answer says.
+     */
+    @Test
+    fun `padding that cannot be taken out safely stays, and the file is still moov-first`() {
+        val ftyp = box("ftyp", "isom".ascii() + ByteArray(4))
+        val before = ftyp + moov(stco(listOf(4L))) + box("free", ByteArray(392)) + box("mdat", samples)
+        val file = File(directory, "odd.mp4").apply { writeBytes(before) }
+
+        assertThat(Mp4Faststart.apply(file)).isTrue()
+        assertThat(file.readBytes()).isEqualTo(before)
+        assertThat(directory.list()!!.toList()).containsExactly(file.name)
     }
 
     /**

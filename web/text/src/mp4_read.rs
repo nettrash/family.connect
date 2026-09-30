@@ -127,7 +127,8 @@ impl<'a> Fields<'a> {
     }
 
     fn u32(&mut self) -> Option<u32> {
-        self.take(4).map(|bytes| u32::from_be_bytes(bytes.try_into().unwrap()))
+        self.take(4)
+            .map(|bytes| u32::from_be_bytes(bytes.try_into().unwrap()))
     }
 
     fn i32(&mut self) -> Option<i32> {
@@ -135,7 +136,8 @@ impl<'a> Fields<'a> {
     }
 
     fn u64(&mut self) -> Option<u64> {
-        self.take(8).map(|bytes| u64::from_be_bytes(bytes.try_into().unwrap()))
+        self.take(8)
+            .map(|bytes| u64::from_be_bytes(bytes.try_into().unwrap()))
     }
 
     fn rest(&self) -> &'a [u8] {
@@ -266,7 +268,11 @@ impl Track {
             .iter()
             .map(|sample| u64::from(sample.duration))
             .sum();
-        let bytes: u64 = self.samples.iter().map(|sample| u64::from(sample.size)).sum();
+        let bytes: u64 = self
+            .samples
+            .iter()
+            .map(|sample| u64::from(sample.size))
+            .sum();
         if ticks == 0 || self.timescale == 0 {
             return None;
         }
@@ -348,6 +354,24 @@ impl Movie {
         }
         (track.timescale > 0 && track.duration > 0)
             .then(|| track.duration * 1000 / u64::from(track.timescale))
+    }
+
+    /// How long `track` shows NOTHING before it starts, in milliseconds:
+    /// the empty edit in front of its media, which is how a file says one
+    /// track starts later than the other. 0 without one. Whoever writes
+    /// the track out again has to write this too (it is
+    /// [`crate::mp4::Track`]'s `lead`), or the picture and its sound come
+    /// out this far apart. None when it is not a length a file can state.
+    pub fn lead_ms(&self, track: &Track) -> Option<u32> {
+        let lead = track.edit.map_or(0, |edit| edit.lead);
+        if lead == 0 {
+            return Some(0);
+        }
+        if self.timescale == 0 {
+            return None;
+        }
+        let timescale = u128::from(self.timescale);
+        u32::try_from((u128::from(lead) * 1000 + timescale / 2) / timescale).ok()
     }
 
     /// The whole file's length in milliseconds, or None.
@@ -597,10 +621,16 @@ fn sample_table(
                 }
             }
             4 => {
-                let packed = fields.take(count.div_ceil(2) as usize).ok_or(ReadError::Malformed)?;
+                let packed = fields
+                    .take(count.div_ceil(2) as usize)
+                    .ok_or(ReadError::Malformed)?;
                 for index in 0..count as usize {
                     let byte = packed[index / 2];
-                    sizes.push(u32::from(if index % 2 == 0 { byte >> 4 } else { byte & 0x0F }));
+                    sizes.push(u32::from(if index % 2 == 0 {
+                        byte >> 4
+                    } else {
+                        byte & 0x0F
+                    }));
                 }
             }
             _ => return Err(ReadError::Malformed),
@@ -919,7 +949,25 @@ fn esds(body: &[u8], entry: &mut SampleEntry) {
 pub struct AudioConfig {
     pub object_type: u8,
     pub sample_rate: u32,
+    /// The channel CONFIGURATION — an index, not a count (see
+    /// [`AudioConfig::channel_count`]).
     pub channels: u8,
+}
+
+impl AudioConfig {
+    /// How many channels the stream decodes to (ISO/IEC 14496-3, Table
+    /// 1.19): the configuration itself up to 6, and 8 for 7 (7.1). HE-AAC
+    /// v2 codes ONE channel and its decoder hands out two — that is what
+    /// parametric stereo is. None for configuration 0, which leaves the
+    /// layout to the stream itself, and for the reserved ones.
+    pub fn channel_count(&self) -> Option<u32> {
+        match (self.object_type, self.channels) {
+            (29, 1) => Some(2),
+            (_, count @ 1..=6) => Some(u32::from(count)),
+            (_, 7) => Some(8),
+            _ => None,
+        }
+    }
 }
 
 const AAC_RATES: [u32; 13] = [
@@ -975,7 +1023,9 @@ pub fn video_codec_string(entry: &SampleEntry) -> Option<String> {
             // configurationVersion, then profile, constraints, level.
             let (profile, constraints, level) = (config.get(1)?, config.get(2)?, config.get(3)?);
             let prefix = std::str::from_utf8(&entry.format).ok()?;
-            Some(format!("{prefix}.{profile:02x}{constraints:02x}{level:02x}"))
+            Some(format!(
+                "{prefix}.{profile:02x}{constraints:02x}{level:02x}"
+            ))
         }
         b"hvc1" | b"hev1" => {
             let first = *config.get(1)?;
@@ -1118,6 +1168,7 @@ mod tests {
                     })
                     .collect(),
                 skip: 0,
+                lead: 0,
             },
             Out {
                 timescale: 48_000,
@@ -1138,6 +1189,7 @@ mod tests {
                     })
                     .collect(),
                 skip: 1024,
+                lead: 0,
             },
         ];
         let payloads = vec![video, audio];
@@ -1221,7 +1273,9 @@ mod tests {
         assert_eq!(box_header(&large).unwrap().size, Some(5_000_000_000));
         assert_eq!(box_header(&large).unwrap().header_len, 16);
         assert_eq!(
-            box_header(&[0, 0, 0, 0, b'm', b'd', b'a', b't']).unwrap().size,
+            box_header(&[0, 0, 0, 0, b'm', b'd', b'a', b't'])
+                .unwrap()
+                .size,
             None
         );
         assert_eq!(box_header(&[0, 0, 0, 5, b'b', b'a', b'd', b'!']), None);
@@ -1299,6 +1353,98 @@ mod tests {
         // HE-AAC v1 (5) at 24 kHz core, mono.
         assert_eq!(audio_config(&[0x2B, 0x08]).unwrap().object_type, 5);
         assert_eq!(audio_config(&[]), None);
+        // The configuration is an index: 7 is eight channels, 0 is "ask the
+        // stream", and HE-AAC v2's one coded channel decodes to two.
+        let config = |object_type, channels| AudioConfig {
+            object_type,
+            sample_rate: 48_000,
+            channels,
+        };
+        assert_eq!(config(2, 1).channel_count(), Some(1));
+        assert_eq!(config(2, 2).channel_count(), Some(2));
+        assert_eq!(config(2, 6).channel_count(), Some(6));
+        assert_eq!(config(2, 7).channel_count(), Some(8));
+        assert_eq!(config(2, 0).channel_count(), None);
+        assert_eq!(config(2, 9).channel_count(), None);
+        assert_eq!(config(29, 1).channel_count(), Some(2));
+        assert_eq!(config(5, 1).channel_count(), Some(1));
+    }
+
+    /// An empty edit in front of a track's media is its lead — read, kept
+    /// apart from where the media starts, and not an edit list this reader
+    /// gives up on. What comes after the media, or a second piece of it, is.
+    #[test]
+    fn an_empty_edit_is_a_lead_and_is_read_back_from_the_writers_file() {
+        let (file, _) = written();
+        let plain = parse_moov(moov_of(&file)).unwrap();
+        assert_eq!(plain.lead_ms(plain.video().unwrap()), Some(0));
+        assert_eq!(plain.lead_ms(plain.audio().unwrap()), Some(0));
+
+        let payloads: Vec<Vec<u8>> = (0..30).map(|i| vec![i as u8; 300]).collect();
+        let late = Out {
+            timescale: 600,
+            media: Media::Video {
+                width: 640,
+                height: 360,
+                avcc: vec![1, 0x64, 0x00, 0x1E, 0xFF, 0xE1, 0, 0, 1, 0],
+                colour: None,
+            },
+            samples: payloads
+                .iter()
+                .map(|payload| mp4::Sample {
+                    size: payload.len() as u32,
+                    duration: 20,
+                    composition_offset: 0,
+                    sync: true,
+                })
+                .collect(),
+            skip: 0,
+            lead: 300,
+        };
+        let file = mp4::write(&[late], &[payloads], Brand::Mp4);
+        let movie = parse_moov(moov_of(&file)).unwrap();
+        let video = movie.video().unwrap();
+        assert_eq!(
+            video.edit,
+            Some(Edit {
+                media_start: 0,
+                lead: 300,
+                length: Some(1000)
+            })
+        );
+        assert!(video.edit_supported());
+        assert_eq!(movie.lead_ms(video), Some(300));
+        assert_eq!(movie.presented_ms(video), Some(1000));
+        assert_eq!(movie.duration_ms(), Some(1300));
+
+        // In another movie timescale — a phone's 90 000 — and as version 1.
+        let entry = |length: u64, media_time: i64| {
+            let mut bytes = length.to_be_bytes().to_vec();
+            bytes.extend_from_slice(&media_time.to_be_bytes());
+            bytes.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+            bytes
+        };
+        let list = |entries: &[Vec<u8>]| {
+            let mut elst = vec![1, 0, 0, 0];
+            elst.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+            for entry in entries {
+                elst.extend_from_slice(entry);
+            }
+            elst
+        };
+        let (found, complex) = edit(&list(&[entry(27_045, -1), entry(90_000, 3_003)])).unwrap();
+        assert!(!complex);
+        let mut track = video.clone();
+        track.edit = found;
+        let mut phone = movie.clone();
+        phone.timescale = 90_000;
+        assert_eq!(phone.lead_ms(&track), Some(301), "300.5 ms, to the nearest");
+        assert_eq!(found.unwrap().media_start, 3_003);
+        // Nothing AFTER the media, or media in two pieces: not one edit.
+        let (_, complex) = edit(&list(&[entry(90_000, 0), entry(9_000, -1)])).unwrap();
+        assert!(complex);
+        let (_, complex) = edit(&list(&[entry(90_000, 0), entry(90_000, 180_000)])).unwrap();
+        assert!(complex);
     }
 
     #[test]

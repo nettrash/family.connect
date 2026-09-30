@@ -81,6 +81,11 @@ struct MacConversationView: View {
     /// failure and only on a failure; knowing which kind this is, is what
     /// lets this one do the same.
     @State private var mediaNotice: Notice?
+    /// Every preparation in flight, so that one can be stopped — by the
+    /// notice's Cancel, or by this conversation going away. The phone's
+    /// `preparations`, for the phone's reason: since issue #74 preparing a
+    /// video is a transcode, and nothing could stop one.
+    @State private var preparations: [UUID: Task<Void, Never>] = [:]
     /// Prepared and waiting for Send — up to StagedAttachment.maxPerMessage
     /// items, in the order staged, which is the order the message will
     /// carry. The Mac used to have no staging step at all — every door
@@ -650,6 +655,10 @@ struct MacConversationView: View {
             // every chat switch, and the draft with it — parked instead,
             // and handed back when the reader returns.
             ComposerDrafts.stash(draft, for: chatID)
+            // A transcode still running belongs to a composer that no
+            // longer exists; left alone it would encode to the end and
+            // leave its file in tmp.
+            cancelPreparations()
         }
         // The suppression ends with the banner it was captured for, and it
         // is cleared HERE rather than beside each of the seven places a
@@ -676,31 +685,36 @@ struct MacConversationView: View {
     /// it. Nothing auto-sends — the files sit staged until Send.
     private func consumeShareImport() {
         guard let urls = session.takeShareImport(for: chatID), !urls.isEmpty else { return }
-        mediaNotice = .busy(String(localized: "Preparing…"))
-        Task {
-            for url in urls {
+        prepare {
+            for (index, url) in urls.enumerated() {
+                // Cancelled: the imports not reached yet are nobody's now,
+                // and nothing else would ever sweep them.
+                guard !Task.isCancelled else {
+                    try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+                    continue
+                }
                 do {
                     let prepared = try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit)
                     // `prepare` may hand back the source itself (a video
-                    // that already fits); only delete the import — the
-                    // whole per-import `fc-shared-<id>` directory, so no
-                    // empty husk survives — when a new file was made from
-                    // it. (When the source IS the staged file, its
-                    // directory lives until the file is consumed.)
-                    if prepared.fileURL != url {
+                    // that goes as it is — within the profile, or after a
+                    // transcode that failed or did not help); only delete
+                    // the import — the whole per-import `fc-shared-<id>`
+                    // directory, so no empty husk survives — when a new
+                    // file was made from it. (When the source IS the staged
+                    // file, its directory lives until the file is consumed.)
+                    if prepared.fileURL != url || Task.isCancelled {
                         try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
                     }
                     // The cap (and its notice) lives in `stage`.
-                    stage(prepared)
+                    stageIfWanted(prepared, moreToCome: index < urls.count - 1)
                 } catch MediaPrep.PrepError.tooLargeAfterCompression {
-                    mediaNotice = .failed(String(localized: "That file is over the 100 MB limit."))
+                    preparationFailed(String(localized: "That file is over the 100 MB limit."))
                     try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
                 } catch {
-                    mediaNotice = .failed(String(localized: "Couldn't read that file."))
+                    preparationFailed(String(localized: "Couldn't read that file."))
                     try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
                 }
             }
-            if mediaNotice == .busy(String(localized: "Preparing…")) { mediaNotice = nil }
         }
     }
 
@@ -1470,6 +1484,14 @@ struct MacConversationView: View {
                         Button("Dismiss") { self.mediaNotice = nil }
                             .buttonStyle(.borderless)
                             .font(.caption)
+                    } else if mediaNotice == Self.preparingNotice, !preparations.isEmpty {
+                        // The one working state with a way out: a transcode
+                        // of a long clip dropped by mistake should not have
+                        // to run to the end to be got rid of. "Sending…" and
+                        // a download say busy too, and are not this.
+                        Button("Cancel") { cancelPreparations() }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
                     }
                 }
             }
@@ -2191,25 +2213,87 @@ struct MacConversationView: View {
     /// Sequential, because ten re-encodes at once is how a machine stalls.
     private func ingest(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        mediaNotice = .busy(String(localized: "Preparing…"))
-        Task {
-            for url in urls {
+        prepare {
+            for (index, url) in urls.enumerated() {
                 do {
                     // Stop at the cap instead of preparing the rest and
                     // throwing them away: `stage` refuses past ten and says
                     // so, and a drop of twenty videos would otherwise spend
                     // minutes re-encoding ten it is about to delete. The cap
                     // and its notice stay `stage`'s — this only asks whether
-                    // the last one landed.
-                    guard stage(try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit))
+                    // the last one landed. (A cancelled one did not, which
+                    // ends the batch the same way.)
+                    guard stageIfWanted(
+                        try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit),
+                        moreToCome: index < urls.count - 1)
                     else { break }
                 } catch MediaPrep.PrepError.tooLargeAfterCompression {
-                    mediaNotice = .failed(String(localized: "That file is over the 100 MB limit."))
+                    preparationFailed(String(localized: "That file is over the 100 MB limit."))
                 } catch {
-                    mediaNotice = .failed(String(localized: "Couldn't read that file."))
+                    guard !Task.isCancelled else { break }
+                    preparationFailed(String(localized: "Couldn't read that file."))
                 }
             }
         }
+    }
+
+    /// What the notice says while something is being prepared — one value,
+    /// because the Cancel button and the end of a preparation both have to
+    /// recognise it among the other things the notice says it is busy with.
+    private static var preparingNotice: Notice { .busy(String(localized: "Preparing…")) }
+
+    /// Run one door's preparation: "Preparing…" in the notice, and a handle
+    /// in `preparations` for as long as it runs. Several can run at once on
+    /// this window — a second drop while the first is still encoding — which
+    /// is why they are counted rather than held in one slot.
+    private func prepare(_ work: @escaping @MainActor () async -> Void) {
+        mediaNotice = Self.preparingNotice
+        let id = UUID()
+        preparations[id] = Task {
+            await work()
+            preparations[id] = nil
+            // A batch that ended on a cancelled or skipped item, with
+            // nothing else still running, has nothing left to say.
+            if preparations.isEmpty, mediaNotice == Self.preparingNotice { mediaNotice = nil }
+        }
+    }
+
+    /// Stop everything being prepared. Each door's own `catch` cleans up
+    /// what it was working on; `stageIfWanted` and `preparationFailed` are
+    /// what keep a cancelled one from staging or complaining.
+    private func cancelPreparations() {
+        guard !preparations.isEmpty else { return }
+        for task in preparations.values { task.cancel() }
+        preparations = [:]
+        if mediaNotice == Self.preparingNotice { mediaNotice = nil }
+    }
+
+    /// `stage`, from inside a preparation — unless that preparation was
+    /// cancelled while the item was being made, in which case the item is
+    /// thrown away instead (`MediaPrep.discard`, which never deletes the
+    /// person's own file): a cancel can land after the last `await`
+    /// returned, where nothing throws.
+    ///
+    /// `moreToCome` keeps "Preparing…" (and its Cancel) up between the
+    /// items of a batch. `stage` clears the notice, which was right when
+    /// the next item took no time; with a transcode per clip it left the
+    /// second of three videos encoding behind a composer that said nothing.
+    @discardableResult
+    private func stageIfWanted(_ prepared: MediaPrep.Prepared, moreToCome: Bool = false) -> Bool {
+        guard !Task.isCancelled else {
+            MediaPrep.discard(prepared)
+            return false
+        }
+        let took = stage(prepared)
+        if took, moreToCome, mediaNotice == nil { mediaNotice = Self.preparingNotice }
+        return took
+    }
+
+    /// Say what went wrong with a preparation — unless it was cancelled,
+    /// which is not something going wrong.
+    private func preparationFailed(_ message: String) {
+        guard !Task.isCancelled else { return }
+        mediaNotice = .failed(message)
     }
 
     /// Something was dropped on the window. True when this view took it.
@@ -2362,18 +2446,17 @@ struct MacConversationView: View {
     /// a trap, because ⌘V is a reflex and the clipboard is not always what
     /// its owner thinks it is.
     private func pasteAttachment() {
-        mediaNotice = .busy(String(localized: "Preparing…"))
-        Task {
+        prepare {
             do {
-                stage(try await ClipboardAttachment.prepare(limit: MediaPrep.sizeLimit))
+                stageIfWanted(try await ClipboardAttachment.prepare(limit: MediaPrep.sizeLimit))
             } catch ClipboardAttachment.Failure.nothingToPaste {
-                mediaNotice = .failed(String(localized: "There's nothing to paste."))
+                preparationFailed(String(localized: "There's nothing to paste."))
             } catch MediaPrep.PrepError.tooLargeAfterCompression {
                 // The same ceiling and the same wording every other door
                 // uses; a pasted item is not a special kind of too big.
-                mediaNotice = .failed(String(localized: "That file is over the 100 MB limit."))
+                preparationFailed(String(localized: "That file is over the 100 MB limit."))
             } catch {
-                mediaNotice = .failed(String(localized: "Couldn't prepare that item."))
+                preparationFailed(String(localized: "Couldn't prepare that item."))
             }
         }
     }
@@ -2386,21 +2469,20 @@ struct MacConversationView: View {
             mediaNotice = .failed(String(localized: "That recording was too short."))
             return
         }
-        mediaNotice = .busy(String(localized: "Preparing…"))
-        Task {
+        prepare {
             do {
                 // No name: a voice note's identity is its length, and the
                 // scratch file it was recorded into is called
                 // `fc-voice-<UUID>.m4a`. And a voice note: recorded to the
                 // profile already, so the audio rules for picked files do
                 // not apply to it.
-                stage(try await MediaPrep.prepareAudio(
+                stageIfWanted(try await MediaPrep.prepareAudio(
                     from: url, limit: MediaPrep.sizeLimit, isVoiceNote: true))
             } catch MediaPrep.PrepError.tooLargeAfterCompression {
-                mediaNotice = .failed(String(localized: "That file is over the 100 MB limit."))
+                preparationFailed(String(localized: "That file is over the 100 MB limit."))
                 try? FileManager.default.removeItem(at: url)
             } catch {
-                mediaNotice = .failed(String(localized: "Couldn't prepare that item."))
+                preparationFailed(String(localized: "Couldn't prepare that item."))
                 try? FileManager.default.removeItem(at: url)
             }
         }
@@ -2435,8 +2517,9 @@ struct MacConversationView: View {
     /// Usually the file is ours — `MediaPrep` wrote it into a temp
     /// directory, and nothing else will clean it up because the delete
     /// that normally consumes it lives in `sendMedia`, which never ran. But
-    /// a video that already fits the ceiling is staged as the person's OWN
-    /// file, and `MediaPrep.discard` is what knows not to delete that.
+    /// a video that goes as it is (rules A, C and D) is staged as the
+    /// person's OWN file, and `MediaPrep.discard` is what knows not to
+    /// delete that.
     private func discardStaged(_ item: StagedAttachment) {
         MediaPrep.discard(item.prepared)
         staged.removeAll { $0.id == item.id }
