@@ -1848,7 +1848,13 @@ see "Board"):
 **The reason carries no provider text to a client.** Not the provider's message, not its code, not
 which category tripped the filter: the frame is one fixed word, and the provider's detail goes to
 the server's own log, on one line, bounded at 400 characters, and never alongside the member's
-question or the model's answer.
+question or the model's answer. **The log keeps only the fields that NAME the failure**: the
+error's `code`, `type` and `param`, its inner error's `code`, the content-filter categories that
+tripped (with their severity), and a 422's field-and-rule pairs, each only while it is shaped like
+an identifier. The provider's `message` and every other field are withheld, because an error can
+repeat what it was sent (a picture refusal can carry the model's `revised_prompt` of the
+description; a validation error can echo the input), and a body that is not JSON is logged as its
+size alone.
 
 The assistant sends under a **reserved account** that belongs to no family, so `sender_id` stays a
 real user id and every foreign key, join and index over messages keeps working untouched. It is not

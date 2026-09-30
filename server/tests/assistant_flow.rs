@@ -6050,3 +6050,74 @@ async fn a_refused_backdrop_answers_picture_refused() {
     )
     .await;
 }
+
+/// What reaches the log when the provider refuses: the error the server
+/// writes for it, built by the real calls against the mock. A refusal can
+/// repeat the words it refused — a DALL·E 3 answer can carry the model's
+/// `revised_prompt` of the description, a message can quote it — and none
+/// of that may reach journald; the fields that say WHICH filter tripped do.
+/// Needs no database: nothing here touches a family.
+#[tokio::test]
+async fn a_refusal_that_echoes_the_words_logs_none_of_them() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let mut cfg = family_connect::config::AiConfig {
+        enabled: true,
+        endpoint: format!("http://{addr}"),
+        deployment: TEXT_DEPLOYMENT.to_string(),
+        api_key: "test-key".to_string(),
+        processor: "Microsoft — Azure OpenAI".to_string(),
+        ..Default::default()
+    };
+    cfg.images.deployment.deployment = IMAGES_DEPLOYMENT.to_string();
+    let client = reqwest::Client::new();
+    let echo = |words: &str| {
+        json!({"error": {
+            "code": "contentFilter",
+            "message": format!("Your request was rejected by our safety system: {words}"),
+            "inner_error": {
+                "code": "ResponsibleAIPolicyViolation",
+                "content_filter_results": {"violence": {"filtered": true, "severity": "high"}},
+                "revised_prompt": format!("A detailed painting of {words}"),
+            },
+        }})
+    };
+
+    let description = "Olive's lilac hedgehog";
+    mock.fail_images(Some(Failure::Http(400, echo(description))));
+    let route = cfg.images_route().expect("a named images deployment");
+    let error = family_connect::ai::generate_image(&client, &route, &cfg.images, description)
+        .await
+        .expect_err("the stub refuses");
+    let line = format!("{error:#}");
+    assert!(family_connect::ai::is_refusal(&error), "{line}");
+    assert!(
+        !line.contains("hedgehog"),
+        "the description reached the log: {line}"
+    );
+    assert!(!line.contains("safety system"), "{line}");
+    assert!(
+        line.contains(
+            "code=contentFilter inner=ResponsibleAIPolicyViolation filtered=violence:high"
+        ),
+        "{line}"
+    );
+
+    let question = "what did Olive say about the lilac hedgehog";
+    mock.fail_chat(Some(Failure::Http(400, echo(question))));
+    let turns = [family_connect::ai::ChatTurn {
+        role: "user",
+        content: question.to_string(),
+        images: Vec::new(),
+    }];
+    let error =
+        family_connect::ai::stream_reply(&client, &cfg.text_route(), "system", &turns, &[], |_| {})
+            .await
+            .expect_err("the stub refuses");
+    let line = format!("{error:#}");
+    assert!(family_connect::ai::is_refusal(&error), "{line}");
+    assert!(
+        !line.contains("hedgehog"),
+        "the question reached the log: {line}"
+    );
+    assert!(!line.contains('\n'), "{line}");
+}
