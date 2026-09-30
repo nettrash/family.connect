@@ -1552,6 +1552,20 @@ struct MacConversationView: View {
                 .foregroundStyle(.secondary)
                 .accessibilityElement(children: .combine)
             }
+            // While the draft is a `/draw` request — the phone's hint, by
+            // the phone's rule (`PictureRequestHint`).
+            if showsPictureRequestHint {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "paintbrush")
+                        .accessibilityHidden(true)
+                    Text(PictureRequestHint.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityElement(children: .combine)
+            }
             // Nothing goes to the model until this member has said so
             // (protocol.md, "Consenting to the assistant").
             if assistantConsentNeeded, let processor = AppSettings.assistantProcessor {
@@ -2010,6 +2024,17 @@ struct MacConversationView: View {
     /// exists to keep.
     private func pickPictures() {
         ingest(MacFilePicker.pickPictures())
+    }
+
+    /// Whether the draft is being written as a picture request, on a
+    /// server that can draw, in a chat where it reaches the assistant — the
+    /// phone's rule, `PictureRequestHint`, for the phone's reason.
+    private var showsPictureRequestHint: Bool {
+        PictureRequestHint.showsInComposer(
+            chatKind: chat?.kind,
+            draft: draft,
+            isEditing: editTarget != nil,
+            offersPictures: AppSettings.offersPictureRequests)
     }
 
     /// Put `/draw ` at the FRONT of the draft and put the caret back.

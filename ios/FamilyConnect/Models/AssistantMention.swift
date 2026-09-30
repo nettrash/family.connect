@@ -145,6 +145,26 @@ nonisolated enum AssistantMention {
         drawScan(in: body)?.token
     }
 
+    /// Is this draft being WRITTEN as a picture request — the token where
+    /// the grammar allows it and whitespace after it — even though no
+    /// words may follow yet?
+    ///
+    /// Looser than `asksForPicture` in exactly one respect: the prompt may
+    /// still be empty. `/draw ` is what the "Ask for a picture" button
+    /// types, and the composer's hint about what a picture provider
+    /// refuses (`PictureRequestHint`) belongs on screen from that moment,
+    /// before the description it is about has been written. Everything
+    /// else — leading whitespace skipped, ONE leading `@ai`, the ASCII
+    /// fold, whitespace rather than a longer word after the token — is the
+    /// same scan `drawScan` makes, so this never says yes to a draft the
+    /// grammar would refuse once words were added to it.
+    ///
+    /// Not a wire contract: nothing is sent on this answer. The server
+    /// only ever sees `drawPrompt`'s.
+    static func startsPictureRequest(_ body: String) -> Bool {
+        drawTokenScan(in: body) != nil
+    }
+
     /// The one answer both public questions are asked of.
     private struct DrawScan {
         /// Where the five characters sit in the caller's own string.
@@ -171,6 +191,17 @@ nonisolated enum AssistantMention {
     /// until it has matched: five leading bytes that match an ASCII token
     /// are five leading scalars, so the index below is always in bounds.
     private static func drawScan(in body: String) -> DrawScan? {
+        guard let token = drawTokenScan(in: body) else { return nil }
+        let prompt = trimmed(body[token.upperBound...])
+        guard !prompt.isEmpty else { return nil }
+        return DrawScan(token: token, prompt: prompt)
+    }
+
+    /// The token half of `drawScan`, and all of `startsPictureRequest`:
+    /// where the five characters sit when they are in the one place the
+    /// grammar allows and are followed by whitespace — whether or not any
+    /// prompt follows that. In scalars, for `drawScan`'s reason.
+    private static func drawTokenScan(in body: String) -> Range<String.Index>? {
         let scalars = body.unicodeScalars
         var index = skippingWhitespace(from: scalars.startIndex, in: scalars)
         // ONE leading mention, and only a leading one — the position is
@@ -196,9 +227,7 @@ nonisolated enum AssistantMention {
         // message — and anything that is not whitespace makes a longer
         // word: `/drawer` and `/draw,a cat` are not requests either.
         guard probe < scalars.endIndex, isWhitespace(scalars[probe]) else { return nil }
-        let prompt = trimmed(body[probe...])
-        guard !prompt.isEmpty else { return nil }
-        return DrawScan(token: index..<probe, prompt: prompt)
+        return index..<probe
     }
 
     /// The first index at or after `from` that is not whitespace.

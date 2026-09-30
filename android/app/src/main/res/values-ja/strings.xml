@@ -533,6 +533,7 @@
     <string name="s_draw_another_backdrop">別の背景を描く</string>
     <string name="s_drawing">描いています…</string>
     <string name="s_draw_failed">描けませんでした。</string>
+    <string name="s_describe_in_general_words">人や物は一般的な言葉で説明してください。実在の人物名やブランド名は断られることがよくあります。</string>
     <string name="s_tick_failed">チェックできませんでした。</string>
     <string name="s_no_calendar_app">追加できるカレンダーアプリがありません。</string>
     <string name="s_the_assistant">アシスタント</string>

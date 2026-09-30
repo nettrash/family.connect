@@ -60,6 +60,36 @@ public class ChatOracleTests
         }
     }
 
+    /// <summary>
+    /// A draft that has BEGUN a picture request is exactly one that would ask for a picture the moment a description is typed
+    /// after it — so the prefix rides the oracle's grammar rather than restating it: every body and every draft in the
+    /// vectors, and the edges the vectors cannot have because they are not requests yet.
+    /// </summary>
+    [Fact]
+    public void ABegunPictureRequestIsOneADescriptionWouldComplete()
+    {
+        IEnumerable<string> drafts =
+        [
+            .. Section("assistant_bodies").EnumerateArray().Select(row => row.GetProperty("body").GetString()!),
+            .. Section("draw_token_drafts").EnumerateArray().Select(row => row.GetProperty("draft").GetString()!),
+            .. Section("draw_token_drafts").EnumerateArray().Select(row => row.GetProperty("with").GetString()!),
+            "/draw ", "  /draw ", "/DRAW\n", "@ai /draw ", " /draw ", "/draw", "/drawer ", "x /draw ", "hey @ai /draw ", "@ai @ai /draw ", "",
+        ];
+        foreach (var draft in drafts)
+        {
+            Assert.True(
+                AssistantText.AsksForPicture(draft + "x") == AssistantText.BeginsPictureRequest(draft),
+                $"begun picture request for {JsonSerializer.Serialize(draft)}");
+            // A request is always a begun one.
+            Assert.True(!AssistantText.AsksForPicture(draft) || AssistantText.BeginsPictureRequest(draft), JsonSerializer.Serialize(draft));
+        }
+        Assert.True(AssistantText.BeginsPictureRequest("/draw "));
+        Assert.True(AssistantText.BeginsPictureRequest(" \t@AI  /Draw \n"));
+        Assert.False(AssistantText.BeginsPictureRequest("/draw"));
+        Assert.False(AssistantText.BeginsPictureRequest("/drawer a cat"));
+        Assert.False(AssistantText.BeginsPictureRequest("look /draw a cat"));
+    }
+
     /// <summary>The assistant's own chat: what its composer says of the photos staged — the original's sentence, case for case.</summary>
     [Fact]
     public void ThePrivateChatsPictureNoticeIsTheOriginals()

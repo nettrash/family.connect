@@ -132,6 +132,16 @@ public static class ErrorCodes
     /// </summary>
     public const string PictureRefused = "picture_refused";
 
+    /// <summary>
+    /// The member has not agreed that their words may go to the model, so nothing was sent (docs/protocol.md,
+    /// "Consenting to the assistant"): a 403, and the answer to it is the consent question, then asking again.
+    /// </summary>
+    /// <remarks>
+    /// Not in <see cref="All"/>: that list is held to the one under "Error shape", which does not name this code
+    /// although the endpoints that raise it do. A REST answer always has its status, so it is terminal either way.
+    /// </remarks>
+    public const string AssistantConsentRequired = "assistant_consent_required";
+
     public const string CallsDisabled = "calls_disabled";
     public const string VideoCallsDisabled = "video_calls_disabled";
     public const string InvalidCall = "invalid_call";

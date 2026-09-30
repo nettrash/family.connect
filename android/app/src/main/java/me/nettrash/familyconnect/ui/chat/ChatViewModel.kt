@@ -1038,6 +1038,27 @@ class ChatViewModel @Inject constructor(
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /**
+     * Whether the composer says, under a picture request being typed,
+     * that real names and brands are often refused (docs/protocol.md,
+     * "Pictures"). Only where [canAskForPicture] offers `/draw` at all,
+     * never while the composer is borrowed for an edit; the rule is
+     * [PictureDescriptionHint.inComposer], pinned by its own tests.
+     *
+     * Eager, for [mentionPictureNotice]'s reason: the line has to be
+     * there on the frame the "ask for a picture" button leaves `/draw `.
+     */
+    val showsPictureDescriptionHint: StateFlow<Boolean> =
+        combine(chat, draftText, canAskForPicture, _editTarget) {
+                chatEntity, draft, offered, editing ->
+            PictureDescriptionHint.inComposer(
+                draft = draft,
+                picturesOffered = offered,
+                inFamilyChat = chatEntity?.kind == "family",
+                editing = editing != null,
+            )
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
      * WHO ANSWERS, verbatim as the operator named them, or null on a
      * server that named nobody — which is a server whose assistant this
      * client does not offer at all (docs/protocol.md, "Consenting to the

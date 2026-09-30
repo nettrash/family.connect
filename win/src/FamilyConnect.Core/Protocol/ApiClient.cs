@@ -27,6 +27,34 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
 {
     private readonly Uri rest = ServerUrl.Rest(baseUrl);
 
+    /// <summary>
+    /// How long an ordinary request may take: the 100 s <see cref="HttpClient"/> has always given every call, now
+    /// applied here per request so that one request can be given a longer one.
+    /// </summary>
+    public static readonly TimeSpan OrdinaryTimeout = TimeSpan.FromSeconds(100);
+
+    /// <summary>
+    /// <c>POST …/board/notes/{id}/backdrop</c>'s OWN deadline: the server may make up to three provider calls in a
+    /// row, so a client gives it "a timeout of its own, no shorter than 90 s … never its ordinary request timeout" —
+    /// and a request whose connection closes first draws nothing (docs/protocol.md, "Board", amended 2026-09-30).
+    /// The Apple client's 120 s.
+    /// </summary>
+    public static readonly TimeSpan BackdropTimeout = TimeSpan.FromSeconds(120);
+
+    /// <summary>
+    /// The <see cref="HttpClient"/> an app builds this client over. It has NO timeout of its own, because
+    /// <see cref="HttpClient.Timeout"/> caps every request sent through it and would quietly cut the backdrop's
+    /// deadline down to the ordinary one; the deadlines are this class's (<see cref="OrdinaryTimeout"/>,
+    /// <see cref="BackdropTimeout"/>).
+    /// </summary>
+    public static HttpClient NewHttpClient() => new() { Timeout = Timeout.InfiniteTimeSpan };
+
+    /// <summary>The deadline this instance gives an ordinary request. <see cref="OrdinaryTimeout"/>; tests shorten it.</summary>
+    public TimeSpan RequestDeadline { get; init; } = OrdinaryTimeout;
+
+    /// <summary>The deadline this instance gives a backdrop. <see cref="BackdropTimeout"/>; tests shorten it.</summary>
+    public TimeSpan BackdropDeadline { get; init; } = BackdropTimeout;
+
     /// <summary>The server this client talks to, as the user gave it.</summary>
     public Uri BaseUrl => baseUrl;
 
@@ -262,9 +290,12 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
     /// Ask the assistant for an event's backdrop. NO REQUEST BODY: the prompt is the note's title
     /// and nothing else (docs/protocol.md, "Board").
     /// </summary>
+    /// <remarks>
+    /// SLOW: it runs under <see cref="BackdropDeadline"/>, never the ordinary one (docs/protocol.md, "Board").
+    /// </remarks>
     public Task<ApiResult<NoteResponse>> DrawBackdrop(long noteId, CancellationToken ct = default) =>
         Send<NoteResponse>(
-            HttpMethod.Post, $"/families/mine/board/notes/{noteId}/backdrop", ct: ct);
+            HttpMethod.Post, $"/families/mine/board/notes/{noteId}/backdrop", deadline: BackdropDeadline, ct: ct);
 
     public Task<ApiResult<Nothing>> DeleteNote(long noteId, CancellationToken ct = default) =>
         Send<Nothing>(HttpMethod.Delete, $"/families/mine/board/notes/{noteId}", ct: ct);
@@ -380,7 +411,7 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         using var request = Request(HttpMethod.Get, $"/users/{userId}/avatar");
         try
         {
-            using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendWithin(request, RequestDeadline, ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 return ApiResult<byte[]>.Failure(await Failure(response, ct).ConfigureAwait(false));
@@ -670,7 +701,7 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         using var request = Request(HttpMethod.Get, path);
         try
         {
-            using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendWithin(request, RequestDeadline, ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 return ApiResult<byte[]>.Failure(await Failure(response, ct).ConfigureAwait(false));
@@ -696,6 +727,20 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         return request;
     }
 
+    /// <summary>
+    /// One request under a deadline of its own. A deadline that passes is an <see cref="OperationCanceledException"/>
+    /// the CALLER did not ask for, so <see cref="Unreached"/> reads it as a transport failure — exactly what
+    /// <see cref="HttpClient.Timeout"/> produced before the deadlines moved here. The response is buffered before
+    /// this returns (<see cref="HttpCompletionOption.ResponseContentRead"/>), so the deadline covers the body too.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendWithin(
+        HttpRequestMessage request, TimeSpan deadline, CancellationToken ct)
+    {
+        using var timer = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timer.CancelAfter(deadline);
+        return await http.SendAsync(request, timer.Token).ConfigureAwait(false);
+    }
+
     /// <param name="noContent">
     /// What a <c>204</c> MEANS, for the few endpoints whose protocol row says a success may carry
     /// no body. Absent everywhere else, where a 2xx this client cannot read stays a failure.
@@ -706,6 +751,7 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         object? body = null,
         HttpContent? content = null,
         T? noContent = default,
+        TimeSpan? deadline = null,
         CancellationToken ct = default)
     {
         // A read is safe to repeat and a write is not: only the outbox knows whether a send
@@ -725,7 +771,7 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
             HttpResponseMessage response;
             try
             {
-                response = await http.SendAsync(request, ct).ConfigureAwait(false);
+                response = await SendWithin(request, deadline ?? RequestDeadline, ct).ConfigureAwait(false);
             }
             catch (Exception exception) when (Unreached(exception, ct))
             {

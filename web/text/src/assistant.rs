@@ -177,6 +177,37 @@ struct DrawScan<'a> {
 /// the comparison passed. The NOT_DRAWS table pins the shapes that took the
 /// server down before it learned this.
 fn draw_scan(body: &str) -> Option<DrawScan<'_>> {
+    let token = draw_token_scan(body)?;
+    let prompt = body[token.end..].trim_matches(is_whitespace);
+    (!prompt.is_empty()).then_some(DrawScan { token, prompt })
+}
+
+/// Is this draft being WRITTEN as a picture request — the token where the
+/// grammar allows it and whitespace after it — though no words may follow
+/// it yet?
+///
+/// Looser than [`asks_for_picture`] in exactly one respect: the prompt may
+/// still be empty. `/draw ` is what the "ask for a picture" button leaves
+/// behind, and the hint about what a picture provider refuses
+/// ([`super::assistant_pictures::shows_picture_hint`]) belongs on screen
+/// from that moment, before the description it is about is written.
+/// Everything else — leading whitespace, ONE leading `@ai`, the ASCII fold,
+/// whitespace rather than a longer word after the token — is [`draw_scan`]'s
+/// own walk, so this never says yes to a draft the grammar would refuse
+/// once words were added to it.
+///
+/// Not a wire contract: nothing is sent or highlighted on this answer.
+/// Mirrors `AssistantMention.startsPictureRequest` (Swift) and
+/// `isStartingPicture` (Kotlin).
+pub fn starts_picture_request(body: &str) -> bool {
+    draw_token_scan(body).is_some()
+}
+
+/// The token half of [`draw_scan`], and all of [`starts_picture_request`]:
+/// where the five characters sit when they are in the one place the
+/// grammar allows and whitespace follows them — whether or not a prompt
+/// follows that.
+fn draw_token_scan(body: &str) -> Option<Range<usize>> {
     let mut index = skipping_whitespace(body, 0);
     // ONE leading mention, and only a leading one — the position is checked
     // rather than trusted, which is what makes `look @ai /draw a cat` an
@@ -192,17 +223,11 @@ fn draw_scan(body: &str) -> Option<DrawScan<'_>> {
     }
     // End of body is not a request, and anything that is not whitespace
     // makes a longer word.
-    let after = &body[end..];
-    match after.chars().next() {
-        Some(first) if is_whitespace(first) => {
-            let prompt = after.trim_matches(is_whitespace);
-            (!prompt.is_empty()).then_some(DrawScan {
-                token: index..end,
-                prompt,
-            })
-        }
-        _ => None,
-    }
+    body[end..]
+        .chars()
+        .next()
+        .is_some_and(is_whitespace)
+        .then_some(index..end)
 }
 
 /// The first byte offset at or after `from` that is not whitespace.
@@ -701,5 +726,54 @@ mod tests {
         let built = with_draw_token("кот");
         assert_eq!(built, "/draw кот");
         assert_eq!(draw_prompt(&built), Some("кот"));
+    }
+
+    // MARK: - A request being written
+
+    /// Every request is one being written, and so is what the button
+    /// leaves behind; the drafts the grammar refuses only for an empty
+    /// prompt are being written too.
+    #[test]
+    fn a_request_is_being_written_from_the_token_on() {
+        for (body, _) in DRAWS {
+            assert!(starts_picture_request(body), "{body:?}");
+        }
+        for draft in [
+            "/draw ",
+            "  /draw  ",
+            "/DRAW\n",
+            "@ai /draw ",
+            "@AI\t/draw\u{85}",
+            "\u{3000}/draw ",
+            &with_draw_token(""),
+        ] {
+            assert!(starts_picture_request(draft), "{draft:?}");
+            assert_eq!(draw_prompt(draft), None, "no prompt yet: {draft:?}");
+        }
+    }
+
+    /// And never one the grammar would refuse once words followed: every
+    /// NOT_DRAWS shape except the one whose only fault is the empty prompt.
+    #[test]
+    fn not_a_request_being_written() {
+        for body in NOT_DRAWS {
+            let only_empty = *body == "  /draw  ";
+            assert_eq!(starts_picture_request(body), only_empty, "{body:?}");
+        }
+        for draft in [
+            "/",
+            "/dra",
+            "/draw",
+            "  /draw",
+            // U+200B is not whitespace to the grammar, on either side, and
+            // a combining mark makes the token part of a longer word.
+            "\u{200B}/draw a cat",
+            "/draw\u{200B}a cat",
+            "/draw\u{301} a cat",
+            "/dra\u{E9} a cat",
+            "\u{43A}\u{43E}\u{442}",
+        ] {
+            assert!(!starts_picture_request(draft), "{draft:?}");
+        }
     }
 }

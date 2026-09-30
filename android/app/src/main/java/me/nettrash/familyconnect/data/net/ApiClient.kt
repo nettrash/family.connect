@@ -123,9 +123,17 @@ class ApiClient @Inject constructor(
         auth: Boolean = true,
     ): ApiResult<T> = decode(raw("POST", path, json.encodeToString(body), auth))
 
-    /** POST with an empty body (approve / reject / rotate / leave / logout). */
-    suspend inline fun <reified T> postEmpty(path: String): ApiResult<T> =
-        decode(raw("POST", path, null))
+    /**
+     * POST with an empty body (approve / reject / rotate / leave / logout).
+     *
+     * [timeout] is the upload's lever, for the one empty POST that waits on
+     * a model — an event's backdrop ([BACKDROP_TIMEOUT]). ZERO, the default,
+     * keeps the shared client's ordinary budget.
+     */
+    suspend inline fun <reified T> postEmpty(
+        path: String,
+        timeout: Duration = Duration.ZERO,
+    ): ApiResult<T> = decode(raw("POST", path, null, timeout = timeout))
 
     suspend inline fun <reified B, reified T> put(
         path: String,
@@ -172,6 +180,8 @@ class ApiClient @Inject constructor(
         jsonBody: String?,
         auth: Boolean = true,
         overrideBase: String? = null,
+        /** ZERO keeps the shared client's budget; see [send]. */
+        timeout: Duration = Duration.ZERO,
     ): ApiResult<String> {
         val body = when {
             jsonBody != null -> jsonBody.toRequestBody(JSON_MEDIA_TYPE)
@@ -180,7 +190,7 @@ class ApiClient @Inject constructor(
             // endpoint takes none.
             else -> ByteArray(0).toRequestBody(null)
         }
-        return send(method, path, body, auth, overrideBase) { it.body.string() }
+        return send(method, path, body, auth, overrideBase, timeout) { it.body.string() }
     }
 
     /**
@@ -297,8 +307,10 @@ class ApiClient @Inject constructor(
         builder.method(method, body)
 
         // An upload of up to 100 MB over a home connection outlives the
-        // default read/write timeouts; ZERO leaves the shared client's
-        // own values in place for every other call.
+        // default read/write timeouts, and so does an event's backdrop,
+        // whose answer waits on up to three model calls in a row; ZERO
+        // leaves the shared client's own values in place for every other
+        // call.
         val call = if (timeout == Duration.ZERO) {
             client
         } else {
@@ -382,6 +394,17 @@ class ApiClient @Inject constructor(
 
         /** Long enough for a 100 MB video on a slow upstream link. */
         val UPLOAD_TIMEOUT: Duration = Duration.ofMinutes(10)
+
+        /**
+         * An event's backdrop: the one request whose answer waits on the
+         * model — a picture, or a picture, a rewrite and a second picture
+         * one after another — so it gets a budget of its own, never the
+         * ordinary 20 s. The protocol's floor is 90 s, the reference
+         * proxy's read timeout on `/api/v1/`; waiting past it lets the
+         * proxy's own answer arrive rather than racing it. A request whose
+         * connection closes first draws nothing (docs/protocol.md, "Board").
+         */
+        val BACKDROP_TIMEOUT: Duration = Duration.ofSeconds(120)
     }
     /**
      * The app's own resolved locale as an IETF tag, e.g. `ru-RU`.

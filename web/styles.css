@@ -1348,6 +1348,9 @@ button.pack-cell:disabled { cursor: default; }
 
 .muted { color: var(--muted); }
 .hint { font-size: 13px; color: var(--muted); margin: 0; }
+/* Under an event's backdrop button while the consent question is open: the
+   composer's line, set as the hint beside it is. */
+.note-sheet .consent-notice { font-size: 13px; margin: 0; }
 .visually-hidden {
     position: absolute;
     width: 1px;

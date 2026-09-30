@@ -1394,7 +1394,8 @@ pub async fn delete_rsvp(
 /// THE AUTHOR'S, AND AN EVENT'S. A backdrop is part of what the note looks
 /// like, which is the author's business like its colour; the other kinds
 /// have nowhere to put one — a photo note IS its picture
-/// (docs/protocol.md, "Board").
+/// (docs/protocol.md, "Board"). And only with the author's consent to the
+/// assistant, because the title is the author's words going to the model.
 ///
 /// WHAT LEAVES THE SERVER IS THE TITLE. No place, no times, no answers, no
 /// history, no language instruction — the `/draw` rule unchanged, which is
@@ -1411,6 +1412,14 @@ pub async fn delete_rsvp(
 /// deleted or handed over meanwhile loses the picture that was drawn for it,
 /// which is why the bytes are discarded on that path rather than left for
 /// the sweeper: no row ever pointed at them.
+///
+/// AND IT IS AWAITED IN THE REQUEST, on purpose. A reworded backdrop is
+/// three provider calls in a row, longer than an ordinary client timeout;
+/// a client that stops waiting closes the connection, the server drops this
+/// future with it, and nothing lands afterwards to contradict the failure
+/// the client showed. Spawning the work would buy exactly that
+/// contradiction (protocol.md, "Board": a client gives this request a
+/// timeout of its own).
 pub async fn draw_backdrop(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -1453,6 +1462,20 @@ pub async fn draw_backdrop(
     }
     if held.get::<String, _>("kind") != Note::KIND_EVENT {
         return Err(ApiError::validation("only an event has a backdrop"));
+    }
+    // NOTHING REACHES THE MODEL WITHOUT THIS MEMBER'S OWN PERMISSION
+    // (protocol.md, "Consenting to the assistant"). The title is words the
+    // author wrote, and it goes to the images deployment — and, refused,
+    // to the text deployment as well — so it is asked here exactly as a
+    // send to the assistant asks it (`handlers_chat`), and refused the same
+    // way. Last of the checks, because it is the one a client answers with
+    // the consent screen: a caller who could not have this backdrop anyway
+    // is told that instead.
+    if !crate::handlers_ai::has_assistant_consent(&state, auth.user_id).await? {
+        return Err(ApiError::forbidden(
+            codes::ASSISTANT_CONSENT_REQUIRED,
+            "you have not agreed that your words may be sent to the assistant",
+        ));
     }
     let title: String = held.get("text");
 

@@ -1512,6 +1512,12 @@ struct ConversationView: View {
             if let notice = pictureNotice ?? mentionPictureNotice {
                 assistantPictureNotice(notice)
             }
+            // While the draft is a `/draw` request: the picture provider's
+            // filter refuses most real names and brands, so say so where
+            // the description is being written (`PictureRequestHint`).
+            if showsPictureRequestHint {
+                pictureRequestHint
+            }
             // The roster, while a member is being named (protocol.md,
             // "Mentioning a member") — family chat only, and only while
             // the draft ends in an `@` token.
@@ -3354,6 +3360,39 @@ struct ConversationView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Whether the draft is being written as a picture request, on a
+    /// server that can draw, in a chat where it reaches the assistant — the
+    /// rule is `PictureRequestHint`'s, shared with the Mac and pinned by
+    /// tests. From the moment the paintbrush types `/draw `, before any
+    /// description follows it.
+    private var showsPictureRequestHint: Bool {
+        PictureRequestHint.showsInComposer(
+            chatKind: chat?.kind,
+            draft: model.draft,
+            isEditing: editTarget != nil,
+            offersPictures: AppSettings.offersPictureRequests)
+    }
+
+    /// The hint itself: advice, not a warning — secondary and small, like
+    /// the picture notices above it. The glyph is decoration; the sentence
+    /// is what VoiceOver reads.
+    private var pictureRequestHint: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "paintbrush")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text(PictureRequestHint.text)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

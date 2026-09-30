@@ -672,6 +672,43 @@ class NoteDialogTest {
         compose.onNodeWithText("Draw a backdrop").assertIsDisplayed()
     }
 
+    /**
+     * "Not Now" on the consent screen a backdrop raised is the author's own
+     * answer, so nothing is said about it — and a redraw that was never
+     * asked for leaves the picture this dialog already drew where it is
+     * (docs/protocol.md, "Consenting to the assistant"; "Board": the note is
+     * untouched).
+     */
+    @Test
+    fun aBackdropTheAuthorDidNotConsentToSaysNothingAndKeepsThePicture() {
+        var answer: BackdropOutcome = BackdropOutcome.Drawn(drawnPicture)
+        compose.setContent {
+            NoteDialog(
+                draft = eventDraft(),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                names = guestNames,
+                canDraw = true,
+                onDrawBackdrop = { onSettled -> onSettled(answer) },
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithText("Draw a backdrop").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Draw another backdrop").assertIsDisplayed()
+
+        answer = BackdropOutcome.Declined
+        compose.onNodeWithText("Draw another backdrop").performClick()
+        compose.waitForIdle()
+
+        assertThat(ShadowToast.getTextOfLatestToast()).isNull()
+        // Still "another": the picture drawn a moment ago is the note's.
+        compose.onNodeWithText("Draw another backdrop").assertIsDisplayed()
+    }
+
     @Test
     fun anEventThatAlreadyHasABackdropOffersAnother() {
         compose.setContent {

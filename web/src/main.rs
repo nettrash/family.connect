@@ -620,10 +620,18 @@ fn app() -> Html {
                         notes={store.board.drawn()}
                         loaded={store.board.loaded}
                         my_user_id={store.my_user_id}
-                        // Whether this SERVER can make a picture at all —
-                        // what the backdrop action hangs on
-                        // (docs/protocol.md, "Board").
-                        can_draw={store.assistant.as_ref().is_some_and(|assistant| assistant.images)}
+                        // Whether this SERVER can make a picture at all,
+                        // and says who makes it — what the backdrop action
+                        // hangs on (docs/protocol.md, "Board"), and what
+                        // the consent question it asks first must name.
+                        can_draw={fc_text::assistant_pictures::server_draws(
+                            store.assistant.as_ref().is_some_and(|assistant| assistant.images),
+                            store.assistant.as_ref().and_then(|assistant| assistant.processor.as_deref()),
+                        )}
+                        processor={store.assistant.as_ref().and_then(|assistant| assistant.processor.clone())}
+                        agreed_to_assistant={store.assistant_consent_at().is_some()}
+                        family_history={store.family.as_ref().is_some_and(|family| family.ai_history)}
+                        family_vision={store.family.as_ref().is_some_and(|family| family.ai_vision)}
                         names={store.names.clone()}
                         members={store.members.clone()}
                         blocked={store.blocked.clone()}

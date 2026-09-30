@@ -3,6 +3,9 @@
 //! assistant a picture from the family chat", "Recent photos from the
 //! family chat").
 //!
+//! And the one line said while a picture is being ASKED for — that real
+//! names and brands are often refused — and where it is said.
+//!
 //! Ported from ios `Models/AssistantPictureLimits.swift`,
 //! `Models/MentionPictureNotice.swift` and the private thread's sentences in
 //! `MacViews/MacConversationView.swift` (`pictureNotice`), with their Swift
@@ -12,7 +15,7 @@
 //! that disagreed with the server would be worse than none.
 use crate::i18n::{t, t1, t2, tn};
 
-use crate::assistant;
+use crate::{assistant, assistant_consent};
 
 /// Photos off one question that reach the model. In the family chat, one
 /// budget across the `@ai` message and the one it replies to.
@@ -272,6 +275,76 @@ impl MentionNotice {
             ),
         }
     }
+}
+
+// MARK: - The picture hint
+
+/// The one line said WHILE a picture is being asked for: the picture
+/// deployment's filter refuses most real people's names, public figures
+/// and brands, and nothing tells a family which word was the problem
+/// (docs/protocol.md, "Pictures"). The server rewords a refused description
+/// once on its own; this line is so that it seldom has to. Small secondary
+/// text beside the control, not a disclosure strip: it is advice.
+///
+/// The same key and the same two places as `PictureRequestHint.swift`,
+/// Android's `PictureDescriptionHint` and Windows' `PictureHint`.
+pub fn picture_hint() -> &'static str {
+    t("Describe people and things in general words — real names and brands are often refused.")
+}
+
+/// Does the composer show [`picture_hint`] under this draft?
+///
+/// All of these, and each one is a reason the sentence would otherwise be
+/// advice about something that is not happening:
+///
+/// - `server_can_draw`: the assistant has an images deployment AND a named
+///   processor — on a server without images `/draw` is answered in words,
+///   and a draft for an unnamed processor is never sent at all
+///   ([`assistant_consent::is_available`]);
+/// - not `editing`: rewriting an old message calls no model;
+/// - the draft is being written as a picture request, from the moment the
+///   token and a space are typed, before any description
+///   ([`assistant::starts_picture_request`]);
+/// - the draft reaches the assistant in this chat
+///   ([`assistant_consent::reaches_the_model`]): always in the `ai` chat,
+///   and in the family chat only with an `@ai` — a bare `/draw` there is an
+///   ordinary message, and `@ai /draw` is drawn by the same filter.
+pub fn shows_picture_hint(
+    chat_kind: &str,
+    draft: &str,
+    editing: bool,
+    server_can_draw: bool,
+) -> bool {
+    server_can_draw
+        && !editing
+        && assistant::starts_picture_request(draft)
+        && assistant_consent::reaches_the_model(chat_kind, draft)
+}
+
+/// Does this server draw pictures a client may OFFER: `assistant.images`,
+/// and a named `processor`? A picture's description is words the member
+/// wrote, going to `processor`, and a client that cannot name it offers
+/// the assistant nothing ([`assistant_consent::is_available`]) — which is
+/// also what lets the consent question, the one a backdrop or a `/draw`
+/// asks first, always say who answers. A conforming server never
+/// advertises an assistant without one (docs/protocol.md, "The
+/// assistant"); this is the client not taking that on trust.
+pub fn server_draws(images: bool, processor: Option<&str>) -> bool {
+    images && assistant_consent::is_available(processor)
+}
+
+/// Is the event-backdrop control offered — and so the hint beside it?
+///
+/// One answer for both, so the sentence can never be left beside a control
+/// that is not there: an EVENT (the other kinds have nowhere to put a
+/// backdrop), that the reader may edit (the backdrop is part of how the
+/// note looks, which is the author's), still on the board, on a server
+/// whose assistant can draw ([`server_draws`]; docs/protocol.md, "Board").
+/// The title IS the description, so it meets the same filter as `/draw` —
+/// and, offered, it asks the same consent question first
+/// ([`assistant_consent::is_required_for_backdrop`]).
+pub fn offers_backdrop(is_event: bool, editable: bool, gone: bool, server_can_draw: bool) -> bool {
+    is_event && editable && !gone && server_can_draw
 }
 
 #[cfg(test)]
@@ -598,6 +671,116 @@ mod tests {
         assert_eq!(
             private_notice(&[jpeg()], true).as_deref(),
             Some("This goes to the model your server is set up to use, with your question. Nothing else from this chat does.")
+        );
+    }
+
+    // MARK: - The picture hint
+
+    /// The composer's hint, by chat, draft, edit and server. Every row is a
+    /// reason it shows or a reason it would be a lie.
+    #[test]
+    fn the_composer_hints_while_a_picture_is_being_asked_for() {
+        let rows: &[(&str, &str, bool, bool, bool)] = &[
+            // (chat, draft, editing, server can draw, shows)
+            // The assistant's own chat: from the moment the button has
+            // typed the token, and on through the description.
+            ("ai", "/draw ", false, true, true),
+            ("ai", "/draw a cat", false, true, true),
+            ("ai", "  /DRAW a cat", false, true, true),
+            ("ai", "@ai /draw a cat", false, true, true),
+            // Not yet a request, or a longer word, or not first.
+            ("ai", "/draw", false, true, false),
+            ("ai", "/drawer", false, true, false),
+            ("ai", "please /draw a cat", false, true, false),
+            ("ai", "", false, true, false),
+            // No images deployment, or an edit: nothing will be drawn.
+            ("ai", "/draw a cat", false, false, false),
+            ("ai", "/draw a cat", true, true, false),
+            // The family chat: only an `@ai` reaches the assistant there.
+            ("family", "@ai /draw a cat", false, true, true),
+            ("family", "@ai /draw ", false, true, true),
+            ("family", "/draw a cat", false, true, false),
+            ("family", "/draw a cat @ai", false, true, true),
+            ("family", "@ai /draw a cat", true, true, false),
+            ("family", "@ai /draw a cat", false, false, false),
+            // A direct chat never reaches the assistant.
+            ("direct", "/draw a cat", false, true, false),
+            ("direct", "@ai /draw a cat", false, true, false),
+        ];
+        for &(chat, draft, editing, can_draw, shows) in rows {
+            assert_eq!(
+                shows_picture_hint(chat, draft, editing, can_draw),
+                shows,
+                "{chat} {draft:?} editing={editing} can_draw={can_draw}"
+            );
+        }
+    }
+
+    /// What the 🎨 button leaves behind is hinted at once.
+    #[test]
+    fn the_button_brings_the_hint_up_at_once() {
+        for draft in ["", "a cat", "  кот "] {
+            assert!(shows_picture_hint(
+                "ai",
+                &assistant::with_draw_token(draft),
+                false,
+                true
+            ));
+        }
+    }
+
+    /// The backdrop control and its hint: every one of the four, alone,
+    /// takes both away.
+    #[test]
+    fn the_backdrop_hint_goes_where_the_control_goes() {
+        assert!(offers_backdrop(true, true, false, true));
+        assert!(!offers_backdrop(false, true, false, true));
+        assert!(!offers_backdrop(true, false, false, true));
+        assert!(!offers_backdrop(true, true, true, true));
+        assert!(!offers_backdrop(true, true, false, false));
+    }
+
+    /// Pictures are offered only where they can be drawn AND the consent
+    /// question can say who draws them.
+    #[test]
+    fn a_server_draws_only_with_images_and_a_named_processor() {
+        // (images, processor, draws)
+        for (images, processor, draws) in [
+            (true, Some("Microsoft — Azure OpenAI"), true),
+            (false, Some("Microsoft — Azure OpenAI"), false),
+            (true, None, false),
+            (true, Some(""), false),
+            (true, Some("   "), false),
+            (false, None, false),
+        ] {
+            assert_eq!(
+                server_draws(images, processor),
+                draws,
+                "images={images} {processor:?}"
+            );
+        }
+    }
+
+    /// The key is the apps' own, so it arrives in the reader's language.
+    #[test]
+    fn the_hint_is_the_apps_sentence_in_the_readers_language() {
+        use crate::i18n::{use_lang, Lang};
+        assert_eq!(
+            picture_hint(),
+            "Describe people and things in general words — real names and brands are often refused."
+        );
+        use_lang(Lang::De);
+        let german = picture_hint();
+        use_lang(Lang::Ru);
+        let russian = picture_hint();
+        use_lang(Lang::En);
+        assert_eq!(
+            german,
+            "Beschreibe Menschen und Dinge allgemein — echte Namen und Marken werden oft abgelehnt."
+        );
+        assert_eq!(
+            russian,
+            "Описывай людей и предметы общими словами — настоящие имена и бренды часто отклоняются."
         );
     }
 }

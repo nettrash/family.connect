@@ -12,7 +12,8 @@
 //      nothing and gets `.shared`, tests pass a session backed by
 //      StubURLProtocol.
 //    - 15 s per-request timeout — generous for a LAN box, short enough
-//      that a dead server doesn't hang a UI await.
+//      that a dead server doesn't hang a UI await. Uploads and an event's
+//      backdrop, which waits on the model, get longer budgets of their own.
 //    - ONE retry, on GETs only, for transient statuses (429 / 5xx),
 //      honouring `Retry-After` (delta-seconds, capped). POSTs are never
 //      auto-retried here: message sending has its own idempotent retry
@@ -95,6 +96,16 @@ actor APIClient {
     /// uplink is minutes, not seconds, and the 15 s that suits a JSON call
     /// would cancel every video.
     private let uploadTimeout: TimeInterval = 600
+    /// An event's backdrop gets one of its own too: it is the one request
+    /// whose answer waits on the model — a picture, or a picture, a
+    /// rewrite and a second picture one after another — and the 15 s that
+    /// suits a JSON call would give up on nearly every one. The protocol
+    /// asks for no less than 90 s, the reference proxy's own read timeout
+    /// on `/api/v1/`; a little past it, so it is the server (or the proxy
+    /// answering for it) that ends the wait and not this client. Giving up
+    /// is safe: the server stops drawing when the connection closes
+    /// (docs/protocol.md, "Board" — "It is SLOW").
+    private let backdropTimeout: TimeInterval = 120
 
     /// `session` is the only test seam — see file header.
     init(serverURL: URL?, session: URLSession = .shared) {
@@ -1104,9 +1115,17 @@ actor APIClient {
     /// `POST …/notes/{id}/backdrop` — the assistant draws a picture for an
     /// event from its own title. No body: the prompt is the title
     /// (docs/protocol.md, "Board").
+    ///
+    /// On `backdropTimeout`, never the ordinary one: it waits on the model,
+    /// up to three calls in a row. Refused with `assistant_consent_required`
+    /// (403) when the author has not agreed that their words may go to the
+    /// model — the title is their words (protocol.md, "Consenting to the
+    /// assistant").
     func drawBackdrop(noteID: Int64) async throws -> NoteDTO {
-        let response: NoteResponse = try await request(
-            "POST", "/families/mine/board/notes/\(noteID)/backdrop")
+        let (data, _) = try await perform(
+            "POST", "/families/mine/board/notes/\(noteID)/backdrop",
+            query: [], bodyData: nil, timeout: backdropTimeout)
+        let response: NoteResponse = try decodeResponse(data)
         return response.note
     }
 
@@ -1409,14 +1428,17 @@ actor APIClient {
         _ path: String,
         query: [URLQueryItem],
         bodyData: Data?,
-        contentType: String = "application/json"
+        contentType: String = "application/json",
+        timeout requestTimeout: TimeInterval? = nil
     ) async throws -> (Data, HTTPURLResponse) {
         guard let serverURL else { throw APIError.notConfigured }
         guard let url = Self.endpointURL(base: serverURL, path: path, query: query) else {
             throw APIError.notConfigured
         }
 
-        var request = URLRequest(url: url, timeoutInterval: timeout)
+        // The ordinary budget unless the one call asking said otherwise
+        // (`backdropTimeout`).
+        var request = URLRequest(url: url, timeoutInterval: requestTimeout ?? timeout)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let token {

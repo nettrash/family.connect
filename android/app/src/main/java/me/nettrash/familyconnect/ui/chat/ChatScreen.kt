@@ -400,6 +400,7 @@ fun ChatScreen(
     // What the composer must say out loud about what is staged, right now.
     val assistantPictureNotice by viewModel.assistantPictureNotice.collectAsStateWithLifecycle()
     val mentionPictureNotice by viewModel.mentionPictureNotice.collectAsStateWithLifecycle()
+    val showsPictureDescriptionHint by viewModel.showsPictureDescriptionHint.collectAsStateWithLifecycle()
     // Nothing reaches the model before this member has agreed
     // (docs/protocol.md, "Consenting to the assistant").
     val assistantProcessor by viewModel.assistantProcessor.collectAsStateWithLifecycle()
@@ -1452,6 +1453,7 @@ fun ChatScreen(
                 onAskForPicture = viewModel::insertDrawToken,
                 pictureNotice = assistantPictureNotice,
                 mentionPictureNotice = mentionPictureNotice,
+                showsPictureDescriptionHint = showsPictureDescriptionHint,
                 assistantProcessor = assistantProcessor,
                 assistantConsentNeeded = assistantConsentNeeded,
                 assistantIsUnnamed = assistantIsUnnamed,
@@ -4736,6 +4738,25 @@ private fun AssistantConsentStrip(processor: String?, onReview: (() -> Unit)?) {
     }
 }
 
+/**
+ * The one sentence said beside a picture request — in the composer while
+ * `/draw` is being typed, and in the board's event dialog beside "Draw a
+ * backdrop" — about what the provider's filter tends to refuse
+ * (docs/protocol.md, "Pictures"). Small secondary text rather than a
+ * strip with an icon: it is advice, not a disclosure, and it must not
+ * outweigh the ones above it. Plain [Text], so a screen reader reads it
+ * in place with the control it sits by.
+ */
+@Composable
+internal fun PictureDescriptionHintText(modifier: Modifier = Modifier) {
+    Text(
+        text = stringResource(R.string.s_describe_in_general_words),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier.fillMaxWidth(),
+    )
+}
+
 @Composable
 private fun MentionPictureStrip(notice: MentionPictureNotice) {
     Row(
@@ -5150,6 +5171,12 @@ private fun InputBar(
      */
     mentionPictureNotice: MentionPictureNotice?,
     /**
+     * A picture request is being typed where this client offers `/draw`:
+     * say that real names and brands are often refused, while the member
+     * can still describe it another way ([PictureDescriptionHint]).
+     */
+    showsPictureDescriptionHint: Boolean,
+    /**
      * WHO would receive what is typed, verbatim as the operator named
      * them. Null on a server that named nobody (docs/protocol.md,
      * "Consenting to the assistant").
@@ -5207,6 +5234,15 @@ private fun InputBar(
             // one the family chat.
             if (mentionPictureNotice != null) {
                 MentionPictureStrip(notice = mentionPictureNotice)
+            }
+            // A picture request being typed: the words are still the
+            // member's to change, which is the moment to say what the
+            // provider's filter tends to refuse (docs/protocol.md,
+            // "Pictures").
+            if (showsPictureDescriptionHint) {
+                PictureDescriptionHintText(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
             }
             // Before any of those: nothing goes to the model until this
             // member has said so, and the strip appears as the draft

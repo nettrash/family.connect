@@ -327,6 +327,76 @@ internal static class Dialogs
     public static async Task<bool> AssistantConsentAsync(
         XamlRoot root, IStringCatalog say, string processor, bool familyHistory, bool familyVision)
     {
+        var content = AssistantConsentContent(say, processor, familyHistory, familyVision);
+        var dialog = Create(root, say.Get("The Assistant"), content);
+        dialog.PrimaryButtonText = say.Get("I Agree");
+        dialog.CloseButtonText = say.Get("Not Now");
+        dialog.DefaultButton = ContentDialogButton.Close;
+        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+    }
+
+    /// <summary>
+    /// The same question, asked from INSIDE a dialog — the board's note sheet, whose "Draw a backdrop" sends the event's
+    /// title to the model (docs/protocol.md, "Consenting to the assistant", amended 2026-09-30). A flyout over the
+    /// sheet and not a second dialog, because two cannot be open at once; everything on it is what
+    /// <see cref="AssistantConsentAsync"/> shows, built by the same method, with the same two answers. Dismissing it
+    /// is Not Now.
+    /// </summary>
+    public static Task<bool> AssistantConsentOverAsync(
+        FrameworkElement anchor, IStringCatalog say, string processor, bool familyHistory, bool familyVision)
+    {
+        var answered = new TaskCompletionSource<bool>();
+        var content = AssistantConsentContent(say, processor, familyHistory, familyVision);
+        content.Children.Insert(0, new TextBlock
+        {
+            Text = say.Get("The Assistant"),
+            FontSize = 20,
+            FontWeight = FontWeights.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        var agree = new Button { Content = say.Get("I Agree") };
+        // Looked up rather than assumed, and applied only to what it styles: a style applied by key is not type-checked.
+        if (Application.Current?.Resources is { } resources
+            && resources.TryGetValue("AccentButtonStyle", out var accent)
+            && accent is Style style
+            && style.TargetType is { } target
+            && target.IsAssignableFrom(typeof(Button)))
+        {
+            agree.Style = style;
+        }
+        var notNow = new Button { Content = say.Get("Not Now") };
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        buttons.Children.Add(agree);
+        buttons.Children.Add(notNow);
+        content.Children.Add(buttons);
+        var presenter = new Style(typeof(FlyoutPresenter));
+        presenter.Setters.Add(new Setter(FrameworkElement.MaxWidthProperty, 560.0));
+        var flyout = new Flyout
+        {
+            Content = content,
+            FlyoutPresenterStyle = presenter,
+            Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Full,
+        };
+        agree.Click += (_, _) =>
+        {
+            answered.TrySetResult(true);
+            flyout.Hide();
+        };
+        notNow.Click += (_, _) => flyout.Hide();
+        flyout.Closed += (_, _) => answered.TrySetResult(false);
+        flyout.ShowAt(anchor);
+        return answered.Task;
+    }
+
+    /// <summary>What the assistant question says, wherever it is asked: every line of it, and the policy.</summary>
+    private static StackPanel AssistantConsentContent(
+        IStringCatalog say, string processor, bool familyHistory, bool familyVision)
+    {
         var content = Column(new TextBlock
         {
             Text = say.Get("Before the assistant answers"),
@@ -346,11 +416,7 @@ internal static class Dialogs
             NavigateUri = new Uri("https://nettrash.me/appstore/familyconnect/privacy.html"),
         };
         content.Children.Add(policy);
-        var dialog = Create(root, say.Get("The Assistant"), content);
-        dialog.PrimaryButtonText = say.Get("I Agree");
-        dialog.CloseButtonText = say.Get("Not Now");
-        dialog.DefaultButton = ContentDialogButton.Close;
-        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+        return content;
     }
 
     public static StackPanel Column(params UIElement[] children)
