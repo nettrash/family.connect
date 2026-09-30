@@ -68,7 +68,11 @@ struct MessageBubbleView: View {
     /// empty by design and the attachment never came, so without this the
     /// row that "has to have somewhere to fail" fails into an empty
     /// balloon.
-    var assistantFailed: Bool = false
+    ///
+    /// WHICH failure, not only whether: a refusal by the provider's own
+    /// filter says so instead of "ask again" (protocol.md, "The
+    /// assistant"). Nil while the answer has not failed.
+    var assistantFailure: AssistantFailure? = nil
     let showsSenderName: Bool
     let senderName: String?
     /// Who sent it, for the run-head avatar. Only consulted when
@@ -835,8 +839,12 @@ struct MessageBubbleView: View {
             // …and where it stopped instead of starting. The bubble is
             // already in place and already scrolled to; this is the only
             // thing that can go in it.
-            if assistantFailed && message.body.isEmpty && message.attachments.isEmpty {
-                Label("Couldn't answer that. Ask again.", systemImage: "exclamationmark.circle")
+            if let assistantFailure, message.body.isEmpty && message.attachments.isEmpty {
+                Label {
+                    Text(assistantFailure.sentence)
+                } icon: {
+                    Image(systemName: "exclamationmark.circle")
+                }
                     .font(bubbleFont)
                     .foregroundStyle(bubbleContentColor.opacity(0.7))
                     .fixedSize(horizontal: false, vertical: true)

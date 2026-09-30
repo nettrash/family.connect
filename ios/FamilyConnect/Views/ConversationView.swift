@@ -1144,9 +1144,9 @@ struct ConversationView: View {
                                 isMine: message.senderID == currentUserID,
                                 isStreaming: coordinator.isAwaitingAssistant(
                                     message, isAssistantChat: isAssistantChat),
-                                assistantFailed: message.serverID.map {
-                                    coordinator.assistantAnswerFailed(messageID: $0)
-                                } ?? false,
+                                assistantFailure: message.serverID.flatMap {
+                                    coordinator.assistantFailure(messageID: $0)
+                                },
                                 showsSenderName: MessagePresentation.showsSenderName(
                                     at: index,
                                     in: section.messages,

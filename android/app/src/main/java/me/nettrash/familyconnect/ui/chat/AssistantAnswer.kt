@@ -1,6 +1,9 @@
 package me.nettrash.familyconnect.ui.chat
 
+import androidx.annotation.StringRes
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.MessageEntity
+import me.nettrash.familyconnect.data.repo.AssistantFailure
 
 /**
  * When a row IS the assistant's "still working" state.
@@ -101,5 +104,22 @@ object AssistantAnswer {
             if (serverId in streamingIds) return true
         }
         return isAwaited(entity, isAssistantChat, assistantUserId, myUserId)
+    }
+
+    /**
+     * The sentence a failed answer shows, by HOW it failed
+     * (docs/protocol.md, "The assistant": `ai_error`'s `reason`).
+     *
+     * A refusal by the AI provider's own filter must not say "ask again":
+     * the same words get the same refusal, so it says to put it another
+     * way. Anything else — including a `reason` this client does not know,
+     * which [AssistantFailure.of] already read as absent — keeps the
+     * sentence it always had. The board's backdrop says the refusal
+     * sentence too, where it says a backdrop failed.
+     */
+    @StringRes
+    fun failureSentence(failure: AssistantFailure): Int = when (failure) {
+        AssistantFailure.REFUSED -> R.string.s_assistant_provider_refused
+        AssistantFailure.STOPPED -> R.string.s_assistant_answer_failed
     }
 }

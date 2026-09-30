@@ -197,4 +197,28 @@ public sealed class NoteDraftTests
         Assert.Equal("Can't reach the server. Check your connection.",
             NoteSheetText.Failure(ApiError.Transport("x"), Say));
     }
+
+    /// <summary>
+    /// A backdrop the provider's own filter refused says so, in the sentence a refused answer says; every other
+    /// failure — including a refusal this client has no word for — is the plain one it always was.
+    /// </summary>
+    [Fact]
+    public void ARefusedBackdropSaysTheProviderRefusedIt()
+    {
+        var refused = new ApiError(ErrorCodes.PictureRefused, "the assistant's provider refused to draw this", 400);
+        Assert.False(refused.Transient);
+        Assert.Equal("The assistant's provider refused that. Try putting it another way.",
+            NoteSheetText.BackdropFailure(refused, Say));
+        Assert.Equal("Couldn't draw that.",
+            NoteSheetText.BackdropFailure(new ApiError(ErrorCodes.Internal, "x", 500), Say));
+        Assert.Equal("Couldn't draw that.",
+            NoteSheetText.BackdropFailure(new ApiError(ErrorCodes.PicturesUnavailable, "x", 409), Say));
+        Assert.Equal("Couldn't draw that.", NoteSheetText.BackdropFailure(ApiError.Transport("x"), Say));
+        // Translated with everything else, not left in English.
+        var german = JsonCatalog.For("de");
+        Assert.Equal(german.Get("The assistant's provider refused that. Try putting it another way."),
+            NoteSheetText.BackdropFailure(refused, german));
+        Assert.NotEqual("The assistant's provider refused that. Try putting it another way.",
+            NoteSheetText.BackdropFailure(refused, german));
+    }
 }

@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.db.NoteEntity
+import me.nettrash.familyconnect.data.repo.BackdropOutcome
 import me.nettrash.familyconnect.data.repo.BoardRepository
 import me.nettrash.familyconnect.data.repo.ChatRepository
 import me.nettrash.familyconnect.di.AppScope
@@ -43,7 +44,6 @@ import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.util.BoardBadge
 import me.nettrash.familyconnect.util.badgeMarks
 import me.nettrash.familyconnect.util.marks
-import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.TaskLineRequest
 import me.nettrash.familyconnect.util.MemberMention
@@ -327,10 +327,10 @@ class BoardViewModel @Inject constructor(
 
     /**
      * Ask the assistant for an event's backdrop — the author's, and it
-     * takes seconds, so the caller hears when it has landed
-     * (docs/protocol.md, "Board").
+     * takes seconds, so the caller hears when it has landed, or why it
+     * did not (docs/protocol.md, "Board").
      */
-    fun drawBackdrop(noteId: Long, onSettled: (AttachmentDto?) -> Unit = {}) {
+    fun drawBackdrop(noteId: Long, onSettled: (BackdropOutcome) -> Unit = {}) {
         viewModelScope.launch { onSettled(boardRepository.drawBackdrop(noteId)) }
     }
 

@@ -387,6 +387,7 @@
   "The Assistant": "アシスタント",
   "The answer comes back as a message in that chat, where everyone in the chat can read it.": "答えはその会話にメッセージとして返り、会話にいる全員が読めます。",
   "The assistant on this server can't look at pictures, so it will be told a photo is here but won't be shown it.": "このサーバーのアシスタントは画像を見ることができません。写真があることは伝えられますが、見せられることはありません。",
+  "The assistant's provider refused that. Try putting it another way.": "アシスタントの提供元に断られました。別の言い方で試してみてください。",
   "The board is empty": "ボードは空です",
   "The board is full. Take a note down to make room for this one.": "ボードがいっぱいです。これを貼るには、メモをひとつ外してください。",
   "The board pins photos only.": "ボードに貼れるのは写真だけです。",

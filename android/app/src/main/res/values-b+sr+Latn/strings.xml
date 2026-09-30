@@ -415,6 +415,7 @@
     <string name="s_assistant_mention_sees_quoted_pictures_and_recent">Ovaj odgovor pominje asistenta, pa će mu biti prikazane fotografije na koje odgovaraš, a može da ode i do %1$d najnovijih fotografija iz ovog četa. One napuštaju ovaj server i idu modelu s kojim on razgovara.</string>
     <string name="s_assistant_mention_sees_both_and_recent">Ovaj odgovor pominje asistenta, pa će mu biti prikazane fotografije odavde i one na koje odgovaraš, a može da ode i do %1$d najnovijih fotografija iz ovog četa. One napuštaju ovaj server i idu modelu s kojim on razgovara.</string>
     <string name="s_assistant_answer_failed">Asistent nije uspeo da završi ovaj odgovor. Pitajte ponovo.</string>
+    <string name="s_assistant_provider_refused">Dobavljač asistenta je to odbio. Pokušaj da to kažeš drugačije.</string>
     <string name="s_assistant_vision">Asistent sme da gleda fotografije</string>
     <string name="s_assistant_vision_explanation">Kada neko u svom četu s asistentom priloži fotografiju uz pitanje, priloži je uz poruku koja pominje asistenta u porodičnom četu, ili odgovori na fotografiju pominjući ga, ta fotografija ide modelu zajedno s pitanjem — najviše 4 po pitanju. Fotografija na koju asistentu niko nije ukazao ne šalje se nikada, ni iz ranije poruke osim ako je uključeno „Asistent vidi nedavne fotografije“, kao ni video, fajlovi, audio i lokacije. Isključeno dok ga ne uključite; kad je isključeno, nijedna fotografija se ne šalje.</string>
     <string name="e_change_assistant_vision_failed">Nije uspela promena podešavanja</string>

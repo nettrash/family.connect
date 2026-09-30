@@ -272,8 +272,12 @@ struct MacBoardView: View {
             canDraw: AppSettings.assistantImages,
             onDrawBackdrop: {
                 Task {
-                    if await coordinator.drawBackdrop(noteID: note.noteID) == nil {
-                        failure = String(localized: "Couldn't draw that.")
+                    // A refusal by the provider's own filter says so;
+                    // anything else is "Couldn't draw that." (protocol.md,
+                    // "Board").
+                    if let message = await coordinator.drawBackdrop(
+                        noteID: note.noteID).failureMessage {
+                        failure = message
                     }
                 }
             })

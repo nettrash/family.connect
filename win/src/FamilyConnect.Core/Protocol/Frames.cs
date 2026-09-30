@@ -67,8 +67,12 @@ public abstract record ServerFrame
     /// <summary>The assistant, mid-reply.</summary>
     public sealed record AiDelta(long ChatId, long MessageId, string Text) : ServerFrame;
 
-    /// <summary>The assistant stopped early.</summary>
-    public sealed record AiError(long ChatId, long MessageId) : ServerFrame;
+    /// <summary>
+    /// The assistant stopped early — and, when the server knows, WHY (docs/protocol.md, "The
+    /// assistant": <c>ai_error</c>'s optional <c>reason</c>). Null is every other failure, exactly
+    /// as it was before the field existed.
+    /// </summary>
+    public sealed record AiError(long ChatId, long MessageId, AiErrorReason? Reason = null) : ServerFrame;
 
     public sealed record CallOffer(
         string CallId, long ChatId, long FromUserId, string Sdp, bool Video) : ServerFrame;
@@ -142,7 +146,8 @@ public abstract record ServerFrame
             "ai_delta" => new AiDelta(
                 Number(frame["chat_id"]), Number(frame["message_id"]),
                 frame["text"]?.GetValue<string>() ?? string.Empty),
-            "ai_error" => new AiError(Number(frame["chat_id"]), Number(frame["message_id"])),
+            "ai_error" => new AiError(
+                Number(frame["chat_id"]), Number(frame["message_id"]), AiReason(frame["reason"])),
             "call_offer" => frame["call_id"]?.GetValue<string>() is { } offered
                 ? new CallOffer(
                     offered, Number(frame["chat_id"]), Number(frame["from_user_id"]),
@@ -184,6 +189,42 @@ public abstract record ServerFrame
     }
 
     private static long? Optional(JsonNode? node) => node is null ? null : Number(node);
+
+    /// <summary>
+    /// <c>ai_error</c>'s <c>reason</c>, or null. A value this client does not know — and anything
+    /// that is not a string at all — is read as ABSENT, never guessed at: the compatibility rules,
+    /// applied to a value rather than a field, so a later reason cannot be given a meaning here.
+    /// </summary>
+    private static AiErrorReason? AiReason(JsonNode? node)
+    {
+        string? value;
+        try
+        {
+            value = node?.GetValue<string>();
+        }
+        catch (Exception exception) when (exception is FormatException or InvalidOperationException)
+        {
+            return null;
+        }
+        return value switch
+        {
+            "refused" => AiErrorReason.Refused,
+            _ => null,
+        };
+    }
+}
+
+/// <summary>
+/// Why the assistant's answer failed, as <c>ai_error</c>'s <c>reason</c> says it. Only the values
+/// the protocol defines are here; an unknown one never reaches this type.
+/// </summary>
+public enum AiErrorReason
+{
+    /// <summary>
+    /// The AI provider's OWN safety or content filter refused the question, the answer, or a
+    /// picture's description — asking again in the same words gets the same refusal.
+    /// </summary>
+    Refused,
 }
 
 /// <summary>

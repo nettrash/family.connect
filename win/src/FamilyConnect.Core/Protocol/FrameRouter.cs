@@ -75,8 +75,11 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pa
     /// <summary>The assistant, mid-reply: text to append to that message as it is drawn.</summary>
     public event Action<long, long, string>? AiDelta;
 
-    /// <summary>The assistant stopped early, and the half-written answer is all there is.</summary>
-    public event Action<long, long>? AiStopped;
+    /// <summary>
+    /// The assistant stopped early, and the half-written answer is all there is — with the reason,
+    /// when the frame gave one this client knows.
+    /// </summary>
+    public event Action<long, long, AiErrorReason?>? AiStopped;
 
     /// <summary>
     /// A call frame, passed on whole. Signalling is a conversation with state of its own and no
@@ -201,7 +204,7 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pa
                 break;
 
             case ServerFrame.AiError stopped:
-                AiStopped?.Invoke(stopped.ChatId, stopped.MessageId);
+                AiStopped?.Invoke(stopped.ChatId, stopped.MessageId, stopped.Reason);
                 break;
 
             case ServerFrame.CallOffer:

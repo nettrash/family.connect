@@ -412,6 +412,7 @@
     <string name="s_assistant_mention_sees_quoted_pictures_and_recent">この返信はアシスタントに話しかけているため、返信先の写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
     <string name="s_assistant_mention_sees_both_and_recent">この返信はアシスタントに話しかけているため、ここの写真と返信先の写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
     <string name="s_assistant_answer_failed">アシスタントはこの返事を完了できませんでした。もう一度聞いてください。</string>
+    <string name="s_assistant_provider_refused">アシスタントの提供元に断られました。別の言い方で試してみてください。</string>
     <string name="s_assistant_vision">アシスタントが写真を見られるようにする</string>
     <string name="s_assistant_vision_explanation">アシスタントとの自分だけのチャットで質問に写真を添えたとき、ファミリーチャットでアシスタントに話しかけるメッセージに写真を添えたとき、またはアシスタントに話しかけながら写真に返信したとき、その写真も質問と一緒にモデルへ送られます（1つの質問につき最大4枚）。アシスタントに示していない写真は、「アシスタントが最近の写真を見る」がオンでないかぎり、前のメッセージのものも含めて送られません。動画・ファイル・音声・位置情報も送られません。オンにするまではオフで、オフのあいだは写真は一切送られません。</string>
     <string name="e_change_assistant_vision_failed">設定を変更できませんでした</string>

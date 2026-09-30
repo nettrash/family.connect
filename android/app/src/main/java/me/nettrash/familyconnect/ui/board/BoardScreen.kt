@@ -122,6 +122,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.ui.components.isWideWindow
 import me.nettrash.familyconnect.data.db.NoteEntity
+import me.nettrash.familyconnect.data.repo.BackdropOutcome
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -1962,11 +1963,12 @@ internal fun NoteDialog(
     canDraw: Boolean = false,
     /**
      * Ask the assistant for a backdrop; hears the PICTURE that landed, or
-     * null when none did. The picture rather than a flag, because a redraw
-     * replaces it with a new attachment and this dialog has to draw it
-     * (docs/protocol.md, "Board").
+     * why none did. The picture rather than a flag, because a redraw
+     * replaces it with a new attachment and this dialog has to draw it; and
+     * a refusal by the provider's own filter apart from any other failure,
+     * because it reads differently (docs/protocol.md, "Board").
      */
-    onDrawBackdrop: ((AttachmentDto?) -> Unit) -> Unit = {},
+    onDrawBackdrop: ((BackdropOutcome) -> Unit) -> Unit = {},
     /** Put a copy in this reader's own calendar. */
     onAddToCalendar: () -> Unit = {},
     onDelete: (() -> Unit)?,
@@ -2158,13 +2160,25 @@ internal fun NoteDialog(
                                     // button pressed twice is two bills.
                                     if (!drawing) {
                                         drawing = true
-                                        onDrawBackdrop { landed ->
+                                        onDrawBackdrop { outcome ->
                                             drawing = false
-                                            drewBackdrop = landed
-                                            if (landed == null) {
+                                            drewBackdrop = outcome.picture
+                                            // A title the provider's own
+                                            // filter refused gets the same
+                                            // refusal every time, so it is
+                                            // told to put it another way —
+                                            // the sentence a refused answer
+                                            // says (docs/protocol.md, "Board").
+                                            val said = when (outcome) {
+                                                is BackdropOutcome.Drawn -> null
+                                                BackdropOutcome.Refused ->
+                                                    R.string.s_assistant_provider_refused
+                                                BackdropOutcome.Failed -> R.string.s_draw_failed
+                                            }
+                                            if (said != null) {
                                                 Toast.makeText(
                                                     context,
-                                                    R.string.s_draw_failed,
+                                                    said,
                                                     Toast.LENGTH_SHORT,
                                                 ).show()
                                             }

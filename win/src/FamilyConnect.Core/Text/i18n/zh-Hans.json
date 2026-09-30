@@ -387,6 +387,7 @@
   "The Assistant": "助手",
   "The answer comes back as a message in that chat, where everyone in the chat can read it.": "回答会作为一条消息回到那个对话里，对话里的每个人都能看到。",
   "The assistant on this server can't look at pictures, so it will be told a photo is here but won't be shown it.": "这台服务器上的助手看不了图片。它会被告知这里有一张照片，但不会看到它。",
+  "The assistant's provider refused that. Try putting it another way.": "助手的服务提供方拒绝了这个请求。换个说法试试。",
   "The board is empty": "留言板是空的",
   "The board is full. Take a note down to make room for this one.": "留言板已满。请先取下一条便签，为这条腾出位置。",
   "The board pins photos only.": "留言板上只能钉照片。",

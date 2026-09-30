@@ -98,6 +98,7 @@ import me.nettrash.familyconnect.data.net.ws.SocketState
 import me.nettrash.familyconnect.data.push.PushNotifications
 import me.nettrash.familyconnect.data.repo.ChatRepository
 import android.content.Context
+import me.nettrash.familyconnect.data.repo.AssistantFailure
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.repo.VoiceRecorder
@@ -612,10 +613,11 @@ class ChatViewModel @Inject constructor(
      *
      * The bubble needs it: a picture answer that failed has an empty row
      * and no deltas ever arrived, so without this it is a blank balloon
-     * that never resolves (docs/protocol.md, "Pictures").
+     * that never resolves (docs/protocol.md, "Pictures"). Each carries HOW
+     * it failed, which picks the sentence it shows (AssistantAnswer).
      */
-    val failedAssistantMessageIds: StateFlow<Set<Long>> =
-        messageRepository.failedAssistantMessageIds
+    val failedAssistantAnswers: StateFlow<Map<Long, AssistantFailure>> =
+        messageRepository.failedAssistantAnswers
 
     /** Open the poll sheet on a fresh draft — two empty options, no question. */
     fun beginPoll() {

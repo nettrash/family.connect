@@ -16,7 +16,7 @@ use fc_text::i18n::{t, tn};
 use yew::prelude::*;
 
 use crate::actions::Action;
-use crate::model::{Assistant, Family, Member, Message, PackItem};
+use crate::model::{AiFailure, Assistant, Family, Member, Message, PackItem};
 use crate::pack::Gate;
 use crate::store::Draft;
 use crate::timeline;
@@ -43,7 +43,7 @@ pub struct ThreadPanelProps {
     pub revealed: HashSet<i64>,
     pub revealed_quotes: HashSet<(i64, u8)>,
     pub failed: HashMap<String, String>,
-    pub ai_failed: HashSet<i64>,
+    pub ai_failed: HashMap<i64, AiFailure>,
     /// The reader's family, whose switches decide what may go to the
     /// assistant.
     #[prop_or_default]
@@ -235,7 +235,7 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
                                 run_end={true}
                                 seen={false}
                                 awaited={false}
-                                ai_failed={props.ai_failed.contains(&message.id)}
+                                ai_failed={props.ai_failed.get(&message.id).copied()}
                                 {failed}
                                 is_family_chat={props.is_family_chat}
                                 is_ai_chat={props.is_ai_chat}

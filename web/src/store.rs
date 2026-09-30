@@ -10,8 +10,8 @@ use fc_text::i18n::t;
 use std::collections::{HashMap, HashSet};
 
 use crate::model::{
-    Assistant, ChatListItem, Me, Member, Mention, Message, Poll, PollOption, Reaction, ReplyParent,
-    ReplyTo, Roster, User,
+    AiFailure, Assistant, ChatListItem, Me, Member, Mention, Message, Poll, PollOption, Reaction,
+    ReplyParent, ReplyTo, Roster, User,
 };
 use crate::staged::{OutgoingItem, Prepared, StagedBytes};
 
@@ -362,8 +362,9 @@ pub struct Store {
     /// The peer's read marker in a DIRECT chat — the highest id they have
     /// reported, which is what a "seen" tick compares against.
     pub peer_read: HashMap<i64, i64>,
-    /// Assistant answers that stopped early (`ai_error`).
-    pub ai_failed: HashSet<i64>,
+    /// Assistant answers that stopped early (`ai_error`), each with what it
+    /// says about it — remembered for exactly as long as the failure is.
+    pub ai_failed: HashMap<i64, AiFailure>,
     /// What was being typed in a chat the reader left.
     pub drafts: HashMap<i64, String>,
     pub thread_view: Option<ThreadView>,
@@ -1167,9 +1168,10 @@ impl Store {
         });
     }
 
-    /// The assistant stopped early: the row keeps what arrived, and says so.
-    pub fn apply_ai_error(&mut self, message_id: i64) {
-        self.ai_failed.insert(message_id);
+    /// The assistant stopped early: the row keeps what arrived, and says so
+    /// — and says WHY when the frame did, the latest frame's word winning.
+    pub fn apply_ai_error(&mut self, message_id: i64, failure: AiFailure) {
+        self.ai_failed.insert(message_id, failure);
     }
 
     /// Move a catch-up cursor forward — from a catch-up page always, from a
@@ -2167,6 +2169,38 @@ mod tests {
             Some("Sure — seven works."),
             "a delta after the finished row is late and ignored"
         );
+    }
+
+    /// A failed answer remembers WHICH failure it was, for exactly as long
+    /// as it remembers that it failed: a refusal stays a refusal through
+    /// every redraw, a later frame's word wins, and a finished row or a
+    /// sign-out forgets both at once (docs/protocol.md, "The assistant").
+    #[wasm_bindgen_test]
+    fn a_failed_answer_remembers_why_until_it_is_finished() {
+        let mut store = store();
+        store.apply_message(message(100, 2, ""), Some(42), Via::Frame);
+        store.apply_message(message(101, 2, "Half an"), Some(42), Via::Frame);
+        store.apply_ai_error(100, AiFailure::Refused);
+        store.apply_ai_error(101, AiFailure::Failed);
+        assert_eq!(store.ai_failed.get(&100), Some(&AiFailure::Refused));
+        assert_eq!(store.ai_failed.get(&101), Some(&AiFailure::Failed));
+
+        store.apply_ai_error(101, AiFailure::Refused);
+        assert_eq!(
+            store.ai_failed.get(&101),
+            Some(&AiFailure::Refused),
+            "the latest frame's word wins"
+        );
+
+        let mut done = message(100, 2, "Here it is after all.");
+        done.edit_seq = Some(1);
+        store.apply_edit(done);
+        assert_eq!(
+            store.ai_failed.get(&100),
+            None,
+            "a finished answer is a finished answer"
+        );
+        assert_eq!(store.ai_failed.get(&101), Some(&AiFailure::Refused));
     }
 
     // --- Cursors ----------------------------------------------------------

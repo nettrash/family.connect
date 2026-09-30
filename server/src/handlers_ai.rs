@@ -67,7 +67,7 @@ use crate::events;
 use crate::handlers_chat;
 use crate::models::{Attachment, Message};
 use crate::state::AppState;
-use crate::ws::ServerFrame;
+use crate::ws::{AiErrorReason, ServerFrame};
 
 /// The reserved account the assistant sends under (migration 0015). Looked
 /// up rather than hard-coded: the id is whatever the sequence gave it.
@@ -209,7 +209,7 @@ pub async fn ensure_ai_chat(state: &AppState, user_id: i64) -> Result<Option<i64
 pub fn spawn_reply(state: AppState, chat_id: i64, user_id: i64, language: Option<String>) {
     tokio::spawn(async move {
         if let Err(error) = reply(&state, chat_id, user_id, language.as_deref()).await {
-            warn!(%chat_id, %error, "assistant reply failed");
+            warn!(%chat_id, error = %format!("{error:#}"), "assistant reply failed");
         }
     });
 }
@@ -228,7 +228,7 @@ pub fn spawn_mention_reply(
         if let Err(error) =
             mention_reply(&state, chat_id, user_id, message_id, language.as_deref()).await
         {
-            warn!(%chat_id, %message_id, %error, "assistant mention reply failed");
+            warn!(%chat_id, %message_id, error = %format!("{error:#}"), "assistant mention reply failed");
         }
     });
 }
@@ -2680,6 +2680,8 @@ enum Finished {
     Text {
         text: String,
         usage: ai::Usage,
+        /// Why the model stopped — only ever read to explain an empty answer.
+        finish_reason: String,
     },
     /// A picture — from `/draw`, with no tokens to report, or from the text
     /// model asking for one, with the tokens it spent deciding. Both are one
@@ -2928,6 +2930,29 @@ async fn store_picture(
     Ok(())
 }
 
+/// Tell the audience the reply stopped early, and — when the server knows
+/// one worth a different sentence — why (protocol.md, "The assistant").
+async fn fan_out_ai_error(
+    state: &AppState,
+    audience: &[i64],
+    chat_id: i64,
+    message_id: i64,
+    reason: Option<AiErrorReason>,
+) {
+    state
+        .registry
+        .fan_out(
+            audience,
+            &ServerFrame::AiError {
+                chat_id,
+                message_id,
+                reason,
+            },
+            None,
+        )
+        .await;
+}
+
 /// The half that is the same for both kinds of question: create the row,
 /// stream into it, and finish it through the edit path.
 async fn answer(
@@ -3013,13 +3038,28 @@ async fn answer(
                     text,
                     tool_call: None,
                     usage,
-                }) => Ok(Finished::Text { text, usage }),
+                    finish_reason,
+                }) => Ok(Finished::Text {
+                    text,
+                    usage,
+                    finish_reason,
+                }),
                 // The model asked for a picture. If it ALSO wrote words, the
                 // picture wins and the words are dropped: one reply, one
                 // attachment, the shape `/draw` already has — and the words
                 // were most likely "here it is". Any that streamed as deltas
                 // are gone when the finished row lands, because the row is
                 // the truth (protocol.md, "Drawing without being told to").
+                //
+                // Unless the filter is what ended it: a call the provider
+                // cut off is a fragment, and drawing from it would be
+                // drawing whatever the fragment happened to say.
+                Ok(ai::Streamed {
+                    tool_call: Some(_),
+                    finish_reason,
+                    ..
+                }) if ai::finish_is_refusal(&finish_reason) => Err(anyhow::Error::new(ai::Refused)
+                    .context("the stream ended with finish_reason content_filter mid tool call")),
                 Ok(ai::Streamed {
                     tool_call: Some(call),
                     usage,
@@ -3044,18 +3084,19 @@ async fn answer(
     let finished = match outcome {
         Ok(finished) => finished,
         Err(error) => {
-            warn!(%chat_id, %error, "assistant reply failed");
-            state
-                .registry
-                .fan_out(
-                    &prompt.audience,
-                    &ServerFrame::AiError {
-                        chat_id,
-                        message_id,
-                    },
-                    None,
-                )
-                .await;
+            // The whole chain on one line — the provider's detail is folded
+            // flat by `ai` — and the refusal named as a field of its own, so
+            // a log search for it needs no knowledge of Azure's wording.
+            let refused = ai::is_refusal(&error);
+            warn!(%chat_id, refused, error = %format!("{error:#}"), "assistant reply failed");
+            fan_out_ai_error(
+                state,
+                &prompt.audience,
+                chat_id,
+                message_id,
+                refused.then_some(AiErrorReason::Refused),
+            )
+            .await;
             return Ok(());
         }
     };
@@ -3063,23 +3104,37 @@ async fn answer(
     // What the row will say, and what it will carry. A picture answers with
     // no words at all: the picture IS the answer, and the member's own
     // request handed back to them is not a caption.
-    let (text, usage, image) = match finished {
-        Finished::Text { text, usage } => (text, usage, None),
-        Finished::Picture { image, usage } => (String::new(), usage, Some(image)),
+    let (text, usage, image, finish_reason) = match finished {
+        Finished::Text {
+            text,
+            usage,
+            finish_reason,
+        } => (text, usage, None, finish_reason),
+        Finished::Picture { image, usage } => (String::new(), usage, Some(image), String::new()),
     };
 
     if image.is_none() && text.trim().is_empty() {
-        state
-            .registry
-            .fan_out(
-                &prompt.audience,
-                &ServerFrame::AiError {
-                    chat_id,
-                    message_id,
-                },
-                None,
-            )
-            .await;
+        // SAID, because it used to be silent: the provider answered 200 and
+        // the stream ended cleanly, so nothing above counts it as a failure,
+        // and the member was told "Couldn't answer that" with not a line in
+        // the log to say why. The reason and the counts are the whole
+        // diagnosis — `content_filter` is the provider refusing the answer,
+        // `length` with many completion tokens and no words is a reasoning
+        // model that spent its allowance thinking — and neither is the
+        // member's text, which never goes in a log.
+        warn!(
+            %chat_id,
+            %message_id,
+            finish_reason = %if finish_reason.is_empty() { "(none given)" } else { finish_reason.as_str() },
+            prompt_tokens = usage.prompt_tokens,
+            completion_tokens = usage.completion_tokens,
+            "assistant returned an empty answer"
+        );
+        // Of those, only the filter is the provider REFUSING, and only it
+        // earns the member a different sentence: asking again unchanged is
+        // good advice after `length` and useless after `content_filter`.
+        let reason = ai::finish_is_refusal(&finish_reason).then_some(AiErrorReason::Refused);
+        fan_out_ai_error(state, &prompt.audience, chat_id, message_id, reason).await;
         return Ok(());
     }
 
@@ -3091,18 +3146,9 @@ async fn answer(
     if let Some(image) = &image
         && let Err(error) = store_picture(state, chat_id, message_id, assistant_id, image).await
     {
-        warn!(%chat_id, %error, "storing the generated picture failed");
-        state
-            .registry
-            .fan_out(
-                &prompt.audience,
-                &ServerFrame::AiError {
-                    chat_id,
-                    message_id,
-                },
-                None,
-            )
-            .await;
+        warn!(%chat_id, error = %format!("{error:#}"), "storing the generated picture failed");
+        // Ours, not the provider's: no reason, and asking again may work.
+        fan_out_ai_error(state, &prompt.audience, chat_id, message_id, None).await;
         return Ok(());
     }
 

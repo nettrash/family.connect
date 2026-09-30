@@ -342,6 +342,18 @@ pub struct AiConfig {
     #[serde(default = "default_ai_max_tokens")]
     pub max_tokens: u32,
 
+    /// How long ONE call to the provider may take, start to last byte, in
+    /// seconds — a text answer streaming, a picture being drawn, a picture
+    /// being fetched. 180 by default, which is what it was when it was a
+    /// constant: a large model streaming a long answer is slow by nature,
+    /// and cutting it off mid-sentence is worse than waiting. An operator
+    /// whose image deployment is slower than that raises it here; one who
+    /// would rather a stuck call gave up sooner lowers it. At least 10 —
+    /// below that every answer fails and the setting is a way to switch the
+    /// assistant off that does not say so.
+    #[serde(default = "default_ai_timeout_secs")]
+    pub timeout_secs: u64,
+
     /// How many earlier messages of that member's OWN assistant chat go
     /// with a question. Nothing else is ever included — not the family
     /// chat, not another member's thread (protocol.md).
@@ -535,6 +547,7 @@ impl Default for AiConfig {
             api_version: default_ai_api_version(),
             system_prompt: default_ai_system_prompt(),
             max_tokens: default_ai_max_tokens(),
+            timeout_secs: default_ai_timeout_secs(),
             history_messages: default_ai_history_messages(),
             title: default_ai_title(),
             vision: AiDeployment::default(),
@@ -592,6 +605,10 @@ fn default_ai_system_prompt() -> String {
 
 fn default_ai_max_tokens() -> u32 {
     1024
+}
+
+fn default_ai_timeout_secs() -> u64 {
+    180
 }
 
 fn default_ai_history_messages() -> i64 {
@@ -1370,6 +1387,7 @@ const AI_KEYS: &[&str] = &[
     "api_version",
     "system_prompt",
     "max_tokens",
+    "timeout_secs",
     "history_messages",
     "title",
     "vision",
@@ -1650,6 +1668,12 @@ impl Config {
         }
         // Calls. Validated whether or not they are enabled: a section that
         // is wrong is wrong before somebody flips the switch.
+        if self.ai.timeout_secs < 10 {
+            anyhow::bail!(
+                "ai.timeout_secs must be at least 10 — below that every answer fails, \
+                 and `[ai] enabled = false` is the honest way to switch the assistant off"
+            );
+        }
         if self.calls.ring_timeout_secs < 5 {
             anyhow::bail!(
                 "calls.ring_timeout_secs must be at least 5 — a phone cannot be picked up faster"
@@ -2070,6 +2094,8 @@ deployment = "draws"
                 "enabled" => "true".to_string(),
                 "auth" => "\"bearer\"".to_string(),
                 "max_tokens" | "history_messages" => "7".to_string(),
+                // Its own floor is 10 (`validate`), so the sweep's 7 would be refused.
+                "timeout_secs" => "60".to_string(),
                 _ => format!("\"{key}\""),
             };
             raw.push_str(&format!("{key} = {value}\n"));
@@ -2599,6 +2625,18 @@ height = 1024
     fn validate_rejects_an_unparseable_bind_address() {
         let err = Config::from_toml_str("[server]\nbind = \"not-an-addr\"\n").unwrap_err();
         assert!(format!("{err:#}").contains("server.bind"));
+    }
+
+    /// The provider timeout is the operator's: 180 by default — what it was
+    /// as a constant — settable, and refused below 10, where every answer
+    /// would fail and the setting would be a quiet off switch.
+    #[test]
+    fn the_provider_timeout_is_configurable_and_bounded() {
+        assert_eq!(Config::default().ai.timeout_secs, 180);
+        let cfg = Config::from_toml_str("[ai]\ntimeout_secs = 300\n").unwrap();
+        assert_eq!(cfg.ai.timeout_secs, 300);
+        let err = Config::from_toml_str("[ai]\ntimeout_secs = 5\n").unwrap_err();
+        assert!(format!("{err:#}").contains("ai.timeout_secs"));
     }
 
     #[test]

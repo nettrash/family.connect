@@ -9,7 +9,7 @@ use fc_text::i18n::{t, tn};
 use yew::prelude::*;
 
 use crate::actions::Action;
-use crate::model::{Call, Message};
+use crate::model::{AiFailure, Call, Message};
 use crate::time;
 use crate::views::attachments::AttachmentStack;
 use crate::views::avatar::Avatar;
@@ -63,7 +63,10 @@ pub struct BubbleProps {
     pub run_end: bool,
     pub seen: bool,
     pub awaited: bool,
-    pub ai_failed: bool,
+    /// Whether the assistant's answer stopped early, and what it says about
+    /// it — "ask again", or the provider's refusal (docs/protocol.md, "The
+    /// assistant").
+    pub ai_failed: Option<AiFailure>,
     /// Why a send of mine failed, if it did.
     pub failed: Option<String>,
     pub is_family_chat: bool,
@@ -579,8 +582,8 @@ pub fn bubble(props: &BubbleProps) -> Html {
             </p>
         }
     } else if props.awaited {
-        if props.ai_failed {
-            html! { <p class="body ai-failed">{ t("Couldn't answer that. Ask again.") }</p> }
+        if let Some(failure) = props.ai_failed {
+            html! { <p class="body ai-failed">{ failure.sentence() }</p> }
         } else {
             html! { <p class="body awaiting" aria-label={t("The assistant is answering")}>{ "▍" }</p> }
         }
@@ -602,8 +605,8 @@ pub fn bubble(props: &BubbleProps) -> Html {
                         on_open_direct={props.on_action.reform(|user_id| Action::OpenDirect { user_id })}
                     />
                 }
-                if props.ai_failed {
-                    <p class="ai-failed">{ t("Couldn't answer that. Ask again.") }</p>
+                if let Some(failure) = props.ai_failed {
+                    <p class="ai-failed">{ failure.sentence() }</p>
                 }
             </>
         }
@@ -748,7 +751,7 @@ mod tests {
             run_end: true,
             seen: false,
             awaited: false,
-            ai_failed: false,
+            ai_failed: None,
             failed: None,
             is_family_chat: true,
             is_ai_chat: false,
@@ -1355,6 +1358,74 @@ mod tests {
         assert!(!labels(&root, ".menu [role=menuitem]").contains(&"Reply".to_string()));
         handle.destroy();
         root.remove();
+    }
+
+    /// A failed answer says WHICH failure it was — in the row still waiting
+    /// for words and under a partial answer alike: the provider's refusal
+    /// says to put it another way, and every other failure keeps "ask
+    /// again" (docs/protocol.md, "The assistant").
+    #[wasm_bindgen_test]
+    async fn a_failed_answer_says_whether_the_provider_refused_it() {
+        const ASK_AGAIN: &str = "Couldn't answer that. Ask again.";
+        const REFUSED: &str = "The assistant's provider refused that. Try putting it another way.";
+        let failed_line = |root: &Element| labels(root, ".ai-failed");
+
+        for (failure, says, never) in [
+            (AiFailure::Failed, ASK_AGAIN, REFUSED),
+            (AiFailure::Refused, REFUSED, ASK_AGAIN),
+        ] {
+            // Still waiting for its first word: the streaming row.
+            let mut waiting = props(message(101, 2, ""), Rc::new(RefCell::new(Vec::new())));
+            waiting.is_ai_chat = true;
+            waiting.awaited = true;
+            waiting.ai_failed = Some(failure);
+            let (root, handle) = render(waiting).await;
+            assert_eq!(failed_line(&root), vec![says.to_string()], "{failure:?}");
+            assert!(!text(&root).contains(never), "{}", text(&root));
+            assert!(root.query_selector(".awaiting").unwrap().is_none());
+            handle.destroy();
+            root.remove();
+
+            // Stopped midway: the words that arrived, and the sentence under them.
+            let mut partial = props(
+                message(102, 2, "Half an"),
+                Rc::new(RefCell::new(Vec::new())),
+            );
+            partial.is_ai_chat = true;
+            partial.ai_failed = Some(failure);
+            let (root, handle) = render(partial).await;
+            assert_eq!(failed_line(&root), vec![says.to_string()], "{failure:?}");
+            assert!(text(&root).contains("Half an"), "{}", text(&root));
+            handle.destroy();
+            root.remove();
+        }
+
+        // Not failed: neither sentence.
+        let mut fine = props(
+            message(103, 2, "All of it."),
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        fine.is_ai_chat = true;
+        let (root, handle) = render(fine).await;
+        assert!(failed_line(&root).is_empty(), "{}", text(&root));
+        handle.destroy();
+        root.remove();
+    }
+
+    /// The sentence each failure says, and the reason each wire word is.
+    #[wasm_bindgen_test]
+    fn the_refusal_sentence_is_chosen_only_for_refused() {
+        assert_eq!(
+            AiFailure::from_reason(Some("refused")).sentence(),
+            "The assistant's provider refused that. Try putting it another way."
+        );
+        for absent in [None, Some("rate_limited"), Some(""), Some("Refused")] {
+            assert_eq!(
+                AiFailure::from_reason(absent).sentence(),
+                "Couldn't answer that. Ask again.",
+                "{absent:?} reads as absent"
+            );
+        }
     }
 
     impl BubbleProps {

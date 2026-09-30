@@ -357,6 +357,19 @@ nonisolated struct CallOfferPayload: Decodable, Equatable, Sendable {
     }
 }
 
+/// Why an assistant reply stopped, as an `ai_error` frame's optional
+/// `reason` says it (docs/protocol.md, "The assistant").
+///
+/// Only the values the protocol defines are here. Anything else the server
+/// sends decodes to nil — the same as no reason at all — so a value added
+/// later never makes this client invent a meaning for it.
+nonisolated enum AIErrorReason: String, Equatable, Sendable {
+    /// The AI provider's OWN safety or content filter refused the question,
+    /// the answer, or a picture's description. Asking again in the same
+    /// words gets the same refusal.
+    case refused
+}
+
 nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     case ack(clientMsgID: String, message: MessageDTO)
     case message(MessageDTO)
@@ -380,7 +393,11 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     /// live-typing effect, never the answer.
     case aiDelta(chatID: Int64, messageID: Int64, text: String)
     /// The reply stopped early. Whatever arrived is already on the row.
-    case aiError(chatID: Int64, messageID: Int64)
+    ///
+    /// `reason` says WHY when the server knows, and is nil for every other
+    /// failure — including a `reason` this client does not know, which the
+    /// protocol says to read as absent (docs/protocol.md, "The assistant").
+    case aiError(chatID: Int64, messageID: Int64, reason: AIErrorReason? = nil)
     case read(chatID: Int64, userID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64, userID: Int64)
     case memberJoined(MemberJoinedPayload)
@@ -472,9 +489,17 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
                 messageID: try container.decode(Int64.self, forKey: .messageID),
                 text: try container.decode(String.self, forKey: .text))
         case "ai_error":
+            // `reason` is optional and OPEN: a value this client does not
+            // know — or one of the wrong JSON type — reads as absent, never
+            // as a malformed frame, so a later server can add a reason
+            // without costing an old client the failure it would otherwise
+            // show (docs/protocol.md, "The assistant").
+            let reason = (try? container.decodeIfPresent(String.self, forKey: .reason))
+                .flatMap(AIErrorReason.init(rawValue:))
             self = .aiError(
                 chatID: try container.decode(Int64.self, forKey: .chatID),
-                messageID: try container.decode(Int64.self, forKey: .messageID))
+                messageID: try container.decode(Int64.self, forKey: .messageID),
+                reason: reason)
         case "read":
             self = .read(
                 chatID: try container.decode(Int64.self, forKey: .chatID),

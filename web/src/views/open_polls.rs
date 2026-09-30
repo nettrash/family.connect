@@ -11,7 +11,7 @@ use fc_text::i18n::t;
 use yew::prelude::*;
 
 use crate::actions::Action;
-use crate::model::Message;
+use crate::model::{AiFailure, Message};
 use crate::timeline;
 use crate::views::bubble::Bubble;
 
@@ -71,7 +71,7 @@ pub fn open_polls_panel(props: &OpenPollsProps) -> Html {
                                 run_end={true}
                                 seen={false}
                                 awaited={false}
-                                ai_failed={false}
+                                ai_failed={None::<AiFailure>}
                                 failed={None::<String>}
                                 is_family_chat={true}
                                 is_ai_chat={false}

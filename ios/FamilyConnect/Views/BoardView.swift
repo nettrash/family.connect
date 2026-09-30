@@ -716,8 +716,10 @@ private struct NoteEditor: View {
     /// Ask the assistant for a backdrop — the AUTHOR's. Answers with the
     /// picture's id, so the sheet can stop saying "Drawing…" AND draw what
     /// arrived: a redraw replaces the picture with a new attachment, and
-    /// this sheet holds the note as it was when it opened.
-    var onDrawBackdrop: (Int64) async -> Int64? = { _ in nil }
+    /// this sheet holds the note as it was when it opened. A refusal by
+    /// the provider's own filter comes back as its own outcome, so the
+    /// sheet can say so (protocol.md, "Board").
+    var onDrawBackdrop: (Int64) async -> BackdropOutcome = { _ in .failed }
 
     @Environment(\.dismiss) private var dismiss
 
@@ -773,7 +775,7 @@ private struct NoteEditor: View {
         mentionCandidates: @escaping (String) -> [MentionDTO] = { _ in [] },
         names: @escaping (Int64) -> String = { _ in "" },
         canDraw: Bool = false,
-        onDrawBackdrop: @escaping (Int64) async -> Int64? = { _ in nil }
+        onDrawBackdrop: @escaping (Int64) async -> BackdropOutcome = { _ in .failed }
     ) {
         self.draft = draft
         self.canEdit = canEdit
@@ -835,11 +837,11 @@ private struct NoteEditor: View {
         drawing = true
         failure = nil
         Task {
-            if let drawn = await onDrawBackdrop(noteID) {
-                drewBackdrop = drawn
-            } else {
-                failure = String(localized: "Couldn't draw that.")
+            let outcome = await onDrawBackdrop(noteID)
+            if case .drawn(let attachmentID) = outcome {
+                drewBackdrop = attachmentID
             }
+            failure = outcome.failureMessage
             drawing = false
         }
     }

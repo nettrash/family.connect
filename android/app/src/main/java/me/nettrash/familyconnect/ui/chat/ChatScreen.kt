@@ -286,6 +286,7 @@ import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.LinkPreviewState
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.repo.AssistantFailure
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import android.net.Uri
@@ -388,8 +389,9 @@ fun ChatScreen(
     val streamingIds by viewModel.streamingMessageIds.collectAsStateWithLifecycle()
     // Rows an `ai_error` frame named. A picture answer streams nothing, so
     // its failure is an empty balloon and nothing else unless the bubble
-    // says so (docs/protocol.md, "Pictures").
-    val failedAssistantIds by viewModel.failedAssistantMessageIds.collectAsStateWithLifecycle()
+    // says so (docs/protocol.md, "Pictures"). Each remembers HOW it failed,
+    // which picks the sentence (docs/protocol.md, "The assistant").
+    val failedAssistantAnswers by viewModel.failedAssistantAnswers.collectAsStateWithLifecycle()
     // The two picture affordances, each behind its own capability check —
     // no surface at all where the server cannot do the thing, rather than
     // a disabled one that lies about what would happen.
@@ -1234,10 +1236,10 @@ fun ChatScreen(
                                         assistantUserId = assistantUserId,
                                         myUserId = myUserId,
                                         streamingIds = streamingIds,
-                                        failedIds = failedAssistantIds,
+                                        failedIds = failedAssistantAnswers.keys,
                                     ),
-                                    answerFailed = item.entity.serverId
-                                        ?.let { it in failedAssistantIds } == true,
+                                    answerFailure = item.entity.serverId
+                                        ?.let { failedAssistantAnswers[it] },
                                     myUserId = myUserId,
                                     memberNames = memberNames,
                                     memberAvatars = memberAvatars,
@@ -2455,9 +2457,10 @@ internal fun MessageBubble(
     isStreaming: Boolean,
     /**
      * An `ai_error` frame named this row: the answer stopped early and
-     * nothing more is coming (docs/protocol.md, "Pictures").
+     * nothing more is coming (docs/protocol.md, "Pictures") — and HOW, which
+     * picks the sentence it shows. Null when it did not fail.
      */
-    answerFailed: Boolean,
+    answerFailure: AssistantFailure?,
     myUserId: Long?,
     memberNames: Map<Long, String>,
     memberAvatars: Map<Long, Long>,
@@ -2739,7 +2742,7 @@ internal fun MessageBubble(
                     chat = chat,
                     isMine = isMine,
                     isStreaming = isStreaming,
-                    answerFailed = answerFailed,
+                    answerFailure = answerFailure,
                     mediaOnly = bareMedia,
                     sticker = sticker,
                     emojiFontSize = emojiFontSize,
@@ -3663,8 +3666,8 @@ private fun BubbleContent(
     isMine: Boolean,
     /** The assistant is still writing into this row. */
     isStreaming: Boolean,
-    /** The answer stopped early — see [MessageBubble]. */
-    answerFailed: Boolean,
+    /** The answer stopped early, and how — see [MessageBubble]. */
+    answerFailure: AssistantFailure?,
     /**
      * Nothing but photos/videos: the balloon is gone (MessageBubble), so
      * the content's inset goes with it — the tile's edge is the message's
@@ -3911,7 +3914,7 @@ private fun BubbleContent(
         // the same thing.
         if (isStreaming && entity.body.isEmpty()) {
             StreamingCursor()
-        } else if (answerFailed && entity.body.isEmpty() && bubbleAttachments.isEmpty()) {
+        } else if (answerFailure != null && entity.body.isEmpty() && bubbleAttachments.isEmpty()) {
             // The answer stopped with nothing on the row at all — which is
             // every PICTURE answer that failed, because an image model
             // produces no token stream and so there are no deltas to have
@@ -3919,9 +3922,12 @@ private fun BubbleContent(
             // empty row was created before the provider was called
             // precisely so a failure would have somewhere to fail; this is
             // that somewhere. A text answer that failed half-written keeps
-            // its half instead, and says nothing extra.
+            // its half instead, and says nothing extra. A refusal by the
+            // provider's own filter says so instead of "ask again", which
+            // would only earn the same refusal (docs/protocol.md, "The
+            // assistant").
             Text(
-                text = stringResource(R.string.s_assistant_answer_failed),
+                text = stringResource(AssistantAnswer.failureSentence(answerFailure)),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontStyle = FontStyle.Italic,

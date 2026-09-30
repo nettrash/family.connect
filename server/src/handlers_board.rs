@@ -1455,11 +1455,24 @@ pub async fn draw_backdrop(
     let title: String = held.get("text");
 
     // The slow part, with nothing locked.
+    //
+    // A refusal by the provider's own filter is TERMINAL and says so
+    // (`picture_refused`): the same title gets the same refusal, and an
+    // `internal` would have a client retry it for nothing. Every other
+    // failure stays `internal` — the provider failing is transient.
     let image = crate::ai::generate_image(&state.http, &route, &state.cfg.ai.images, title.trim())
         .await
         .map_err(|error| {
-            tracing::warn!(%error, "the assistant could not draw a backdrop");
-            ApiError::Internal(error)
+            let refused = crate::ai::is_refusal(&error);
+            tracing::warn!(%note_id, refused, error = %format!("{error:#}"), "the assistant could not draw a backdrop");
+            if refused {
+                ApiError::bad_request(
+                    codes::PICTURE_REFUSED,
+                    "the assistant's provider refused to draw this",
+                )
+            } else {
+                ApiError::Internal(error)
+            }
         })?;
 
     // Written to disk first, and bound in the transaction below: the note

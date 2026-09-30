@@ -1816,7 +1816,7 @@ async fn a_thread_sends_a_sticker_to_its_root() {
                     revealed={std::collections::HashSet::<i64>::new()}
                     revealed_quotes={std::collections::HashSet::<(i64, u8)>::new()}
                     failed={std::collections::HashMap::<String, String>::new()}
-                    ai_failed={std::collections::HashSet::<i64>::new()}
+                    ai_failed={std::collections::HashMap::<i64, crate::model::AiFailure>::new()}
                     {stickers}
                     {agreed_to_assistant}
                     {on_action}
