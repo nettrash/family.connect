@@ -58,7 +58,7 @@ use sqlx::Row;
 use time::{Duration as TimeDuration, OffsetDateTime, UtcOffset};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::ai::{self, ChatTurn, GeneratedImage, InlineImage};
@@ -2799,8 +2799,115 @@ async fn draw_as_asked(
     // as the words after `/draw`, and those could never be longer than a
     // message.
     let prompt = call.draw_prompt(state.cfg.limits.max_message_chars)?;
-    let image = ai::generate_image(&state.http, &route, &state.cfg.ai.images, &prompt).await?;
-    Ok(Finished::Picture { image, usage })
+    let drawn = draw_or_reword(state, &route, "draw_picture", &prompt).await?;
+    // Two bills against one picture when the description had to be
+    // reworded: the tokens spent deciding, and the tokens spent rewording.
+    Ok(Finished::Picture {
+        image: drawn.image,
+        usage: usage.plus(drawn.usage),
+    })
+}
+
+/// A picture, and what the TEXT deployment was paid on the way to it.
+pub(crate) struct Drawn {
+    pub image: GeneratedImage,
+    /// The rewrite's tokens when the description had to be reworded; zero
+    /// when the images deployment drew it first time.
+    pub usage: ai::Usage,
+}
+
+/// Draw a description — and, if the images deployment's filter REFUSES it,
+/// have the text deployment reword it once and draw the rewrite.
+///
+/// The one place this rule lives, for all three paths that send a
+/// description to the images deployment: a `/draw`, the text model's own
+/// `draw_picture` call, and the board's event backdrop (`origin` says which,
+/// for the log). protocol.md, "A refused description is reworded once".
+///
+/// - ONLY a refusal starts it. A 5xx, a timeout, any other 4xx comes back
+///   exactly as it always did, and the text deployment is asked nothing.
+/// - ONCE: one rewrite and one more picture request, never a loop.
+/// - Anything that stops the rewrite from becoming a picture — the rewrite
+///   request failing or refused, a rewrite `ai::rephrase_description` turns
+///   away, the second picture request refused or failing — hands back the
+///   FIRST refusal, so the member hears exactly what they would have heard
+///   without this: their description was refused.
+/// - What is logged is that a rewrite was tried and how it ended, and the
+///   provider's identifying fields. Never the description and never the
+///   rewrite: no member's words reach a log.
+///
+/// Consent is not looked at here, and needs no second look: this follows
+/// only a first attempt that was already allowed to run, to the same
+/// provider the member agreed to.
+pub(crate) async fn draw_or_reword(
+    state: &AppState,
+    route: &ModelRoute,
+    origin: &'static str,
+    description: &str,
+) -> Result<Drawn> {
+    let images = &state.cfg.ai.images;
+    let refused = match ai::generate_image(&state.http, route, images, description).await {
+        Ok(image) => {
+            return Ok(Drawn {
+                image,
+                usage: ai::Usage::default(),
+            });
+        }
+        Err(error) if !ai::is_refusal(&error) => return Err(error),
+        Err(error) => error,
+    };
+    // Said once the attempt has run, alongside the first refusal's own
+    // line from the caller, so the two read together.
+    let not_drawn = |refused: anyhow::Error| {
+        refused.context("the images deployment refused the description, and rewording it once did not produce a picture")
+    };
+
+    let rewrite = ai::rephrase_description(
+        &state.http,
+        &state.cfg.ai.text_route(),
+        description,
+        state.cfg.limits.max_message_chars,
+    )
+    .await;
+    let (rewrite, usage) = match rewrite {
+        Ok(found) => found,
+        Err(error) => {
+            warn!(
+                origin,
+                outcome = "no_usable_rewrite",
+                error = %format!("{error:#}"),
+                "a refused picture description could not be reworded"
+            );
+            return Err(not_drawn(refused));
+        }
+    };
+
+    match ai::generate_image(&state.http, route, images, &rewrite).await {
+        Ok(image) => {
+            info!(
+                origin,
+                outcome = "drawn",
+                prompt_tokens = usage.prompt_tokens,
+                completion_tokens = usage.completion_tokens,
+                "a refused picture description was reworded and drawn"
+            );
+            Ok(Drawn { image, usage })
+        }
+        Err(error) => {
+            let outcome = if ai::is_refusal(&error) {
+                "refused_again"
+            } else {
+                "failed_again"
+            };
+            warn!(
+                origin,
+                outcome,
+                error = %format!("{error:#}"),
+                "a reworded picture description was not drawn either"
+            );
+            Err(not_drawn(refused))
+        }
+    }
 }
 
 /// Write a generated picture to disk and bind it to the message that is
@@ -3071,12 +3178,15 @@ async fn answer(
         // and the empty row IS the "still working" state (protocol.md,
         // "Pictures"). No language instruction either — a picture has none
         // to come back in.
+        // A refused description is reworded once before it is called
+        // refused (`draw_or_reword`), and a rewrite's tokens ride on the
+        // picture it produced.
         Ask::Picture { prompt, route } => {
-            ai::generate_image(&state.http, &route, &state.cfg.ai.images, &prompt)
+            draw_or_reword(state, &route, "draw", &prompt)
                 .await
-                .map(|image| Finished::Picture {
-                    image,
-                    usage: ai::Usage::default(),
+                .map(|drawn| Finished::Picture {
+                    image: drawn.image,
+                    usage: drawn.usage,
                 })
         }
     };
@@ -3212,8 +3322,9 @@ async fn answer(
         // one image — and a family reading only the token counts would see
         // the expensive half of the assistant as free. A picture the text
         // model asked for is one question, the tokens it spent deciding, and
-        // one image: the only reply that carries both (protocol.md, "Family
-        // statistics").
+        // one image (protocol.md, "Family statistics"). A picture drawn from
+        // a reworded description is still ONE image — two requests to the
+        // images deployment, one picture — with the rewrite's tokens added.
         .bind(i32::from(image.is_some()))
         .execute(&state.pool)
         .await

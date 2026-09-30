@@ -1055,7 +1055,10 @@ picture).
 who is coming, not the family's history, not a language instruction. That is the `/draw` rule
 applied unchanged (see "Pictures"), and it is why this takes no prompt from the client: a request
 body would be a second way to send words to a model from a screen that is not the assistant's chat,
-and the words on the sticker are the ones the family already chose to put on their wall.
+and the words on the sticker are the ones the family already chose to put on their wall. When the
+images deployment refuses the title, the title — still nothing else — also goes once to the text
+deployment to be reworded, and the backdrop is drawn from the rewrite: the rule under "Pictures",
+"A refused description is reworded once", which a `/draw` follows too.
 
 It needs a server with an images deployment, which is the same `assistant.images` that `GET
 /families/mine` already reports, and which is what a client hangs the action on; a server without
@@ -1066,7 +1069,8 @@ process with no upload and nobody to authenticate.
 
 **A title the provider's filter refuses to draw answers `picture_refused` (400)** — decided exactly
 where a refused `/draw` is (see "The assistant": the provider's structured error fields, never its
-wording alone). It is TERMINAL, like every 4xx with a code: the same title gets the same refusal,
+wording alone), and only once the one rewrite has been tried and has not produced a backdrop
+either. It is TERMINAL, like every 4xx with a code: the same title gets the same refusal,
 so a client does not retry it, and it shows the sentence a refused answer shows — "The assistant's
 provider refused that. Try putting it another way." — where it shows a backdrop that failed. The
 note is untouched: the backdrop it had, if any, stays, nothing is counted and nothing is written.
@@ -1808,7 +1812,9 @@ member sees a partial answer and can ask again, which is better than a bubble th
 ```
 
 - **`"refused"`** — the AI provider's OWN safety or content filter refused the question, the
-  answer, or a picture's description. It is not this server's judgement and not a fault: the
+  answer, or a picture's description (a description only once the server's one rewrite of it has
+  not produced a picture either — see "A refused description is reworded once" under
+  "Pictures"). It is not this server's judgement and not a fault: the
   provider read the request and declined it, so asking again in the same words gets the same
   refusal. A client says so instead of "ask again" — the failed answer reads **"The assistant's
   provider refused that. Try putting it another way."** wherever the failure sentence appears (the
@@ -1950,6 +1956,15 @@ including other members' words, display names and timestamps, and only the menti
 is off; a photo goes only where "Pictures" says it does, and only while `ai_vision` is on; and the
 answer comes back as a message in the chat. A client that cannot name `processor` does not offer
 the assistant at all, so there is no screen to write.
+
+*Amended 2026-09-30:* a picture description is words the member wrote too, and there is now one
+more place it can go — still to `processor`, never anywhere else. When the provider's images
+model refuses a description, the server sends that description, once, to the same provider's
+TEXT model to be reworded, and draws from the rewrite (see "A refused description is reworded
+once" under "Pictures"). The sentence above — the message goes to `processor` — stays true, so
+this widens no consent; it is written here because a disclosure that is true only by omission is
+not the disclosure this section asks for. A client may say it in a line of its own; it must not
+say anything that contradicts it.
 
 **Recorded on the server, not on the device.** `GET /me` carries `assistant_consent_at`, a
 timestamp or null, and `POST /me/assistant-consent` sets it. Server-side for three reasons: the
@@ -2957,6 +2972,13 @@ instruction — an image has no language to come back in — and it translates n
 translation is another request to another model carrying the same words for no gain the family asked
 for.
 
+*Amended 2026-09-30: there is exactly one case in which the words after `/draw` go to a second
+model, and it is a gain the family did ask for — a picture. When the images deployment's filter
+REFUSES them, they are sent once to the text deployment to be reworded without real names or
+brands, and the picture is drawn from the rewrite (see "A refused description is reworded once"
+below). Only then, only once, and never as a translation; on every `/draw` the images deployment
+does not refuse, what leaves is still the words and nothing else.*
+
 Both surfaces take it: a member's own `ai` chat, and `@ai /draw …` in the family chat, where the
 whole family sees the answer arrive. The family chat is allowed here precisely because generation
 sends only the asking member's own words, which a mention already sends today.
@@ -3029,13 +3051,16 @@ Three rules about the edges, each decided rather than left to happen:
   call naming any other is refused with `ai_error`, never executed. A model that calls the tool
   more than once in one reply has asked for one picture several times: the first call is honoured
   and the rest are dropped.
-  None of these three carries a `reason`: the model's mistake is not the provider's refusal. A
-  `prompt` the images deployment's filter then refuses IS one, and its `ai_error` carries
+  None of these three carries a `reason`: the model's mistake is not the provider's refusal — and
+  none of them is reworded, because nothing was refused. A `prompt` the images deployment's filter
+  then refuses IS one: it gets the one rewrite a refused `/draw` gets (see "A refused description
+  is reworded once"), and when that does not produce a picture its `ai_error` carries
   `"reason": "refused"` exactly as a refused `/draw` does.
 
 `/draw` stays, unchanged, and is still the explicit path: a member who writes it gets a picture
 whether or not the model would have thought of one, and what leaves on it is still the words after
-the token alone — it never goes through the text model at all. Contextual drawing is an addition,
+the token alone — it never goes through the text model at all, save for the one rewrite of a
+description the images deployment refused (2026-09-30). Contextual drawing is an addition,
 never a replacement. An operator whose text deployment refuses a `tools` key may switch the
 declaration off with `[ai.images] contextual = false`; `/draw` keeps working, `assistant.images`
 stays true, and nothing on the wire changes.
@@ -3084,7 +3109,8 @@ notification the assistant raises per answer is raised as it always was, once th
 Failure is the failure a text answer already has: the row keeps whatever it has (nothing) and an
 `ai_error` frame names it. `ai_error` needs no new shape and the member can simply ask again. A
 description the images deployment's own filter refuses is the one failure where asking again in the
-same words does not help, and it says so the way a refused text answer does: `"reason": "refused"`
+same words does not help, and — once the one rewrite below has been tried and has not produced a
+picture — it says so the way a refused text answer does: `"reason": "refused"`
 (see "The assistant"). That
 is the reason the empty row is created BEFORE the provider is called rather than the finished
 picture arriving as a message of its own — an answer that failed has to have somewhere to fail.
@@ -3096,6 +3122,59 @@ preview (`has_preview: false`) — the server generates none, here as everywhere
 from its full bytes, exactly as they already do for a photo whose preview has not arrived. And it is
 never sent to any model afterwards: a picture the assistant made is a `[photo]` in a later prompt
 like any other.
+
+##### A refused description is reworded once
+
+Added 2026-09-30. An images deployment's filter refuses far more than a text model's does. Azure's
+FLUX deployment answers `400 content_safety_violation` to almost any description that names a real
+person, a public figure, a brand or a trademarked character — "Taylor Swift singing to our cat", "a
+Lego castle", "Pikachu at Anna's birthday" — when what the member wanted was a singer, a castle of
+toy bricks, a small yellow cartoon creature. Nothing tells a family which word was the problem.
+
+So **when — and only when — the images deployment REFUSES a description** (a refusal exactly as
+"The assistant" decides one: the provider's structured error fields), the server makes ONE more
+attempt before it says so:
+
+1. it asks the TEXT deployment (`[ai]`) once to rewrite the description so that it keeps what is to
+   be drawn but names no real person, public figure, brand, trademarked or copyrighted character —
+   describing each of them in general words instead — and answers with the rewritten description
+   and nothing else;
+2. it asks the images deployment once more, with the rewrite.
+
+It applies wherever a description meets the images deployment: a `/draw`, the text model's own
+`draw_picture` call, and an event's backdrop on the board (whose description is the note's title).
+
+**What goes to the text deployment on that request is the description, and nothing else**: one
+fixed instruction of the server's own (not the operator's configured prompt) and the description as
+the only user turn. No thread, no transcript, no member's name, no language line, no picture and
+no tool. It is the string that was just sent to the images deployment, going to the same provider
+— `processor` — that the member already agreed to (see "Consenting to the assistant", whose
+disclosure says so). Nothing about who may ask changes: the rewrite follows only a first attempt
+that was already allowed to run, under exactly the checks that attempt passed.
+
+- **Success looks exactly like a first-time success**: the same `photo` attachment on the same row,
+  the same `message_edited`, the same single notification — or, on the board, the same backdrop and
+  `board_seq`. It is ONE `image` in "Family statistics", and the tokens the text deployment reported
+  for the rewrite are counted like any other tokens the assistant spends. The picture is of the
+  rewrite rather than of the member's exact words, and nothing on the wire says so: the member
+  asked for a picture and got one.
+- **Failure is exactly the refusal it would have been without this**: `ai_error` with
+  `"reason": "refused"`, or `picture_refused` (400) for a backdrop, with nothing stored and nothing
+  counted. That covers the rewrite request failing or being refused, a rewrite that is empty, longer
+  than a draw prompt may be (the message-body ceiling, 4000 characters by default — never cut) or
+  the description unchanged, and the images deployment refusing the rewrite too, or failing on it
+  in any other way: the member's description WAS refused, and that is what they are told.
+- **Only a refusal starts it.** A `5xx`, a timeout, any other `4xx`, a picture that could not be
+  stored and a malformed `draw_picture` call are the failures they always were, and the text
+  deployment is asked nothing.
+- **Once.** Never a second rewrite and never a third picture request: per picture asked for, at most
+  one request to the text deployment and two to the images deployment.
+- **Not in the log.** The server's log says that a rewrite was tried and how it ended — drawn, no
+  usable rewrite, refused again, failed again — with the provider's identifying fields and the
+  rewrite's token counts, and never the description or the rewrite, for the reason no member's
+  words ever reach it.
+
+Nothing new reaches a client, and a client needs no change to stay correct.
 
 ##### What a client is told
 
@@ -3145,6 +3224,7 @@ per request and the family never sees the seam:
 | an `@ai` mention carrying a photo, or replying to one (#56) | `[ai.vision]` | what a mention sends, plus up to four photos off those two messages together |
 | an `@ai` mention in a family whose owner has turned `ai_history_photos` on, when photos travel (2026-09-03) | `[ai.vision]` | what a mention sends, plus up to four photos under ONE budget — the mention's, then the quote's, then the transcript's newest — each `[photo N]`-numbered where it is written |
 | a question the text model answers by calling `draw_picture` (#56) | `[ai]`, then `[ai.images]` | the usual text request — with one tool declared — and then the tool's `prompt`, and nothing else |
+| a description the images deployment REFUSED — from any of the rows above that reach it, or a board backdrop (2026-09-30) | `[ai]`, then `[ai.images]` once more | the refused description under a fixed instruction to reword it, and then the rewrite, and nothing else |
 
 `[ai]` is the section that already existed and it keeps its meaning exactly: it is the TEXT
 deployment, and a server that configures nothing else behaves precisely as it did before — which is
@@ -3599,6 +3679,13 @@ Since #56 there is one reply that carries both: a picture the text model asked f
 "Drawing without being told to") is one `question`, the `prompt_tokens` and `completion_tokens` the
 text model reported for the request in which it decided, and one `image`. Two bills, one reply, and
 both are recorded against it — the zero-token sentence above is true of `/draw` and of nothing else.
+
+*Amended 2026-09-30:* a picture drawn from a rewrite (see "A refused description is reworded
+once") is still one `question` and one `image` — two requests to the images deployment, one
+picture. The tokens the text deployment reported for the rewrite are added to that reply's
+`prompt_tokens` and `completion_tokens`, beside any it spent deciding to draw; so a reworded
+`/draw`, and a reworded backdrop, are the ones that carry tokens. A rewrite that did not end in a
+picture records nothing, as every failed reply records nothing.
 
 ### Retention
 
@@ -4271,7 +4358,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /families/mine/board/notes` | `{text, color, x, y, size?, font?, kind?, attachment_id?, starts_at?, ends_at?, place?, mentions?, items?}` → `201 {note: Note}`. `mentions: [{user_id, name}]` names members of this family, at most 20, each once, each a name the `text` says after an `@` — the same rules and the same grammar as a message's (`validation` otherwise, see "Board"). Caller becomes the author. `size` defaults to `medium`, `font` to `plain` and `kind` to `text` when absent. `attachment_id` claims one photo this caller uploaded: REQUIRED by `kind: "photo"` (whose `text` may then be empty), optional on `kind: "event"` (the backdrop), refused on a text note. `starts_at` is required by — and only accepted on — an event, with `ends_at` and `place` optional there and nowhere else. Errors: `validation` (text empty on a text note or > 280; an `attachment_id` without the kind, or the kind without one), `invalid_note_kind`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `invalid_attachment` (not a photo), `attachment_not_found`, `attachment_already_used`, `attachment_expired`, `board_full` (409, over the note ceiling), `not_in_family`. An event also answers `validation` for a missing or unparseable `starts_at`, an `ends_at` before it, a `place` over 200 characters, or any of the three on a note that is not an event. `items: [{text}]` is the TASK LIST's lines, accepted on — and only on — `kind: "tasks"`, whose `text` is its title: at most 20, each trimmed, non-empty and at most 100 characters, `validation` otherwise. An `id` on a created item is refused: ids are the server's. |
 | `PATCH /families/mine/board/notes/{id}` | `{text?, color?, size?, font?, x?, y?, starts_at?, ends_at?, place?, mentions?, items?}` → `200 {note: Note}`. `mentions` REPLACES the list — a note's names are re-decided on every edit, unlike a message's, because an edit to a note notifies nobody (see "Board"); sending `text` without `mentions` clears them. A note's KIND and its picture are fixed at creation: neither is patchable, and a photo note's caption may be set to empty here. An event's `starts_at`, `ends_at` and `place` are the AUTHOR'S, like its title — `place` may be sent empty to clear it, `ends_at` null to clear it — and are refused on any other kind. `items` REPLACES a task list's lines and is the author's too (refused on any other kind): an entry `{id, text}` whose `id` the note holds is that item, rewritten and moved, and KEEPS ITS TICK; an entry `{text}` is new; an item left out is gone; an `id` that is not this note's is `validation`, and a `done` sent here is ignored (see "Board"). Any member may send `x`/`y`; only the author may send `text`, `color`, `size` or `font` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `validation`, `not_in_family`. |
 | `PUT /families/mine/board/notes/{id}/rsvp` | `{answer}` → `200 {note: Note}`. Records the caller as `going`, `maybe` or `no` on an event — an idempotent state-set, not a toggle, and ANY member may send it. Re-sending the answer already held is a no-op: no new seq, no fan-out. Errors: `invalid_rsvp` (400 — not one of the three, or the note is not an event), `note_not_found` (404), `not_in_family`. |
-| `POST /families/mine/board/notes/{id}/backdrop` | → `200 {note: Note}`. Asks the assistant for a picture to sit behind an EVENT, drawn from the note's TITLE and nothing else; the AUTHOR only. No request body: the prompt is the title (see "Board"). Replaces the backdrop it has, taking the old picture's row and bytes with it — the one way a note's picture changes after creation. Costs one image against the family's count, takes a `board_seq`, notifies nobody and leaves `content_seq` alone. Errors: `pictures_unavailable` (403 — this server has no images deployment; `assistant.images` on `GET /families/mine` is what a client checks first), `picture_refused` (400 — the provider's own filter refused to draw this title; terminal, and the note is untouched), `note_not_found` (404), `not_note_author` (403), `validation` (the note is not an event), `storage_full`, `not_in_family`; any other provider failure is `internal` (500). |
+| `POST /families/mine/board/notes/{id}/backdrop` | → `200 {note: Note}`. Asks the assistant for a picture to sit behind an EVENT, drawn from the note's TITLE and nothing else (reworded once by the text deployment when the images deployment refuses it — "A refused description is reworded once"); the AUTHOR only. No request body: the prompt is the title (see "Board"). Replaces the backdrop it has, taking the old picture's row and bytes with it — the one way a note's picture changes after creation. Costs one image against the family's count (and the rewrite's tokens, when there was one), takes a `board_seq`, notifies nobody and leaves `content_seq` alone. Errors: `pictures_unavailable` (403 — this server has no images deployment; `assistant.images` on `GET /families/mine` is what a client checks first), `picture_refused` (400 — the provider's own filter refused to draw this title, and the one rewrite did not produce a backdrop either; terminal, and the note is untouched), `note_not_found` (404), `not_note_author` (403), `validation` (the note is not an event), `storage_full`, `not_in_family`; any other provider failure is `internal` (500). |
 | `PUT /families/mine/board/notes/{id}/tasks/{item_id}` | `{done}` → `200 {note: Note}`. Ticks or unticks one line of a task list — an idempotent state-set, not a toggle, and ANY member may send it; the server records who. Re-sending the state already held is a no-op: no new seq, no fan-out. Errors: `invalid_task` (400 — the note is not a task list, or the item is not one of its lines), `note_not_found` (404), `not_in_family`. |
 | `DELETE /families/mine/board/notes/{id}/rsvp` | → `200 {note: Note}`. Retracts the caller's answer; idempotent (retracting nothing returns the event unchanged and burns no seq). Errors: `invalid_rsvp` (the note is not an event), `note_not_found`, `not_in_family`. |
 | `DELETE /families/mine/board/notes/{id}` | → `204`. Author only. Idempotent: deleting an already-deleted note is still `204` and takes no new seq. A photo note's picture goes with it. Errors: `note_not_found`, `not_note_author`, `not_in_family`. |
