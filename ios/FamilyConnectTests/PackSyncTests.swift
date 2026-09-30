@@ -264,8 +264,13 @@ struct PackSyncTests {
         let host = "pack-feed.test"
         // A page of 200 (the limit the client asks for) and then a short
         // one carrying a removal.
-        let first = (1...200).map { Self.itemJSON(id: Int64($0), packSeq: Int64(10 + $0), attachmentID: Int64(1000 + $0)) }
-            .joined(separator: ",")
+        // Typed step by step: as one expression this was past what Xcode 26's type checker would
+        // solve "in reasonable time" on CI, though Xcode 27 here compiled it without complaint.
+        let rows: [String] = (1...200).map { (number: Int) -> String in
+            let id = Int64(number)
+            return Self.itemJSON(id: id, packSeq: 10 + id, attachmentID: 1000 + id)
+        }
+        let first: String = rows.joined(separator: ",")
         let harness = try makeHarness(host: host) { request in
             let after = URLComponents(url: request.url, resolvingAgainstBaseURL: false)?
                 .queryItems?.first { $0.name == "after_seq" }?.value
