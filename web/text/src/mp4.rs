@@ -86,6 +86,13 @@ pub struct Track {
     /// edit list that skips this much of the beginning (an AAC encoder's
     /// priming frames, carried over from a source). 0 writes no edit list.
     pub skip: u32,
+    /// How long NOTHING of this track is shown before it starts, in the
+    /// movie's timescale ([`MOVIE_TIMESCALE`]): an empty edit in front of
+    /// the media. It is how a file says that one track starts later than
+    /// the other — a phone whose camera came up a third of a second after
+    /// its microphone writes one — and a track written without it starts
+    /// that much early against the other, for the whole clip. 0 writes none.
+    pub lead: u32,
 }
 
 impl Track {
@@ -104,6 +111,13 @@ impl Track {
     /// The length a player presents — the media less what the edit skips.
     fn presented_duration(&self) -> u64 {
         self.media_duration().saturating_sub(u64::from(self.skip))
+    }
+
+    /// How long the track takes in the MOVIE, in its milliseconds: what is
+    /// presented, after the lead of nothing in front of it. It is what
+    /// `tkhd` states, and the sum of the edit list's segments.
+    fn movie_duration(&self) -> u64 {
+        u64::from(self.lead) + in_movie_time(self.presented_duration(), self.timescale)
     }
 }
 
@@ -170,7 +184,7 @@ struct BitWriter {
 impl BitWriter {
     fn put(&mut self, value: u32, count: u32) {
         for shift in (0..count).rev() {
-            if self.used % 8 == 0 {
+            if self.used.is_multiple_of(8) {
                 self.bytes.push(0);
             }
             let bit = ((value >> shift) & 1) as u8;
@@ -259,11 +273,18 @@ fn chunks(tracks: &[Track]) -> Vec<Chunk> {
         }
         all.extend(current);
     }
-    // By time — compared exactly, across two timescales, by cross
-    // multiplication — and the lower-numbered track first on a tie.
+    // By the time each is SHOWN — a track's lead counts, or the sound of a
+    // moment would sit that far from its picture in the file — compared
+    // exactly, across two timescales, by cross multiplication; and the
+    // lower-numbered track first on a tie.
+    let shown = |chunk: &Chunk| {
+        let track = &tracks[chunk.track];
+        let timescale = u128::from(track.timescale);
+        u128::from(chunk.start) * u128::from(MOVIE_TIMESCALE) + u128::from(track.lead) * timescale
+    };
     all.sort_by(|a, b| {
-        let left = u128::from(a.start) * u128::from(tracks[b.track].timescale);
-        let right = u128::from(b.start) * u128::from(tracks[a.track].timescale);
+        let left = shown(a) * u128::from(tracks[b.track].timescale);
+        let right = shown(b) * u128::from(tracks[a.track].timescale);
         left.cmp(&right).then(a.track.cmp(&b.track))
     });
     all
@@ -347,7 +368,13 @@ fn boxed(out: &mut Vec<u8>, kind: &[u8; 4], body: impl FnOnce(&mut Vec<u8>)) {
 }
 
 /// A full box: a box whose body starts with a version and 24 bits of flags.
-fn full(out: &mut Vec<u8>, kind: &[u8; 4], version: u8, flags: u32, body: impl FnOnce(&mut Vec<u8>)) {
+fn full(
+    out: &mut Vec<u8>,
+    kind: &[u8; 4],
+    version: u8,
+    flags: u32,
+    body: impl FnOnce(&mut Vec<u8>),
+) {
     boxed(out, kind, |out| {
         out.push(version);
         out.extend_from_slice(&flags.to_be_bytes()[1..]);
@@ -398,11 +425,7 @@ fn in_movie_time(ticks: u64, timescale: u32) -> u64 {
 
 fn moov(tracks: &[Track], chunks: &[Chunk], offsets: &[u64], wide: bool) -> Vec<u8> {
     let mut out = Vec::new();
-    let movie_duration = tracks
-        .iter()
-        .map(|track| in_movie_time(track.presented_duration(), track.timescale))
-        .max()
-        .unwrap_or(0);
+    let movie_duration = tracks.iter().map(Track::movie_duration).max().unwrap_or(0);
     boxed(&mut out, b"moov", |out| {
         full(out, b"mvhd", 0, 0, |out| {
             u32be(out, 0); // creation time: none — a date here is a date leaked
@@ -437,7 +460,7 @@ fn trak(out: &mut Vec<u8>, id: u32, track: &Track, chunks: &[(&Chunk, u64)], wid
             u32be(out, 0);
             u32be(out, id);
             u32be(out, 0);
-            u32be(out, presented.min(u64::from(u32::MAX)) as u32);
+            u32be(out, track.movie_duration().min(u64::from(u32::MAX)) as u32);
             out.extend_from_slice(&[0; 8]);
             u16be(out, 0); // layer
             u16be(out, 0); // alternate group
@@ -451,10 +474,17 @@ fn trak(out: &mut Vec<u8>, id: u32, track: &Track, chunks: &[(&Chunk, u64)], wid
             u32be(out, u32::from(width) << 16);
             u32be(out, u32::from(height) << 16);
         });
-        if track.skip > 0 {
+        if track.skip > 0 || track.lead > 0 {
             boxed(out, b"edts", |out| {
                 full(out, b"elst", 0, 0, |out| {
-                    u32be(out, 1);
+                    u32be(out, 1 + u32::from(track.lead > 0));
+                    if track.lead > 0 {
+                        // An empty edit: this long, of no media at all (−1).
+                        u32be(out, track.lead);
+                        u32be(out, u32::MAX);
+                        u16be(out, 1);
+                        u16be(out, 0);
+                    }
                     u32be(out, presented.min(u64::from(u32::MAX)) as u32);
                     u32be(out, track.skip);
                     u16be(out, 1); // rate 1.0
@@ -675,9 +705,7 @@ fn esds(out: &mut Vec<u8>, asc: &[u8], avg_bitrate: u32, max_bitrate: u32) {
         let mut decoder_config = vec![
             0x40, // MPEG-4 Audio
             0x15, // an audio stream (5 << 2), not upstream, reserved bit set
-            0,
-            0,
-            0, // buffer size: not stated
+            0, 0, 0, // buffer size: not stated
         ];
         decoder_config.extend_from_slice(&max_bitrate.max(avg_bitrate).to_be_bytes());
         decoder_config.extend_from_slice(&avg_bitrate.to_be_bytes());
@@ -767,6 +795,7 @@ mod tests {
                 })
                 .collect(),
             skip: 0,
+            lead: 0,
         };
         (track, payloads)
     }
@@ -802,7 +831,11 @@ mod tests {
     #[test]
     fn every_chunk_offset_points_at_its_samples_bytes() {
         let (track, payloads) = voice(200);
-        let file = write(&[track.clone()], &[payloads.clone()], Brand::M4a);
+        let file = write(
+            std::slice::from_ref(&track),
+            std::slice::from_ref(&payloads),
+            Brand::M4a,
+        );
         let stbl = find(&file, &[b"moov", b"trak", b"mdia", b"minf", b"stbl"]).unwrap();
         let stco = find(stbl, &[b"stco"]).unwrap();
         let stsc = find(stbl, &[b"stsc"]).unwrap();
@@ -834,7 +867,10 @@ mod tests {
                 .1;
             let mut at = be32(stco, 4 + 4 * chunk) as usize;
             for _ in 0..per_chunk {
-                assert_eq!(&file[at..at + payloads[sample].len()], &payloads[sample][..]);
+                assert_eq!(
+                    &file[at..at + payloads[sample].len()],
+                    &payloads[sample][..]
+                );
                 at += payloads[sample].len();
                 sample += 1;
             }
@@ -926,6 +962,7 @@ mod tests {
                 })
                 .collect(),
             skip: 0,
+            lead: 0,
         };
         (track, payloads)
     }
@@ -947,14 +984,14 @@ mod tests {
         }
         assert!(switches >= 10, "{switches}");
         // Each track's own samples stay in order.
-        for track in 0..2 {
+        for (index, track) in tracks.iter().enumerate() {
             let mine: Vec<usize> = layout
                 .order
                 .iter()
-                .filter(|(t, _)| *t == track)
+                .filter(|(t, _)| *t == index)
                 .map(|(_, s)| *s)
                 .collect();
-            assert_eq!(mine, (0..tracks[track].samples.len()).collect::<Vec<_>>());
+            assert_eq!(mine, (0..track.samples.len()).collect::<Vec<_>>());
         }
         let file = write(&tracks, &payloads, Brand::Mp4);
         assert_eq!(file.len() as u64, layout.total_len);
@@ -991,6 +1028,55 @@ mod tests {
         let (plain, payloads) = voice(100);
         let file = write(&[plain], &[payloads], Brand::M4a);
         assert!(find(&file, &[b"moov", b"trak", b"edts"]).is_none());
+    }
+
+    /// A track that starts late says so with an empty edit in front of its
+    /// media — and the track and the movie are that much longer for it.
+    #[test]
+    fn a_lead_is_an_empty_edit_in_front_of_the_media() {
+        let (mut video, video_payloads) = video_track(90); // 3 s at 30 fps
+        video.lead = 300;
+        let (mut audio, audio_payloads) = voice(141); // 3.008 s
+        audio.skip = 1024;
+        let file = write(
+            &[video, audio],
+            &[video_payloads, audio_payloads],
+            Brand::Mp4,
+        );
+        let elst = find(&file, &[b"moov", b"trak", b"edts", b"elst"]).unwrap();
+        assert_eq!(be32(elst, 4), 2, "the lead, then the media");
+        assert_eq!((be32(elst, 8), be32(elst, 12)), (300, u32::MAX));
+        assert_eq!(be32(elst, 16), 0x0001_0000, "at normal rate");
+        assert_eq!((be32(elst, 20), be32(elst, 24)), (3000, 0));
+        let tkhd = find(&file, &[b"moov", b"trak", b"tkhd"]).unwrap();
+        assert_eq!(be32(tkhd, 20), 3300, "the track is its lead longer");
+        let mvhd = find(&file, &[b"moov", b"mvhd"]).unwrap();
+        assert_eq!(be32(mvhd, 16), 3300, "and so is the movie");
+        // A lead alone, with nothing skipped, is still an edit list.
+        let (mut late, payloads) = voice(47);
+        late.lead = 120;
+        let file = write(&[late], &[payloads], Brand::M4a);
+        let elst = find(&file, &[b"moov", b"trak", b"edts", b"elst"]).unwrap();
+        assert_eq!(be32(elst, 4), 2);
+        assert_eq!((be32(elst, 8), be32(elst, 12)), (120, u32::MAX));
+        assert_eq!((be32(elst, 20), be32(elst, 24)), (1003, 0));
+    }
+
+    /// The file keeps a moment's sound beside its picture: a track with a
+    /// lead is laid out by when it is SHOWN, not by where its media starts.
+    #[test]
+    fn a_late_track_is_interleaved_by_when_it_is_shown() {
+        let (mut video, _) = video_track(90);
+        video.lead = 1000;
+        let (audio, _) = voice(188); // 4.01 s
+        let layout = layout(&[video, audio], Brand::Mp4);
+        // A second of sound comes before the first frame of the picture.
+        let first_frame = layout.order.iter().position(|(t, _)| *t == 0).unwrap();
+        let sound_before = layout.order[..first_frame].len();
+        assert!(
+            (46..=48).contains(&sound_before),
+            "{sound_before} frames of sound before the picture"
+        );
     }
 
     #[test]

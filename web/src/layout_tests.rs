@@ -1206,3 +1206,120 @@ async fn a_tall_picture_in_the_viewer_fits_the_window() {
     );
     root.remove();
 }
+
+/// A file pasted onto the page, the way ⌘V outside the box delivers one.
+fn paste(file: &web_sys::File) {
+    js_sys::Function::new_with_args(
+        "file",
+        "const carried = new DataTransfer(); carried.items.add(file); \
+         document.body.dispatchEvent(new ClipboardEvent('paste', \
+           { clipboardData: carried, bubbles: true, cancelable: true }));",
+    )
+    .call1(&wasm_bindgen::JsValue::NULL, file)
+    .expect("pasting");
+}
+
+/// The media notice's words, once they satisfy `wanted` — waited for, up to
+/// `ms`.
+async fn notice_saying(root: &Element, ms: u32, wanted: impl Fn(&str) -> bool) -> Option<String> {
+    for _ in 0..ms / 20 {
+        let said = root
+            .query_selector(".media-notice")
+            .expect("a selector")
+            .and_then(|notice| notice.text_content());
+        if let Some(said) = said.filter(|said| wanted(said)) {
+            return Some(said);
+        }
+        TimeoutFuture::new(20).await;
+    }
+    None
+}
+
+fn staged_so_far(log: &Rc<RefCell<Vec<Action>>>) -> usize {
+    log.borrow()
+        .iter()
+        .filter(|action| matches!(action, Action::Stage { .. }))
+        .count()
+}
+
+/// A video outside the profile is transcoded as it is staged — seconds for
+/// a short clip, minutes for a long one — and the composer is busy for as
+/// long. So the notice says how far it has got, and offers a way out:
+/// Cancel gives the composer back at once and stages NOTHING, neither the
+/// transcode nor the original in its place. And a pane that goes away
+/// takes its transcode with it.
+#[wasm_bindgen_test]
+async fn a_long_preparation_says_how_far_it_is_and_can_be_called_off() {
+    let root = pane();
+    let (log, on_action) = recorder();
+    let asked = props_with(vec![message(1)], None, on_action);
+    let handle =
+        yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), asked).render();
+    TimeoutFuture::new(50).await;
+    let clip = crate::encode::testing::film(1280, 720, 60, 3, 8_000_000, Some(256_000)).await;
+    let options = web_sys::FilePropertyBag::new();
+    options.set_type("video/mp4");
+    let picked = web_sys::File::new_with_blob_sequence_and_options(
+        &js_sys::Array::of1(&clip),
+        "IMG_0042.mp4",
+        &options,
+    )
+    .expect("a file");
+
+    paste(&picked);
+    let said = notice_saying(&root, 10_000, |said| said.contains('%'))
+        .await
+        .expect("the notice says how far the transcode has got");
+    assert!(said.starts_with("Preparing…"), "{said}");
+    assert_eq!(staged_so_far(&log), 0);
+    // While it is busy, the way out is Cancel — not a notice to dismiss.
+    assert!(root
+        .query_selector(".media-notice button[aria-label='Dismiss']")
+        .unwrap()
+        .is_none());
+    click_labelled(&root, ".media-notice button", "Cancel");
+    TimeoutFuture::new(50).await;
+    assert!(
+        root.query_selector(".media-notice").unwrap().is_none(),
+        "the composer is given back at once"
+    );
+    // Long enough for the whole transcode, had it gone on.
+    TimeoutFuture::new(2_500).await;
+    assert_eq!(staged_so_far(&log), 0, "nothing of it was staged");
+    assert!(root.query_selector(".media-notice").unwrap().is_none());
+
+    // The composer is free again: the same file, left alone, is staged —
+    // as the profile's MP4, not as the original.
+    paste(&picked);
+    for _ in 0..500 {
+        if staged_so_far(&log) > 0 {
+            break;
+        }
+        TimeoutFuture::new(20).await;
+    }
+    let staged = log
+        .borrow()
+        .iter()
+        .find_map(|action| match action {
+            Action::Stage { item, .. } => Some(item.clone()),
+            _ => None,
+        })
+        .expect("staged");
+    assert_eq!(staged.kind, "video");
+    assert!((staged.size as f64) < clip.size() / 2.0);
+    TimeoutFuture::new(50).await;
+    assert!(
+        root.query_selector(".media-notice").unwrap().is_none(),
+        "and the notice goes when it is done"
+    );
+
+    // A pane that goes away mid-transcode stages nothing after it.
+    paste(&picked);
+    notice_saying(&root, 10_000, |said| said.contains('%'))
+        .await
+        .expect("under way again");
+    handle.destroy();
+    TimeoutFuture::new(2_500).await;
+    assert_eq!(staged_so_far(&log), 1, "only the one that was let finish");
+    root.remove();
+}

@@ -10,13 +10,23 @@
 //! refuses one it cannot read: its original bytes would carry every piece
 //! of EXIF the re-encode exists to leave behind, GPS first among them.
 //!
-//! A VIDEO goes untouched when it fits the ceiling, with its size, length
-//! and a poster frame read by the browser's own player. One over the
-//! ceiling is refused: re-encoding in a tab is not something a browser does
-//! well, and the Mac's 1080p export has no honest equivalent here.
+//! A VIDEO is brought to the protocol's profile — H.264 and AAC in an MP4,
+//! 720 on its short side, 30 frames a second — unless it is within it
+//! already, in which case it goes untouched (docs/protocol.md, "Preparing
+//! media before upload"). What it becomes is fc_text::media_plan's decision,
+//! the same one every other client makes; making it is crate::encode's job,
+//! with the browser's own codecs. Where this browser cannot — no encoder, a
+//! codec it does not decode, a failure half way — the file goes exactly as
+//! it went before there was a profile: untouched within the ceiling, refused
+//! over it (rule C). Either way it carries its size, length and a poster
+//! frame read by the browser's own player. A transcode can take minutes,
+//! so whoever asks for a file to be prepared holds a [`Job`] it can stop:
+//! a stopped preparation is `Cancelled`, and sends nothing at all.
 //!
-//! AUDIO and FILES go untouched; what kind each is, and what it is called,
-//! are fc_text::media's rules.
+//! AUDIO follows the audio rules the same way: uncompressed and lossless
+//! sound, Ogg, and MP3 or AAC above 192 kbit/s become M4A; everything else
+//! goes untouched. FILES go untouched; what kind each is, and what it is
+//! called, are fc_text::media's rules.
 //!
 //! A PROFILE PICTURE is its own thing (ios `Core/AvatarImage.swift`): the
 //! largest centred square, at most 512 across, over white, as a JPEG stepped
@@ -28,6 +38,7 @@ use std::rc::Rc;
 
 use fc_text::avatar;
 use fc_text::media::{self, Route};
+use fc_text::media_plan::{self, AudioPlan, Upload};
 use futures::channel::oneshot;
 use futures::future::{select, Either};
 use gloo_timers::future::TimeoutFuture;
@@ -39,6 +50,8 @@ use web_sys::{
     HtmlVideoElement, ImageBitmap, ImageBitmapOptions, ImageOrientation, Url,
 };
 
+pub use crate::encode::Job;
+use crate::encode::{self, Planned};
 use crate::staged::Prepared;
 
 /// Why something could not be staged — each with the Mac's sentence.
@@ -48,6 +61,10 @@ pub enum PrepError {
     Unreadable,
     /// Offered to the board, which pins photos and nothing else.
     NotAPhoto,
+    /// Its [`Job`] was stopped while it was being prepared. Not a failure,
+    /// and above all not rule C: whoever stopped it wants NOTHING sent, not
+    /// the original in place of the transcode they called off.
+    Cancelled,
 }
 
 impl PrepError {
@@ -56,19 +73,29 @@ impl PrepError {
             PrepError::TooLarge => t("That file is over the 100 MB limit."),
             PrepError::Unreadable => t("Couldn't read that file."),
             PrepError::NotAPhoto => t("The board pins photos only."),
+            // Nothing to say: the person who cancelled knows they did.
+            PrepError::Cancelled => "",
         }
     }
 }
 
-/// Prepare one picked, dropped or pasted file.
-pub async fn prepare(file: &File) -> Result<Prepared, PrepError> {
+/// Prepare one picked, dropped or pasted file. `job` is how the caller
+/// stops it and hears how far it has got — a video outside the profile is
+/// transcoded here, which for a long clip is minutes.
+pub async fn prepare(file: &File, job: &Job) -> Result<Prepared, PrepError> {
     let name = file.name();
     let head = head(file, 12).await;
     match media::route(&file.type_(), &name, &head) {
         Route::Photo => photo(file).await,
-        Route::Video => video(file).await,
-        Route::Audio(mime) => audio(file, mime).await,
-        Route::File => as_file(file),
+        Route::Video => video(file, job).await,
+        Route::Audio(mime) => audio(file, mime, job).await,
+        // AIFF and FLAC are not types the server takes as audio, so the
+        // router calls them files — and the audio rules say to re-encode
+        // them into one it does.
+        Route::File => match media::unaccepted_audio(&file.type_(), &name, &head) {
+            Some(container) => audio(file, container, job).await,
+            None => as_file(file),
+        },
     }
 }
 
@@ -324,25 +351,84 @@ fn finite_ms(seconds: f64) -> Option<i64> {
     (seconds.is_finite() && seconds > 0.0).then(|| (seconds * 1000.0).round() as i64)
 }
 
-async fn video(file: &File) -> Result<Prepared, PrepError> {
-    within_limit(file)?;
+/// What a send does with a transcode's outcome: the result, or the source
+/// as it went before (docs/protocol.md, rules C and D).
+///
+/// `result_bytes` is None when nothing was made — the plan kept the source
+/// (rule A), or this browser could not transcode it (rule C). A result
+/// BIGGER than a source that could itself be sent is thrown away (rule D);
+/// one bigger than a source that could not is still the only thing there
+/// is to send.
+fn chosen(kind: &str, container: &str, source_bytes: u64, result_bytes: Option<u64>) -> Upload {
+    // `honest`: the router has already held these bytes to the server's
+    // own magic-number check, or they would not be on this path.
+    let sendable = media_plan::sendable(kind, container, true, source_bytes, media::SIZE_LIMIT);
+    match result_bytes {
+        Some(result_bytes) => media_plan::keep_smaller(source_bytes, sendable, result_bytes),
+        None => Upload::Source,
+    }
+}
+
+async fn video(file: &File, job: &Job) -> Result<Prepared, PrepError> {
     let mime = media::declared_type(&file.type_(), &file.name());
+    let container = if mime == "video/quicktime" {
+        "video/quicktime"
+    } else {
+        "video/mp4"
+    };
+    let made = match encode::video(file, container, job).await {
+        Some(Planned::Made(blob)) => Some(blob),
+        Some(Planned::Keep) | None => None,
+    };
+    // Asked BEFORE rule C is: a stopped transcode also made nothing, and
+    // must not be mistaken for one this browser could not do.
+    if job.stopped() {
+        return Err(PrepError::Cancelled);
+    }
+    sent_video(file, container, made).await
+}
+
+/// What goes for a picked video once the transcode has had its say: `made`
+/// is its result, or None when there is none — the plan kept the source
+/// (rule A) or this browser could not transcode it (rule C).
+async fn sent_video(
+    file: &File,
+    container: &'static str,
+    made: Option<Blob>,
+) -> Result<Prepared, PrepError> {
+    let result_bytes = made.as_ref().map(|blob| blob.size() as u64);
+    match (
+        chosen("video", container, file.size() as u64, result_bytes),
+        made,
+    ) {
+        (Upload::Result, Some(blob)) => {
+            within_limit(&blob)?;
+            Ok(described_video(blob, "video/mp4").await)
+        }
+        // Rule A, rule C, or rule D's "the source instead": what this did
+        // before any of them — untouched within the ceiling, refused over it.
+        _ => {
+            within_limit(file)?;
+            Ok(described_video(file.clone().into(), container).await)
+        }
+    }
+}
+
+/// `blob`, going as a video of type `mime`, with what the browser's own
+/// player can read of it.
+async fn described_video(blob: Blob, mime: &str) -> Prepared {
     let mut prepared = Prepared {
         kind: "video".into(),
-        mime: if mime == "video/quicktime" {
-            mime
-        } else {
-            "video/mp4".into()
-        },
-        size: file.size() as i64,
-        file: Some(file.clone().into()),
+        mime: mime.into(),
+        size: blob.size() as i64,
+        file: Some(blob.clone()),
         ..Prepared::default()
     };
     // Everything below is what the browser can READ of it. A codec it
     // cannot play still goes — the server checks the container, not the
     // codec — just without its size, length or poster.
-    let Some((element, url)) = media_element("video", file) else {
-        return Ok(prepared);
+    let Some((element, url)) = media_element("video", &blob) else {
+        return prepared;
     };
     let video: HtmlVideoElement = element.clone().unchecked_into();
     if wait_for(&element, "loadedmetadata", 10_000).await {
@@ -356,7 +442,7 @@ async fn video(file: &File) -> Result<Prepared, PrepError> {
     }
     element.set_src("");
     let _ = Url::revoke_object_url(&url);
-    Ok(prepared)
+    prepared
 }
 
 /// A frame worth drawing: past a fade-in first, then the very start, then a
@@ -387,14 +473,44 @@ async fn poster(video: &HtmlVideoElement, duration: f64) -> Option<Blob> {
     None
 }
 
-async fn audio(file: &File, mime: &'static str) -> Result<Prepared, PrepError> {
-    within_limit(file)?;
+/// A picked sound file, which would be sent as `container`: one of the
+/// types the server takes as audio, or AIFF or FLAC, which it does not.
+async fn audio(file: &File, container: &'static str, job: &Job) -> Result<Prepared, PrepError> {
     let name = file.name();
+    let probe = encode::probe_audio(file, container).await;
+    let made = match media_plan::plan_audio(&probe.source) {
+        AudioPlan::Transcode { .. } => encode::audio(file, &probe, job).await,
+        AudioPlan::Keep => None,
+    };
+    if job.stopped() {
+        return Err(PrepError::Cancelled);
+    }
+    let result_bytes = made.as_ref().map(|track| track.blob.size() as u64);
+    let size = file.size() as u64;
+    if let (Upload::Result, Some(track)) = (chosen("audio", container, size, result_bytes), made) {
+        within_limit(&track.blob)?;
+        return Ok(Prepared {
+            kind: "audio".into(),
+            mime: "audio/mp4".into(),
+            size: track.blob.size() as i64,
+            duration_ms: Some(track.duration_ms),
+            // A track's title is worth showing; a recording has none.
+            name: media::sanitized_name(&media::m4a_name(&name)),
+            file: Some(track.blob),
+            ..Prepared::default()
+        });
+    }
+    // What went before there were audio rules (rule C). For a type the
+    // server takes that is the file itself, untouched; AIFF and FLAC were
+    // never audio to it, and go as the files they always went as.
+    if media::audio_mime(container, "").is_none() {
+        return as_file(file);
+    }
+    within_limit(file)?;
     let mut prepared = Prepared {
         kind: "audio".into(),
-        mime: mime.into(),
+        mime: container.into(),
         size: file.size() as i64,
-        // A track's title is worth showing; a recording has none.
         name: media::sanitized_name(&name),
         file: Some(file.clone().into()),
         ..Prepared::default()
@@ -468,7 +584,7 @@ mod tests {
     #[wasm_bindgen_test]
     async fn a_photo_is_downscaled_to_jpeg_with_a_preview() {
         let source = png(3000, 1500).await;
-        let prepared = prepare(&file(&source, "wide.png", "image/png"))
+        let prepared = prepare(&file(&source, "wide.png", "image/png"), &Job::default())
             .await
             .unwrap();
         assert_eq!(prepared.kind, "photo");
@@ -525,9 +641,12 @@ mod tests {
         let array = js_sys::Uint8Array::from(bytes.as_slice());
         let turned = Blob::new_with_u8_array_sequence(&js_sys::Array::of1(&array)).unwrap();
 
-        let prepared = prepare(&file(&turned, "IMG_0003.JPG", "image/jpeg"))
-            .await
-            .unwrap();
+        let prepared = prepare(
+            &file(&turned, "IMG_0003.JPG", "image/jpeg"),
+            &Job::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             (prepared.width, prepared.height),
@@ -550,7 +669,7 @@ mod tests {
     #[wasm_bindgen_test]
     async fn a_small_photo_keeps_its_size() {
         let source = png(640, 480).await;
-        let prepared = prepare(&file(&source, "small.png", "image/png"))
+        let prepared = prepare(&file(&source, "small.png", "image/png"), &Job::default())
             .await
             .unwrap();
         assert_eq!((prepared.width, prepared.height), (Some(640), Some(480)));
@@ -563,7 +682,7 @@ mod tests {
     async fn an_undecodable_photo_is_refused_not_sent_as_it_was() {
         let parts = js_sys::Array::of1(&JsValue::from_str("not really a picture"));
         let blob = Blob::new_with_str_sequence(&parts).unwrap();
-        let refused = prepare(&file(&blob, "IMG_0001.heic", "image/heic")).await;
+        let refused = prepare(&file(&blob, "IMG_0001.heic", "image/heic"), &Job::default()).await;
         assert_eq!(refused, Err(PrepError::Unreadable));
         assert_eq!(PrepError::Unreadable.message(), "Couldn't read that file.");
     }
@@ -573,9 +692,12 @@ mod tests {
     async fn a_gif_goes_as_itself() {
         let parts = js_sys::Array::of1(&JsValue::from_str("GIF89a…"));
         let blob = Blob::new_with_str_sequence(&parts).unwrap();
-        let prepared = prepare(&file(&blob, "dance:party.gif", "image/gif"))
-            .await
-            .unwrap();
+        let prepared = prepare(
+            &file(&blob, "dance:party.gif", "image/gif"),
+            &Job::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(prepared.kind, "file");
         assert_eq!(prepared.name.as_deref(), Some("dance_party.gif"));
         assert!(prepared.preview.is_none());
@@ -595,7 +717,7 @@ mod tests {
         canvas.set_height(64);
         // Nothing drawn at all: every pixel fully transparent.
         let clear = to_blob(&canvas, "image/png", 1.0).await.unwrap();
-        let prepared = prepare(&file(&clear, "clear.png", "image/png"))
+        let prepared = prepare(&file(&clear, "clear.png", "image/png"), &Job::default())
             .await
             .unwrap();
         let bitmap = decode(prepared.file.as_ref().unwrap()).await.unwrap();
@@ -620,6 +742,643 @@ mod tests {
             pixel[0] > 240 && pixel[1] > 240 && pixel[2] > 240,
             "{:?}",
             &pixel[..3]
+        );
+    }
+
+    // --- sound and video (docs/protocol.md, "Preparing media before upload") ---
+
+    use crate::encode::testing::{blob, film, noise, read, whole, PORTRAIT, QUICKTIME, WITHIN};
+    use crate::webcodecs::testing::{refusing, without, Lack};
+    use fc_text::{mp4_read, wav};
+    use std::cell::Cell;
+
+    const AAC_256K: &[u8] = include_bytes!("../text/fixtures/aac-256k.m4a");
+    const AAC_128K: &[u8] = include_bytes!("../text/fixtures/aac-128k.m4a");
+    const FLAC: &[u8] = include_bytes!("../text/fixtures/lossless.flac");
+    const AIFF: &[u8] = include_bytes!("../text/fixtures/uncompressed.aiff");
+    const ALAC: &[u8] = include_bytes!("../text/fixtures/lossless-alac.m4a");
+
+    fn picked(bytes: &[u8], name: &str, mime: &str) -> File {
+        file(&blob(bytes, mime), name, mime)
+    }
+
+    /// What an M4A this client made holds: channels, rate, bit/s.
+    async fn sound_of(prepared: &Prepared) -> (u8, u32, u64) {
+        let bytes = whole(prepared.file.as_ref().unwrap()).await;
+        assert!(media::matches_magic("audio/mp4", &bytes[..12]));
+        let (kinds, movie) = read(&bytes);
+        assert_eq!(
+            kinds,
+            vec![*b"ftyp", *b"moov", *b"mdat"],
+            "the index comes first"
+        );
+        let track = movie.audio().unwrap();
+        let config = mp4_read::audio_config(&track.entry.as_ref().unwrap().config).unwrap();
+        assert_eq!(config.object_type, 2, "AAC-LC");
+        (
+            config.channels,
+            config.sample_rate,
+            track.data_rate().unwrap(),
+        )
+    }
+
+    /// Rule D, and what stands behind it: a result is used unless it is
+    /// bigger than a source that could itself have gone.
+    #[wasm_bindgen_test]
+    fn a_result_bigger_than_a_sendable_source_is_thrown_away() {
+        let limit = media::SIZE_LIMIT;
+        assert_eq!(chosen("video", "video/mp4", 1_000, None), Upload::Source);
+        assert_eq!(
+            chosen("video", "video/mp4", 1_000, Some(999)),
+            Upload::Result
+        );
+        assert_eq!(
+            chosen("video", "video/mp4", 1_000, Some(1_000)),
+            Upload::Result
+        );
+        assert_eq!(
+            chosen("video", "video/quicktime", 1_000, Some(1_001)),
+            Upload::Source
+        );
+        // Over the ceiling the source cannot go, so the result does.
+        assert_eq!(
+            chosen("video", "video/mp4", limit + 1, Some(limit + 2)),
+            Upload::Result
+        );
+        // AIFF and FLAC are not audio to the server at any size.
+        assert_eq!(
+            chosen("audio", "audio/flac", 1_000, Some(5_000)),
+            Upload::Result
+        );
+        assert_eq!(
+            chosen("audio", "audio/wav", 1_000, Some(5_000)),
+            Upload::Source
+        );
+    }
+
+    /// AAC above 192 kbit/s is re-encoded — stereo, so at 128 000 — and AAC
+    /// at 128 kbit/s goes byte for byte as it was.
+    #[wasm_bindgen_test]
+    async fn aac_over_192k_is_re_encoded_and_under_it_left_alone() {
+        let prepared = prepare(
+            &picked(AAC_256K, "Song.m4a", "audio/x-m4a"),
+            &Job::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (prepared.kind.as_str(), prepared.mime.as_str()),
+            ("audio", "audio/mp4")
+        );
+        assert_eq!(prepared.name.as_deref(), Some("Song.m4a"));
+        assert!(
+            (prepared.size as usize) < AAC_256K.len(),
+            "{} bytes",
+            prepared.size
+        );
+        assert_eq!(prepared.size, prepared.file.as_ref().unwrap().size() as i64);
+        let (channels, sample_rate, rate) = sound_of(&prepared).await;
+        assert_eq!(
+            (channels, sample_rate),
+            (2, 44_100),
+            "its own rate, never raised"
+        );
+        assert!(rate <= 128_000 * 9 / 8, "{rate} bit/s");
+        let length = prepared.duration_ms.unwrap();
+        assert!((500..=600).contains(&length), "{length} ms");
+
+        let kept = prepare(&picked(AAC_128K, "Quiet.m4a", "audio/mp4"), &Job::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            (kept.kind.as_str(), kept.mime.as_str()),
+            ("audio", "audio/mp4")
+        );
+        assert_eq!(
+            whole(kept.file.as_ref().unwrap()).await,
+            AAC_128K,
+            "untouched"
+        );
+    }
+
+    /// Uncompressed sound becomes M4A: mono at 64 000, at a rate the
+    /// encoder takes, as long as it was — and under a name that says so.
+    #[wasm_bindgen_test]
+    async fn a_wav_becomes_an_m4a_a_fraction_of_its_size() {
+        let pcm = wav::encode(&noise(16_000 * 3, 16_000, 5), 16_000);
+        let prepared = prepare(&picked(&pcm, "Memo 12.wav", "audio/wav"), &Job::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            (prepared.kind.as_str(), prepared.mime.as_str()),
+            ("audio", "audio/mp4")
+        );
+        assert_eq!(prepared.name.as_deref(), Some("Memo 12.m4a"));
+        assert_eq!(prepared.duration_ms, Some(3_000));
+        let (channels, sample_rate, rate) = sound_of(&prepared).await;
+        assert_eq!((channels, sample_rate), (1, 48_000));
+        assert!((40_000..=72_000).contains(&rate), "{rate} bit/s");
+        assert!(
+            (prepared.size as usize) < pcm.len() / 3,
+            "{} of {}",
+            prepared.size,
+            pcm.len()
+        );
+    }
+
+    /// FLAC is not a type the server takes as audio: before the audio rules
+    /// it went as a file. Re-encoded, it goes as audio — even where the
+    /// result is BIGGER, because the source was never sendable as audio.
+    #[wasm_bindgen_test]
+    async fn a_flac_goes_as_audio_once_it_is_re_encoded() {
+        let prepared = prepare(&picked(FLAC, "Concert.flac", "audio/flac"), &Job::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            (prepared.kind.as_str(), prepared.mime.as_str()),
+            ("audio", "audio/mp4")
+        );
+        assert_eq!(prepared.name.as_deref(), Some("Concert.m4a"));
+        // The fixture is one channel: the mono row, 64 000.
+        let (channels, _, rate) = sound_of(&prepared).await;
+        assert_eq!(channels, 1);
+        assert!(rate <= 64_000 * 9 / 8, "{rate} bit/s");
+    }
+
+    /// Whether this browser's own decoder reads `bytes` as sound — asked of
+    /// the browser, so that a test knows which of two right answers to
+    /// hold it to instead of accepting either.
+    async fn decodes(bytes: &[u8]) -> bool {
+        let context =
+            web_sys::OfflineAudioContext::new_with_number_of_channels_and_length_and_sample_rate(
+                1, 1, 48_000.0,
+            )
+            .unwrap();
+        let buffer = js_sys::Uint8Array::from(bytes).buffer();
+        match context.decode_audio_data(&buffer) {
+            Ok(decoding) => JsFuture::from(decoding).await.is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    /// Rule C for sound: what this browser cannot decode or cannot encode
+    /// goes exactly as it went before — an accepted type untouched, AIFF
+    /// and FLAC as the files they always were.
+    #[wasm_bindgen_test]
+    async fn sound_this_browser_cannot_re_encode_goes_as_it_did_before() {
+        // AIFF and ALAC decode in some browsers and not in others. Which
+        // this one is, it says — and is then held to: re-encoded where it
+        // decodes them, untouched where it does not. Never "either".
+        let aiff = prepare(&picked(AIFF, "Take.aiff", "audio/aiff"), &Job::default())
+            .await
+            .unwrap();
+        if decodes(AIFF).await {
+            assert_eq!(
+                (aiff.kind.as_str(), aiff.mime.as_str()),
+                ("audio", "audio/mp4")
+            );
+            assert_eq!(aiff.name.as_deref(), Some("Take.m4a"));
+            assert_eq!(aiff.duration_ms, Some(500));
+            let (channels, _, rate) = sound_of(&aiff).await;
+            assert_eq!(channels, 1);
+            assert!(rate <= 64_000 * 9 / 8, "{rate} bit/s");
+        } else {
+            console_log!("This browser does not decode AIFF: it goes as the file it was.");
+            assert_eq!(
+                (aiff.kind.as_str(), aiff.mime.as_str()),
+                ("file", "audio/aiff")
+            );
+            assert_eq!(aiff.name.as_deref(), Some("Take.aiff"));
+            assert_eq!(whole(aiff.file.as_ref().unwrap()).await, AIFF);
+        }
+        let alac = prepare(&picked(ALAC, "Album.m4a", "audio/mp4"), &Job::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            (alac.kind.as_str(), alac.mime.as_str()),
+            ("audio", "audio/mp4")
+        );
+        if decodes(ALAC).await {
+            assert_ne!(whole(alac.file.as_ref().unwrap()).await, ALAC);
+            let (channels, _, rate) = sound_of(&alac).await;
+            assert_eq!(channels, 1);
+            assert!(rate <= 64_000 * 9 / 8, "{rate} bit/s");
+        } else {
+            console_log!("This browser does not decode ALAC: it goes untouched.");
+            assert_eq!(whole(alac.file.as_ref().unwrap()).await, ALAC);
+            assert_eq!(alac.size as usize, ALAC.len());
+        }
+
+        // A browser with no AAC encoder re-encodes nothing.
+        for stand in [without as Lack, refusing] {
+            let _stand = stand("AudioEncoder");
+            let aac = prepare(&picked(AAC_256K, "Song.m4a", "audio/mp4"), &Job::default())
+                .await
+                .unwrap();
+            assert_eq!(
+                (aac.kind.as_str(), aac.mime.as_str()),
+                ("audio", "audio/mp4")
+            );
+            assert_eq!(whole(aac.file.as_ref().unwrap()).await, AAC_256K);
+            let flac = prepare(&picked(FLAC, "Concert.flac", "audio/flac"), &Job::default())
+                .await
+                .unwrap();
+            assert_eq!(
+                (flac.kind.as_str(), flac.mime.as_str()),
+                ("file", "audio/flac")
+            );
+            assert_eq!(flac.name.as_deref(), Some("Concert.flac"));
+            assert_eq!(whole(flac.file.as_ref().unwrap()).await, FLAC);
+        }
+
+        // Rule D: a WAV so short that its M4A — an index and a frame —
+        // would be the bigger of the two goes as the WAV it is.
+        let tiny = wav::encode(&[0.0; 64], 16_000);
+        let kept = prepare(&picked(&tiny, "blip.wav", "audio/wav"), &Job::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            (kept.kind.as_str(), kept.mime.as_str()),
+            ("audio", "audio/wav")
+        );
+        assert_eq!(whole(kept.file.as_ref().unwrap()).await, tiny);
+        assert_eq!(kept.name.as_deref(), Some("blip.wav"));
+    }
+
+    /// A picked video outside the profile goes as the profile's MP4, with
+    /// the size, length and poster of what is actually being sent.
+    #[wasm_bindgen_test]
+    async fn a_video_outside_the_profile_is_sent_as_the_profiles_mp4() {
+        let source = film(1920, 1080, 60, 2, 8_000_000, Some(256_000)).await;
+        let picked = file(&source, "IMG_0042.mp4", "video/mp4");
+        let prepared = prepare(&picked, &Job::default()).await.unwrap();
+        assert_eq!(
+            (prepared.kind.as_str(), prepared.mime.as_str()),
+            ("video", "video/mp4")
+        );
+        let sent = prepared.file.as_ref().unwrap();
+        assert_eq!(prepared.size, sent.size() as i64);
+        assert!(
+            sent.size() < source.size() / 2.0,
+            "{} of {}",
+            sent.size(),
+            source.size()
+        );
+        assert_eq!((prepared.width, prepared.height), (Some(1280), Some(720)));
+        // Two seconds — and an AAC encoder's priming and padding, twice
+        // over: the fixture's own sound carries its encoder's (with no edit
+        // list to say so), and the re-encode adds this browser's.
+        let length = prepared.duration_ms.unwrap();
+        assert!((2_000..=2_150).contains(&length), "{length} ms");
+        let poster = prepared.preview.clone().expect("a poster");
+        let poster = decode(&poster).await.unwrap();
+        assert_eq!((poster.width(), poster.height()), (600, 338));
+        let bytes = whole(sent).await;
+        assert!(media::matches_magic("video/mp4", &bytes[..12]));
+        let (kinds, movie) = read(&bytes);
+        assert_eq!(kinds, vec![*b"ftyp", *b"moov", *b"mdat"]);
+        assert_eq!(
+            movie.video().unwrap().samples.len(),
+            60,
+            "30 frames a second"
+        );
+    }
+
+    /// Rule A: a clip within the profile goes byte for byte as it is.
+    #[wasm_bindgen_test]
+    async fn a_video_within_the_profile_goes_untouched() {
+        let prepared = prepare(&picked(WITHIN, "clip.mp4", "video/mp4"), &Job::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            (prepared.kind.as_str(), prepared.mime.as_str()),
+            ("video", "video/mp4")
+        );
+        assert_eq!(whole(prepared.file.as_ref().unwrap()).await, WITHIN);
+        assert_eq!((prepared.width, prepared.height), (Some(1280), Some(720)));
+    }
+
+    /// Rule C for video: with no encoder, or no decoder, a QuickTime movie
+    /// goes as the QuickTime movie it is — exactly as before.
+    #[wasm_bindgen_test]
+    async fn a_video_this_browser_cannot_transcode_goes_as_it_did_before() {
+        let stands: [(Lack, &'static str); 3] = [
+            (without, "VideoEncoder"),
+            (refusing, "VideoEncoder"),
+            (without, "VideoDecoder"),
+        ];
+        for (stand, class) in stands {
+            let _stand = stand(class);
+            let prepared = prepare(
+                &picked(QUICKTIME, "IMG_0001.MOV", "video/quicktime"),
+                &Job::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                (prepared.kind.as_str(), prepared.mime.as_str()),
+                ("video", "video/quicktime")
+            );
+            assert_eq!(whole(prepared.file.as_ref().unwrap()).await, QUICKTIME);
+        }
+    }
+
+    /// Rule D for video, decided: a result BIGGER than a source that could
+    /// itself go is thrown away and the source goes, as the type it is; a
+    /// result no bigger goes; and a bigger result still goes when the
+    /// source could not — it is the only thing there is to send.
+    #[wasm_bindgen_test]
+    async fn a_transcode_that_came_out_bigger_is_thrown_away() {
+        let source = picked(WITHIN, "IMG_0002.MOV", "video/quicktime");
+        // Bigger than its source by one byte.
+        let mut grown = WITHIN.to_vec();
+        grown.push(0);
+        let sent = sent_video(&source, "video/quicktime", Some(blob(&grown, "video/mp4")))
+            .await
+            .unwrap();
+        assert_eq!(
+            (sent.kind.as_str(), sent.mime.as_str()),
+            ("video", "video/quicktime")
+        );
+        assert_eq!(
+            whole(sent.file.as_ref().unwrap()).await,
+            WITHIN,
+            "the source, untouched"
+        );
+        assert_eq!(sent.size as usize, WITHIN.len());
+        // Exactly its size is not bigger: the result goes.
+        let same = sent_video(&source, "video/quicktime", Some(blob(WITHIN, "video/mp4")))
+            .await
+            .unwrap();
+        assert_eq!(same.mime, "video/mp4");
+        // Smaller: the result, described as what IT is.
+        assert!(QUICKTIME.len() < WITHIN.len());
+        let smaller = sent_video(
+            &source,
+            "video/quicktime",
+            Some(blob(QUICKTIME, "video/mp4")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(smaller.mime, "video/mp4");
+        assert_eq!(whole(smaller.file.as_ref().unwrap()).await, QUICKTIME);
+        assert_eq!((smaller.width, smaller.height), (Some(640), Some(360)));
+        // Nothing made (rule A, rule C): the source.
+        let kept = sent_video(&source, "video/quicktime", None).await.unwrap();
+        assert_eq!(kept.mime, "video/quicktime");
+        assert_eq!(whole(kept.file.as_ref().unwrap()).await, WITHIN);
+
+        // And through the whole path, on the fixtures: they are flat colour,
+        // so small that an encoder may not get under them. Whichever this
+        // browser's does, what goes is never the bigger of the two — the
+        // profile's MP4 when it is the smaller, the source when it is not.
+        for (source, mime) in [
+            (QUICKTIME, "video/quicktime"),
+            (PORTRAIT, "video/quicktime"),
+        ] {
+            let prepared = prepare(&picked(source, "IMG_0002.MOV", mime), &Job::default())
+                .await
+                .unwrap();
+            let sent = whole(prepared.file.as_ref().unwrap()).await;
+            if prepared.mime == "video/mp4" {
+                assert!(sent.len() <= source.len());
+                let (kinds, movie) = read(&sent);
+                assert_eq!(kinds, vec![*b"ftyp", *b"moov", *b"mdat"]);
+                let entry = movie.video().unwrap().entry.clone().unwrap();
+                assert_eq!(&entry.format, b"avc1");
+            } else {
+                assert_eq!(prepared.mime, mime);
+                assert_eq!(sent, source, "the source, untouched");
+            }
+        }
+    }
+
+    /// A file over the ceiling: `clip`, with enough behind it — a box no
+    /// player reads — to weigh more than the server takes.
+    fn over_the_ceiling(clip: &Blob, name: &str) -> File {
+        let weight = media::SIZE_LIMIT as u32 + 1024;
+        let mut header = (weight + 8).to_be_bytes().to_vec();
+        header.extend_from_slice(b"free");
+        let parts = js_sys::Array::of3(
+            clip,
+            &js_sys::Uint8Array::from(header.as_slice()),
+            &js_sys::Uint8Array::new_with_length(weight),
+        );
+        let options = web_sys::FilePropertyBag::new();
+        options.set_type("video/mp4");
+        File::new_with_blob_sequence_and_options(&parts, name, &options).unwrap()
+    }
+
+    /// A video over the ceiling could not go at all before there was a
+    /// profile. Now it is transcoded, and what comes out under the ceiling
+    /// goes — the only case in which this section makes a send WORK. Where
+    /// this browser cannot transcode it, it is refused exactly as before.
+    #[wasm_bindgen_test]
+    async fn a_video_over_the_ceiling_goes_once_it_is_transcoded_under_it() {
+        let clip = film(1280, 720, 60, 1, 6_000_000, Some(256_000)).await;
+        let heavy = over_the_ceiling(&clip, "Holiday.mp4");
+        assert!(heavy.size() as u64 > media::SIZE_LIMIT);
+        let prepared = prepare(&heavy, &Job::default()).await.unwrap();
+        assert_eq!(
+            (prepared.kind.as_str(), prepared.mime.as_str()),
+            ("video", "video/mp4")
+        );
+        assert!((prepared.size as u64) < media::SIZE_LIMIT / 50);
+        assert_eq!(prepared.size, prepared.file.as_ref().unwrap().size() as i64);
+        assert_eq!((prepared.width, prepared.height), (Some(1280), Some(720)));
+        let bytes = whole(prepared.file.as_ref().unwrap()).await;
+        let (_, movie) = read(&bytes);
+        assert_eq!(movie.video().unwrap().samples.len(), 30);
+
+        let stands: [(Lack, &'static str); 2] =
+            [(without, "VideoEncoder"), (refusing, "VideoDecoder")];
+        for (stand, class) in stands {
+            let _stand = stand(class);
+            assert_eq!(
+                prepare(&heavy, &Job::default()).await,
+                Err(PrepError::TooLarge),
+                "{class}"
+            );
+        }
+    }
+
+    /// The Ogg checksum: CRC-32 with the polynomial 0x04C11DB7, neither
+    /// reflected nor inverted.
+    fn ogg_crc(bytes: &[u8]) -> u32 {
+        let mut crc = 0u32;
+        for byte in bytes {
+            crc ^= u32::from(*byte) << 24;
+            for _ in 0..8 {
+                crc = if crc & 0x8000_0000 != 0 {
+                    (crc << 1) ^ 0x04C1_1DB7
+                } else {
+                    crc << 1
+                };
+            }
+        }
+        crc
+    }
+
+    /// One Ogg page holding one packet.
+    fn ogg_page(packet: &[u8], sequence: u32, granule: u64, flags: u8) -> Vec<u8> {
+        let mut page = b"OggS".to_vec();
+        page.push(0);
+        page.push(flags);
+        page.extend_from_slice(&granule.to_le_bytes());
+        page.extend_from_slice(&0x4643_3734u32.to_le_bytes()); // the stream's serial
+        page.extend_from_slice(&sequence.to_le_bytes());
+        page.extend_from_slice(&[0; 4]); // the checksum, once the page is whole
+        let mut lacing = vec![255u8; packet.len() / 255];
+        lacing.push((packet.len() % 255) as u8);
+        page.push(lacing.len() as u8);
+        page.extend_from_slice(&lacing);
+        page.extend_from_slice(packet);
+        let crc = ogg_crc(&page);
+        page[22..26].copy_from_slice(&crc.to_le_bytes());
+        page
+    }
+
+    /// An Ogg Opus file of `seconds` of mono noise at 96 kbit/s — what a
+    /// voice-message app or a Linux recorder saves. The browser's own Opus
+    /// encoder makes the packets; the container is written here. None in a
+    /// browser that encodes no Opus.
+    async fn ogg_opus(seconds: u32) -> Option<Vec<u8>> {
+        let samples = js_sys::Float32Array::from(noise(48_000 * seconds, 48_000, 13).as_slice());
+        let encode = js_sys::Function::new_with_args(
+            "samples",
+            "return (async () => { \
+               const config = {codec: 'opus', sampleRate: 48000, numberOfChannels: 1, \
+                               bitrate: 96000}; \
+               if (typeof AudioEncoder !== 'function' || \
+                   !(await AudioEncoder.isConfigSupported(config)).supported) return null; \
+               const packets = []; \
+               const encoder = new AudioEncoder({ \
+                 output: (chunk) => { const bytes = new Uint8Array(chunk.byteLength); \
+                                      chunk.copyTo(bytes); packets.push(bytes); }, \
+                 error: () => {} }); \
+               encoder.configure(config); \
+               encoder.encode(new AudioData({format: 'f32-planar', sampleRate: 48000, \
+                 numberOfFrames: samples.length, numberOfChannels: 1, timestamp: 0, \
+                 data: samples})); \
+               await encoder.flush(); encoder.close(); return packets; })();",
+        );
+        let packets = JsFuture::from(js_sys::Promise::from(
+            encode.call1(&JsValue::NULL, &samples).unwrap(),
+        ))
+        .await
+        .unwrap();
+        if packets.is_null() {
+            return None;
+        }
+        let packets: Vec<Vec<u8>> = js_sys::Array::from(&packets)
+            .iter()
+            .map(|packet| js_sys::Uint8Array::from(packet).to_vec())
+            .collect();
+        // OpusHead: version 1, one channel, 312 samples of pre-skip, 48 kHz.
+        let mut head = b"OpusHead".to_vec();
+        head.extend_from_slice(&[1, 1]);
+        head.extend_from_slice(&312u16.to_le_bytes());
+        head.extend_from_slice(&48_000u32.to_le_bytes());
+        head.extend_from_slice(&[0, 0, 0]);
+        let mut tags = b"OpusTags".to_vec();
+        tags.extend_from_slice(&4u32.to_le_bytes());
+        tags.extend_from_slice(b"test");
+        tags.extend_from_slice(&0u32.to_le_bytes());
+        let mut file = ogg_page(&head, 0, 0, 2);
+        file.extend(ogg_page(&tags, 1, 0, 0));
+        let count = packets.len();
+        for (index, packet) in packets.iter().enumerate() {
+            // 20 ms to a packet: 960 samples.
+            let granule = 960 * (index as u64 + 1);
+            let last = if index + 1 == count { 4 } else { 0 };
+            file.extend(ogg_page(packet, index as u32 + 2, granule, last));
+        }
+        Some(file)
+    }
+
+    /// Ogg does not play on an iPhone or a Mac, so Ogg audio — Opus here —
+    /// is re-encoded wherever this browser can decode it, and goes as the
+    /// Ogg it is where it cannot.
+    #[wasm_bindgen_test]
+    async fn an_ogg_file_becomes_an_m4a_where_this_browser_decodes_it() {
+        let Some(ogg) = ogg_opus(3).await else {
+            console_log!("This browser encodes no Opus: no Ogg file to pick.");
+            return;
+        };
+        assert!(media::matches_magic("audio/ogg", &ogg[..12]));
+        let probe = encode::probe_audio(&blob(&ogg, "audio/ogg"), "audio/ogg").await;
+        assert_eq!(probe.source.codec, "opus");
+        assert!(matches!(
+            media_plan::plan_audio(&probe.source),
+            AudioPlan::Transcode { bitrate: 64_000 }
+        ));
+        let prepared = prepare(&picked(&ogg, "Voice 004.ogg", "audio/ogg"), &Job::default())
+            .await
+            .unwrap();
+        if decodes(&ogg).await {
+            assert_eq!(
+                (prepared.kind.as_str(), prepared.mime.as_str()),
+                ("audio", "audio/mp4")
+            );
+            assert_eq!(prepared.name.as_deref(), Some("Voice 004.m4a"));
+            let (channels, sample_rate, rate) = sound_of(&prepared).await;
+            assert_eq!((channels, sample_rate), (1, 48_000));
+            assert!(rate <= 64_000 * 9 / 8, "{rate} bit/s");
+            let length = prepared.duration_ms.unwrap();
+            assert!((2_950..=3_100).contains(&length), "{length} ms");
+            assert!((prepared.size as usize) < ogg.len());
+        } else {
+            console_log!("This browser does not decode Ogg Opus: it goes untouched.");
+            assert_eq!(
+                (prepared.kind.as_str(), prepared.mime.as_str()),
+                ("audio", "audio/ogg")
+            );
+            assert_eq!(whole(prepared.file.as_ref().unwrap()).await, ogg);
+        }
+    }
+
+    /// A preparation that is called off sends NOTHING — not the result,
+    /// and not the original in its place, which is what "this browser
+    /// could not transcode it" would send.
+    #[wasm_bindgen_test]
+    async fn a_cancelled_preparation_is_not_a_failed_transcode() {
+        let clip = film(1280, 720, 60, 2, 6_000_000, Some(256_000)).await;
+        let video = file(&clip, "IMG_0042.mp4", "video/mp4");
+        // Called off a third of the way through the picture.
+        let stopper: Rc<RefCell<Option<Job>>> = Rc::new(RefCell::new(None));
+        let reached = Rc::new(Cell::new(0));
+        let job = {
+            let stopper = stopper.clone();
+            let reached = reached.clone();
+            Job::watched(move |percent| {
+                reached.set(percent);
+                if percent >= 30 {
+                    if let Some(job) = stopper.borrow().as_ref() {
+                        job.stop();
+                    }
+                }
+            })
+        };
+        *stopper.borrow_mut() = Some(job.clone());
+        assert_eq!(prepare(&video, &job).await, Err(PrepError::Cancelled));
+        assert!((30..60).contains(&reached.get()), "{} %", reached.get());
+        // Called off before it began — a video, and a sound file.
+        let stopped = Job::default();
+        stopped.stop();
+        assert_eq!(prepare(&video, &stopped).await, Err(PrepError::Cancelled));
+        let pcm = wav::encode(&noise(16_000, 16_000, 5), 16_000);
+        assert_eq!(
+            prepare(&picked(&pcm, "Memo.wav", "audio/wav"), &stopped).await,
+            Err(PrepError::Cancelled)
+        );
+        // The same files, not called off, go.
+        assert!(prepare(&video, &Job::default()).await.is_ok());
+        // A photo has nothing to call off, and is quick: it is prepared.
+        let photo = png(64, 64).await;
+        assert!(
+            prepare(&file(&photo, "a.png", "image/png"), &Job::default())
+                .await
+                .is_ok()
         );
     }
 }

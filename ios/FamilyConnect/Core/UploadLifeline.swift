@@ -64,8 +64,10 @@ enum UploadLifeline {
             // Logged because this is the one silent-loss path in the send
             // pipeline: the sender saw "Uploading 3 of 5…" and will get no
             // bubble and, if they have left the chat, no error either.
+            // (Named, since a composer preparing a clip borrows this too —
+            // issue #74 — and what is abandoned there is a transcode.)
             AppLog.sync.error(
-                "Upload background time expired; a send in flight is being abandoned")
+                "Background time expired (\(name, privacy: .public)); what was in flight is being abandoned")
             if identifier != .invalid {
                 UIApplication.shared.endBackgroundTask(identifier)
                 identifier = .invalid

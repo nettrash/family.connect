@@ -10,10 +10,20 @@
 //  be megabytes of binary nobody can review, pinned to whatever encoder
 //  made it. Written here, every property the tests turn on is a parameter
 //  in plain sight: the stored size, the rotation, the frame rate, the
-//  container, the bitrate, the colour tags. The content is noise where the
-//  source has to be BIG (noise is what an encoder cannot shrink, so a
-//  12 Mbit/s request produces a 12 Mbit/s file) and a sine where it has to
-//  be steady.
+//  container, the bitrate, the colour tags.
+//
+//  THE PICTURE IS A SCENE, NOT NOISE, and that is a correction. The first
+//  version filled every frame with random pixels so that "the encoder has
+//  to spend the bitrate asked of it". It spends far more: white noise is
+//  the one picture H.264 cannot compress at ANY quantiser, so a clip asked
+//  for at 12 000 000 bit/s was written at 228 000 000 by the hardware
+//  encoder and 379 000 000 by the software one, and no transcode of it can
+//  reach a target bitrate either. CI measured exactly that (48 591 064
+//  bit/s out of a 2 000 000 request) and the fixture read as a product bug.
+//  What is drawn now is what a camera sees — a textured scene panning
+//  slowly, with a band of fresh grain so there is always something new to
+//  code — which costs a megabit or two at 720p and which a rate controller
+//  can steer, on either encoder, to the number it was given.
 //
 //  Both platforms: nothing here touches UIKit or AppKit.
 //
@@ -22,6 +32,7 @@ import AVFoundation
 import CoreMedia
 import CoreVideo
 import Foundation
+import VideoToolbox
 @testable import FamilyConnect
 
 enum MediaFixtures {
@@ -43,11 +54,22 @@ enum MediaFixtures {
         var transform: CGAffineTransform = .identity
         /// Nil for a clip with no audio track at all.
         var audioChannels: Int? = 2
+        /// A soundtrack of silence at the encoder's own variable rate — a
+        /// screen recording with the microphone off. Its track states a
+        /// couple of thousand bits a second, which is below anything
+        /// Apple's AAC encoder can be ASKED for.
+        var silentAudio = false
         /// Tag the video BT.2020 / HLG, as a recent iPhone records HDR.
         var hdrTagged = false
-        /// Random pixels, so the encoder has to spend the bitrate asked of
-        /// it; otherwise a gently moving gradient.
-        var noise = false
+        /// What a recent iPhone really records: HEVC Main 10, ten bits a
+        /// sample, and (with `hdrTagged`) HLG that is HLG in the pixels and
+        /// not only in the tags. The H.264 clips are 8-bit whatever they
+        /// are tagged, so they cannot show that a 10-bit source is read.
+        var hevc10Bit = false
+        /// Write it with the software encoder — what a CI runner, a virtual
+        /// machine with no hardware encoder, uses for everything. macOS
+        /// only; elsewhere the system chooses, as it always does.
+        var softwareEncoder = false
     }
 
     /// The 90° turn a phone writes for a portrait clip stored landscape.
@@ -71,15 +93,19 @@ enum MediaFixtures {
         let url = scratch(ext)
         let writer = try AVAssetWriter(outputURL: url, fileType: clip.fileType)
 
+        var compression: [String: Any] = [
+            AVVideoAverageBitRateKey: clip.bitrate,
+            AVVideoExpectedSourceFrameRateKey: clip.frameRate,
+            AVVideoMaxKeyFrameIntervalKey: clip.frameRate,
+        ]
+        if clip.hevc10Bit {
+            compression[AVVideoProfileLevelKey] = kVTProfileLevel_HEVC_Main10_AutoLevel as String
+        }
         var videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoCodecKey: clip.hevc10Bit ? AVVideoCodecType.hevc : AVVideoCodecType.h264,
             AVVideoWidthKey: clip.width,
             AVVideoHeightKey: clip.height,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: clip.bitrate,
-                AVVideoExpectedSourceFrameRateKey: clip.frameRate,
-                AVVideoMaxKeyFrameIntervalKey: clip.frameRate,
-            ] as [String: Any],
+            AVVideoCompressionPropertiesKey: compression,
         ]
         if clip.hdrTagged {
             videoSettings[AVVideoColorPropertiesKey] = [
@@ -88,6 +114,13 @@ enum MediaFixtures {
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020,
             ]
         }
+        #if os(macOS)
+        if clip.softwareEncoder {
+            videoSettings[AVVideoEncoderSpecificationKey] = [
+                kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String: false,
+            ]
+        }
+        #endif
         guard writer.canApply(outputSettings: videoSettings, forMediaType: .video) else {
             throw FixtureError.unsupported("video settings \(clip)")
         }
@@ -97,8 +130,9 @@ enum MediaFixtures {
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: videoInput,
             sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String:
-                    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                kCVPixelBufferPixelFormatTypeKey as String: clip.hevc10Bit
+                    ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                    : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
                 kCVPixelBufferWidthKey as String: clip.width,
                 kCVPixelBufferHeightKey as String: clip.height,
             ])
@@ -106,13 +140,19 @@ enum MediaFixtures {
 
         var audioInput: AVAssetWriterInput?
         if let channels = clip.audioChannels {
-            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+            var audioSettings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: 44_100,
                 AVNumberOfChannelsKey: channels,
                 AVEncoderBitRateKey: channels == 1 ? 64_000 : 128_000,
-                AVEncoderBitRateStrategyKey: AVAudioBitRateStrategy_Constant,
-            ])
+            ]
+            // Constant, so a test knows the rate its clip states; left to
+            // the encoder for the silent one, where the point is how little
+            // a variable-rate track of nothing comes to.
+            if !clip.silentAudio {
+                audioSettings[AVEncoderBitRateStrategyKey] = AVAudioBitRateStrategy_Constant
+            }
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
             input.expectsMediaDataInRealTime = false
             writer.add(input)
             audioInput = input
@@ -127,41 +167,70 @@ enum MediaFixtures {
         let totalAudioFrames = Int(44_100 * clip.seconds)
         var frame = 0
         var audioFrame = 0
-        var noise = Noise(seed: 0x5EED)
+        var scene = Scene(width: clip.width, height: clip.height, seconds: clip.seconds)
+        var videoDone = false
+        var audioDone = audioInput == nil
         // Interleaved by hand: the writer stops taking one track until the
         // other has caught up, so feeding them one after the other stalls.
-        while frame < totalFrames || (audioInput != nil && audioFrame < totalAudioFrames) {
+        //
+        // EACH INPUT IS FINISHED AS SOON AS IT HAS NOTHING LEFT, and that is
+        // the fix for a hang, not tidiness. Both used to be marked finished
+        // after the loop. But an encoder holds its last samples back until
+        // it is told there are no more, so the writer saw one track stop
+        // short of where the other had reached and refused the other until
+        // the first caught up — which it could not, everything having been
+        // handed over already. `sample` showed this loop asking a video
+        // input that still had frames to take whether it was ready, a
+        // millisecond at a time, until the test's time limit: two tests
+        // "exceeded" 60 and 120 seconds on CI's Mac lane, and on a 16-core
+        // Mac just the same. Which track runs out first is a race, which is
+        // why the one-second clips got away with it.
+        while !videoDone || !audioDone {
+            if writer.status == .failed {
+                throw FixtureError.writerFailed(String(describing: writer.error))
+            }
             var progressed = false
-            if frame < totalFrames, videoInput.isReadyForMoreMediaData {
-                guard let pool = adaptor.pixelBufferPool else {
-                    throw FixtureError.writerFailed("no pixel buffer pool: \(String(describing: writer.error))")
+            if !videoDone, videoInput.isReadyForMoreMediaData {
+                if frame < totalFrames {
+                    guard let pool = adaptor.pixelBufferPool else {
+                        throw FixtureError.writerFailed("no pixel buffer pool: \(String(describing: writer.error))")
+                    }
+                    let buffer = try pixelBuffer(
+                        from: pool, frame: frame, frameRate: clip.frameRate, scene: &scene,
+                        hdr: clip.hdrTagged, tenBit: clip.hevc10Bit)
+                    let time = CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(clip.frameRate))
+                    guard adaptor.append(buffer, withPresentationTime: time) else {
+                        throw FixtureError.writerFailed(String(describing: writer.error))
+                    }
+                    frame += 1
                 }
-                let buffer = try pixelBuffer(
-                    from: pool, frame: frame, noise: &noise, useNoise: clip.noise, hdr: clip.hdrTagged)
-                let time = CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(clip.frameRate))
-                guard adaptor.append(buffer, withPresentationTime: time) else {
-                    throw FixtureError.writerFailed(String(describing: writer.error))
+                if frame == totalFrames {
+                    videoInput.markAsFinished()
+                    videoDone = true
                 }
-                frame += 1
                 progressed = true
             }
-            if let audioInput, audioFrame < totalAudioFrames, audioInput.isReadyForMoreMediaData {
-                let count = min(1024, totalAudioFrames - audioFrame)
-                let sample = try sineSampleBuffer(
-                    frames: count, startFrame: audioFrame, sampleRate: 44_100,
-                    channels: clip.audioChannels ?? 2)
-                guard audioInput.append(sample) else {
-                    throw FixtureError.writerFailed(String(describing: writer.error))
+            if let audioInput, !audioDone, audioInput.isReadyForMoreMediaData {
+                if audioFrame < totalAudioFrames {
+                    let count = min(1024, totalAudioFrames - audioFrame)
+                    let sample = try sineSampleBuffer(
+                        frames: count, startFrame: audioFrame, sampleRate: 44_100,
+                        channels: clip.audioChannels ?? 2, amplitude: clip.silentAudio ? 0 : 8_000)
+                    guard audioInput.append(sample) else {
+                        throw FixtureError.writerFailed(String(describing: writer.error))
+                    }
+                    audioFrame += count
                 }
-                audioFrame += count
+                if audioFrame == totalAudioFrames {
+                    audioInput.markAsFinished()
+                    audioDone = true
+                }
                 progressed = true
             }
             if !progressed {
                 try await Task.sleep(for: .milliseconds(1))
             }
         }
-        videoInput.markAsFinished()
-        audioInput?.markAsFinished()
         await writer.finishWriting()
         guard writer.status == .completed else {
             throw FixtureError.writerFailed(String(describing: writer.error))
@@ -169,7 +238,7 @@ enum MediaFixtures {
         return url
     }
 
-    /// A tiny, fast PRNG — noise, not cryptography.
+    /// A tiny, fast PRNG — grain, not cryptography.
     struct Noise {
         var state: UInt64
         init(seed: UInt64) { state = seed }
@@ -181,8 +250,115 @@ enum MediaFixtures {
         }
     }
 
+    /// What the clips are a picture OF: a wall of 8-pixel tiles, each its own
+    /// grey, wider than the frame so that it can pan across it — sharp edges
+    /// and steady motion, which is what an encoder is good at — and, along
+    /// the top sixth, grain that is new in every frame, which is what it has
+    /// to pay for. See the top of this file for why it is not plain noise.
+    struct Scene {
+        /// Pixels the picture moves each second.
+        static let panPerSecond = 60
+        static let tile = 8
+
+        let width: Int
+        let height: Int
+        /// One row of luma is `stride` bytes; the frame shows `width` of them.
+        let stride: Int
+        private var luma: [UInt8]
+        /// The same wall at ten bits a sample, made the first time a 10-bit
+        /// frame is asked for.
+        private var luma10: [UInt16] = []
+        private var grain = Noise(seed: 0x5EED)
+
+        init(width: Int, height: Int, seconds: Double) {
+            self.width = width
+            self.height = height
+            let travel = Int((seconds * Double(Self.panPerSecond)).rounded(.up)) + Self.tile
+            let stride = width + travel
+            self.stride = stride
+            var noise = Noise(seed: 0xC0FFEE)
+            var luma = [UInt8](repeating: 0, count: stride * height)
+            luma.withUnsafeMutableBytes { bytes in
+                guard let base = bytes.baseAddress else { return }
+                var row = 0
+                while row < height {
+                    // One row of tiles, then the same row for the tile's height.
+                    var column = 0
+                    while column < stride {
+                        let grey = Int32(40 + noise.next() % 160)
+                        memset(base + row * stride + column, grey, min(Self.tile, stride - column))
+                        column += Self.tile
+                    }
+                    for copy in 1..<Self.tile where row + copy < height {
+                        memcpy(base + (row + copy) * stride, base + row * stride, stride)
+                    }
+                    row += Self.tile
+                }
+            }
+            self.luma = luma
+        }
+
+        /// Draw frame `frame` of a clip at `frameRate` into a 4:2:0 biplanar
+        /// buffer: the wall, panned, in luma; flat grey chroma; the grain.
+        mutating func draw(into buffer: CVPixelBuffer, frame: Int, frameRate: Int) {
+            guard let lumaBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return }
+            let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+            let rows = min(height, CVPixelBufferGetHeightOfPlane(buffer, 0))
+            let shift = min(frame * Self.panPerSecond / max(frameRate, 1), stride - width)
+            luma.withUnsafeBytes { bytes in
+                guard let source = bytes.baseAddress else { return }
+                for row in 0..<rows {
+                    memcpy(lumaBase + row * rowBytes, source + row * stride + shift, min(width, rowBytes))
+                }
+            }
+            // Fresh grain in the low four bits of the top sixth, eight bytes
+            // at a time; the row padding gets some too, which nothing reads.
+            let words = rowBytes * (rows / 6) / 8
+            let wide = lumaBase.assumingMemoryBound(to: UInt64.self)
+            for index in 0..<words {
+                wide[index] = (wide[index] & 0xF0F0_F0F0_F0F0_F0F0) | (grain.next() & 0x0F0F_0F0F_0F0F_0F0F)
+            }
+            if let chroma = CVPixelBufferGetBaseAddressOfPlane(buffer, 1) {
+                memset(
+                    chroma, 128,
+                    CVPixelBufferGetBytesPerRowOfPlane(buffer, 1) * CVPixelBufferGetHeightOfPlane(buffer, 1))
+            }
+        }
+
+        /// The same frame into a 10-bit 4:2:0 biplanar buffer, whose samples
+        /// are sixteen bits wide with the ten that count at the top. The
+        /// wall only, no grain: what this clip is for is its bit depth and
+        /// its transfer function, not what it costs to encode.
+        mutating func draw10Bit(into buffer: CVPixelBuffer, frame: Int, frameRate: Int) {
+            if luma10.isEmpty {
+                luma10 = luma.map { UInt16($0) << 8 }
+            }
+            guard let lumaBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return }
+            let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+            let rows = min(height, CVPixelBufferGetHeightOfPlane(buffer, 0))
+            let shift = min(frame * Self.panPerSecond / max(frameRate, 1), stride - width)
+            luma10.withUnsafeBytes { bytes in
+                guard let source = bytes.baseAddress else { return }
+                for row in 0..<rows {
+                    memcpy(
+                        lumaBase + row * rowBytes, source + (row * stride + shift) * 2,
+                        min(width * 2, rowBytes))
+                }
+            }
+            if let chroma = CVPixelBufferGetBaseAddressOfPlane(buffer, 1) {
+                // Mid-grey chroma is 0x8000: `memset` writes bytes, so the
+                // pattern is laid down a sample at a time.
+                let samples = CVPixelBufferGetBytesPerRowOfPlane(buffer, 1)
+                    * CVPixelBufferGetHeightOfPlane(buffer, 1) / 2
+                let wide = chroma.assumingMemoryBound(to: UInt16.self)
+                for index in 0..<samples { wide[index] = 0x8000 }
+            }
+        }
+    }
+
     private static func pixelBuffer(
-        from pool: CVPixelBufferPool, frame: Int, noise: inout Noise, useNoise: Bool, hdr: Bool
+        from pool: CVPixelBufferPool, frame: Int, frameRate: Int, scene: inout Scene, hdr: Bool,
+        tenBit: Bool
     ) throws -> CVPixelBuffer {
         var made: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &made) == kCVReturnSuccess,
@@ -192,25 +368,10 @@ enum MediaFixtures {
         }
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-        for plane in 0..<CVPixelBufferGetPlaneCount(buffer) {
-            guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, plane) else { continue }
-            let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(buffer, plane)
-            let rows = CVPixelBufferGetHeightOfPlane(buffer, plane)
-            let bytes = base.assumingMemoryBound(to: UInt8.self)
-            if useNoise {
-                // Eight bytes of noise at a time; the row padding gets some
-                // too, which nothing reads.
-                let words = (rowBytes * rows) / 8
-                let wide = base.assumingMemoryBound(to: UInt64.self)
-                for index in 0..<words {
-                    wide[index] = noise.next()
-                }
-            } else {
-                for row in 0..<rows {
-                    let value = UInt8(truncatingIfNeeded: (row + frame * 3) % 200 + 16)
-                    memset(bytes + row * rowBytes, Int32(plane == 0 ? value : 128), rowBytes)
-                }
-            }
+        if tenBit {
+            scene.draw10Bit(into: buffer, frame: frame, frameRate: frameRate)
+        } else {
+            scene.draw(into: buffer, frame: frame, frameRate: frameRate)
         }
         if hdr {
             CVBufferSetAttachment(
@@ -230,7 +391,7 @@ enum MediaFixtures {
 
     /// 16-bit PCM of a 440 Hz sine — the LPCM an audio writer input takes.
     private static func sineSampleBuffer(
-        frames: Int, startFrame: Int, sampleRate: Int, channels: Int
+        frames: Int, startFrame: Int, sampleRate: Int, channels: Int, amplitude: Double = 8_000
     ) throws -> CMSampleBuffer {
         var description = AudioStreamBasicDescription(
             mSampleRate: Double(sampleRate), mFormatID: kAudioFormatLinearPCM,
@@ -242,7 +403,9 @@ enum MediaFixtures {
         CMAudioFormatDescriptionCreate(
             allocator: nil, asbd: &description, layoutSize: 0, layout: nil,
             magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &format)
-        let bytes = sine(frames: frames, startFrame: startFrame, sampleRate: sampleRate, channels: channels)
+        let bytes = sine(
+            frames: frames, startFrame: startFrame, sampleRate: sampleRate, channels: channels,
+            amplitude: amplitude)
         var block: CMBlockBuffer?
         CMBlockBufferCreateWithMemoryBlock(
             allocator: nil, memoryBlock: nil, blockLength: bytes.count, blockAllocator: nil,
@@ -264,11 +427,13 @@ enum MediaFixtures {
     }
 
     /// Little-endian 16-bit interleaved samples of a 440 Hz sine.
-    private static func sine(frames: Int, startFrame: Int, sampleRate: Int, channels: Int) -> Data {
+    private static func sine(
+        frames: Int, startFrame: Int, sampleRate: Int, channels: Int, amplitude: Double = 8_000
+    ) -> Data {
         var samples = [Int16](repeating: 0, count: frames * channels)
         for index in 0..<frames {
             let phase = Double(startFrame + index) * 2 * Double.pi * 440 / Double(sampleRate)
-            let value = Int16(8_000 * sin(phase))
+            let value = Int16(amplitude * sin(phase))
             for channel in 0..<channels {
                 samples[index * channels + channel] = value.littleEndian
             }
@@ -313,6 +478,33 @@ enum MediaFixtures {
             AVLinearPCMBitDepthKey: 16,
             AVLinearPCMIsBigEndianKey: true,
             AVLinearPCMIsFloatKey: false,
+        ])
+        try writeSine(into: file, seconds: seconds)
+        return url
+    }
+
+    /// An M4A holding Apple Lossless — an accepted container (`audio/mp4`)
+    /// around a codec the audio rules re-encode.
+    static func writeALAC(seconds: Double, sampleRate: Int, channels: Int) throws -> URL {
+        let url = scratch("m4a")
+        let file = try AVAudioFile(forWriting: url, settings: [
+            AVFormatIDKey: kAudioFormatAppleLossless,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: channels,
+            AVEncoderBitDepthHintKey: 16,
+        ])
+        try writeSine(into: file, seconds: seconds)
+        return url
+    }
+
+    /// A FLAC — lossless, and a type the server does not take as audio.
+    static func writeFLAC(seconds: Double, sampleRate: Int, channels: Int) throws -> URL {
+        let url = scratch("flac")
+        let file = try AVAudioFile(forWriting: url, settings: [
+            AVFormatIDKey: kAudioFormatFLAC,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: channels,
+            AVEncoderBitDepthHintKey: 16,
         ])
         try writeSine(into: file, seconds: seconds)
         return url
@@ -391,6 +583,8 @@ enum MediaFixtures {
         var videoDataRate: Float
         var colorPrimaries: String?
         var transferFunction: String?
+        /// Bits a sample, where the format description says (HEVC does).
+        var bitsPerComponent: Int?
         var audioCodec: FourCharCode?
         var audioChannels: Int?
         var audioDataRate: Float?
@@ -438,6 +632,8 @@ enum MediaFixtures {
             frameCount: times.count, shortestFrameGap: gaps.min() ?? 0,
             durationSeconds: try await asset.load(.duration).seconds, videoDataRate: dataRate,
             colorPrimaries: primaries, transferFunction: transfer,
+            bitsPerComponent: CMFormatDescriptionGetExtension(
+                format, extensionKey: kCMFormatDescriptionExtension_BitsPerComponent) as? Int,
             audioCodec: nil, audioChannels: nil, audioDataRate: nil)
         if let audio = try await asset.loadTracks(withMediaType: .audio).first {
             let (audioRate, audioFormats) = try await audio.load(.estimatedDataRate, .formatDescriptions)

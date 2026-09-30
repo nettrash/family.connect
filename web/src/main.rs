@@ -20,6 +20,7 @@ mod actions;
 mod api;
 mod board;
 mod calls;
+mod encode;
 mod live;
 mod location;
 mod media;
@@ -36,6 +37,7 @@ mod sync;
 mod time;
 mod timeline;
 mod views;
+mod webcodecs;
 
 #[cfg(test)]
 mod layout_tests;

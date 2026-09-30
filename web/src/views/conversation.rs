@@ -17,7 +17,7 @@ use crate::live::Opening;
 use crate::location;
 use crate::model::{Assistant, ChatListItem, Family, Member, Message};
 use crate::prep;
-use crate::recorder::Recording;
+use crate::recorder::{Listening, Recording};
 use crate::staged::Prepared;
 use crate::store::Draft;
 use crate::time;
@@ -460,6 +460,11 @@ pub fn conversation(props: &ConversationProps) -> Html {
 
     // --- The attachment doors (the Mac's attach menu, drop and paste) ----
     let preparing = use_state(|| false);
+    // The batch being prepared, for as long as it is: how it is told to
+    // stop. A video outside the profile is transcoded as it is staged, and
+    // for a long clip that is minutes — during which the composer is busy.
+    // So it can be called off, and it is called off when the pane goes.
+    let job = use_mut_ref(|| Option::<prep::Job>::None);
     let locating = use_state(|| false);
     let media_notice = use_state(|| Option::<String>::None);
     let append = use_state(|| (0u32, String::new()));
@@ -507,6 +512,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
         let staged = props.staged.len();
         let busy = busy_reason.clone();
         let alive = alive.clone();
+        let job = job.clone();
         Callback::from(move |files: Vec<File>| {
             if files.is_empty() {
                 return;
@@ -517,15 +523,25 @@ pub fn conversation(props: &ConversationProps) -> Html {
             }
             preparing.set(true);
             media_notice.set(Some(t("Preparing…").to_string()));
+            // How far a transcode has got, said beside the word: minutes of
+            // "Preparing…" with nothing moving reads as a page that hung.
+            let batch = {
+                let media_notice = media_notice.clone();
+                prep::Job::watched(move |percent| {
+                    media_notice.set(Some(format!("{} {percent}%", t("Preparing…"))));
+                })
+            };
+            *job.borrow_mut() = Some(batch.clone());
             let on_action = on_action.clone();
             let preparing = preparing.clone();
             let media_notice = media_notice.clone();
             let alive = alive.clone();
+            let job = job.clone();
             spawn_local(async move {
                 let mut count = staged;
                 let mut said = None;
                 for file in files {
-                    if !*alive.borrow() {
+                    if !*alive.borrow() || batch.stopped() {
                         return;
                     }
                     if !media::can_stage(count) {
@@ -535,8 +551,11 @@ pub fn conversation(props: &ConversationProps) -> Html {
                         ));
                         break;
                     }
-                    let prepared = prep::prepare(&file).await;
-                    if !*alive.borrow() {
+                    let prepared = prep::prepare(&file, &batch).await;
+                    // Cancelled, like gone: whoever cancelled has already
+                    // put the composer back, and may have started another
+                    // batch since — this one touches nothing more.
+                    if !*alive.borrow() || batch.stopped() {
                         return;
                     }
                     match prepared {
@@ -547,9 +566,25 @@ pub fn conversation(props: &ConversationProps) -> Html {
                         Err(error) => said = Some(error.message().to_string()),
                     }
                 }
+                *job.borrow_mut() = None;
                 preparing.set(false);
                 media_notice.set(said);
             });
+        })
+    };
+    // Calling a preparation off. The composer is given back at once, not
+    // when the transcode notices: what is left of it lets go of its codecs
+    // the next time its loop comes round, and stages nothing.
+    let cancel_preparing = {
+        let job = job.clone();
+        let preparing = preparing.clone();
+        let media_notice = media_notice.clone();
+        Callback::from(move |_: MouseEvent| {
+            if let Some(batch) = job.borrow_mut().take() {
+                batch.stop();
+            }
+            preparing.set(false);
+            media_notice.set(None);
         })
     };
     let append_text = {
@@ -702,13 +737,15 @@ pub fn conversation(props: &ConversationProps) -> Html {
                 return;
             }
             starting.set(true);
+            // Made here, in the click itself — see `Listening`.
+            let listening = Listening::in_the_click();
             let recording = recording.clone();
             let recording_since = recording_since.clone();
             let starting = starting.clone();
             let notice = notice.clone();
             let alive = alive.clone();
             spawn_local(async move {
-                let started = Recording::start().await;
+                let started = Recording::start(listening).await;
                 starting.set(false);
                 match started {
                     // Granted after the pane went, or beside one already
@@ -723,16 +760,22 @@ pub fn conversation(props: &ConversationProps) -> Html {
             });
         })
     };
-    // Gone with the pane: nothing it started may land after it, and a
-    // microphone left open is a microphone left open.
+    // Gone with the pane: nothing it started may land after it, a
+    // microphone left open is a microphone left open — and a transcode
+    // nobody will see the end of is stopped, not left to run for minutes
+    // and be thrown away.
     {
         let recording = recording.clone();
         let alive = alive.clone();
+        let job = job.clone();
         use_effect_with((), move |_| {
             move || {
                 *alive.borrow_mut() = false;
                 if let Some(active) = recording.borrow_mut().take() {
                     active.cancel();
+                }
+                if let Some(batch) = job.borrow_mut().take() {
+                    batch.stop();
                 }
             }
         });
@@ -1211,10 +1254,15 @@ pub fn conversation(props: &ConversationProps) -> Html {
             if let Some(text) = (*media_notice).clone() {
                 <p class="composer-notice media-notice" role="status">
                     { text }
-                    <button class="link" aria-label={t("Dismiss")}
-                            onclick={let media_notice = media_notice.clone(); Callback::from(move |_: MouseEvent| media_notice.set(None))}>
-                        { "✕" }
-                    </button>
+                    if *preparing {
+                        // Not a notice to dismiss but work to call off.
+                        <button class="link" onclick={cancel_preparing}>{ t("Cancel") }</button>
+                    } else {
+                        <button class="link" aria-label={t("Dismiss")}
+                                onclick={let media_notice = media_notice.clone(); Callback::from(move |_: MouseEvent| media_notice.set(None))}>
+                            { "✕" }
+                        </button>
+                    }
                 </p>
             }
             if let Some(since) = *recording_since {

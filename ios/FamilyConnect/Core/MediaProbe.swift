@@ -160,7 +160,9 @@ nonisolated enum MediaProbe {
     /// `estimatedDataRate` in whole bits a second — AVFoundation's own
     /// figure for the track's samples, which is what the container states
     /// about them. 0 (not known) is nil, as the planner reads it.
-    private static func bitrate(_ dataRate: Float) -> Int? {
+    /// (`MediaTranscoder` reads a track's rate through this too, so that
+    /// "the rate the planner was told" is one number and not two roundings.)
+    static func bitrate(_ dataRate: Float) -> Int? {
         guard dataRate.isFinite, dataRate > 0 else { return nil }
         return Int(dataRate.rounded())
     }

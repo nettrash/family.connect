@@ -17,6 +17,7 @@ use axum::routing::post;
 use common::{TestServer, assert_error, spawn_server, spawn_server_with_config};
 use family_connect::config::Config;
 use family_connect::handlers_auth::{Scrubbed, scrub_account};
+use family_connect::push_payload::PushEvent;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
@@ -343,11 +344,11 @@ async fn mentioning_the_assistant_in_the_family_chat_answers_the_whole_family() 
 async fn the_assistants_answer_to_a_blocked_member_does_not_wake_the_blocker() {
     let (_mock, addr) = spawn_mock_provider().await;
     let ts = server_with_pictures(addr).await;
-    let (owner, _) = ts.register("owner", "Olive").await;
+    let (owner, owner_id) = ts.register("owner", "Olive").await;
     let (_, code) = ts.create_family(&owner, "The Smiths").await;
     ts.set_open_policy(&owner).await;
     let (member, member_id) = ts.register("junior", "Junior").await;
-    let (gran, _) = ts.register("gran", "Gran").await;
+    let (gran, gran_id) = ts.register("gran", "Gran").await;
     ts.join(&member, &code, "joined").await;
     ts.join(&gran, &code, "joined").await;
 
@@ -376,41 +377,63 @@ async fn the_assistants_answer_to_a_blocked_member_does_not_wake_the_blocker() {
     let asked = say(&ts, &member, chat, "@ai what is for dinner?").await;
     let asked_id = asked["id"].as_i64().expect("the question has an id");
     // The answer lands, quoting Junior.
-    wait_for_assistant_message(&ts, &gran, chat, asked_id).await;
+    let answer = wait_for_assistant_message(&ts, &gran, chat, asked_id).await;
+    let answer_id = answer["id"].as_i64().expect("the answer has an id");
 
-    // Gran is woken by the answer; Olive, who blocked the asker, is not.
-    // Junior's own question wakes neither (Olive blocked him, Gran is the
-    // one candidate) — so the answer's push is the one to wait for.
-    let woken = |ts: &TestServer| -> Vec<String> {
+    // Gran is woken twice — by Junior's question, which she may read, and
+    // by the answer to it — and Olive, who blocked the asker, by neither.
+    // The pushes are told apart by the message each one is ABOUT: "Gran's
+    // phone lit up" is already true after the question, before the
+    // assistant has done anything, so waiting for that and then looking
+    // for Olive would be looking too early.
+    let woken_by = |ts: &TestServer, message: i64| -> Vec<String> {
         ts.push
             .calls()
             .iter()
+            .filter(|call| {
+                matches!(call.note.event,
+                    PushEvent::Message { message_id, .. } if message_id == message)
+            })
             .flat_map(|call| call.devices.iter().map(|device| device.push_token.clone()))
             .collect()
     };
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        if woken(&ts).iter().any(|token| token == "gran-device") {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the assistant's answer never woke Gran; pushed: {:?}",
-            woken(&ts)
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    for (message, what) in [
+        (asked_id, "Junior's question never woke Gran"),
+        (answer_id, "the assistant's answer never woke Gran"),
+    ] {
+        eventually(what, async || {
+            woken_by(&ts, message)
+                .iter()
+                .any(|token| token == "gran-device")
+                .then_some(())
+        })
+        .await;
     }
-    // The absence is what this test is about, and one notify call per user
-    // means Olive's would land beside Gran's rather than with it: give it a
-    // full second to show up, so a green run means it never came.
-    for _ in 0..20 {
-        let tokens = woken(&ts);
-        assert!(
-            !tokens.iter().any(|token| token == "olive-device"),
-            "the blocker was woken by the assistant's answer to the member they blocked: {tokens:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+
+    // The absence is what this test is about, and it is PROVEN rather than
+    // waited out. One message's notifications leave as one batch, walked by
+    // one task in ascending user id (`push_message_to` groups them in a
+    // BTreeMap; `spawn_notify` sends them in that order). Olive registered
+    // before Gran, so in either batch hers would have gone out FIRST — and
+    // Gran's is already in the log. Nothing of those two batches is still
+    // on its way, so an `olive-device` that is not here now is never
+    // coming. This used to be "give it a full second to show up", which is
+    // a bet on the machine in both directions: a slow one could take
+    // longer, and a fast one spent a second proving nothing.
+    assert!(
+        owner_id < gran_id,
+        "the ordering the proof above leans on: Olive's push would precede Gran's"
+    );
+    let everyone: Vec<String> = ts
+        .push
+        .calls()
+        .iter()
+        .flat_map(|call| call.devices.iter().map(|device| device.push_token.clone()))
+        .collect();
+    assert!(
+        !everyone.iter().any(|token| token == "olive-device"),
+        "the blocker was woken by the assistant's answer to the member they blocked: {everyone:?}"
+    );
 }
 
 /// A family that has NAMED a language must still get an answer.
@@ -447,7 +470,11 @@ async fn a_mention_still_answers_when_the_family_has_named_a_language() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL"]
 async fn an_ordinary_family_message_does_not_reach_the_assistant() {
-    let ts = server_with_assistant().await;
+    // A provider that can be reached, unlike most of this section's: the
+    // claim is that nothing was SENT, and the only place that can be read
+    // off is the thing it would have been sent to.
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_text_only(addr).await;
     let (owner, _) = ts.register("owner", "Olive").await;
     ts.create_family(&owner, "The Smiths").await;
     let chat = ts.family_chat_id(&owner).await;
@@ -463,13 +490,68 @@ async fn an_ordinary_family_message_does_not_reach_the_assistant() {
         say(&ts, &owner, chat, body).await;
     }
 
-    // Long enough that a spawned reply would have created its row.
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_nothing_else_was_asked(&ts, &mock, &owner, chat).await;
     let messages = messages_in(&ts, &owner, chat).await;
     assert_eq!(
         messages.len(),
-        4,
-        "nothing but the four messages sent: {messages:#?}"
+        4 + 2,
+        "the four messages sent, the marker and its one answer: {messages:#?}"
+    );
+}
+
+/// The words of the one question `assert_nothing_else_was_asked` asks.
+const MARKER_QUESTION: &str = "@ai is anybody there?";
+
+/// Prove that nothing sent so far reached the provider — by asking it one
+/// thing on purpose and showing that this is the ONLY thing it was asked.
+///
+/// "Nothing happened" cannot be observed directly: a reply is a spawned
+/// task, and a test that looks straight after the send sees nothing
+/// whether or not one is on its way. This used to be answered with
+/// `sleep(600 ms)` — "long enough that a spawned reply would have created
+/// its row" — which is a bet on the machine, lost under load in exactly the
+/// direction that matters: on a starved runner the sleep ends first, the
+/// assertion passes, and the test is green over a bug.
+///
+/// So the wait is tied to the pipeline instead of to a clock. Whether a
+/// message is answered is decided INSIDE the send, before it returns
+/// (`create_message`, `model_surface`), so a reply any earlier message had
+/// wrongly started has been running since before the marker below was even
+/// typed. The marker then goes down the same path — prompt, placeholder,
+/// provider, edit — and is waited for to the very end of it. By the time
+/// its answer is FINISHED, an earlier reply has had that whole journey,
+/// plus its head start, to get as far as the provider, which is only the
+/// first part of it. The window scales with the machine rather than betting
+/// against it: a runner slow enough to delay the stray request is slow
+/// enough to delay the marker's answer by more.
+///
+/// `family_chat` is the asker's own family chat, which is where a mention
+/// is answered. The caller counts the two rows this adds to it.
+async fn assert_nothing_else_was_asked(
+    ts: &TestServer,
+    mock: &MockProvider,
+    token: &str,
+    family_chat: i64,
+) {
+    let marker = say(ts, token, family_chat, MARKER_QUESTION).await;
+    let marker_id = marker["id"].as_i64().expect("the marker has an id");
+    wait_for_finished_reply(ts, token, family_chat, marker_id).await;
+
+    let calls = mock.calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "the provider was asked once, by the marker, and by nothing before it: {:#?}",
+        calls.iter().map(|call| &call.raw).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        calls[0].body["messages"]
+            .as_array()
+            .and_then(|turns| turns.last())
+            .map(|turn| &turn["content"]),
+        Some(&json!(MARKER_QUESTION)),
+        "and that one request is the marker's own: {}",
+        calls[0].raw
     );
 }
 
@@ -479,7 +561,8 @@ async fn an_ordinary_family_message_does_not_reach_the_assistant() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL"]
 async fn a_mention_in_a_direct_chat_does_nothing() {
-    let ts = server_with_assistant().await;
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_text_only(addr).await;
     let (owner, _) = ts.register("owner", "Olive").await;
     let (_, code) = ts.create_family(&owner, "The Smiths").await;
     ts.set_open_policy(&owner).await;
@@ -493,7 +576,11 @@ async fn a_mention_in_a_direct_chat_does_nothing() {
     let direct = body["chat"]["id"].as_i64().expect("a direct chat");
 
     say(&ts, &owner, direct, "@ai are you there?").await;
-    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    // The same words in the FAMILY chat are answered, and that answer is
+    // what bounds the wait — see `assert_nothing_else_was_asked`.
+    let family_chat = ts.family_chat_id(&owner).await;
+    assert_nothing_else_was_asked(&ts, &mock, &owner, family_chat).await;
 
     let messages = messages_in(&ts, &owner, direct).await;
     assert_eq!(messages.len(), 1, "only what was typed: {messages:#?}");
@@ -586,54 +673,129 @@ async fn messages_in(ts: &TestServer, token: &str, chat_id: i64) -> Vec<Value> {
     body["messages"].as_array().cloned().unwrap_or_default()
 }
 
-/// Poll for the assistant's row. The reply is spawned, so it does not exist
-/// the moment the send returns — and polling beats a fixed sleep, which is
-/// either flaky or slow.
-/// The statistics a generated picture produces, once they EXIST.
+/// How long anything in this file waits for something that WILL happen.
 ///
-/// `wait_for_picture` gates on the attachment landing on the message, which
-/// is not the same moment: the `ai_usage` row that feeds `totals.ai` is
-/// written separately, so there is a window where the picture is on the
-/// message and every AI counter still reads zero. Asserting straight after
-/// the picture therefore fails about one run in three — observed, not
-/// theorised. Polling the thing actually being asserted closes it, the same
-/// way `wait_for_assistant_message` polls rather than sleeping.
-async fn wait_for_ai_stats(ts: &TestServer, token: &str) -> Value {
-    for _ in 0..50 {
-        let stats: Value = ts
-            .get(token, "/families/mine/stats")
+/// A reply is a spawned task behind several database round trips and a
+/// request to the provider, so every wait here is a wait on the machine —
+/// and CI runs all of these at once on a runner with a couple of cores.
+/// Each bound this replaces was a bet on how fast that is (5 s of sleeps,
+/// a 5 s frame deadline, 2 s, 600 ms), and each lost it at least once under
+/// `taskpolicy -c background`, which is the only way to see it on a fast
+/// Mac. One generous ceiling instead: it costs nothing when the machine is
+/// healthy, because every wait returns on the first poll that finds what it
+/// is looking for, and it is only ever spent on a run that is about to
+/// fail anyway.
+const PATIENCE: Duration = Duration::from_secs(60);
+
+/// Poll `probe` until it answers, or panic naming what never happened.
+///
+/// The one loop every wait in this file is made of. A DEADLINE rather than
+/// a count of sleeps — a count quietly includes the time the probe itself
+/// takes, which under load is most of it — and never a loop with no bound
+/// at all, which turns a missing reply into a job that hangs until the
+/// runner's own timeout instead of a failure with a name.
+async fn eventually<T>(what: &str, mut probe: impl AsyncFnMut() -> Option<T>) -> T {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        if let Some(found) = probe().await {
+            return found;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what} — waited {PATIENCE:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The statistics once `questions` answers have been COUNTED.
+///
+/// The `ai_usage` row that feeds them is written after the reply's row is
+/// finished, so there is a window where the answer is on the message and
+/// every AI counter still reads zero. Asserting straight after the answer
+/// therefore fails about one run in three — observed, not theorised.
+///
+/// And seeing the count is not yet enough to assert on the rest. The
+/// endpoint reads its per-member figures and its totals in separate
+/// queries, so the read that first SEES the row can straddle its commit:
+/// totals that count the picture beside a member who has not drawn one
+/// (`a_generated_picture_is_counted_as_an_image_in_statistics`, starved:
+/// `members[0].ai.images` 0 under `totals.ai.images` 1). So the answer is
+/// read AGAIN once the row is known to be there — a read that starts after
+/// the commit sees it in every query.
+///
+/// An exact count rather than "more than none", for the same reason: a
+/// test that has asked twice is asserting on both rows, and one row is a
+/// state it would otherwise have to poll for a second time.
+async fn wait_for_ai_stats(ts: &TestServer, token: &str, questions: i64) -> Value {
+    let read = async || -> Value {
+        ts.get(token, "/families/mine/stats")
             .await
             .json()
             .await
-            .expect("JSON");
-        if stats["totals"]["ai"]["questions"]
-            .as_i64()
-            .is_some_and(|n| n > 0)
-        {
-            return stats;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("the assistant's usage was never recorded");
+            .expect("JSON")
+    };
+    eventually("the assistant's usage was never recorded", async || {
+        (read().await["totals"]["ai"]["questions"].as_i64() == Some(questions)).then_some(())
+    })
+    .await;
+    read().await
 }
 
+/// Poll for the assistant's row. The reply is spawned, so it does not exist
+/// the moment the send returns — and polling beats a fixed sleep, which is
+/// either flaky or slow.
+///
+/// This is the PLACEHOLDER: the row exists, and nothing is promised about
+/// what is in it. A test about what the answer says, or about what the
+/// NEXT question carries, wants `wait_for_finished_reply`.
 async fn wait_for_assistant_message(
     ts: &TestServer,
     token: &str,
     chat_id: i64,
     after_id: i64,
 ) -> Value {
-    for _ in 0..50 {
-        let messages = messages_in(ts, token, chat_id).await;
-        if let Some(found) = messages
+    eventually("the assistant never created its placeholder", async || {
+        messages_in(ts, token, chat_id)
+            .await
             .into_iter()
             .find(|message| message["id"].as_i64().is_some_and(|id| id > after_id))
-        {
-            return found;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("the assistant never created its placeholder");
+    })
+    .await
+}
+
+/// Poll until the assistant's answer is FINISHED — written into its row
+/// through the edit path, which is the last thing a reply does to it.
+///
+/// "The provider was asked" is not this moment, and mistaking the one for
+/// the other is the flake that turned CI red on 0c4f12a: the mock captures
+/// a request the instant it arrives, while the answer it streams back is
+/// still several round trips from the database. A follow-up sent in that
+/// window is answered from a thread whose previous answer is an empty row
+/// — which `thread_prompt` rightly leaves out — so the follow-up's request
+/// has one turn fewer than the same follow-up sent a moment later. Two
+/// servers compared request for request then differ by which side of the
+/// window each happened to land on.
+///
+/// `edit_seq` is the mark, not a non-empty body: a picture answer finishes
+/// with no words at all, and a row that has been through the edit path is
+/// finished whatever it says.
+async fn wait_for_finished_reply(
+    ts: &TestServer,
+    token: &str,
+    chat_id: i64,
+    after_id: i64,
+) -> Value {
+    eventually("the assistant never finished its answer", async || {
+        messages_in(ts, token, chat_id)
+            .await
+            .into_iter()
+            .find(|message| {
+                message["id"].as_i64().is_some_and(|id| id > after_id)
+                    && message["edit_seq"].as_i64().is_some()
+            })
+    })
+    .await
 }
 
 /// A location sent the way a CONNECTED client sends one — over the socket
@@ -738,7 +900,7 @@ async fn connect_ws(ts: &TestServer, token: &str) -> WsClient {
 }
 
 async fn next_frame_of_type(ws: &mut WsClient, wanted: &str) -> Value {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
         let message = tokio::time::timeout_at(deadline, ws.next())
             .await
@@ -1250,21 +1412,31 @@ impl MockProvider {
     ///
     /// A long ceiling costs nothing when the machine is healthy: this
     /// returns on the first poll that finds the call.
+    ///
+    /// What this proves is that the request LEFT — not that the answer to
+    /// it has been stored. A test that goes on to ask a second question in
+    /// the same thread needs `wait_for_finished_reply` as well.
     async fn wait_for(&self, deployment: &str) -> ProviderCall {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        while tokio::time::Instant::now() < deadline {
-            if let Some(call) = self.to_deployment(deployment).into_iter().next() {
-                return call;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!(
-            "nothing was ever sent to {deployment}; got {:?}",
-            self.calls()
-                .iter()
-                .map(|call| call.path.clone())
-                .collect::<Vec<_>>()
-        );
+        self.wait_for_call(deployment, |_| true).await
+    }
+
+    /// The first call to this deployment that `wanted` picks out — for a
+    /// test that has already sent it one request and is waiting on the
+    /// next.
+    async fn wait_for_call(
+        &self,
+        deployment: &str,
+        wanted: impl Fn(&ProviderCall) -> bool,
+    ) -> ProviderCall {
+        eventually(
+            &format!("the request this test is waiting for never reached {deployment}"),
+            async || {
+                self.to_deployment(deployment)
+                    .into_iter()
+                    .find(|call| wanted(call))
+            },
+        )
+        .await
     }
 }
 
@@ -1670,19 +1842,30 @@ async fn ai_chat_id(ts: &TestServer, token: &str) -> i64 {
         .expect("the assistant chat")
 }
 
-/// Poll until the assistant's row carries an attachment.
+/// Poll until the assistant's row carries an attachment AND is finished.
+///
+/// Both, because they are two writes: the picture is bound to the row
+/// first and the edit that carries its `edit_seq` follows (`answer`, "The
+/// picture is bound to the row BEFORE the edit"). Returning on the
+/// attachment alone handed the callers a row caught between the two — a
+/// picture with no `edit_seq` — and the ones that assert "it arrives
+/// through the edit path" then failed on a starved machine for a reason
+/// that had nothing to do with the edit path.
 async fn wait_for_picture(ts: &TestServer, token: &str, chat_id: i64, after_id: i64) -> Value {
-    for _ in 0..100 {
-        let messages = messages_in(ts, token, chat_id).await;
-        if let Some(found) = messages.into_iter().find(|message| {
-            message["id"].as_i64().is_some_and(|id| id > after_id)
-                && message["attachments"].is_array()
-        }) {
-            return found;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("the assistant never attached a picture to its reply");
+    eventually(
+        "the assistant never finished a reply with a picture on it",
+        async || {
+            messages_in(ts, token, chat_id)
+                .await
+                .into_iter()
+                .find(|message| {
+                    message["id"].as_i64().is_some_and(|id| id > after_id)
+                        && message["attachments"].is_array()
+                        && message["edit_seq"].as_i64().is_some()
+                })
+        },
+    )
+    .await
 }
 
 /// The load-bearing assertion of the whole feature: `/draw` sends the words
@@ -1699,8 +1882,14 @@ async fn a_picture_request_sends_the_words_after_the_token_and_nothing_else() {
     let chat = ai_chat_id(&ts, &owner).await;
 
     // A thread with something in it, so that "the thread did not travel" is
-    // a real assertion rather than an empty one.
-    say(&ts, &owner, chat, "what is the capital of Serbia").await;
+    // a real assertion rather than an empty one. ANSWERED before the next
+    // message goes: a reply reads the thread when its task gets to run, not
+    // when its question was sent, so a `/draw` that lands first is what the
+    // Serbia reply would find as the newest message — and it would draw
+    // too. Two image requests and no thread at all is not the scene this
+    // test describes.
+    let first = say(&ts, &owner, chat, "what is the capital of Serbia").await;
+    wait_for_finished_reply(&ts, &owner, chat, first["id"].as_i64().expect("id")).await;
     let asked = say(&ts, &owner, chat, "/draw a cat in a hat").await;
 
     let call = mock.wait_for(IMAGES_DEPLOYMENT).await;
@@ -1982,16 +2171,11 @@ async fn an_earlier_photo_in_the_thread_is_never_sent_again() {
 
     // A follow-up with no picture of its own.
     say(&ts, &owner, chat, "and what colour was it?").await;
-    let follow_up = loop {
-        let calls = mock.to_deployment(TEXT_DEPLOYMENT);
-        if let Some(call) = calls
-            .into_iter()
-            .find(|call| call.raw.contains("what colour was it"))
-        {
-            break call;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
+    let follow_up = mock
+        .wait_for_call(TEXT_DEPLOYMENT, |call| {
+            call.raw.contains("what colour was it")
+        })
+        .await;
     assert!(
         !follow_up.raw.contains("data:image"),
         "the picture is not re-sent with the next question: {}",
@@ -3222,29 +3406,14 @@ async fn a_direct_chat_and_the_private_thread_are_unaffected_by_the_switch() {
     let photo = upload_marked_photo(&ts_on, &owner_on, 0xA1).await;
     say_with(&ts_on, &owner_on, direct_id, "just us", vec![photo]).await;
     say(&ts_on, &member_on, direct_id, "@ai what is that?").await;
-    // The two messages read back, waited FOR rather than slept past: a
-    // fixed 600 ms is a bet on the machine, and this suite lost it once
-    // under load (2026-09-21, starved). The negative assertion below is
-    // the point of the test and needs the window to have actually opened.
-    let written = {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-        loop {
-            let held = messages_in(&ts_on, &owner_on, direct_id).await;
-            if held.len() >= 2 || tokio::time::Instant::now() >= deadline {
-                break held;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    };
-    assert_eq!(
-        written.len(),
-        2,
-        "the two messages, and nothing the assistant added"
-    );
-    // And now that they are both stored, a provider call would have had to
-    // happen by now to be this test's failure.
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    assert!(mock_on.calls().is_empty(), "no provider call at all");
+    // Nothing is slept past here. "No provider call" was a 600 ms sleep and
+    // then a look, which is a bet on the machine that a starved runner wins
+    // for the wrong reason — the sleep ends before a stray reply has got
+    // anywhere, and the look finds nothing. The absence is settled at the
+    // END of this test instead, once the private thread below has been
+    // asked and answered twice on this same server: whatever the direct
+    // chat's mention had started would have reached the mock long before
+    // that, and the mock is then counted. See the last assertions.
     // …and a photo in the FAMILY chat does not reach a private thread
     // either: it is the family chat's, and the thread never reads it.
     let family_photo = upload_marked_photo(&ts_on, &member_on, 0xB1).await;
@@ -3258,30 +3427,74 @@ async fn a_direct_chat_and_the_private_thread_are_unaffected_by_the_switch() {
     ] {
         let chat = ai_chat_id(ts, owner).await;
         let photo = upload_photo(ts, owner, true).await;
-        say_with(ts, owner, chat, "what is this?", vec![photo]).await;
+        let asked = say_with(ts, owner, chat, "what is this?", vec![photo]).await;
         let first = mock.wait_for(VISION_DEPLOYMENT).await;
-        say(ts, owner, chat, "and what colour was it?").await;
-        let follow_up = loop {
-            if let Some(call) = mock
-                .to_deployment(TEXT_DEPLOYMENT)
-                .into_iter()
-                .find(|call| call.raw.contains("what colour was it"))
-            {
-                break call;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        };
+        // The first answer is STORED before the follow-up is sent, and this
+        // line is the fix for the flake that failed CI on 0c4f12a. The mock
+        // has the request the moment it arrives; the answer it streams back
+        // is written to the row several round trips later, and until then
+        // the row is empty and `thread_prompt` leaves it out. A follow-up
+        // sent in that window carries [question, follow-up]; one sent after
+        // it carries [question, answer, follow-up]. Nothing made the two
+        // servers land on the same side, so the comparison below failed
+        // whenever they did not — over a difference that had nothing to do
+        // with the switch.
+        wait_for_finished_reply(ts, owner, chat, asked["id"].as_i64().expect("id")).await;
+        let asked = say(ts, owner, chat, "and what colour was it?").await;
+        let follow_up = mock
+            .wait_for_call(TEXT_DEPLOYMENT, |call| {
+                call.raw.contains("what colour was it")
+            })
+            .await;
         assert!(!follow_up.raw.contains("data:image"), "{}", follow_up.raw);
         assert!(!follow_up.raw.contains("[photo 1]"), "{}", follow_up.raw);
         assert!(
             !first.raw.contains(&marked_preview_base64(0xB1)),
             "the family chat's photo never reaches a private thread"
         );
+        // Pinned on both sides rather than left to the comparison: two
+        // requests that are EQUALLY missing the answer would compare equal
+        // and prove nothing about the thread a member actually has.
+        assert_eq!(
+            follow_up.body["messages"],
+            json!([
+                {"role": "system", "content": format!(
+                    "{DEFAULT_SYSTEM_PROMPT}\n\n{MIRROR_LANGUAGE}"
+                )},
+                {"role": "user", "content": "[photo] what is this?"},
+                {"role": "assistant", "content": "a picture of something"},
+                {"role": "user", "content": "and what colour was it?"},
+            ]),
+            "the whole thread, the first answer included: {}",
+            follow_up.raw
+        );
         requests.push((first.body, follow_up.body));
+
+        // Both questions answered to the end, and then the provider is
+        // COUNTED: the photo question and the follow-up, and nothing else.
+        // On the switched-on server this is the direct chat's absence,
+        // proven — its mention was sent before any of this, so a reply it
+        // had started has had two whole answers' worth of the same
+        // pipeline to reach the mock, and the mock holds exactly two.
+        wait_for_finished_reply(ts, owner, chat, asked["id"].as_i64().expect("id")).await;
+        let calls = mock.calls();
+        assert_eq!(
+            calls.len(),
+            2,
+            "the private thread's two requests and no other — the direct chat's \
+             mention reached nobody: {:#?}",
+            calls.iter().map(|call| &call.path).collect::<Vec<_>>()
+        );
     }
     assert_eq!(
         requests[0], requests[1],
         "the private thread's requests are the same with the switch on and off"
+    );
+    let direct = messages_in(&ts_on, &owner_on, direct_id).await;
+    assert_eq!(
+        direct.len(),
+        2,
+        "the two messages, and nothing the assistant added: {direct:#?}"
     );
 }
 
@@ -3494,7 +3707,7 @@ async fn a_generated_picture_is_counted_as_an_image_in_statistics() {
     mock.wait_for(IMAGES_DEPLOYMENT).await;
     wait_for_picture(&ts, &owner, chat, asked["id"].as_i64().expect("id")).await;
 
-    let stats = wait_for_ai_stats(&ts, &owner).await;
+    let stats = wait_for_ai_stats(&ts, &owner, 1).await;
     let ai = &stats["totals"]["ai"];
     assert_eq!(ai["images"].as_i64(), Some(1), "stats: {stats}");
     assert_eq!(ai["questions"].as_i64(), Some(1));
@@ -3580,8 +3793,8 @@ async fn the_assistant_may_draw_without_being_told_to() {
     // images deployment" is a real assertion. Answered in full before the
     // next question goes, so the two usage rows cannot race each other.
     let first = say(&ts, &owner, chat, "what is the capital of Serbia").await;
-    wait_for_assistant_message(&ts, &owner, chat, first["id"].as_i64().expect("id")).await;
-    wait_for_ai_stats(&ts, &owner).await;
+    wait_for_finished_reply(&ts, &owner, chat, first["id"].as_i64().expect("id")).await;
+    wait_for_ai_stats(&ts, &owner, 1).await;
     mock.answer_with_tool_call(
         "draw_picture",
         r#"{"prompt": "a cat in a hat, watercolour"}"#,
@@ -3619,15 +3832,9 @@ async fn the_assistant_may_draw_without_being_told_to() {
     assert!(reply["edit_seq"].as_i64().is_some(), "{reply}");
 
     // The usage row lands separately from the picture (see
-    // `wait_for_ai_stats`), so poll for the image itself.
-    let mut stats = wait_for_ai_stats(&ts, &owner).await;
-    for _ in 0..50 {
-        if stats["totals"]["ai"]["images"].as_i64() == Some(1) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        stats = wait_for_ai_stats(&ts, &owner).await;
-    }
+    // `wait_for_ai_stats`), so wait for the SECOND row — this question's,
+    // which is the one that carries the image.
+    let stats = wait_for_ai_stats(&ts, &owner, 2).await;
     let ai = &stats["totals"]["ai"];
     // Two questions: the Serbia one, and this. One image.
     assert_eq!(ai["images"].as_i64(), Some(1), "stats: {stats}");
@@ -3867,17 +4074,14 @@ async fn spawn_capturing_provider() -> (Captured, SocketAddr) {
 
 /// The one call the stub received, once there is one.
 async fn one_captured_call(calls: &Captured) -> RawCall {
-    for _ in 0..100 {
-        {
-            let seen = calls.lock().expect("capture lock");
-            if let Some(call) = seen.first() {
-                assert_eq!(seen.len(), 1, "one picture, one request: {seen:?}");
-                return call.clone();
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("the images deployment was never called");
+    eventually("the images deployment was never called", async || {
+        let seen = calls.lock().expect("capture lock");
+        seen.first().map(|call| {
+            assert_eq!(seen.len(), 1, "one picture, one request: {seen:?}");
+            call.clone()
+        })
+    })
+    .await
 }
 
 /// **Black Forest Labs FLUX on Azure AI Foundry, pinned against the sample
@@ -4532,12 +4736,11 @@ async fn the_assistants_answer_is_in_the_mentions_chain() {
     let nested: Value = nested.json().await.expect("JSON");
     let nested_id = nested["message"]["id"].as_i64().expect("id");
     assert_eq!(nested["message"]["thread_root_id"], earlier_id);
-    for _ in 0..100 {
-        if mock.to_deployment(TEXT_DEPLOYMENT).len() >= 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    eventually(
+        "the nested mention never reached the provider",
+        async || (mock.to_deployment(TEXT_DEPLOYMENT).len() >= 2).then_some(()),
+    )
+    .await;
     let second_answer = wait_for_assistant_message(&ts, &member, family_chat, nested_id).await;
     assert_eq!(
         second_answer["reply_to"]["message_id"], nested_id,
@@ -5149,28 +5352,19 @@ async fn the_assistants_own_line_gets_no_face_and_is_not_named() {
     let first = say(&ts, &member, family_chat, "@ai who said morning first?").await;
     let first_id = first["id"].as_i64().expect("id");
     mock.wait_for(VISION_DEPLOYMENT).await;
-    for _ in 0..50 {
-        let answered = messages_in(&ts, &member, family_chat)
-            .await
-            .into_iter()
-            .find(|message| message["id"].as_i64().is_some_and(|id| id > first_id))
-            .and_then(|message| message["body"].as_str().map(|body| !body.is_empty()))
-            .unwrap_or(false);
-        if answered {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    // The answer has to be IN its row before the next mention reads the
+    // window, or there is no line of the assistant's to talk about. This
+    // was fifty sleeps that fell through in silence when they ran out,
+    // leaving the assertion below to fail for them.
+    wait_for_finished_reply(&ts, &member, family_chat, first_id).await;
 
     say(&ts, &member, family_chat, "@ai and then?").await;
 
-    let second = loop {
-        let calls = mock.to_deployment(VISION_DEPLOYMENT);
-        if calls.len() >= 2 {
-            break calls.into_iter().nth(1).expect("the second call");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
+    let second = eventually(
+        "the second mention never reached the provider",
+        async || mock.to_deployment(VISION_DEPLOYMENT).into_iter().nth(1),
+    )
+    .await;
     let prompt = system_prompt_of(&second);
     assert!(
         prompt.contains("] Assistant: "),

@@ -51,9 +51,11 @@ pub enum Route {
     /// the browser cannot decode falls back to [`Route::File`] at the
     /// decoding step, where that is known.
     Photo,
-    /// Uploaded untouched, with a poster.
+    /// Brought to the protocol's profile where it is not within it already
+    /// ([`crate::media_plan`]), and uploaded with a poster.
     Video,
-    /// Uploaded untouched, as the type the server checks.
+    /// Uploaded as the type the server checks — untouched, unless the audio
+    /// rules say to re-encode it ([`crate::media_plan`]).
     Audio(&'static str),
     /// Uploaded untouched; nothing is checked.
     File,
@@ -168,6 +170,47 @@ pub fn audio_mime(mime: &str, name: &str) -> Option<&'static str> {
         "ogg" | "oga" => Some("audio/ogg"),
         _ => None,
     })
+}
+
+/// A sound file the server does NOT take as audio, but which the audio rules
+/// say to re-encode into one it does (docs/protocol.md, "Preparing media
+/// before upload": "Uncompressed or lossless audio — PCM/WAV, AIFF, FLAC,
+/// ALAC — is re-encoded"): AIFF and FLAC, under the names the planner knows
+/// them by. Told by its BYTES, as everything the server will check is; the
+/// type and the name only say whether to look.
+///
+/// Such a file is a [`Route::File`] by [`route`], and stays one wherever the
+/// browser cannot re-encode it (rule C).
+pub fn unaccepted_audio(browser_mime: &str, name: &str, head: &[u8]) -> Option<&'static str> {
+    let mime = declared_type(browser_mime, name);
+    let extension = extension(name);
+    let named = |types: &[&str], extensions: &[&str]| {
+        types.contains(&mime.as_str()) || extensions.contains(&extension.as_str())
+    };
+    if named(&["audio/aiff", "audio/x-aiff"], &["aif", "aiff", "aifc"])
+        && head.len() >= 12
+        && head.starts_with(b"FORM")
+        && (&head[8..12] == b"AIFF" || &head[8..12] == b"AIFC")
+    {
+        return Some("audio/aiff");
+    }
+    if named(&["audio/flac", "audio/x-flac"], &["flac"]) && head.starts_with(b"fLaC") {
+        return Some("audio/flac");
+    }
+    None
+}
+
+/// The name a sound file travels under once it has been re-encoded as M4A:
+/// its own, with the extension it no longer deserves replaced (ios
+/// MediaPrep: `deletingPathExtension + ".m4a"`). A name lands on somebody
+/// else's disk, and "Song.flac" holding AAC opens in nothing.
+pub fn m4a_name(name: &str) -> String {
+    let ext = extension(name);
+    if ext.is_empty() {
+        format!("{name}.m4a")
+    } else {
+        format!("{}.m4a", &name[..name.len() - ext.len() - 1])
+    }
 }
 
 /// How a picked file goes, from what the browser said it is, its name, and
@@ -936,5 +979,50 @@ mod tests {
     fn ten_items_and_no_more() {
         assert!(can_stage(0) && can_stage(9));
         assert!(!can_stage(10) && !can_stage(11));
+    }
+
+    #[test]
+    fn lossless_sound_the_server_refuses_is_told_by_its_bytes() {
+        let aiff = b"FORM\x00\x00\x10\x00AIFFCOMM";
+        let aifc = b"FORM\x00\x00\x10\x00AIFCFVER";
+        let flac = b"fLaC\x00\x00\x00\x22\x10\x00\x10\x00";
+        assert_eq!(
+            unaccepted_audio("audio/aiff", "a.aiff", aiff),
+            Some("audio/aiff")
+        );
+        assert_eq!(
+            unaccepted_audio("audio/x-aiff", "a", aifc),
+            Some("audio/aiff")
+        );
+        assert_eq!(unaccepted_audio("", "Take 1.AIF", aiff), Some("audio/aiff"));
+        assert_eq!(
+            unaccepted_audio("audio/flac", "a.flac", flac),
+            Some("audio/flac")
+        );
+        assert_eq!(
+            unaccepted_audio("audio/x-flac", "a", flac),
+            Some("audio/flac")
+        );
+        assert_eq!(unaccepted_audio("", "a.flac", flac), Some("audio/flac"));
+        // The name alone is not enough, and neither are the bytes.
+        assert_eq!(unaccepted_audio("audio/flac", "a.flac", aiff), None);
+        assert_eq!(
+            unaccepted_audio("audio/aiff", "a.aiff", b"FORM\x00\x00\x10\x00ILBMBMHD"),
+            None
+        );
+        assert_eq!(unaccepted_audio("application/pdf", "a.pdf", flac), None);
+        assert_eq!(unaccepted_audio("audio/aiff", "a.aiff", b"FORM"), None);
+        // Both are files to the router, which is what they fall back to.
+        assert_eq!(route("audio/aiff", "a.aiff", aiff), Route::File);
+        assert_eq!(route("audio/flac", "a.flac", flac), Route::File);
+    }
+
+    #[test]
+    fn a_re_encoded_sound_file_is_named_m4a() {
+        assert_eq!(m4a_name("Song.flac"), "Song.m4a");
+        assert_eq!(m4a_name("Take 1.final.WAV"), "Take 1.final.m4a");
+        assert_eq!(m4a_name("untitled"), "untitled.m4a");
+        assert_eq!(m4a_name(".hidden"), ".hidden.m4a");
+        assert_eq!(m4a_name("Песня.ogg"), "Песня.m4a");
     }
 }

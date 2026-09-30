@@ -26,14 +26,24 @@ internal enum RecordingFailure
 /// AAC-LC, mono, 44.1 kHz, 64 000 bit/s — not <c>AudioEncodingQuality.Auto</c>, whose numbers were whatever Windows chose.
 /// Media Foundation's AAC encoder documents 96 000 as its lowest rate, so where it refuses 64 000 the note is recorded at
 /// that instead (<see cref="MediaEncoding.VoiceNoteAttempts"/>), and where it refuses both, as 1.1 recorded it: a voice
-/// note that cannot start is worse than one a little larger than the protocol's. The first one this machine takes is
-/// remembered for the run, so only the first recording pays for asking.
+/// note that cannot start is worse than one a little larger than the protocol's. The first of the protocol's two this
+/// machine takes is remembered for the run, so only the first recording pays for asking — but 1.1's way is NEVER
+/// remembered: it is outside the profile, and one start that failed for a reason of its own must not pin every later
+/// note of the run to it.
+/// </para>
+/// <para>
+/// <b>WHAT WAS RECORDED IS READ BACK, AND SAID WHEN IT IS NOT WHAT WAS ASKED FOR.</b> A recording cannot be refused
+/// the way a transcode can — there is no original to send instead, and the moment is gone — so a capture that took the
+/// profile and wrote other numbers is sent as it is. It goes into the diagnostics log, so that it is at least known.
 /// </para>
 /// </remarks>
 internal sealed class VoiceRecorder : IAsyncDisposable
 {
-    /// <summary>Where in <see cref="Profiles"/> to begin: the first one this machine took, once one has been.</summary>
+    /// <summary>Where in <see cref="Encodes"/> to begin: the first of the protocol's this machine took, once one has been.</summary>
     private static int firstTaken;
+
+    /// <summary>What this recording was asked for, to read it back against; null when it was 1.1's <c>Auto</c>.</summary>
+    private AacEncoding? asked;
 
     private MediaCapture? capture;
     private LowLagMediaRecording? recording;
@@ -48,20 +58,18 @@ internal sealed class VoiceRecorder : IAsyncDisposable
     public TimeSpan Elapsed => DateTimeOffset.UtcNow - started;
 
     /// <summary>
-    /// The encodes a voice note may be recorded with, in order: the protocol's, the nearest the encoder documents, and what
-    /// 1.1 recorded with.
+    /// The encodes a voice note may be recorded with, in order: the protocol's, the nearest the encoder documents, and —
+    /// the null at the end — what 1.1 recorded with, whose numbers are whatever Windows chooses.
     /// </summary>
-    private static IReadOnlyList<Func<MediaEncodingProfile>> Profiles { get; } =
-    [
-        .. MediaEncoding.VoiceNoteAttempts().Select(aac => (Func<MediaEncodingProfile>)(() => MediaPreparing.M4aProfile(aac))),
-        () => MediaEncodingProfile.CreateM4a(AudioEncodingQuality.Auto),
-    ];
+    private static IReadOnlyList<AacEncoding?> Encodes { get; } =
+        [.. MediaEncoding.VoiceNoteAttempts().Select(aac => (AacEncoding?)aac), null];
 
     /// <summary>Ask for the microphone and start. Windows asks the person the first time; a refusal is said out loud.</summary>
     public static async Task<(VoiceRecorder? Recorder, RecordingFailure? Failure)> StartAsync()
     {
-        for (var at = Math.Min(firstTaken, Profiles.Count - 1); at < Profiles.Count; at++)
+        for (var at = Math.Min(firstTaken, Encodes.Count - 1); at < Encodes.Count; at++)
         {
+            var encode = Encodes[at];
             // A fresh capture for every encode tried: one that refused a profile is not trusted with the next.
             var recorder = new VoiceRecorder { capture = new MediaCapture(), stream = new InMemoryRandomAccessStream() };
             try
@@ -85,10 +93,19 @@ internal sealed class VoiceRecorder : IAsyncDisposable
             }
             try
             {
-                recorder.recording = await recorder.capture.PrepareLowLagRecordToStreamAsync(Profiles[at](), recorder.stream);
+                var profile = encode is { } aac ? MediaPreparing.M4aProfile(aac) : MediaEncodingProfile.CreateM4a(AudioEncodingQuality.Auto);
+                recorder.recording = await recorder.capture.PrepareLowLagRecordToStreamAsync(profile, recorder.stream);
                 await recorder.recording.StartAsync();
                 recorder.started = DateTimeOffset.UtcNow;
-                firstTaken = at;
+                recorder.asked = encode;
+                if (encode is not null)
+                {
+                    firstTaken = at;
+                }
+                else
+                {
+                    Diagnostics.Write("a voice note is being recorded as 1.1 recorded it: this machine took neither of the protocol's encodes");
+                }
                 return (recorder, null);
             }
             catch (Exception e)
@@ -122,6 +139,7 @@ internal sealed class VoiceRecorder : IAsyncDisposable
                 await reader.LoadAsync((uint)recorded.Size);
                 reader.ReadBytes(bytes);
             }
+            await SayIfNotAsAskedAsync(recorded);
             return (bytes, elapsed);
         }
         catch (Exception e)
@@ -132,6 +150,34 @@ internal sealed class VoiceRecorder : IAsyncDisposable
         finally
         {
             await DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// The recording read back as a transcode is: AAC, the channels asked for, the rate asked for. It is only SAID —
+    /// the note is sent either way — and a recording nothing can read back is not worth losing the note over.
+    /// </summary>
+    private async Task SayIfNotAsAskedAsync(IRandomAccessStream recorded)
+    {
+        if (asked is not { } encode)
+        {
+            return;
+        }
+        try
+        {
+            recorded.Seek(0);
+            var audio = (await MediaEncodingProfile.CreateFromStreamAsync(recorded)).Audio;
+            if (audio is null
+                || !MediaEncoding.AacCameOut(encode, MediaPreparing.AudioCodec(audio.Subtype), audio.ChannelCount)
+                || !MediaEncoding.AudioRateCameOut(encode.Bitrate, audio.Bitrate))
+            {
+                Diagnostics.Write(
+                    $"a voice note came out as {audio?.Subtype ?? "no audio"}, {audio?.ChannelCount} channel(s), {audio?.Bitrate} bit/s; asked {encode}");
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a voice note back: {e.GetType().Name}");
         }
     }
 

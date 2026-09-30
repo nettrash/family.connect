@@ -285,6 +285,12 @@ nonisolated enum MediaPrep {
             sizeBytes: originalSize, ceilingBytes: limit)
         let source = await MediaProbe.video(
             at: sourceURL, container: container ?? mimeType(for: sourceURL), sizeBytes: originalSize)
+        // Somebody pressed Cancel, or left the conversation, while the file
+        // was being read. Said here because a cancelled probe does not throw
+        // — every field is allowed to be unknown — so without this a clip
+        // nobody wants any more would plan as "no size", take rule C and
+        // come back as something to stage.
+        try Task.checkCancellation()
 
         switch MediaPlan.planVideo(source) {
         case .keep:
@@ -578,6 +584,9 @@ nonisolated enum MediaPrep {
             kind: "audio", container: mime, honest: Magic.honest(url: sourceURL, mime: mime),
             sizeBytes: size, ceilingBytes: limit)
         let source = await MediaProbe.audio(at: sourceURL, container: mime, sizeBytes: size)
+        // As in `prepareVideo`: a cancelled probe reads as "unknown", not
+        // as an error, and unknown would be kept and staged.
+        try Task.checkCancellation()
 
         switch MediaPlan.planAudio(source) {
         case .keep:

@@ -7,7 +7,7 @@ The fourth client of the protocol in `docs/protocol.md`, alongside `ios/` (iOS +
 **Status: the whole client, run on Windows.** The core and the logic are the part of the client that
 has nothing to do with Windows — the wire, the local cache, the send queue, the board's arithmetic,
 the reconnect resync, the live frame router and the session gate — and they are tested wherever
-`dotnet` runs (419 + 366 tests). `FamilyConnect.App` is the WinUI 3 window over them, and it carries
+`dotnet` runs (426 + 479 tests). `FamilyConnect.App` is the WinUI 3 window over them, and it carries
 what the Mac and the web carry: the chats with threads, polls, reactions, edits, mentions, the
 assistant, link previews and every attachment kind; the board; the family and its owner's console;
 settings; one-to-one voice and video calls; notifications; the notification area; and files shared in
@@ -34,7 +34,10 @@ win/
                 Conversation — one open chat: the window, paging back, the read marker, typing
                 Board — the wall: the stickers on it, the badge over it, the writes that change it
                 MediaOutbox — the uploads a queued message owes, and the bytes waiting for them
-                MediaEncoding — the numbers a Media Foundation profile is given for a plan
+                MediaEncoding — the numbers a Media Foundation profile is given for a plan, what a result
+                                must read back as, and which of source and result then goes
+                TranscodeAttempts — the order a transcode is asked for in, and what ends the asking
+                FrameTurn — a frame of a transcode beside the same frame of its source
                 Faststart — an MP4's index moved in front of its media data
                 AttachmentCache — downloaded bytes, kept, with the preview rule in ONE place
                 Family — the door, the owner's console, and the numbers everybody may see
@@ -114,16 +117,33 @@ clients must reach the same answer for the same file. What Media Foundation is a
 `MediaEncoding`, and three things about it are not obvious. **Its AAC encoder documents four rates
 — 96, 128, 160 and 192 kbit/s — and the protocol's 64 000 is not one**, so every encode (a voice
 note's too) asks for the exact number first and then for the nearest documented one that keeps
-rule B. **A portrait clip is encoded in its STORED orientation with the source's turn carried as
+rule B. A track already under 96 000 has no such rate, so where it is AAC at or under the profile's
+row it is asked for as ITSELF and passed through; anything else under 96 000 goes as the original.
+**A portrait clip is encoded in its STORED orientation with the source's turn carried as
 metadata** (`MF_MT_VIDEO_ROTATION`), and **every result is read back and checked** — sides, turn,
-codec, audio kept or not — because nothing on the Mac can watch Media Foundation run; one that came
-out wrong is a failed transcode, and rule C sends what 1.1 sent. **The `moov` is moved to the front
-in C#** (`Faststart`), not asked of the MP4 sink, so it is the same on every Windows and tested
-here (and checked once, by hand, on a real moov-at-end file from `AVAssetWriter`: every sample of
-both tracks decoded identically before and after). What only Windows can show has not been run
-yet: that the encoder takes these profiles and keeps the turn (both checked, and a refusal logged
-to `diagnostics.log`), that it drops 60 fps to 30 (logged when it does not), and that it tone-maps
-HDR rather than clipping it (nothing here can tell — it needs an HDR clip and eyes).
+codec, audio kept or not, a frame rate no higher than asked, an audio rate that is the one asked
+for, SDR where SDR was asked for — because nothing on the Mac can watch Media Foundation run. The
+numbers can all be right and the picture wrong (a transcoder that turns the pixels AND carries the
+turn writes exactly the sides and the turn it was asked for), so **a frame of the result is
+compared with the same frame of its source** (`FrameTurn`): on its side, upside down or squashed
+between bars is a failed transcode too, and rule C sends what 1.1 sent. **A refusal is a refusal
+whenever it arrives** (`TranscodeAttempts`): an encoder that takes a profile and rejects it once
+the transcode has started is followed by the next way of asking, under one ceiling for all of them.
+**A transcode can be called off** — it is minutes where 1.1's file read was seconds — from the
+"Preparing…" bar's Cancel or by the window going, and a cancel is not a failure: nothing is staged.
+**The `moov` is moved to the front in C#** (`Faststart`), not asked of the MP4 sink, so it is the
+same on every Windows and tested here (and checked once, by hand, on a real moov-at-end file from
+`AVAssetWriter`: every sample of both tracks decoded identically before and after); it is asked of
+a video only, and a re-encoded sound file goes with its index wherever it is. Two sources are left
+alone because their transcode would come out wrong with every number right: one whose pixels are
+not square, and one with sound the shell reads and Media Foundation does not. What only Windows can
+show has not been run yet: that the encoder takes these profiles and keeps the turn, that it
+passes an audio track through when asked for what it already is, that it drops 60 fps to 30 (a
+failed transcode when it does not — every such clip then goes as the original, and
+`diagnostics.log` says why), that a frame read back from a good transcode does compare as its
+source's, and that it tone-maps HDR rather than clipping it (nothing here can tell — it needs an
+HDR clip and eyes). A voice note is read back as well, but only SAID when it is not what was asked
+for: there is no original to send in its place.
 
 **A preview is only asked for when the attachment says it has one.** The server generates none for
 a picture the assistant drew, and none at all for a file, audio or a location — so `has_preview` is

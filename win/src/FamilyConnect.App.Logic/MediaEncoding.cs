@@ -22,6 +22,10 @@ public readonly record struct AacEncoding(uint SampleRate, uint Channels, uint B
 /// </param>
 /// <param name="Rotation">Degrees, 0, 90, 180 or 270, in the convention the source's own was read in.</param>
 /// <param name="ToSdr">Whether to ask for BT.709 SDR explicitly — set only for a source that is HDR.</param>
+/// <param name="KeepAudio">
+/// Whether the audio asked for is the SOURCE'S OWN TRACK, handed back exactly as it was read so the transcoder passes it
+/// through rather than encoding it again. <paramref name="Audio"/> then holds that track's own numbers.
+/// </param>
 public sealed record VideoEncoding(
     uint Width,
     uint Height,
@@ -31,7 +35,21 @@ public sealed record VideoEncoding(
     uint FrameRateDenominator,
     H264Profile Profile,
     AacEncoding? Audio,
-    bool ToSdr);
+    bool ToSdr,
+    bool KeepAudio = false);
+
+/// <summary>What is sent once a transcode has run: rule D, and what faststart could not do.</summary>
+public enum Chosen
+{
+    /// <summary>The transcode's bytes.</summary>
+    Result,
+
+    /// <summary>The source, untouched — the result is thrown away.</summary>
+    Original,
+
+    /// <summary>Nothing: the source could not have gone, and the result is over the ceiling too.</summary>
+    TooLarge,
+}
 
 /// <summary>
 /// The Windows half of "Preparing media before upload" that needs no Windows: what a Media Foundation profile is
@@ -50,10 +68,21 @@ public sealed record VideoEncoding(
 /// number, and still a tenth of the WAV it came from.
 /// </para>
 /// <para>
+/// <b>WHAT THAT LEAVES OUT IS A TRACK ALREADY UNDER 96 000</b> — a messenger's re-share, a screen recording, an old
+/// phone's mono. Rule B forbids the encoder's lowest rate for it, so where the exact number is refused there is nothing
+/// left to ENCODE with. When that track is already AAC at or under the profile's row, the video is asked for with the
+/// source's own track handed back as it was read (<see cref="VideoEncoding.KeepAudio"/>): a transcoder that is not told
+/// to re-encode everything passes a stream through when it is asked for what it already is, and the track was within
+/// the profile to begin with. Anything else under 96 000 — an MP3 track, a mono AAC at 80 000 whose row is 64 000 — has
+/// no way through this encoder that keeps rule B, and goes as the original (rule C).
+/// </para>
+/// <para>
 /// <b>A TRANSCODE IS CHECKED, NOT TRUSTED.</b> Nothing here can see Media Foundation run, so the window reads the
-/// result back and <see cref="Matches"/> decides whether it is what was asked for. A result that came out sideways or
-/// at the wrong size is a failed transcode, and rule C sends the original — a picture can only be lost by being sent
-/// wrong, never by being sent as it was.
+/// result back and <see cref="Matches"/>, <see cref="FrameRateCameOut"/> and <see cref="AudioRateCameOut"/> decide
+/// whether it is what was asked for — and <see cref="FrameTurn"/> whether it still LOOKS like its source, which the
+/// numbers alone cannot say. A result that came out sideways, at the wrong size or faster than asked is a failed
+/// transcode, and rule C sends the original — a picture can only be lost by being sent wrong, never by being sent as
+/// it was.
 /// </para>
 /// </remarks>
 public static class MediaEncoding
@@ -100,6 +129,23 @@ public static class MediaEncoding
     /// <summary>Whether a video is HDR by what its type says — PQ or HLG, or BT.2020's primaries.</summary>
     public static bool IsHdr(long? transferFunction, long? primaries) =>
         transferFunction is TransferFunctionPq or TransferFunctionHlg || primaries is PrimariesBt2020;
+
+    /// <summary>
+    /// Whether a video has sound Media Foundation did not show: the shell states a channel count, a sample rate or an
+    /// audio bit rate for a file whose streams came back with no audio track. Transcoding that would send a SILENT
+    /// video where 1.1 sent the sound, and the read-back could not tell — no track was asked for, none came out — so it
+    /// is a source this machine cannot transcode (rule C).
+    /// </summary>
+    public static bool HidesAudio(bool audioTrackRead, long? shellChannels, long? shellSampleRate, long? shellBitrate) =>
+        !audioTrackRead && FirstKnown(shellChannels, shellSampleRate, shellBitrate) is not null;
+
+    /// <summary>
+    /// Whether a stream's pixels are square — or say nothing, which every phone's and every screen recording's do. The
+    /// protocol's <c>W × H</c> is the DISPLAYED size and only names the rotation; an anamorphic source (HDV's 1440×1080
+    /// shown 16:9) is wider than its stored sides, and scaling those sides would squash it for good. It is left alone.
+    /// </summary>
+    public static bool SquarePixels(uint numerator, uint denominator) =>
+        numerator == 0 || denominator == 0 || numerator == denominator;
 
     /// <summary>
     /// The type a picked sound file is judged as when the router sent it as a FILE: its declared type when that is
@@ -213,9 +259,10 @@ public static class MediaEncoding
 
     /// <summary>
     /// A video's encodes, in the order to ask for them. High profile with the planner's exact audio rate; then High
-    /// with the encoder's nearest audio rate, when that differs; then Main with the nearest (or the exact, when there
-    /// is no nearest) — the protocol's "Main where an encoder offers nothing else". Every one carries the same size,
-    /// frame rate, video bitrate and turn: only what an encoder may refuse changes.
+    /// with the source's own track passed through, where it is one the profile already takes
+    /// (<see cref="KeepsAudio"/>); then High with the encoder's nearest audio rate, when that differs; then Main with the
+    /// last of those there is — the protocol's "Main where an encoder offers nothing else". Every one carries the same
+    /// size, frame rate, video bitrate and turn: only what an encoder may refuse changes.
     /// </summary>
     public static IReadOnlyList<VideoEncoding> VideoAttempts(
         VideoTarget target,
@@ -225,12 +272,14 @@ public static class MediaEncoding
         long? audioChannels,
         long? audioSampleRate,
         long? sourceAudioBitrate,
-        bool hdr)
+        bool hdr,
+        bool audioIsAac = false)
     {
         var (width, height) = Encoded(target.Width, target.Height, rotation);
         var (numerator, denominator) = FrameRateRatio(target.FrameRate, sourceFrameRateNumerator, sourceFrameRateDenominator);
         AacEncoding? exact = null;
         AacEncoding? nearest = null;
+        AacEncoding? kept = null;
         if (target.AudioBitrate is { } audio)
         {
             exact = new AacEncoding(AacSampleRate(audioSampleRate), AacChannels(audioChannels), Rate(audio));
@@ -238,16 +287,36 @@ public static class MediaEncoding
             {
                 nearest = exact.Value with { Bitrate = rate };
             }
+            if (KeepsAudio(audioIsAac, audio, audioChannels, audioSampleRate, sourceAudioBitrate))
+            {
+                // The track's OWN numbers, not the encoder's: 22.05 kHz stays 22.05, because nothing is encoded.
+                kept = new AacEncoding(Rate(audioSampleRate!.Value), Rate(audioChannels!.Value), Rate(audio));
+            }
         }
         var first = new VideoEncoding(width, height, rotation, Rate(target.VideoBitrate), numerator, denominator, H264Profile.High, exact, hdr);
         List<VideoEncoding> attempts = [first];
+        if (kept is { } own)
+        {
+            attempts.Add(first with { Audio = own, KeepAudio = true });
+        }
         if (nearest is { } second && second != exact)
         {
             attempts.Add(first with { Audio = second });
         }
-        attempts.Add(first with { Profile = H264Profile.Main, Audio = nearest ?? exact });
+        attempts.Add(nearest is null && kept is { } passed
+            ? first with { Profile = H264Profile.Main, Audio = passed, KeepAudio = true }
+            : first with { Profile = H264Profile.Main, Audio = nearest ?? exact });
         return attempts;
     }
+
+    /// <summary>
+    /// Whether a video's own audio track may be passed through instead of encoded: it is AAC, mono or stereo, and its
+    /// stated bit rate is what the planner asked for — which it is exactly when that rate was already at or under the
+    /// profile's row, so the cap was the source itself (rule B). Encoding it again at its own rate could only cost it a
+    /// generation; above the row it has to come down, and is never passed through.
+    /// </summary>
+    public static bool KeepsAudio(bool audioIsAac, long target, long? channels, long? sampleRate, long? sourceBitrate) =>
+        audioIsAac && channels is 1 or 2 && sampleRate is > 0 && sourceBitrate == target;
 
     /// <summary>
     /// Whether what Media Foundation wrote is what was asked for: the encoded sides exactly, and the SAME turn — read
@@ -258,9 +327,62 @@ public static class MediaEncoding
         asked.Width == width && asked.Height == height && asked.Rotation == rotation;
 
     /// <summary>
+    /// Whether a result's frame rate is what was asked for: not above it by more than the planner's own tolerance. A
+    /// 60 fps source that came out at 60 was given a bitrate worked out for 30 — half the bits a frame, and outside the
+    /// profile's "at most 30" — so it is a failed transcode like a wrong size is. A rate BELOW what was asked is not:
+    /// a transcoder cannot invent frames the source never had. One nobody can read is not judged.
+    /// </summary>
+    public static bool FrameRateCameOut(VideoEncoding asked, double? rate) =>
+        rate is not { } known
+        || asked.FrameRateDenominator == 0
+        || known <= ((double)asked.FrameRateNumerator / asked.FrameRateDenominator) + (MediaPlan.FrameRateTolerance - MediaPlan.MaxFrameRate);
+
+    /// <summary>
+    /// Whether a result's audio is at the rate asked for, within a tenth. An encoder that takes 64 000 and writes its
+    /// own 96 000 has raised a bitrate over what rule B allowed without refusing anything; that result is thrown away
+    /// and the next way of asking — which names the encoder's rate only where rule B permits it — is tried. A rate the
+    /// result does not state is not judged.
+    /// </summary>
+    public static bool AudioRateCameOut(uint asked, long? stated) =>
+        stated is not > 0 || stated.Value * 10 <= asked * 11L;
+
+    /// <summary>
+    /// Whether a recording or a re-encode came out as the AAC it was asked for, in the channels asked for. A count the
+    /// result does not state is not judged.
+    /// </summary>
+    public static bool AacCameOut(AacEncoding asked, string codec, long? channels) =>
+        codec == "aac" && (channels is not > 0 || channels == asked.Channels);
+
+    /// <summary>
+    /// What goes once a transcode has come out as asked — rule D, and what faststart could not do. A result bigger than
+    /// a sendable source is thrown away; a VIDEO whose index could not be moved to the front does not go where the
+    /// source can go instead; and a result over the ceiling is refused, as the source would have been. Otherwise the
+    /// result is sent — the only thing that can be.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A SENDABLE SOURCE IS NEVER REFUSED HERE</b>, whatever the result turned out to be: preparing media may not
+    /// turn a send that worked in 1.1 into one that does not (rule C).
+    /// </para>
+    /// <para>
+    /// <b>THE INDEX MATTERS FOR A VIDEO ONLY</b> (<paramref name="needsMoovFirst"/>). The protocol asks for
+    /// <c>moov</c> before <c>mdat</c> in the video container's row and not in "Audio alone", and an M4A a tenth the size
+    /// of its WAV is worth more with its index at the end than the WAV is — or than an Ogg original, which does not
+    /// play on iOS or macOS at all.
+    /// </para>
+    /// </remarks>
+    public static Chosen Choose(
+        long sourceBytes, bool sourceSendable, long resultBytes, bool moovFirst, bool needsMoovFirst, long ceiling) =>
+        MediaPlan.KeepSmaller(sourceBytes, sourceSendable, resultBytes) == Upload.Source ? Chosen.Original
+        : needsMoovFirst && !moovFirst && sourceSendable ? Chosen.Original
+        : resultBytes > ceiling ? Chosen.TooLarge
+        : Chosen.Result;
+
+    /// <summary>
     /// How long a transcode may take before it counts as failed: two minutes plus three times the clip — a hardware
     /// encoder is many times faster than that, and a stuck one must not leave the composer "Preparing…" for good.
-    /// Ten minutes when the length is unknown.
+    /// Ten minutes when the length is unknown. It is ONE ceiling for every way of asking together
+    /// (<see cref="TranscodeAttempts"/>), not one each.
     /// </summary>
     public static TimeSpan TranscodeCeiling(long? durationMs) =>
         durationMs is > 0 ? TimeSpan.FromMinutes(2) + TimeSpan.FromMilliseconds(3.0 * durationMs.Value) : TimeSpan.FromMinutes(10);

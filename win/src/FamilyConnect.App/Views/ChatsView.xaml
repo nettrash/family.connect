@@ -121,6 +121,12 @@
                     <ProgressRing x:Name="LocationRing" Width="16" Height="16" IsActive="False" />
                     <TextBlock x:Name="LocationText" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 </StackPanel>
+                <!-- Files being prepared. A video is transcoded first, which can take minutes: said while it runs, with a way out. -->
+                <StackPanel x:Name="PreparingBar" Margin="0,6,0,0" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
+                    <ProgressRing x:Name="PreparingRing" Width="16" Height="16" IsActive="False" />
+                    <TextBlock x:Name="PreparingText" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <HyperlinkButton x:Name="PreparingCancel" VerticalAlignment="Center" />
+                </StackPanel>
             </StackPanel>
             <Border
                 x:Name="ComposerPanel"

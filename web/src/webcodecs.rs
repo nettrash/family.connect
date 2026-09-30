@@ -16,7 +16,7 @@
 //! class missing, the call throwing, the promise rejecting — is "no". A "no"
 //! is never an error: it sends the file the way it went before (rule C).
 
-use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array};
+use js_sys::{Function, Object, Promise, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -59,7 +59,8 @@ extern "C" {
     #[wasm_bindgen(method, catch)]
     pub fn configure(this: &VideoEncoder, config: &Object) -> Result<(), JsValue>;
     #[wasm_bindgen(method, catch)]
-    pub fn encode(this: &VideoEncoder, frame: &VideoFrame, options: &Object) -> Result<(), JsValue>;
+    pub fn encode(this: &VideoEncoder, frame: &VideoFrame, options: &Object)
+        -> Result<(), JsValue>;
     #[wasm_bindgen(method, catch)]
     pub fn flush(this: &VideoEncoder) -> Result<Promise, JsValue>;
     #[wasm_bindgen(method, catch)]
@@ -129,6 +130,26 @@ extern "C" {
     pub fn kind(this: &EncodedVideoChunk) -> String;
     #[wasm_bindgen(method, catch, js_name = copyTo)]
     pub fn copy_to(this: &EncodedVideoChunk, destination: &Uint8Array) -> Result<(), JsValue>;
+
+    /// A canvas's 2D context, for the one call web-sys has no overload of:
+    /// drawing a decoded `VideoFrame`.
+    pub type FrameCanvas;
+    #[wasm_bindgen(method, catch, js_name = drawImage)]
+    pub fn draw_frame(
+        this: &FrameCanvas,
+        frame: &VideoFrame,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> Result<(), JsValue>;
+
+    /// An `AudioBuffer`, for its samples as the browser's own array —
+    /// web-sys's `get_channel_data` copies them into this module's memory,
+    /// which for an hour of music is more than it should ever hold.
+    pub type Samples;
+    #[wasm_bindgen(method, catch, js_name = getChannelData)]
+    pub fn channel(this: &Samples, index: u32) -> Result<js_sys::Float32Array, JsValue>;
 }
 
 /// A plain object of `entries` — a WebCodecs configuration or init.
@@ -141,6 +162,7 @@ pub fn object(entries: &[(&str, JsValue)]) -> Object {
 }
 
 /// Whether this browser has the class `name` at all.
+#[cfg(test)]
 pub fn has(name: &str) -> bool {
     Reflect::get(&js_sys::global(), &JsValue::from_str(name))
         .map(|class| class.is_function())
@@ -240,11 +262,8 @@ pub fn bytes_of(value: &JsValue) -> Option<Vec<u8>> {
         let length = Reflect::get(value, &JsValue::from_str("byteLength"))
             .ok()?
             .as_f64()?;
-        let view = Uint8Array::new_with_byte_offset_and_length(
-            &buffer.dyn_into::<js_sys::ArrayBuffer>().ok()?,
-            offset as u32,
-            length as u32,
-        );
+        let view =
+            Uint8Array::new_with_byte_offset_and_length(&buffer, offset as u32, length as u32);
         return Some(view.to_vec());
     }
     None
@@ -263,25 +282,21 @@ pub fn decoder_config_field(metadata: &JsValue, key: &str) -> Option<JsValue> {
     (!value.is_undefined() && !value.is_null()).then_some(value)
 }
 
-/// An `Array` of one value — for `Blob` parts and the like.
-pub fn array_of(value: &JsValue) -> Array {
-    Array::of1(value)
-}
-
+/// Standing in for a browser that lacks something, in the tests of every
+/// module that asks one what it can do.
 #[cfg(test)]
-mod tests {
+pub mod testing {
     use super::*;
-    use wasm_bindgen_test::*;
 
     /// Put `value` at `window[name]` for the length of a test, and the old
     /// one back after — the way a test stands in for a browser without it.
-    struct Stand {
+    pub struct Stand {
         name: &'static str,
         was: JsValue,
     }
 
     impl Stand {
-        fn in_for(name: &'static str, value: &JsValue) -> Stand {
+        pub fn in_for(name: &'static str, value: &JsValue) -> Stand {
             let global = js_sys::global();
             let was = Reflect::get(&global, &JsValue::from_str(name)).unwrap();
             Reflect::set(&global, &JsValue::from_str(name), value).unwrap();
@@ -296,12 +311,35 @@ mod tests {
     }
 
     /// A class whose `isConfigSupported` answers `answer` (or throws).
-    fn fake_class(body: &str) -> JsValue {
+    pub fn fake_class(body: &str) -> JsValue {
         let make = Function::new_no_args(&format!(
             "const C = function() {{}}; C.isConfigSupported = {body}; return C;"
         ));
         make.call0(&JsValue::NULL).unwrap()
     }
+
+    /// One way for a browser to lack a class — [`without`] it, or
+    /// [`refusing`] everything asked of it. A stand-in is made where it is
+    /// used, one at a time: two alive at once for the same class put each
+    /// other back in the wrong order.
+    pub type Lack = fn(&'static str) -> Stand;
+
+    /// A browser with no such class at all.
+    pub fn without(name: &'static str) -> Stand {
+        Stand::in_for(name, &JsValue::UNDEFINED)
+    }
+
+    /// A browser whose `name` answers every configuration "not supported".
+    pub fn refusing(name: &'static str) -> Stand {
+        Stand::in_for(name, &fake_class("async () => ({supported: false})"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::*;
+    use super::*;
+    use wasm_bindgen_test::*;
 
     /// The branch this browser takes is whatever it says, not what its name
     /// suggests — and a browser that says "no" in any of the ways a browser
@@ -314,28 +352,45 @@ mod tests {
             assert!(!aac_supported(48_000, 1, 64_000).await, "no class");
         }
         {
-            let _no = Stand::in_for("AudioEncoder", &fake_class("async () => ({supported: false})"));
+            let _no = Stand::in_for(
+                "AudioEncoder",
+                &fake_class("async () => ({supported: false})"),
+            );
             assert!(!aac_supported(48_000, 1, 64_000).await);
         }
         {
-            let _yes = Stand::in_for("AudioEncoder", &fake_class("async () => ({supported: true})"));
+            let _yes = Stand::in_for(
+                "AudioEncoder",
+                &fake_class("async () => ({supported: true})"),
+            );
             assert!(aac_supported(48_000, 1, 64_000).await);
         }
         {
-            let _throws = Stand::in_for("AudioEncoder", &fake_class("() => { throw new Error('no'); }"));
+            let _throws = Stand::in_for(
+                "AudioEncoder",
+                &fake_class("() => { throw new Error('no'); }"),
+            );
             assert!(!aac_supported(48_000, 1, 64_000).await);
         }
         {
-            let _rejects =
-                Stand::in_for("AudioEncoder", &fake_class("() => Promise.reject(new Error('no'))"));
+            let _rejects = Stand::in_for(
+                "AudioEncoder",
+                &fake_class("() => Promise.reject(new Error('no'))"),
+            );
             assert!(!aac_supported(48_000, 1, 64_000).await);
         }
         {
-            let _odd = Stand::in_for("AudioEncoder", &fake_class("async () => ({supported: 'yes'})"));
+            let _odd = Stand::in_for(
+                "AudioEncoder",
+                &fake_class("async () => ({supported: 'yes'})"),
+            );
             assert!(!aac_supported(48_000, 1, 64_000).await, "only a real true");
         }
         {
-            let _none = Stand::in_for("VideoEncoder", &fake_class("async () => ({supported: false})"));
+            let _none = Stand::in_for(
+                "VideoEncoder",
+                &fake_class("async () => ({supported: false})"),
+            );
             assert!(h264_config(1280, 720, 30.0, 2_000_000).await.is_none());
         }
         {

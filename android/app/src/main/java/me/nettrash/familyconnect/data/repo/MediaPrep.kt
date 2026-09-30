@@ -332,42 +332,38 @@ class MediaPrep @Inject constructor(
      * failure: it propagates, and takes the partial output with it.
      */
     @OptIn(UnstableApi::class)
-    private suspend fun transcodeOrNull(input: Uri, settings: TranscodeSettings): File? {
-        val output = cacheFile(if (settings.audioOnly) "m4a" else "mp4")
-        return try {
-            export(output) { listener, path ->
+    private suspend fun transcodeOrNull(input: Uri, settings: TranscodeSettings): File? =
+        try {
+            exported(if (settings.audioOnly) "m4a" else "mp4") { listener, path ->
                 val composition =
                     TranscodeRecipe.composition(TranscodeRecipe.editedMediaItem(input, settings), settings)
                 TranscodeRecipe.transformer(context, settings, listener).also { it.start(composition, path) }
             }
-            withContext(Dispatchers.IO) { faststart(output) }
-            output
         } catch (e: CancellationException) {
-            output.delete()
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "transcode failed, sending what 1.1 would have: ${e.message}")
-            output.delete()
             null
         }
-    }
 
     /**
-     * 1.1's compress, kept UNCHANGED for rule C: re-encode to a short side
-     * of 720 with Media3's default settings, then insist the result fits.
+     * 1.1's compress, kept for rule C: re-encode to a short side of 720 with
+     * Media3's default settings, then insist the result fits.
      *
-     * Unchanged on purpose, including what rule B would object to — it
-     * scales a 480p .webm UP to 720p, and leaves HDR to Media3's default.
-     * It runs only when the planned transcode failed or had no size to aim
-     * at, and rule C's promise is that no send that worked in 1.1 stops
-     * working: "improving" this path could turn one that 1.1 managed into
-     * one that is too large.
+     * The ENCODE is unchanged on purpose, including what rule B would object
+     * to — it scales a 480p .webm UP to 720p, and leaves HDR to Media3's
+     * default. It runs only when the planned transcode failed or had no size
+     * to aim at, and rule C's promise is that no send that worked in 1.1
+     * stops working: "improving" this path could turn one that 1.1 managed
+     * into one that is too large. The one thing added is what [exported]
+     * does to every file this client makes — `moov` first, and Media3's
+     * unused reservation taken out — which changes no frame and can only
+     * make the result smaller.
      */
     @OptIn(UnstableApi::class)
     private suspend fun compressAsBefore(input: Uri, limit: Long): File {
-        val output = cacheFile("mp4")
-        try {
-            export(output) { listener, path ->
+        val output = try {
+            exported("mp4") { listener, path ->
                 val scale: Effect = Presentation.createForShortSide(COMPRESSED_SHORT_SIDE)
                 val item = EditedMediaItem.Builder(MediaItem.fromUri(input))
                     .setEffects(Effects(emptyList(), listOf(scale)))
@@ -380,14 +376,38 @@ class MediaPrep @Inject constructor(
                     .also { it.start(item, path) }
             }
         } catch (e: CancellationException) {
-            output.delete()
             throw e
         } catch (_: Exception) {
-            output.delete()
             throw UnreadableMedia()
         }
-        withContext(Dispatchers.IO) { faststart(output) }
         return fitting(output, limit)
+    }
+
+    /**
+     * One export into a new cache file, with its `moov` first — or no file.
+     *
+     * The file's whole life until it is handed back is HERE, for both the
+     * planned transcode and 1.1's compress: whatever stops it — a failed
+     * export, or a cancellation landing in the export or in the rewrite
+     * after it, which copies the whole file and so takes seconds on a large
+     * one — takes the output with it. Nothing else sweeps the upload cache,
+     * so a file dropped here would stay until the system evicted it — which
+     * is what the compress did while its rewrite sat outside its own guard.
+     */
+    @OptIn(UnstableApi::class)
+    private suspend fun exported(
+        extension: String,
+        start: (listener: Transformer.Listener, path: String) -> Transformer,
+    ): File {
+        val output = cacheFile(extension)
+        try {
+            export(output, start)
+            withContext(Dispatchers.IO) { faststart(output) }
+            return output
+        } catch (e: Throwable) {
+            output.delete()
+            throw e
+        }
     }
 
     /**
@@ -437,8 +457,11 @@ class MediaPrep @Inject constructor(
     }
 
     /**
-     * `moov` before `mdat` (the protocol's Container row). Media3 only
-     * attempts it; a file it could not fix still plays, from its tail.
+     * `moov` before `mdat` (the protocol's Container row), and the space
+     * Media3 reserved for it taken back out — up to 400 000 bytes of zeros a
+     * family would otherwise store with every clip. Media3 only attempts the
+     * first and never does the second; a file this could not fix still
+     * plays, from its tail.
      */
     private fun faststart(output: File) {
         if (!Mp4Faststart.apply(output)) {
@@ -652,7 +675,7 @@ class MediaPrep @Inject constructor(
             sizeBytes = size,
             ceilingBytes = limit,
         )
-        val result = transcodeOrNull(Uri.fromFile(copy), TranscodeSettings.forAudio(plan.bitrate, source))
+        val result = transcodeOrNull(Uri.fromFile(copy), TranscodeSettings.forAudio(plan.bitrate))
         if (result == null) {
             Log.w(TAG, "re-encoding picked audio failed; rule C: ${MediaPlan.onFailure(sendable)}")
             return null

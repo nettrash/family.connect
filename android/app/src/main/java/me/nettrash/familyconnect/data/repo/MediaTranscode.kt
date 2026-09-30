@@ -9,7 +9,7 @@
  *
  *  - [TranscodeSettings] is plain data, decided from MediaPlan's target and
  *    the source it was planned from: the exact size, whether frames are
- *    dropped and to what, the two bitrates, a downmix, tone-mapping.
+ *    dropped and to what, the two bitrates, tone-mapping.
  *    MediaTranscodeTest pins it on the JVM.
  *  - [TranscodeRecipe] turns those settings into Media3 objects — effects,
  *    encoder settings, the composition, the Transformer — and nothing else.
@@ -33,11 +33,32 @@
  *    budgets bits per frame from that hint would spend half the target on a
  *    60 → 30 clip. [FrameRateHintEncoderFactory] tells it the rate it will
  *    actually be fed.
+ *  - The AAC encoder's sample rate: asking for AAC-LC by name switches OFF
+ *    the one step in DefaultEncoderFactory that fits the source's rate to
+ *    what the encoder takes (createForAudioEncoding skips its fallback once
+ *    an encoder offering the profile is found), so for a 96 kHz FLAC — the
+ *    largest lossless files there are — the encoder is configured at
+ *    96 kHz, a rate Android's AAC encoders do not list. What happens next
+ *    is then the encoder's to decide. [SampleRateEncoderFactory] does that
+ *    step itself.
  *
- * The H.264 PROFILE is left to DefaultEncoderFactory, which already does
- * what the protocol row asks: High, at the highest level the encoder
- * supports, on every API this app runs on (26+), and the encoder's own
- * default where it offers no High (adjustMediaFormatForH264EncoderSettings).
+ * AND ONE THING IT DOES BY DEFAULT THAT IS KEPT: which TRACKS the output has
+ * is Media3's to say, not the probe's. Media3 reads the file with its own
+ * extractor; MediaProbe reads it with the platform's, which before Android
+ * 10 does not list PCM, Opus, FLAC or ALAC audio in an MP4 or a .mov at all.
+ * Naming the tracks from the probe made Media3 DROP an audio track it could
+ * read perfectly well — a camera's .mov came out silent, and smaller, so
+ * rule D kept it. A probe that sees no audio track is therefore only a probe
+ * that saw none: the settings still say what a track is encoded at if there
+ * turns out to be one.
+ *
+ * The H.264 PROFILE is DefaultEncoderFactory's wherever an encoder offers
+ * High: it asks for High at the highest level that encoder supports, on
+ * every API this app runs on (26+). Where NO encoder offers High it sets
+ * nothing, and the encoder's own default is Baseline — the emulator's
+ * software encoder came out Constrained Baseline — where the protocol row
+ * says "Main where an encoder offers nothing else". [TranscodeRecipe.h264Fallback]
+ * asks for Main in exactly that case.
  */
 
 package me.nettrash.familyconnect.data.repo
@@ -46,7 +67,6 @@ import android.content.Context
 import android.media.MediaCodecInfo
 import android.media.metrics.LogSessionId
 import android.net.Uri
-import androidx.media3.common.C
 import androidx.media3.common.Effect
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
@@ -64,6 +84,7 @@ import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.Effects
+import androidx.media3.transformer.EncoderUtil
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
 
@@ -87,20 +108,14 @@ data class TranscodeSettings(
     /** The frame rate the video encoder budgets its bits for. */
     val encoderFrameRate: Float?,
     val videoBitrate: Int?,
-    val audioBitrate: Int?,
     /**
-     * The channel count of a source with more than two (3–6) — mixed down to
-     * stereo, because the target is "128 000 bit/s stereo" and 5.1 AAC-LC at
-     * 128 kbit/s is 21 kbit/s a channel. Null keeps the source's channels:
-     * mono stays mono (and 64 kbit/s), stereo stays stereo.
+     * What an audio track is encoded at. MediaPlan's target where the probe
+     * saw the track; where it saw none, the profile's stereo rate — a CEILING
+     * for a track only Media3 can read (see the file comment), and nothing at
+     * all for a clip that really is silent: a transcode does not invent a
+     * track.
      */
-    val downmixFrom: Int?,
-    /**
-     * Whether the source has an audio track to carry over. The output has
-     * exactly the tracks the source had — a transcode does not invent
-     * silence (MediaPlan: no audio track, no audio target).
-     */
-    val hasAudio: Boolean,
+    val audioBitrate: Int,
     /** HDR in, 8-bit SDR out. */
     val toneMapToSdr: Boolean,
 ) {
@@ -118,15 +133,13 @@ data class TranscodeSettings(
                 dropFramesTo = rate.takeIf { known == null || known > target.frameRate },
                 encoderFrameRate = rate,
                 videoBitrate = target.videoBitrate.toInt(),
-                audioBitrate = target.audioBitrate?.toInt(),
-                downmixFrom = source.audioCodec?.let { downmix(source.audioChannels) },
-                hasAudio = source.audioCodec != null,
+                audioBitrate = (target.audioBitrate ?: MediaPlan.targetAudioBitrate(null, null)).toInt(),
                 toneMapToSdr = true,
             )
         }
 
         /** A picked sound file, re-encoded at MediaPlan's [bitrate]. */
-        fun forAudio(bitrate: Long, source: MediaPlan.AudioSource): TranscodeSettings =
+        fun forAudio(bitrate: Long): TranscodeSettings =
             TranscodeSettings(
                 width = null,
                 height = null,
@@ -134,13 +147,8 @@ data class TranscodeSettings(
                 encoderFrameRate = null,
                 videoBitrate = null,
                 audioBitrate = bitrate.toInt(),
-                downmixFrom = downmix(source.channels),
-                hasAudio = true,
                 toneMapToSdr = false,
             )
-
-        /** Media3 has constant-power stereo mixes for 3 to 6 channels, and none past that. */
-        private fun downmix(channels: Long?): Int? = channels?.takeIf { it in 3..6 }?.toInt()
     }
 }
 
@@ -165,41 +173,59 @@ object TranscodeRecipe {
         }
     }
 
-    fun audioProcessors(settings: TranscodeSettings): List<AudioProcessor> = buildList {
-        if (settings.downmixFrom == null) return@buildList
-        add(
-            ChannelMixingAudioProcessor().apply {
-                // Registered for every count the mix covers, not only the one
-                // probed, because the decoder is what finally says how many
-                // channels arrive — and an input with no matrix is an error.
-                for (channels in 3..6) {
-                    putChannelMixingMatrix(ChannelMixingMatrix.createForConstantPower(channels, 2))
-                }
-            },
-        )
-    }
+    /**
+     * Surround (3–6 channels) mixed down to stereo, because the target is
+     * "128 000 bit/s stereo" and 5.1 AAC-LC at 128 kbit/s is 21 kbit/s a
+     * channel. Mono stays mono and stereo stays stereo.
+     *
+     * ALWAYS there, and for every count from 1 to 6, because the DECODER is
+     * what finally says how many channels arrive, not the probe: an input
+     * with no matrix is an error that fails the whole transcode
+     * (ChannelMixingAudioProcessor.onConfigure), which is what a decoder that
+     * had already mixed 5.1 down to stereo would have met, and a surround
+     * track the probe never saw would have gone through unmixed. The mono and
+     * stereo matrices are identities, which Media3 treats as "not active".
+     * Past six there is no default mix; that transcode fails, and rule C
+     * sends the original.
+     */
+    fun audioProcessors(): List<AudioProcessor> = listOf(
+        ChannelMixingAudioProcessor().apply {
+            for (channels in 1..MAX_MIXED_CHANNELS) {
+                putChannelMixingMatrix(
+                    ChannelMixingMatrix.createForConstantPower(channels, minOf(channels, 2)),
+                )
+            }
+        },
+    )
 
     fun editedMediaItem(input: Uri, settings: TranscodeSettings): EditedMediaItem =
         EditedMediaItem.Builder(MediaItem.fromUri(input))
             // Cover art an audio file carries as a picture track is not sound.
             .setRemoveVideo(settings.audioOnly)
-            .setEffects(Effects(audioProcessors(settings), videoEffects(settings)))
+            .setEffects(Effects(audioProcessors(), videoEffects(settings)))
             .build()
 
     /**
-     * The tracks the output has, named rather than left to Media3 to infer:
-     * its "infer them from the one item" sequence is package-private in 1.11,
-     * and the probe already knows what the source holds.
+     * The one item, with the output's tracks left for Media3 to INFER from
+     * what its own extractor finds in the file (see the file comment) — the
+     * sequence `Transformer.start(EditedMediaItem, …)` builds, which 1.1's
+     * compress used and which kept every track it could read.
+     *
+     * Naming the tracks instead is wrong in both directions: a type left out
+     * is REMOVED from a source that has it (SequenceAssetLoader), and a type
+     * named is INVENTED for a source that lacks it — silence, or black
+     * frames (`forceAudioTrack`). The constructor that infers is deprecated
+     * in 1.11 in favour of the one that names, and its replacement
+     * (`fromSingleItem`) is package-private; this is the only public way to
+     * get the behaviour together with a Composition, which the HDR mode
+     * needs.
      */
-    fun trackTypes(settings: TranscodeSettings): Set<Int> = buildSet {
-        if (!settings.audioOnly) add(C.TRACK_TYPE_VIDEO)
-        if (settings.hasAudio) add(C.TRACK_TYPE_AUDIO)
-    }
+    @Suppress("DEPRECATION")
+    fun sequence(item: EditedMediaItem): EditedMediaItemSequence =
+        EditedMediaItemSequence.Builder(item).build()
 
     fun composition(item: EditedMediaItem, settings: TranscodeSettings): Composition =
-        Composition.Builder(
-            EditedMediaItemSequence.Builder(trackTypes(settings)).addItem(item).build(),
-        )
+        Composition.Builder(sequence(item))
             .setHdrMode(
                 if (settings.toneMapToSdr) {
                     Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL
@@ -209,26 +235,83 @@ object TranscodeRecipe {
             )
             .build()
 
-    fun videoEncoderSettings(settings: TranscodeSettings): VideoEncoderSettings =
+    /**
+     * @param h264Fallback the profile and level to ask for where no encoder
+     *   offers High ([h264Fallback]), or null to leave it to Media3.
+     */
+    fun videoEncoderSettings(
+        settings: TranscodeSettings,
+        h264Fallback: Pair<Int, Int>? = null,
+    ): VideoEncoderSettings =
         VideoEncoderSettings.Builder()
             .apply { settings.videoBitrate?.let { setBitrate(it) } }
+            .apply { h264Fallback?.let { (profile, level) -> setEncodingProfileLevel(profile, level) } }
             .build()
+
+    /**
+     * "High profile (Main where an encoder offers nothing else)": Main and
+     * the highest level it is offered at, when NO H.264 encoder on this
+     * device offers High; null otherwise — High is then Media3's to ask for
+     * — and null where none offers Main either, which leaves the encoder its
+     * own default as before.
+     *
+     * [offered] is each encoder's list of (profile, level), so the choice can
+     * be pinned without a device.
+     */
+    fun h264Fallback(offered: List<List<Pair<Int, Int>>>): Pair<Int, Int>? {
+        val all = offered.flatten()
+        if (all.any { it.first == MediaCodecInfo.CodecProfileLevel.AVCProfileHigh }) return null
+        val level = all
+            .filter { it.first == MediaCodecInfo.CodecProfileLevel.AVCProfileMain }
+            .maxOfOrNull { it.second }
+            ?: return null
+        return MediaCodecInfo.CodecProfileLevel.AVCProfileMain to level
+    }
+
+    /** What this device's H.264 encoders offer, for [h264Fallback]. Never throws: no answer is no request. */
+    private fun h264Offered(): List<List<Pair<Int, Int>>> = runCatching {
+        EncoderUtil.getSupportedEncoders(MimeTypes.VIDEO_H264).map { encoder ->
+            encoder.getCapabilitiesForType(MimeTypes.VIDEO_H264).profileLevels
+                .map { it.profile to it.level }
+        }
+    }.getOrDefault(emptyList())
 
     /** AAC-LC by name — the profile row says LC, and HE-AAC is not what every client decodes alike. */
     fun audioEncoderSettings(settings: TranscodeSettings): AudioEncoderSettings =
         AudioEncoderSettings.Builder()
-            .setProfile(MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            .apply { settings.audioBitrate?.let { setBitrate(it) } }
+            .setProfile(AUDIO_PROFILE)
+            .setBitrate(settings.audioBitrate)
             .build()
 
     fun encoderFactory(context: Context, settings: TranscodeSettings): Codec.EncoderFactory =
-        FrameRateHintEncoderFactory(
-            DefaultEncoderFactory.Builder(context)
-                .setRequestedVideoEncoderSettings(videoEncoderSettings(settings))
-                .setRequestedAudioEncoderSettings(audioEncoderSettings(settings))
-                .build(),
-            settings.encoderFrameRate,
+        SampleRateEncoderFactory(
+            FrameRateHintEncoderFactory(
+                DefaultEncoderFactory.Builder(context)
+                    .setRequestedVideoEncoderSettings(
+                        videoEncoderSettings(settings, h264Fallback(h264Offered())),
+                    )
+                    .setRequestedAudioEncoderSettings(audioEncoderSettings(settings))
+                    .build(),
+                settings.encoderFrameRate,
+            ),
+            ::encoderSampleRate,
         )
+
+    /**
+     * The sample rate closest to [requested] that the AAC encoder Media3 is
+     * about to pick will take — the first one offering AAC-LC, which is
+     * DefaultEncoderFactory's own choice once a profile is asked for. With no
+     * such encoder Media3 does this search itself, so [requested] is
+     * returned as it came; so it is when the platform will not answer.
+     */
+    fun encoderSampleRate(mime: String, requested: Int): Int = runCatching {
+        val encoder = EncoderUtil.getSupportedEncoders(mime)
+            .firstOrNull { AUDIO_PROFILE in EncoderUtil.findSupportedEncodingProfiles(it, mime) }
+            ?: return requested
+        EncoderUtil.getClosestSupportedSampleRate(encoder, mime, requested)
+            // What it answers for an encoder that lists no rate at all.
+            .takeIf { it in 1 until Int.MAX_VALUE }
+    }.getOrNull() ?: requested
 
     /**
      * H.264 and AAC, into Media3's default muxer — an MP4 that TRIES to put
@@ -246,6 +329,57 @@ object TranscodeRecipe {
             .setEncoderFactory(encoderFactory(context, settings))
             .addListener(listener)
             .build()
+
+    /** AAC-LC, the profile row's audio. */
+    private const val AUDIO_PROFILE = MediaCodecInfo.CodecProfileLevel.AACObjectLC
+
+    /** Media3 has constant-power stereo mixes for up to six channels, and none past that. */
+    const val MAX_MIXED_CHANNELS = 6
+}
+
+/**
+ * Asks the audio encoder for a sample rate it TAKES.
+ *
+ * Transformer asks for the source's own rate (AudioSampleExporter), and
+ * DefaultEncoderFactory fits that to the encoder only in a fallback it skips
+ * when a profile was requested — which TranscodeRecipe does, for AAC-LC. So
+ * a 96 kHz source reaches an AAC encoder that lists nothing above 48 kHz,
+ * and the outcome is whatever that encoder does with a rate it does not
+ * list. The API 36 emulator's quietly took 44.1 kHz instead, and Media3
+ * resampled to it; one that refuses fails the export, and rule C then sends
+ * the lossless original — the audio rule doing nothing for exactly the
+ * files it saves the most on. That is not a thing to find out per device.
+ *
+ * Asking for a rate the encoder lists is all it takes: Transformer compares
+ * what the encoder was configured with against what it is about to feed it,
+ * and resamples when they differ. A rate the encoder already takes — 44.1
+ * and 48 kHz, which is nearly every file — passes through untouched.
+ */
+@UnstableApi
+class SampleRateEncoderFactory(
+    private val delegate: Codec.EncoderFactory,
+    /** (MIME type, requested rate) → the rate to ask for. */
+    private val supported: (String, Int) -> Int,
+) : Codec.EncoderFactory {
+
+    override fun createForAudioEncoding(format: Format, logSessionId: LogSessionId?): Codec =
+        delegate.createForAudioEncoding(fitted(format), logSessionId)
+
+    override fun createForVideoEncoding(format: Format, logSessionId: LogSessionId?): Codec =
+        delegate.createForVideoEncoding(format, logSessionId)
+
+    override fun audioNeedsEncoding(): Boolean = delegate.audioNeedsEncoding()
+
+    override fun videoNeedsEncoding(): Boolean = delegate.videoNeedsEncoding()
+
+    /** [format] at a rate the encoder takes; itself when it states none, or one that already is. */
+    fun fitted(format: Format): Format {
+        val mime = format.sampleMimeType ?: return format
+        val requested = format.sampleRate
+        if (requested == Format.NO_VALUE) return format
+        val rate = supported(mime, requested)
+        return if (rate == requested) format else format.buildUpon().setSampleRate(rate).build()
+    }
 }
 
 /**

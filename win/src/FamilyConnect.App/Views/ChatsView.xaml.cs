@@ -242,6 +242,15 @@ public sealed partial class ChatsView : UserControl
         RecordingStop.Click += (_, _) => _ = StopRecordingAsync();
         RecordingCancel.Click += (_, _) => CancelRecording();
         LocationText.Text = say.Get("Finding your location…");
+        PreparingText.Text = say.Get("Preparing…");
+        PreparingCancel.Content = say.Get("Cancel");
+        PreparingCancel.Click += (_, _) =>
+        {
+            if (open is { } chat)
+            {
+                Staging(chat.ChatId).CancelPreparing();
+            }
+        };
         ThreadTitle.Text = say.Get("Thread");
         ThreadSend.Content = say.Get("Send");
         ThreadComposer.PlaceholderText = say.Get("Reply in thread");
@@ -361,6 +370,11 @@ public sealed partial class ChatsView : UserControl
         pendingLink = null;
         StopAudio();
         locationHunt?.Cancel();
+        // A transcode nobody is waiting for any more is minutes of an encoder for nothing: every chat's is called off.
+        foreach (var strip in strips.Values)
+        {
+            strip.CancelPreparing();
+        }
         CloseViewer();
         thread = null;
         // Gone BEFORE the player goes: a playback event already queued finds a view with nothing left to draw into.
@@ -4323,11 +4337,14 @@ public sealed partial class ChatsView : UserControl
             ShowProblem(busy);
             return;
         }
-        ShowProblem(services.Say.Get("Preparing…"));
+        ComposerError.Visibility = Visibility.Collapsed;
         string? said;
         try
         {
-            said = await strip.IngestAsync(files, MediaPreparing.PrepareAsync, () => !gone, services.Say);
+            // The strip is marked as preparing before its first await, so the bar can be drawn from it straight away.
+            var ingest = strip.IngestAsync(files, MediaPreparing.PrepareAsync, () => !gone, services.Say);
+            ShowPreparing();
+            said = await ingest;
         }
         catch (Exception e)
         {
@@ -4338,8 +4355,10 @@ public sealed partial class ChatsView : UserControl
         {
             return;
         }
+        ShowPreparing();
         ComposerError.Visibility = Visibility.Collapsed;
-        if (open == chat)
+        // By its id: a chat left and come back to while a video was transcoded is a new model over the same strip.
+        if (open?.ChatId == chat.ChatId)
         {
             if (said is not null)
             {
@@ -4350,8 +4369,20 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>What the open chat has staged, each with its own ✕.</summary>
+    /// <summary>
+    /// "Preparing…" and its Cancel, for the chat that is OPEN: a batch goes on for the chat it was dropped into whichever
+    /// chat is looked at meanwhile, so the bar follows the open chat's own strip rather than whoever started last.
+    /// </summary>
+    private void ShowPreparing()
+    {
+        var preparing = open is { } chat && strips.TryGetValue(chat.ChatId, out var strip) && strip.Preparing;
+        PreparingRing.IsActive = preparing;
+        PreparingBar.Visibility = preparing ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     private void DrawStaging()
     {
+        ShowPreparing();
         DrawPictureNotice();
         StagingStrip.Children.Clear();
         if (open is not { } chat || Staging(chat.ChatId) is not { Items.Count: > 0 } strip)
