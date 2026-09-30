@@ -318,15 +318,17 @@ public class FrameRouterTests : IDisposable
         chats.Apply(Message(1341, body: ""));
         var text = "";
         router.AiDelta += (_, _, piece) => text += piece;
-        var stopped = 0;
-        router.AiStopped += (_, _) => stopped++;
+        var stopped = new List<AiErrorReason?>();
+        router.AiStopped += (_, _, reason) => stopped.Add(reason);
 
         router.Hear(new ServerFrame.AiDelta(42, 1341, "Once "));
         router.Hear(new ServerFrame.AiDelta(42, 1341, "upon"));
         router.Hear(new ServerFrame.AiError(42, 1341));
+        // The reason is passed on with the failure, for the row to remember which sentence it says.
+        router.Hear(new ServerFrame.AiError(42, 1341, AiErrorReason.Refused));
 
         Assert.Equal("Once upon", text);
-        Assert.Equal(1, stopped);
+        Assert.Equal([null, AiErrorReason.Refused], stopped);
         Assert.Equal("", chats.Message(1341)!.Body);
     }
 

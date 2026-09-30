@@ -111,6 +111,18 @@ pub enum ClientFrame {
     Ping,
 }
 
+/// Why an assistant reply failed, on the `ai_error` frame (protocol.md,
+/// "The assistant"). One value today; a client reads any value it does not
+/// know as the field being absent, so adding one later breaks nobody.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiErrorReason {
+    /// The AI provider's own safety or content filter refused the question,
+    /// the answer, or a picture's description. Asking again in the same
+    /// words gets the same answer, so the member is told to rephrase.
+    Refused,
+}
+
 /// Server -> client frames (protocol.md "Server → client").
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -235,6 +247,12 @@ pub enum ServerFrame {
     AiError {
         chat_id: i64,
         message_id: i64,
+        /// Why, when the server knows a why worth a different sentence —
+        /// today only the provider's own filter refusing. Absent otherwise,
+        /// which is the frame exactly as it was before the field existed
+        /// (protocol.md, "The assistant").
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        reason: Option<AiErrorReason>,
     },
     Reaction {
         chat_id: i64,
@@ -1208,8 +1226,18 @@ mod tests {
             &ServerFrame::AiError {
                 chat_id: 42,
                 message_id: 1339,
+                reason: None,
             },
             r#"{"type": "ai_error", "chat_id": 42, "message_id": 1339}"#,
+        );
+        // The reason is one fixed word — never the provider's own text.
+        assert_serializes_to(
+            &ServerFrame::AiError {
+                chat_id: 42,
+                message_id: 1339,
+                reason: Some(AiErrorReason::Refused),
+            },
+            r#"{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused"}"#,
         );
     }
 

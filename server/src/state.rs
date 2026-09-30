@@ -46,8 +46,10 @@ impl AppState {
         let storage = Storage::new(cfg.storage.attachments_dir.clone());
         // A generous timeout: a large model streaming a long answer is slow
         // by nature, and cutting it off mid-sentence is worse than waiting.
+        // The operator's to change (`[ai] timeout_secs`), because how slow an
+        // image deployment is depends on whose it is.
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(180))
+            .timeout(std::time::Duration::from_secs(cfg.ai.timeout_secs))
             .build()
             .unwrap_or_default();
         Self {

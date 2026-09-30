@@ -867,9 +867,9 @@ struct MacConversationView: View {
                                 avatarVersionFor: { avatarVersions[$0] ?? 0 },
                                 isStreaming: coordinator.isAwaitingAssistant(
                                     row.message, isAssistantChat: isAssistantChat),
-                                assistantFailed: row.message.serverID.map {
-                                    coordinator.assistantAnswerFailed(messageID: $0)
-                                } ?? false,
+                                assistantFailure: row.message.serverID.flatMap {
+                                    coordinator.assistantFailure(messageID: $0)
+                                },
                                 isMine: row.isMine,
                                 showsSenderName: row.showsSenderName,
                                 showsTimestamp: row.isRunEnd,

@@ -22,6 +22,7 @@ import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.db.NoteEntity
+import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import me.nettrash.familyconnect.data.net.dto.BoardResponse
 import me.nettrash.familyconnect.data.net.dto.MentionDto
@@ -816,5 +817,54 @@ class BoardRepositoryTest {
         assertThat(kept?.map { it.text }).containsExactly("Oat milk", "Eggs").inOrder()
         // A move leaves the lines alone, as it leaves the names alone.
         assertThat(boardApi.patched[1].second.items).isNull()
+    }
+
+    /** A backdrop that landed is the picture, and the note now holds it. */
+    @Test
+    fun `a backdrop that landed answers the picture`() = runTest(dispatcher) {
+        val repository = repository()
+
+        val outcome = repository.drawBackdrop(5L)
+        runCurrent()
+
+        assertThat(outcome).isInstanceOf(BackdropOutcome.Drawn::class.java)
+        assertThat(outcome.picture?.id).isEqualTo(905L)
+        assertThat(AttachmentsCodec.decode(noteDao.findById(5)!!.attachmentJson)?.single()?.id)
+            .isEqualTo(905L)
+    }
+
+    /**
+     * `picture_refused` is the provider's own filter refusing the title:
+     * told apart from every other failure, because the same title gets the
+     * same refusal (docs/protocol.md, "Board").
+     */
+    @Test
+    fun `a title the provider refused is a refusal, not a failure`() = runTest(dispatcher) {
+        val repository = repository()
+        boardApi.backdropFailure = ApiResult.HttpError(
+            status = 400,
+            code = "picture_refused",
+            message = "the assistant's provider refused to draw this",
+        )
+
+        assertThat(repository.drawBackdrop(5L)).isEqualTo(BackdropOutcome.Refused)
+        // The note is untouched: nothing arrived to apply.
+        assertThat(noteDao.findById(5)).isNull()
+    }
+
+    /** Any other failure — a 500, another 4xx, no network — is only a failure. */
+    @Test
+    fun `any other backdrop failure is only a failure`() = runTest(dispatcher) {
+        val repository = repository()
+
+        boardApi.backdropFailure = ApiResult.HttpError(status = 500, code = "internal", message = "internal error")
+        assertThat(repository.drawBackdrop(5L)).isEqualTo(BackdropOutcome.Failed)
+
+        // The status alone decides nothing: another 4xx is not a refusal.
+        boardApi.backdropFailure = ApiResult.HttpError(status = 403, code = "pictures_unavailable", message = null)
+        assertThat(repository.drawBackdrop(5L)).isEqualTo(BackdropOutcome.Failed)
+
+        boardApi.backdropFailure = ApiResult.NetworkError(java.io.IOException("offline"))
+        assertThat(repository.drawBackdrop(5L)).isEqualTo(BackdropOutcome.Failed)
     }
 }

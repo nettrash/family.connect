@@ -414,6 +414,43 @@ nonisolated enum PollPresentation {
     }
 }
 
+/// How an assistant answer failed, as far as its bubble needs to know: which
+/// of the two sentences it says (docs/protocol.md, "The assistant").
+///
+/// Remembered per row for exactly as long as the failure itself is, so a
+/// redraw says the same sentence it said the first time — the row does not
+/// fall back to "ask again" under a refusal just because SwiftUI asked for
+/// its body once more.
+nonisolated enum AssistantFailure: Equatable, Sendable {
+    /// Any failure the server gave no reason for: the provider could not be
+    /// reached, the stream broke, a picture could not be stored. Asking
+    /// again may well work.
+    case stopped
+    /// The provider's own filter refused the question, the answer or the
+    /// picture's description. Asking again in the same words will not work,
+    /// so the sentence does not tell the member to.
+    case refused
+
+    /// The frame's reason, read. Nil — absent, or a value this client does
+    /// not know — is `.stopped`, the sentence every client showed before
+    /// `reason` existed.
+    init(reason: AIErrorReason?) {
+        switch reason {
+        case .refused: self = .refused
+        case nil: self = .stopped
+        }
+    }
+
+    /// The sentence drawn where the answer would have been — the bubble,
+    /// the Mac's row, and so what VoiceOver reads for it.
+    var sentence: LocalizedStringResource {
+        switch self {
+        case .stopped: "Couldn't answer that. Ask again."
+        case .refused: "The assistant's provider refused that. Try putting it another way."
+        }
+    }
+}
+
 nonisolated enum MessagePresentation {
 
     /// The quick-set offered by the long-press picker. Client UI only —

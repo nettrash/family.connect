@@ -15,7 +15,7 @@ use yew::prelude::*;
 use crate::actions::Action;
 use crate::live::Opening;
 use crate::location;
-use crate::model::{Assistant, ChatListItem, Family, Member, Message, PackItem};
+use crate::model::{AiFailure, Assistant, ChatListItem, Family, Member, Message, PackItem};
 use crate::pack::Gate;
 use crate::prep;
 use crate::recorder::{Listening, Recording};
@@ -66,7 +66,7 @@ pub struct ConversationProps {
     /// This device's messages that will not be sent unless somebody asks,
     /// by `client_msg_id`, with why.
     pub failed: HashMap<String, String>,
-    pub ai_failed: HashSet<i64>,
+    pub ai_failed: HashMap<i64, AiFailure>,
     /// The peer's read marker, in a direct chat.
     pub peer_read: i64,
     /// Who is typing here, already resolved to names.
@@ -1286,7 +1286,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                                     run_end={row.run_end}
                                     seen={row.seen}
                                     awaited={row.awaited}
-                                    ai_failed={props.ai_failed.contains(&message.id)}
+                                    ai_failed={props.ai_failed.get(&message.id).copied()}
                                     {failed}
                                     is_family_chat={is_family}
                                     is_ai_chat={is_ai}

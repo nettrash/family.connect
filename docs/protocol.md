@@ -206,7 +206,7 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `invalid_note_font`, `invalid_note_kind`, `invalid_rsvp`, `invalid_task`, `invalid_language`,
 `board_full`, `pack_full`, `pack_item_too_large`, `pack_item_not_found`, `not_pack_item_author`,
 `invalid_pagination`, `device_not_found`, `invalid_poll`, `poll_closed`,
-`pictures_unavailable`,
+`pictures_unavailable`, `picture_refused`,
 `calls_disabled`, `video_calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`,
 `peer_busy`, `peer_unreachable`, `avatar_too_large`, `invalid_image`, `attachment_too_large`,
 `invalid_attachment`, `attachment_not_found`, `attachment_expired`, `attachment_already_used`,
@@ -1064,6 +1064,16 @@ attachment afterwards in every respect — claimed by that one note, served to t
 statistics, swept with the note — and it is made the way a `/draw` picture is, by the server's own
 process with no upload and nobody to authenticate.
 
+**A title the provider's filter refuses to draw answers `picture_refused` (400)** — decided exactly
+where a refused `/draw` is (see "The assistant": the provider's structured error fields, never its
+wording alone). It is TERMINAL, like every 4xx with a code: the same title gets the same refusal,
+so a client does not retry it, and it shows the sentence a refused answer shows — "The assistant's
+provider refused that. Try putting it another way." — where it shows a backdrop that failed. The
+note is untouched: the backdrop it had, if any, stays, nothing is counted and nothing is written.
+Every OTHER failure of the provider stays what it always was, `internal` (500), which is transient.
+Before this code existed a refusal was an `internal` too, which a client rightly retried to no
+purpose; an old client that does not know `picture_refused` treats it as the terminal 4xx it is.
+
 Asking again REPLACES it: the note's picture is otherwise fixed at creation, and this is the one
 exception, because a family who dislikes what the model drew should not have to take the event down
 and lose the answers to get another one. The picture it replaces goes the way a deleted note's
@@ -1790,6 +1800,55 @@ without a line of new code.
 
 A reply that fails midway leaves the row with whatever text arrived and an `ai_error` frame; the
 member sees a partial answer and can ask again, which is better than a bubble that never resolves.
+
+**`ai_error` may say WHY, in an optional `reason`** (added 2026-09-30). One value is defined:
+
+```json
+{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused"}
+```
+
+- **`"refused"`** — the AI provider's OWN safety or content filter refused the question, the
+  answer, or a picture's description. It is not this server's judgement and not a fault: the
+  provider read the request and declined it, so asking again in the same words gets the same
+  refusal. A client says so instead of "ask again" — the failed answer reads **"The assistant's
+  provider refused that. Try putting it another way."** wherever the failure sentence appears (the
+  bubble, the streaming row, the accessibility label), and the failed row remembers WHICH sentence
+  it failed with for exactly as long as it remembers that it failed.
+- **absent** — any other failure, exactly as before this field existed: the provider could not be
+  reached or answered an error that is not a refusal, the stream broke, the answer came back empty
+  for a reason that was not the filter, a picture could not be stored. The sentence stays
+  "Couldn't answer that. Ask again."
+
+A client MUST treat a `reason` it does not know as ABSENT — the compatibility rules above, applied
+to a value rather than a field — so a later value can be added without an old client inventing a
+meaning for it. A client that predates the field ignores it and shows the sentence it always did,
+which is less helpful but still true.
+
+**Where the server decides "refused"**, so that it is decided the same way on every path — a
+member's private thread, an `@ai` mention in the family chat, a `/draw`, the text model's own
+`draw_picture` call, and the board's backdrop (which answers over HTTP instead: `picture_refused`,
+see "Board"):
+
+- the provider answered an HTTP 4xx whose JSON error names a content refusal in a STRUCTURED field —
+  `error.code` or `error.type` is `content_filter`, `content_policy_violation`,
+  `content_safety_violation` or `moderation_blocked`, or `error.innererror.code` is
+  `ResponsibleAIPolicyViolation` (Azure's chat completions answer
+  `{"error": {"code": "content_filter", …, "innererror": {"code": "ResponsibleAIPolicyViolation"}}}`
+  when the QUESTION is filtered; its images endpoint answers
+  `{"error": {"code": "content_safety_violation", …}}` or `content_policy_violation` when the
+  DESCRIPTION is). Only when those fields are absent or merely generic (`BadRequest`,
+  `invalid_request_error`) does the error's `message` count, and then only a message naming Azure's
+  policy outright (`ResponsibleAIPolicyViolation`, "RAI policy", "content management policy"). Any
+  other 4xx — `max_tokens` too large, an unknown deployment, a malformed body — is NOT a refusal, and
+  says nothing about the member's words;
+- or a streamed answer ENDED with `finish_reason: "content_filter"` and no words at all: the
+  provider accepted the question and then filtered the answer. (One that was cut off by the filter
+  after some words finishes with those words, as a reply that stops midway always has.)
+
+**The reason carries no provider text to a client.** Not the provider's message, not its code, not
+which category tripped the filter: the frame is one fixed word, and the provider's detail goes to
+the server's own log, on one line, bounded at 400 characters, and never alongside the member's
+question or the model's answer.
 
 The assistant sends under a **reserved account** that belongs to no family, so `sender_id` stays a
 real user id and every foreign key, join and index over messages keeps working untouched. It is not
@@ -2964,6 +3023,9 @@ Three rules about the edges, each decided rather than left to happen:
   call naming any other is refused with `ai_error`, never executed. A model that calls the tool
   more than once in one reply has asked for one picture several times: the first call is honoured
   and the rest are dropped.
+  None of these three carries a `reason`: the model's mistake is not the provider's refusal. A
+  `prompt` the images deployment's filter then refuses IS one, and its `ai_error` carries
+  `"reason": "refused"` exactly as a refused `/draw` does.
 
 `/draw` stays, unchanged, and is still the explicit path: a member who writes it gets a picture
 whether or not the model would have thought of one, and what leaves on it is still the words after
@@ -3014,7 +3076,10 @@ editing changes — a picture answer still does not re-notify through the edit, 
 notification the assistant raises per answer is raised as it always was, once the reply exists.
 
 Failure is the failure a text answer already has: the row keeps whatever it has (nothing) and an
-`ai_error` frame names it. `ai_error` needs no new shape and the member can simply ask again. That
+`ai_error` frame names it. `ai_error` needs no new shape and the member can simply ask again. A
+description the images deployment's own filter refuses is the one failure where asking again in the
+same words does not help, and it says so the way a refused text answer does: `"reason": "refused"`
+(see "The assistant"). That
 is the reason the empty row is created BEFORE the provider is called rather than the finished
 picture arriving as a message of its own — an answer that failed has to have somewhere to fail.
 
@@ -4200,7 +4265,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /families/mine/board/notes` | `{text, color, x, y, size?, font?, kind?, attachment_id?, starts_at?, ends_at?, place?, mentions?, items?}` → `201 {note: Note}`. `mentions: [{user_id, name}]` names members of this family, at most 20, each once, each a name the `text` says after an `@` — the same rules and the same grammar as a message's (`validation` otherwise, see "Board"). Caller becomes the author. `size` defaults to `medium`, `font` to `plain` and `kind` to `text` when absent. `attachment_id` claims one photo this caller uploaded: REQUIRED by `kind: "photo"` (whose `text` may then be empty), optional on `kind: "event"` (the backdrop), refused on a text note. `starts_at` is required by — and only accepted on — an event, with `ends_at` and `place` optional there and nowhere else. Errors: `validation` (text empty on a text note or > 280; an `attachment_id` without the kind, or the kind without one), `invalid_note_kind`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `invalid_attachment` (not a photo), `attachment_not_found`, `attachment_already_used`, `attachment_expired`, `board_full` (409, over the note ceiling), `not_in_family`. An event also answers `validation` for a missing or unparseable `starts_at`, an `ends_at` before it, a `place` over 200 characters, or any of the three on a note that is not an event. `items: [{text}]` is the TASK LIST's lines, accepted on — and only on — `kind: "tasks"`, whose `text` is its title: at most 20, each trimmed, non-empty and at most 100 characters, `validation` otherwise. An `id` on a created item is refused: ids are the server's. |
 | `PATCH /families/mine/board/notes/{id}` | `{text?, color?, size?, font?, x?, y?, starts_at?, ends_at?, place?, mentions?, items?}` → `200 {note: Note}`. `mentions` REPLACES the list — a note's names are re-decided on every edit, unlike a message's, because an edit to a note notifies nobody (see "Board"); sending `text` without `mentions` clears them. A note's KIND and its picture are fixed at creation: neither is patchable, and a photo note's caption may be set to empty here. An event's `starts_at`, `ends_at` and `place` are the AUTHOR'S, like its title — `place` may be sent empty to clear it, `ends_at` null to clear it — and are refused on any other kind. `items` REPLACES a task list's lines and is the author's too (refused on any other kind): an entry `{id, text}` whose `id` the note holds is that item, rewritten and moved, and KEEPS ITS TICK; an entry `{text}` is new; an item left out is gone; an `id` that is not this note's is `validation`, and a `done` sent here is ignored (see "Board"). Any member may send `x`/`y`; only the author may send `text`, `color`, `size` or `font` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `validation`, `not_in_family`. |
 | `PUT /families/mine/board/notes/{id}/rsvp` | `{answer}` → `200 {note: Note}`. Records the caller as `going`, `maybe` or `no` on an event — an idempotent state-set, not a toggle, and ANY member may send it. Re-sending the answer already held is a no-op: no new seq, no fan-out. Errors: `invalid_rsvp` (400 — not one of the three, or the note is not an event), `note_not_found` (404), `not_in_family`. |
-| `POST /families/mine/board/notes/{id}/backdrop` | → `200 {note: Note}`. Asks the assistant for a picture to sit behind an EVENT, drawn from the note's TITLE and nothing else; the AUTHOR only. No request body: the prompt is the title (see "Board"). Replaces the backdrop it has, taking the old picture's row and bytes with it — the one way a note's picture changes after creation. Costs one image against the family's count, takes a `board_seq`, notifies nobody and leaves `content_seq` alone. Errors: `pictures_unavailable` (403 — this server has no images deployment; `assistant.images` on `GET /families/mine` is what a client checks first), `note_not_found` (404), `not_note_author` (403), `validation` (the note is not an event), `storage_full`, `not_in_family`. |
+| `POST /families/mine/board/notes/{id}/backdrop` | → `200 {note: Note}`. Asks the assistant for a picture to sit behind an EVENT, drawn from the note's TITLE and nothing else; the AUTHOR only. No request body: the prompt is the title (see "Board"). Replaces the backdrop it has, taking the old picture's row and bytes with it — the one way a note's picture changes after creation. Costs one image against the family's count, takes a `board_seq`, notifies nobody and leaves `content_seq` alone. Errors: `pictures_unavailable` (403 — this server has no images deployment; `assistant.images` on `GET /families/mine` is what a client checks first), `picture_refused` (400 — the provider's own filter refused to draw this title; terminal, and the note is untouched), `note_not_found` (404), `not_note_author` (403), `validation` (the note is not an event), `storage_full`, `not_in_family`; any other provider failure is `internal` (500). |
 | `PUT /families/mine/board/notes/{id}/tasks/{item_id}` | `{done}` → `200 {note: Note}`. Ticks or unticks one line of a task list — an idempotent state-set, not a toggle, and ANY member may send it; the server records who. Re-sending the state already held is a no-op: no new seq, no fan-out. Errors: `invalid_task` (400 — the note is not a task list, or the item is not one of its lines), `note_not_found` (404), `not_in_family`. |
 | `DELETE /families/mine/board/notes/{id}/rsvp` | → `200 {note: Note}`. Retracts the caller's answer; idempotent (retracting nothing returns the event unchanged and burns no seq). Errors: `invalid_rsvp` (the note is not an event), `note_not_found`, `not_in_family`. |
 | `DELETE /families/mine/board/notes/{id}` | → `204`. Author only. Idempotent: deleting an already-deleted note is still `204` and takes no new seq. A photo note's picture goes with it. Errors: `note_not_found`, `not_note_author`, `not_in_family`. |
@@ -4316,6 +4381,9 @@ the other, or both, and the receiving stack accepts whichever it was given.)
 {"type": "pack_item", "item": {PackItem}}
 {"type": "ai_delta", "chat_id": 42, "message_id": 1339, "text": "…"}   — assistant, mid-reply
 {"type": "ai_error", "chat_id": 42, "message_id": 1339}                — it stopped early
+{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused"}
+                                                                       — the provider's own filter refused it;
+                                                                         an unknown "reason" is read as absent
 {"type": "call_offer",   "call_id": "6a1f0c3e-…", "chat_id": 42, "from_user_id": 7, "sdp": "v=0\r\n…"}
 {"type": "call_offer",   "call_id": "7b2e1d4f-…", "chat_id": 42, "from_user_id": 7, "sdp": "v=0\r\n…",
                          "video": true}

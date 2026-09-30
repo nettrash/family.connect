@@ -89,7 +89,7 @@ public class ApiErrorTests
     [Fact]
     public void TheCanonicalCodesAreAllHereAndAllDistinct()
     {
-        Assert.Equal(65, ErrorCodes.All.Length);
+        Assert.Equal(66, ErrorCodes.All.Length);
         // The sticker pack's four, as the document lists them.
         Assert.Contains(ErrorCodes.PackFull, ErrorCodes.All);
         Assert.Contains(ErrorCodes.PackItemTooLarge, ErrorCodes.All);
@@ -98,6 +98,7 @@ public class ApiErrorTests
         Assert.Equal(ErrorCodes.All.Length, ErrorCodes.All.Distinct().Count());
         Assert.Contains(ErrorCodes.OwnerCannotLeave, ErrorCodes.All);
         Assert.Contains(ErrorCodes.PicturesUnavailable, ErrorCodes.All);
+        Assert.Contains(ErrorCodes.PictureRefused, ErrorCodes.All);
         Assert.Contains(ErrorCodes.InvalidTask, ErrorCodes.All);
         // This client's own name for "it never got there" is NOT one of the protocol's.
         Assert.DoesNotContain(ErrorCodes.Transport, ErrorCodes.All);

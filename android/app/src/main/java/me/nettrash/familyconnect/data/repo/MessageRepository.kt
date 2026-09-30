@@ -145,7 +145,7 @@ class MessageRepository @Inject constructor(
                         // fires for a row this device marked failed and the
                         // server then finished anyway — but leaving the
                         // mark would draw "ask again" under a real answer.
-                        _failedAssistantMessageIds.update { it - frame.message.id }
+                        _failedAssistantAnswers.update { it - frame.message.id }
                         applyEdit(frame.message)
                     }
                     is ServerFrame.AiDelta -> appendAssistantDelta(frame)
@@ -160,8 +160,12 @@ class MessageRepository @Inject constructor(
                         // balloon that never resolves and never explains
                         // itself. The mark is what lets the bubble say so
                         // (docs/protocol.md, "Pictures": "an answer that
-                        // failed has to have somewhere to fail").
-                        _failedAssistantMessageIds.update { it + frame.messageId }
+                        // failed has to have somewhere to fail"). WHY it
+                        // failed rides along, so the sentence it is given
+                        // survives every redraw the mark does.
+                        _failedAssistantAnswers.update {
+                            it + (frame.messageId to AssistantFailure.of(frame))
+                        }
                     }
                     is ServerFrame.Read -> onRead(frame)
                     is ServerFrame.Reaction -> onReaction(frame)
@@ -731,9 +735,15 @@ class MessageRepository @Inject constructor(
      * frames" — "an image model produces no token stream and there is
      * nothing honest to stream"), so its failure is an empty balloon and
      * nothing else. The bubble draws a short line from this instead.
+     *
+     * Keyed by server id, valued by HOW it failed: a refusal by the
+     * provider's own filter reads differently from any other failure
+     * (protocol.md, "The assistant": `ai_error`'s `reason`), and the row
+     * has to remember which for as long as it remembers that it failed.
      */
-    private val _failedAssistantMessageIds = MutableStateFlow<Set<Long>>(emptySet())
-    val failedAssistantMessageIds: StateFlow<Set<Long>> = _failedAssistantMessageIds
+    private val _failedAssistantAnswers =
+        MutableStateFlow<Map<Long, AssistantFailure>>(emptyMap())
+    val failedAssistantAnswers: StateFlow<Map<Long, AssistantFailure>> = _failedAssistantAnswers
 
     /**
      * Append one fragment to the assistant's row.

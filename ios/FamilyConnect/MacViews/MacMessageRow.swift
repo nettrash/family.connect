@@ -31,8 +31,10 @@ struct MacMessageRow: View {
     /// its "still working" state (protocol.md, "How a picture comes back").
     var isStreaming: Bool = false
     /// An `ai_error` named this row, and it is BLANK — no partial text and
-    /// no picture. The phone's rule, and its wording.
-    var assistantFailed: Bool = false
+    /// no picture. The phone's rule, and its wording — including WHICH
+    /// sentence, a provider's refusal or the plain "ask again". Nil while
+    /// the answer has not failed.
+    var assistantFailure: AssistantFailure? = nil
     let isMine: Bool
     /// Family chat, run head, not mine — the phone's rule, shared.
     var showsSenderName: Bool = false
@@ -592,8 +594,12 @@ struct MacMessageRow: View {
                 // balloon would look broken.
                 Text(verbatim: "▍").opacity(0.6)
             }
-            if assistantFailed && message.body.isEmpty && message.attachments.isEmpty {
-                Label("Couldn't answer that. Ask again.", systemImage: "exclamationmark.circle")
+            if let assistantFailure, message.body.isEmpty && message.attachments.isEmpty {
+                Label {
+                    Text(assistantFailure.sentence)
+                } icon: {
+                    Image(systemName: "exclamationmark.circle")
+                }
                     .opacity(0.75)
                     .fixedSize(horizontal: false, vertical: true)
             }

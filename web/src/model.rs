@@ -818,6 +818,61 @@ impl Message {
     }
 }
 
+/// Why an assistant answer stopped early — an `ai_error`'s optional
+/// `reason`, already read (docs/protocol.md, "The assistant").
+///
+/// Two values and not a string, because a client MUST treat a reason it
+/// does not know as absent: the decision is made once, where the frame is
+/// read, and nothing after it can invent a meaning for a word a newer
+/// server sends. It is what the failed row REMEMBERS, beside the fact that
+/// it failed, so the sentence survives every redraw the flag did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AiFailure {
+    /// Any failure the server did not say more about — the provider out of
+    /// reach, a broken stream, a picture that could not be stored — and any
+    /// `reason` this client has not learned.
+    #[default]
+    Failed,
+    /// `"refused"`: the AI provider's OWN safety or content filter declined
+    /// the question, the answer or a picture's description. Asking again in
+    /// the same words gets the same refusal, so the sentence says to put it
+    /// another way instead.
+    Refused,
+}
+
+impl AiFailure {
+    /// The wire's `reason`, with everything but a known word read as absent.
+    pub fn from_reason(reason: Option<&str>) -> AiFailure {
+        match reason {
+            Some("refused") => AiFailure::Refused,
+            _ => AiFailure::Failed,
+        }
+    }
+
+    /// What the failed answer says — in the bubble, in the row still
+    /// waiting for words, and so to a screen reader.
+    pub fn sentence(self) -> &'static str {
+        match self {
+            AiFailure::Failed => t("Couldn't answer that. Ask again."),
+            AiFailure::Refused => {
+                t("The assistant's provider refused that. Try putting it another way.")
+            }
+        }
+    }
+}
+
+/// Deserialises an `ai_error`'s `reason` FORGIVINGLY: a word this client
+/// does not know, or a value that is not a word at all, is the failure it
+/// always was — never a frame dropped for being unreadable, which would
+/// leave the row waiting for an answer that is not coming.
+pub fn ai_failure<'de, D>(deserializer: D) -> Result<AiFailure, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let reason = serde_json::Value::deserialize(deserializer)?;
+    Ok(AiFailure::from_reason(reason.as_str()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -281,6 +281,14 @@ pub struct Streamed {
     pub text: String,
     pub tool_call: Option<ToolCall>,
     pub usage: Usage,
+    /// Why the model stopped, in the provider's own word — `stop`, `length`,
+    /// `content_filter`, `tool_calls` — or empty when the stream never said.
+    /// It changes nothing the server DOES. It is kept because an answer with
+    /// no words in it is otherwise indistinguishable from any other: a reply
+    /// cut off by the filter, one that ran out of tokens while reasoning and
+    /// one the provider simply returned empty all reach the member as the
+    /// same "Couldn't answer that", and used to reach the log as nothing.
+    pub finish_reason: String,
 }
 
 /// The most tool calls one stream may accumulate. The server declares ONE
@@ -356,9 +364,15 @@ fn absorb_event<F>(
     }
     // Azure sends a first chunk with an empty `choices` array when it is
     // only reporting usage, so this is a `get`, not an index.
-    let Some(delta) = event["choices"].get(0).map(|choice| &choice["delta"]) else {
+    let Some(choice) = event["choices"].get(0) else {
         return;
     };
+    // The last chunk that names one wins; it arrives once, on the final
+    // chunk of a choice, and every chunk before it carries null.
+    if let Some(reason) = choice["finish_reason"].as_str() {
+        reply.finish_reason = reason.to_string();
+    }
+    let delta = &choice["delta"];
     if let Some(text) = delta["content"].as_str()
         && !text.is_empty()
     {
@@ -412,6 +426,149 @@ fn finish(mut reply: Streamed, drafts: Vec<ToolCall>) -> Streamed {
     reply
 }
 
+/// The provider's OWN safety filter refused the request — the question, the
+/// answer, or a picture's description (docs/protocol.md, "The assistant").
+///
+/// Carried as the SOURCE of the error a provider call returns, under the
+/// usual context line, so every caller keeps the `anyhow` it always had and
+/// the one that needs to know asks [`is_refusal`]. It is a type rather than
+/// a sentence to search for because the decision is made ONCE, here, from
+/// the provider's structured fields — and a caller matching on the words of
+/// a log line would be making it a second time, worse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Refused;
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the provider's content filter refused it")
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Whether this error is the provider refusing, anywhere in its chain.
+pub fn is_refusal(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<Refused>())
+}
+
+/// `error.code` / `error.type` values that ARE a content refusal. Azure's
+/// chat completions say `content_filter`; its images endpoint says
+/// `content_policy_violation` or, on the newer surfaces,
+/// `content_safety_violation`; OpenAI's image models say `moderation_blocked`.
+const REFUSAL_CODES: &[&str] = &[
+    "content_filter",
+    "content_policy_violation",
+    "content_safety_violation",
+    "moderation_blocked",
+];
+
+/// `error.innererror.code` values that are one — Azure's name for "the RAI
+/// policy blocked this", under whatever outer code the surface chose.
+const REFUSAL_INNER_CODES: &[&str] = &["ResponsibleAIPolicyViolation"];
+
+/// Outer codes that say only "the request was bad". They leave the question
+/// open, so the message is allowed to answer it — and ONLY they do: a code
+/// that names some other problem is that problem, whatever its prose says.
+const GENERIC_CODES: &[&str] = &["badrequest", "bad_request", "invalid_request_error"];
+
+/// Phrases a message may name the policy by, consulted only under a generic
+/// or absent code. Each is Azure naming its own filter outright; none is a
+/// word a member's question could put into an unrelated error.
+const REFUSAL_PHRASES: &[&str] = &[
+    "responsibleaipolicyviolation",
+    "rai policy",
+    "content management policy",
+];
+
+/// Did the provider's filter refuse this request? Decided from an HTTP error
+/// answer: its status and its body, as the provider sent them.
+///
+/// **Structured fields decide.** A 4xx whose JSON `error.code`, `error.type`
+/// or `error.innererror.code` names a refusal is one; a 4xx that names
+/// anything else — `max_tokens` too large, an unknown deployment — is not,
+/// whatever it says. Only when those fields are absent or merely generic
+/// does the message count, and then only a phrase that names Azure's policy
+/// outright. A 5xx is never a refusal: the provider did not read the request
+/// and decline it, it failed to answer, and asking again may well work.
+pub fn refused_by_provider(status: reqwest::StatusCode, body: &str) -> bool {
+    if !status.is_client_error() {
+        return false;
+    }
+    let Ok(parsed) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    // Every Azure and OpenAI surface wraps it in `error`; a bare object is
+    // read as the error itself rather than as nothing.
+    let error = if parsed["error"].is_object() {
+        &parsed["error"]
+    } else {
+        &parsed
+    };
+    let is_one_of = |value: &Value, set: &[&str]| {
+        value
+            .as_str()
+            .is_some_and(|found| set.iter().any(|known| found.eq_ignore_ascii_case(known)))
+    };
+    let outer = [&error["code"], &error["type"]];
+    if outer.iter().any(|value| is_one_of(value, REFUSAL_CODES)) {
+        return true;
+    }
+    let inner = [&error["innererror"]["code"], &error["inner_error"]["code"]];
+    if inner
+        .iter()
+        .any(|value| is_one_of(value, REFUSAL_INNER_CODES) || is_one_of(value, REFUSAL_CODES))
+    {
+        return true;
+    }
+    // A code that is a string and neither a refusal nor generic has said
+    // what went wrong, and it was something else.
+    let named_something_else = outer.iter().any(|value| {
+        value
+            .as_str()
+            .is_some_and(|found| !found.trim().is_empty() && !is_one_of(value, GENERIC_CODES))
+    });
+    if named_something_else {
+        return false;
+    }
+    let message = error["message"].as_str().unwrap_or_default().to_lowercase();
+    REFUSAL_PHRASES
+        .iter()
+        .any(|phrase| message.contains(phrase))
+}
+
+/// Did a streamed answer stop because the provider's filter stopped it?
+/// Azure's word for it, on the last chunk of the choice.
+pub fn finish_is_refusal(finish_reason: &str) -> bool {
+    finish_reason.eq_ignore_ascii_case("content_filter")
+}
+
+/// A provider's error body as ONE log line, bounded.
+///
+/// Azure pretty-prints its errors, and journald cuts a record at every
+/// newline — so the part of the detail that says WHICH filter tripped was
+/// arriving as a second, orphaned line, or not at all. Every run of
+/// whitespace becomes one space, then the 400-character bound applies,
+/// counted in characters so a body in any alphabet is never cut mid-letter.
+fn one_line(detail: &str) -> String {
+    detail
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(400)
+        .collect()
+}
+
+/// The error a failed provider call becomes: the context line the log
+/// reads, over [`Refused`] when the provider's filter is what failed it.
+fn provider_error(status: reqwest::StatusCode, summary: String, detail: &str) -> anyhow::Error {
+    if refused_by_provider(status, detail) {
+        anyhow::Error::new(Refused).context(summary)
+    } else {
+        anyhow::anyhow!(summary)
+    }
+}
+
 /// Stream a reply, handing each fragment to `on_delta` as it arrives.
 ///
 /// `on_delta` is called on the caller's task, so it should do nothing slow —
@@ -453,12 +610,18 @@ where
         // diagnosable: "Resource not found" alone cannot tell you whether
         // the endpoint, the deployment or the api-version is wrong. None of
         // it is secret — the key is only ever a header.
+        // The body is read for WHY as well as for the log: a refusal by
+        // the provider's filter is the one failure the member is told about
+        // differently (protocol.md, "The assistant").
         let detail = response.text().await.unwrap_or_default();
-        bail!(
-            "assistant returned {status} for {}: {}",
-            url,
-            detail.chars().take(400).collect::<String>()
-        );
+        return Err(provider_error(
+            status,
+            format!(
+                "assistant returned {status} for {url}: {}",
+                one_line(&detail)
+            ),
+            &detail,
+        ));
     }
 
     let mut reply = Streamed::default();
@@ -570,11 +733,15 @@ pub async fn generate_image(
         // body field this deployment does not implement was the wrong one.
         // None of it is secret — the key is only ever a header.
         let detail = response.text().await.unwrap_or_default();
-        bail!(
-            "image generation returned {status} for {}: {}",
-            route.url,
-            detail.chars().take(400).collect::<String>()
-        );
+        return Err(provider_error(
+            status,
+            format!(
+                "image generation returned {status} for {}: {}",
+                route.url,
+                one_line(&detail)
+            ),
+            &detail,
+        ));
     }
 
     let payload: Value = response
@@ -951,6 +1118,40 @@ mod tests {
         );
     }
 
+    /// WHY the model stopped is kept, because it is the only thing that tells
+    /// an empty answer apart from any other: the filter, a reasoning model
+    /// out of tokens and a provider that returned nothing all stream no words.
+    /// It rides on the last chunk of a choice, null on every chunk before,
+    /// and the usage-only chunk after it must not wipe it.
+    #[test]
+    fn the_reason_a_reply_stopped_is_kept() {
+        for (reason, completion) in [("content_filter", 0), ("length", 16384), ("stop", 12)] {
+            let mut reply = Streamed::default();
+            let mut drafts = Vec::new();
+            let events = [
+                json!({"choices": [{"delta": {"role": "assistant"}, "finish_reason": null}]}),
+                json!({"choices": [{"delta": {}, "finish_reason": reason}]}),
+                json!({"choices": [], "usage": {"prompt_tokens": 40, "completion_tokens": completion}}),
+            ];
+            for event in &events {
+                absorb_event(event, &mut reply, &mut drafts, &mut |_| {});
+            }
+            let reply = finish(reply, drafts);
+            assert_eq!(reply.text, "", "no words arrived");
+            assert_eq!(reply.finish_reason, reason);
+            assert_eq!(reply.usage.completion_tokens, completion);
+        }
+        // A stream that never names one leaves it empty rather than guessing.
+        let mut reply = Streamed::default();
+        absorb_event(
+            &json!({"choices": [{"delta": {"content": "hi"}}]}),
+            &mut reply,
+            &mut Vec::new(),
+            &mut |_| {},
+        );
+        assert_eq!(reply.finish_reason, "");
+    }
+
     /// A tool call arrives in pieces: the name on the first chunk, the
     /// arguments a few characters at a time, all under one index. They are
     /// joined, and the words — none, for a pure tool call — are untouched.
@@ -1207,5 +1408,162 @@ mod tests {
             !cfg.configured_but_nameless(),
             "a section switched off is not a warning either"
         );
+    }
+
+    // -- refusals ------------------------------------------------------------
+    //
+    // The bodies below are the shapes the providers actually send, pretty-
+    // printed where they arrive pretty-printed — which is also what the
+    // one-line fold exists for.
+
+    use reqwest::StatusCode;
+
+    /// Azure's images endpoint, refusing a description. This is the one seen
+    /// in production.
+    #[test]
+    fn an_images_content_safety_violation_is_a_refusal() {
+        let body = r#"{
+  "error": {
+    "code": "content_safety_violation",
+    "message": "This request has been blocked by our content filters.",
+    "type": null,
+    "param": null
+  }
+}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, body));
+    }
+
+    /// The classic DALL·E surface: `content_policy_violation`, with the RAI
+    /// inner error underneath.
+    #[test]
+    fn an_images_content_policy_violation_is_a_refusal() {
+        let body = r#"{"error": {"code": "content_policy_violation",
+            "message": "Your request was rejected as a result of our safety system.",
+            "innererror": {"code": "ResponsibleAIPolicyViolation",
+                           "content_filter_results": {"violence": {"filtered": true, "severity": "medium"}}}}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, body));
+        // OpenAI's image models name it differently, in the same place.
+        let openai = r#"{"error": {"message": "Your request was rejected by the safety system.",
+            "type": "image_generation_user_error", "param": null, "code": "moderation_blocked"}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, openai));
+    }
+
+    /// Azure's chat completions, refusing the QUESTION: `content_filter` and
+    /// the RAI inner code, the way it answers a filtered prompt.
+    #[test]
+    fn a_chat_completions_content_filter_is_a_refusal() {
+        let body = r#"{"error": {"message": "The response was filtered due to the prompt triggering Azure OpenAI's content management policy. Please modify your prompt and retry.",
+            "type": null, "param": "prompt", "code": "content_filter", "status": 400,
+            "innererror": {"code": "ResponsibleAIPolicyViolation",
+                           "content_filter_result": {"hate": {"filtered": true, "severity": "high"}}}}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, body));
+        // The inner code alone decides it, under whatever outer code.
+        let inner_only = r#"{"error": {"code": "BadRequest", "message": "blocked",
+            "innererror": {"code": "ResponsibleAIPolicyViolation"}}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, inner_only));
+    }
+
+    /// The message counts only under a generic or absent code — and then
+    /// only a phrase naming the policy outright.
+    #[test]
+    fn the_message_counts_only_when_the_code_says_nothing() {
+        let generic = r#"{"error": {"code": "BadRequest", "message": "The request was blocked by the RAI policy of this deployment."}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, generic));
+        let absent = r#"{"error": {"message": "Blocked: ResponsibleAIPolicyViolation"}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, absent));
+        // A code that names some other problem IS that problem, even if the
+        // prose happens to mention the policy.
+        let named = r#"{"error": {"code": "DeploymentNotFound", "message": "No RAI policy is attached to this deployment."}}"#;
+        assert!(!refused_by_provider(StatusCode::NOT_FOUND, named));
+        // And a generic code with ordinary prose is ordinary.
+        let plain = r#"{"error": {"code": "BadRequest", "message": "Invalid value for 'size'."}}"#;
+        assert!(!refused_by_provider(StatusCode::BAD_REQUEST, plain));
+    }
+
+    /// The 400s that are NOT a refusal, which are the ones an operator has
+    /// to fix and a member must not be told to rephrase around.
+    #[test]
+    fn an_ordinary_bad_request_is_not_a_refusal() {
+        let max_tokens = r#"{"error": {"message": "max_tokens is too large: 100000. This model supports at most 16384 completion tokens, whereas you provided 100000.",
+            "type": "invalid_request_error", "param": "max_tokens", "code": null}}"#;
+        assert!(!refused_by_provider(StatusCode::BAD_REQUEST, max_tokens));
+        let unsupported = r#"{"error": {"message": "Unrecognized request argument supplied: tools",
+            "type": "invalid_request_error", "param": null, "code": "unsupported_parameter"}}"#;
+        assert!(!refused_by_provider(StatusCode::BAD_REQUEST, unsupported));
+        let not_found = r#"{"error": {"code": "DeploymentNotFound", "message": "The API deployment for this resource does not exist."}}"#;
+        assert!(!refused_by_provider(StatusCode::NOT_FOUND, not_found));
+        // Not JSON at all: nothing structured to decide from.
+        assert!(!refused_by_provider(StatusCode::BAD_REQUEST, "Bad Request"));
+        assert!(!refused_by_provider(StatusCode::BAD_REQUEST, ""));
+    }
+
+    /// A 5xx is never a refusal, whatever its body claims: the provider did
+    /// not decline the request, it failed to answer it.
+    #[test]
+    fn a_server_error_is_never_a_refusal() {
+        let body = r#"{"error": {"code": "content_filter", "message": "The content filter is unavailable."}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, body));
+        assert!(!refused_by_provider(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            body
+        ));
+        assert!(!refused_by_provider(StatusCode::SERVICE_UNAVAILABLE, body));
+    }
+
+    /// A streamed answer the filter stopped, by Azure's own word for it.
+    #[test]
+    fn a_content_filter_finish_is_a_refusal_and_no_other_finish_is() {
+        assert!(finish_is_refusal("content_filter"));
+        for other in ["stop", "length", "tool_calls", ""] {
+            assert!(!finish_is_refusal(other), "{other:?}");
+        }
+    }
+
+    /// The decision survives the context the log line is written in, and
+    /// any context a caller adds on top — while an ordinary failure, with
+    /// the same kind of line, is not mistaken for one.
+    #[test]
+    fn a_refusal_is_found_through_the_error_chain() {
+        let refused = provider_error(
+            StatusCode::BAD_REQUEST,
+            "image generation returned 400".to_string(),
+            r#"{"error": {"code": "content_safety_violation"}}"#,
+        );
+        assert!(is_refusal(&refused));
+        assert!(is_refusal(&refused.context("drawing the picture")));
+        let ordinary = provider_error(
+            StatusCode::BAD_REQUEST,
+            "image generation returned 400".to_string(),
+            r#"{"error": {"code": "invalid_size"}}"#,
+        );
+        assert!(!is_refusal(&ordinary));
+        // The log line still says what happened, and then why.
+        let line = format!(
+            "{:#}",
+            provider_error(
+                StatusCode::BAD_REQUEST,
+                "assistant returned 400".to_string(),
+                r#"{"error": {"code": "content_filter"}}"#,
+            )
+        );
+        assert_eq!(
+            line,
+            "assistant returned 400: the provider's content filter refused it"
+        );
+    }
+
+    /// The provider's detail reaches the log on ONE line, bounded, and never
+    /// cut mid-letter.
+    #[test]
+    fn the_provider_detail_is_folded_onto_one_line() {
+        let pretty = "{\n  \"error\": {\n    \"code\": \"content_filter\",\r\n\t\"message\": \"x\"\n  }\n}\n";
+        assert_eq!(
+            one_line(pretty),
+            r#"{ "error": { "code": "content_filter", "message": "x" } }"#
+        );
+        let long = format!("{{\n{}\n}}", "я".repeat(1000));
+        let folded = one_line(&long);
+        assert_eq!(folded.chars().count(), 400);
+        assert!(!folded.contains('\n'));
     }
 }

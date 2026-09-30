@@ -1053,8 +1053,12 @@ class FakeBoardApi : BoardApi {
     /** Every backdrop asked for, and the picture this fake draws. */
     val backdrops = mutableListOf<Long>()
 
+    /** What the server answers instead of a picture, when set — a refusal, a 500. */
+    var backdropFailure: ApiResult<NoteResponse>? = null
+
     override suspend fun drawBackdrop(noteId: Long): ApiResult<NoteResponse> {
         backdrops += noteId
+        backdropFailure?.let { return it }
         return ApiResult.Ok(
             NoteResponse(
                 noteDto(

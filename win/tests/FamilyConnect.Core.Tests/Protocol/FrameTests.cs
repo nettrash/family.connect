@@ -275,7 +275,28 @@ public class FrameTests
         Assert.Equal("Sure", Assert.IsType<ServerFrame.AiDelta>(delta).Text);
         var error = ServerFrame.Parse("""{"type": "ai_error", "chat_id": 42, "message_id": 1339}""");
         Assert.Equal(1339, Assert.IsType<ServerFrame.AiError>(error).MessageId);
+        // Absent is every failure that is not a refusal, exactly as before the field existed.
+        Assert.Null(Assert.IsType<ServerFrame.AiError>(error).Reason);
         Assert.IsType<ServerFrame.Pong>(ServerFrame.Parse("""{"type": "pong"}"""));
+    }
+
+    /// <summary>
+    /// <c>ai_error</c>'s optional <c>reason</c>: "refused" is the provider's own filter, and a value this client does
+    /// not know — or one that is not a string at all — is read as ABSENT, never guessed at (docs/protocol.md).
+    /// </summary>
+    [Fact]
+    public void AnAssistantFailureSaysWhyOnlyInWordsItKnows()
+    {
+        var refused = Assert.IsType<ServerFrame.AiError>(ServerFrame.Parse(
+            """{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused"}"""));
+        Assert.Equal(new ServerFrame.AiError(42, 1339, AiErrorReason.Refused), refused);
+
+        foreach (var unknown in new[] { "\"quota\"", "\"Refused\"", "\"\"", "null", "7", "true", "{}", "[\"refused\"]" })
+        {
+            var frame = ServerFrame.Parse(
+                $$"""{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": {{unknown}}}""");
+            Assert.Equal(new ServerFrame.AiError(42, 1339), frame);
+        }
     }
 
     [Fact]

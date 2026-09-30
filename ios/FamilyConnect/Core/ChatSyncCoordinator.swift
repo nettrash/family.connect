@@ -63,6 +63,42 @@ import Observation
 import os
 import SwiftData
 
+/// What asking the assistant for an event's backdrop came to
+/// (docs/protocol.md, "Board").
+nonisolated enum BackdropOutcome: Equatable, Sendable {
+    /// The picture's id — the NEW attachment a redraw makes, which the
+    /// sheet that asked has to be told, since it holds the note as it was.
+    case drawn(attachmentID: Int64)
+    /// `picture_refused`: the provider's own filter would not draw this
+    /// title. Terminal — the same title gets the same refusal.
+    case refused
+    /// Anything else: no images deployment, a transport failure, the
+    /// provider's own failure (`internal`), a picture that never landed.
+    case failed
+
+    /// Sorted from what the request threw. Only the protocol's code decides
+    /// a refusal; a 400 with any other code is an ordinary failure.
+    init(error: Error) {
+        if case APIError.conflict(let code, _) = error, code == "picture_refused" {
+            self = .refused
+        } else {
+            self = .failed
+        }
+    }
+
+    /// What the sheet says, nil when there is nothing to say. A refusal
+    /// reads as a refused answer does (protocol.md, "Board"), because it
+    /// is the same thing: asking again in the same words will not help.
+    var failureMessage: String? {
+        switch self {
+        case .drawn: nil
+        case .refused:
+            String(localized: "The assistant's provider refused that. Try putting it another way.")
+        case .failed: String(localized: "Couldn't draw that.")
+        }
+    }
+}
+
 @MainActor @Observable
 final class ChatSyncCoordinator {
 
@@ -557,7 +593,7 @@ final class ChatSyncCoordinator {
         case .aiDelta(_, let messageID, let text):
             appendAssistantDelta(messageID: messageID, text: text)
 
-        case .aiError(_, let messageID):
+        case .aiError(_, let messageID, let reason):
             // Whatever arrived is already on the row and stays there — a
             // partial answer is worth more than a bubble that never
             // resolves. Just stop showing it as still being written.
@@ -569,7 +605,12 @@ final class ChatSyncCoordinator {
             // (protocol.md, "How a picture comes back"). Without this the
             // row that "has to have somewhere to fail" fails into a
             // completely blank bubble.
-            failedAssistantMessageIDs.insert(messageID)
+            //
+            // WHICH failure is remembered with it: a refusal by the
+            // provider's own filter says so instead of "ask again", and
+            // must go on saying so on every redraw (protocol.md, "The
+            // assistant"). An unknown reason arrives here as nil already.
+            failedAssistantAnswers[messageID] = AssistantFailure(reason: reason)
 
         case .messageEdited(let message):
             // The authoritative body: whatever was accumulated from deltas
@@ -588,7 +629,7 @@ final class ChatSyncCoordinator {
             // normally un-fail (asking again makes a NEW message), but a
             // late edit racing an `ai_error` must not leave the row
             // apologising underneath a finished answer.
-            failedAssistantMessageIDs.remove(message.id)
+            failedAssistantAnswers[message.id] = nil
             // bumpUnread: false — an edit is not new mail. The body write
             // itself is guarded by edit_seq inside upsert, and the chat's
             // cursor advances so a later catch-up does not replay it.
@@ -792,14 +833,17 @@ final class ChatSyncCoordinator {
     /// ROW is what says an empty answer is still coming.
     private(set) var streamingMessageIDs: Set<Int64> = []
 
-    /// Assistant replies an `ai_error` frame named, by server id.
+    /// Assistant replies an `ai_error` frame named, by server id, and
+    /// which failure it was — the frame's `reason`, read into the sentence
+    /// the bubble says (protocol.md, "The assistant").
     ///
     /// Read by the bubble so an answer that stopped says so where it would
     /// otherwise show nothing. In memory only, exactly like the set above
     /// and for the same reason: a row that failed while the app was running
     /// has a bubble to correct, and a row from a previous launch has no
-    /// business claiming a failure this process never saw.
-    private(set) var failedAssistantMessageIDs: Set<Int64> = []
+    /// business claiming a failure this process never saw. The reason lives
+    /// and dies with the failure it belongs to, never on its own.
+    private(set) var failedAssistantAnswers: [Int64: AssistantFailure] = [:]
 
     /// Is this row an assistant answer that has not arrived yet?
     ///
@@ -831,7 +875,7 @@ final class ChatSyncCoordinator {
     /// again — which is exactly what protocol.md says an empty row means,
     /// and the member's remedy is the one it names: ask again.
     func isAwaitingAssistant(messageID: Int64) -> Bool {
-        guard !failedAssistantMessageIDs.contains(messageID) else { return false }
+        guard failedAssistantAnswers[messageID] == nil else { return false }
         if streamingMessageIDs.contains(messageID) { return true }
         guard let row = fetchMessage(serverID: messageID) else { return false }
         return MessagePresentation.isAwaitedAssistantAnswer(
@@ -850,7 +894,7 @@ final class ChatSyncCoordinator {
     /// rows must not fetch one message and one chat per row per frame.
     func isAwaitingAssistant(_ message: MessageSnapshot, isAssistantChat: Bool) -> Bool {
         if let serverID = message.serverID {
-            guard !failedAssistantMessageIDs.contains(serverID) else { return false }
+            guard failedAssistantAnswers[serverID] == nil else { return false }
             if streamingMessageIDs.contains(serverID) { return true }
         }
         return MessagePresentation.isAwaitedAssistantAnswer(
@@ -862,7 +906,13 @@ final class ChatSyncCoordinator {
 
     /// True once an `ai_error` named this row.
     func assistantAnswerFailed(messageID: Int64) -> Bool {
-        failedAssistantMessageIDs.contains(messageID)
+        failedAssistantAnswers[messageID] != nil
+    }
+
+    /// How this row's answer failed, once an `ai_error` named it — nil
+    /// while it has not. What the bubble draws its sentence from.
+    func assistantFailure(messageID: Int64) -> AssistantFailure? {
+        failedAssistantAnswers[messageID]
     }
 
     /// An empty assistant reply has just been fanned out: the row exists so
@@ -895,7 +945,7 @@ final class ChatSyncCoordinator {
             currentUserID: currentUserID)
         guard isWaiting else { return }
         streamingMessageIDs.insert(dto.id)
-        failedAssistantMessageIDs.remove(dto.id)
+        failedAssistantAnswers[dto.id] = nil
     }
 
     /// Append one fragment to the assistant's row.
@@ -1824,11 +1874,23 @@ final class ChatSyncCoordinator {
     /// holds a snapshot of the note as it was: without the new id it would
     /// keep drawing the old picture, or none, which is what made asking
     /// again look like nothing happening.
-    func drawBackdrop(noteID: Int64) async -> Int64? {
-        guard let dto = try? await api.drawBackdrop(noteID: noteID) else { return nil }
+    ///
+    /// A REFUSAL is told apart from every other failure: the provider's own
+    /// filter refusing the title answers `picture_refused`, which is
+    /// terminal — the same title gets the same refusal — so the sheet says
+    /// to put it another way instead of "Couldn't draw that." (protocol.md,
+    /// "Board").
+    func drawBackdrop(noteID: Int64) async -> BackdropOutcome {
+        let dto: NoteDTO
+        do {
+            dto = try await api.drawBackdrop(noteID: noteID)
+        } catch {
+            return BackdropOutcome(error: error)
+        }
         applyNote(dto)
         saveContext()
-        return dto.attachment?.id
+        guard let attachmentID = dto.attachment?.id else { return .failed }
+        return .drawn(attachmentID: attachmentID)
     }
 
     func deleteNote(id: Int64) async -> Bool {

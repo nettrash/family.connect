@@ -1,4 +1,5 @@
 using System.Text;
+using FamilyConnect.Core;
 using FamilyConnect.Core.Protocol;
 
 namespace FamilyConnect.App.Logic;
@@ -17,12 +18,18 @@ namespace FamilyConnect.App.Logic;
 /// <b>A FINISHED ANSWER IS A FINISHED ANSWER</b>, whatever went before it: an edit clears both the text and the
 /// failure, and a row that carries an <c>edit_seq</c> is never drawn as failed, however it reached the cache.
 /// </para>
+/// <para>
+/// <b>A FAILURE REMEMBERS ITS SENTENCE</b> (docs/protocol.md, <c>ai_error</c>'s <c>reason</c>): a refusal by the
+/// provider's own filter says so, and anything else says "ask again" — for exactly as long as the row is failed, so a
+/// redraw never turns one sentence into the other.
+/// </para>
 /// </remarks>
 public sealed class AssistantAnswers
 {
     private readonly object gate = new();
     private readonly Dictionary<long, StringBuilder> written = [];
-    private readonly HashSet<long> stopped = [];
+    // Each stopped answer, with the reason its frame gave — null for every failure that is not a refusal.
+    private readonly Dictionary<long, AiErrorReason?> stopped = [];
     private int version;
 
     /// <summary>Something about a chat's answers changed (raised on whatever thread the frame arrived on).</summary>
@@ -48,12 +55,12 @@ public sealed class AssistantAnswers
         Touch(chatId);
     }
 
-    /// <summary>It stopped early: the row keeps what arrived, and says so.</summary>
-    public void Stopped(long chatId, long messageId)
+    /// <summary>It stopped early: the row keeps what arrived, and says so — and why, when the frame said.</summary>
+    public void Stopped(long chatId, long messageId, AiErrorReason? reason = null)
     {
         lock (gate)
         {
-            stopped.Add(messageId);
+            stopped[messageId] = reason;
         }
         Touch(chatId);
     }
@@ -84,7 +91,7 @@ public sealed class AssistantAnswers
         }
     }
 
-    /// <summary>Whether the row says "Couldn't answer that. Ask again."</summary>
+    /// <summary>Whether the row says it failed — which sentence it says is <see cref="FailureSentence"/>.</summary>
     public bool Failed(MessageDto message)
     {
         if (message.EditSeq is not null)
@@ -93,9 +100,37 @@ public sealed class AssistantAnswers
         }
         lock (gate)
         {
-            return stopped.Contains(message.Id);
+            return stopped.ContainsKey(message.Id);
         }
     }
+
+    /// <summary>
+    /// What a failed row says — on the bubble, under what streamed, and to a screen reader — or null while it has not
+    /// failed.
+    /// </summary>
+    public string? FailureSentence(MessageDto message, IStringCatalog say)
+    {
+        if (message.EditSeq is not null)
+        {
+            return null;
+        }
+        AiErrorReason? reason;
+        lock (gate)
+        {
+            if (!stopped.TryGetValue(message.Id, out reason))
+            {
+                return null;
+            }
+        }
+        return Sentence(reason, say);
+    }
+
+    /// <summary>The failure sentence for a reason: the provider's refusal is not worth asking again in the same words.</summary>
+    public static string Sentence(AiErrorReason? reason, IStringCatalog say) => reason switch
+    {
+        AiErrorReason.Refused => say.Get("The assistant's provider refused that. Try putting it another way."),
+        _ => say.Get("Couldn't answer that. Ask again."),
+    };
 
     public void Clear()
     {

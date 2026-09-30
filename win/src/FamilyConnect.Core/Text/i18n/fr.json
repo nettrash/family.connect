@@ -387,6 +387,7 @@
   "The Assistant": "L’assistant",
   "The answer comes back as a message in that chat, where everyone in the chat can read it.": "La réponse revient sous forme de message dans cette discussion, où tous ses participants peuvent la lire.",
   "The assistant on this server can't look at pictures, so it will be told a photo is here but won't be shown it.": "L’assistant de ce serveur ne peut pas regarder d’images. On lui dira qu’il y a une photo ici, mais elle ne lui sera pas montrée.",
+  "The assistant's provider refused that. Try putting it another way.": "Le fournisseur de l'assistant a refusé. Essaie de le formuler autrement.",
   "The board is empty": "Le tableau est vide",
   "The board is full. Take a note down to make room for this one.": "Le tableau est plein. Retire une note pour faire de la place à celle-ci.",
   "The board pins photos only.": "Le tableau n’épingle que des photos.",

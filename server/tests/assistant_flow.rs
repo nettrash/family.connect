@@ -1350,12 +1350,27 @@ struct ScriptedCall {
     arguments: String,
 }
 
+/// How a deployment is scripted to FAIL, instead of answering.
+#[derive(Debug, Clone)]
+enum Failure {
+    /// An HTTP error with this JSON body, as the provider sends one.
+    Http(u16, Value),
+    /// A 200 stream that ends with `finish_reason: "content_filter"` and no
+    /// words — the provider accepting the question and filtering the answer.
+    Filtered,
+}
+
 #[derive(Default)]
 struct MockProvider {
     calls: std::sync::Mutex<Vec<ProviderCall>>,
     /// What the chat deployments answer with next: words unless a test
     /// scripted a tool call.
     script: std::sync::Mutex<Option<ScriptedCall>>,
+    /// How the chat deployments fail, while a test says they do. Checked
+    /// before `script`.
+    chat_failure: std::sync::Mutex<Option<Failure>>,
+    /// How the images deployment fails, while a test says it does.
+    images_failure: std::sync::Mutex<Option<Failure>>,
 }
 
 impl MockProvider {
@@ -1381,6 +1396,14 @@ impl MockProvider {
             name: name.to_string(),
             arguments: arguments.to_string(),
         });
+    }
+
+    fn fail_chat(&self, failure: Option<Failure>) {
+        *self.chat_failure.lock().expect("mock lock") = failure;
+    }
+
+    fn fail_images(&self, failure: Option<Failure>) {
+        *self.images_failure.lock().expect("mock lock") = failure;
     }
 
     fn capture(&self, path: &str, body: Value) {
@@ -1462,8 +1485,28 @@ async fn mock_chat(
     axum::extract::Path(deployment): axum::extract::Path<String>,
     State(mock): State<Arc<MockProvider>>,
     Json(body): Json<Value>,
-) -> impl axum::response::IntoResponse {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
     mock.capture(&format!("/chat/{deployment}"), body);
+    let failure = mock.chat_failure.lock().expect("mock lock").clone();
+    match failure {
+        Some(Failure::Http(status, body)) => return http_failure(status, body),
+        // The shape Azure streams when the filter stops an answer before
+        // its first word: the role chunk, the finish, the usage.
+        Some(Failure::Filtered) => {
+            return (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\n",
+                    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":0}}\n\n",
+                    "data: [DONE]\n\n",
+                ),
+            )
+                .into_response();
+        }
+        None => {}
+    }
     let script = mock.script.lock().expect("mock lock").clone();
     let events = match script {
         Some(call) => tool_call_stream(&call),
@@ -1479,6 +1522,20 @@ async fn mock_chat(
         [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
         events,
     )
+        .into_response()
+}
+
+/// An error answer as a provider sends one: the status, and the JSON body
+/// PRETTY-PRINTED, the way Azure sends it — so a log line that is not folded
+/// flat would break across lines here as it does in production.
+fn http_failure(status: u16, body: Value) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (
+        axum::http::StatusCode::from_u16(status).expect("a real status"),
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string_pretty(&body).expect("JSON"),
+    )
+        .into_response()
 }
 
 /// A tool call as Azure streams one: the name on the first chunk with empty
@@ -1525,10 +1582,15 @@ async fn mock_images(
     axum::extract::Path(deployment): axum::extract::Path<String>,
     State(mock): State<Arc<MockProvider>>,
     Json(body): Json<Value>,
-) -> impl axum::response::IntoResponse {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
     mock.capture(&format!("/images/{deployment}"), body);
+    let failure = mock.images_failure.lock().expect("mock lock").clone();
+    if let Some(Failure::Http(status, body)) = failure {
+        return http_failure(status, body);
+    }
     let encoded = base64_standard(&png_bytes());
-    Json(json!({"data": [{"b64_json": encoded}]}))
+    Json(json!({"data": [{"b64_json": encoded}]})).into_response()
 }
 
 /// Standard base64, spelled out rather than pulled in as a dependency for
@@ -5712,6 +5774,279 @@ async fn a_server_that_cannot_draw_says_so() {
         .await,
         403,
         "pictures_unavailable",
+    )
+    .await;
+}
+
+// -- the provider refusing ----------------------------------------------------
+//
+// When the provider's OWN filter refuses — the question, the answer, or a
+// picture's description — `ai_error` says so with `"reason": "refused"`, and
+// every other failure keeps the frame it always had (docs/protocol.md, "The
+// assistant"). Each path that can raise one is walked here, because each
+// reaches the provider its own way: the private thread and the mention
+// through the text deployment, `/draw` and the model's own `draw_picture`
+// through the images one, and the board's backdrop over HTTP instead.
+
+/// Azure's chat completions refusing a QUESTION.
+fn chat_refusal() -> Failure {
+    Failure::Http(
+        400,
+        json!({"error": {
+            "message": "The response was filtered due to the prompt triggering Azure OpenAI's content management policy.",
+            "type": null, "param": "prompt", "code": "content_filter", "status": 400,
+            "innererror": {"code": "ResponsibleAIPolicyViolation",
+                           "content_filter_result": {"violence": {"filtered": true, "severity": "medium"}}}}}),
+    )
+}
+
+/// Azure's images endpoint refusing a DESCRIPTION — the shape seen in
+/// production.
+fn images_refusal() -> Failure {
+    Failure::Http(
+        400,
+        json!({"error": {"code": "content_safety_violation",
+                         "message": "This request has been blocked by our content filters.",
+                         "type": null, "param": null}}),
+    )
+}
+
+/// A 400 that is the OPERATOR's to fix, not the member's to rephrase.
+fn ordinary_bad_request() -> Failure {
+    Failure::Http(
+        400,
+        json!({"error": {"message": "max_tokens is too large: 100000.",
+                         "type": "invalid_request_error", "param": "max_tokens", "code": null}}),
+    )
+}
+
+/// Wait for the next `ai_error` and hand back its `reason`, or `None`.
+async fn next_ai_error_reason(ws: &mut WsClient) -> Option<String> {
+    let frame = next_frame_of_type(ws, "ai_error").await;
+    frame
+        .get("reason")
+        .map(|reason| reason.as_str().expect("a reason is a string").to_string())
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_refusal_on_the_private_thread_says_it_was_refused() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ai_chat_id(&ts, &owner).await;
+    let mut ws = connect_ws(&ts, &owner).await;
+
+    // The question refused, before a word was written.
+    mock.fail_chat(Some(chat_refusal()));
+    say(&ts, &owner, chat, "a question the filter refuses").await;
+    assert_eq!(
+        next_ai_error_reason(&mut ws).await.as_deref(),
+        Some("refused")
+    );
+
+    // The answer refused: a 200 whose stream the filter ended wordless.
+    mock.fail_chat(Some(Failure::Filtered));
+    say(&ts, &owner, chat, "a question whose answer is filtered").await;
+    assert_eq!(
+        next_ai_error_reason(&mut ws).await.as_deref(),
+        Some("refused")
+    );
+
+    // Anything else is the frame it always was: no reason at all.
+    mock.fail_chat(Some(ordinary_bad_request()));
+    say(&ts, &owner, chat, "a question on a misconfigured server").await;
+    assert_eq!(next_ai_error_reason(&mut ws).await, None);
+
+    // And a 5xx is never the filter, whatever its body says.
+    let Failure::Http(_, body) = chat_refusal() else {
+        unreachable!()
+    };
+    mock.fail_chat(Some(Failure::Http(503, body)));
+    say(&ts, &owner, chat, "a question to a provider that is down").await;
+    assert_eq!(next_ai_error_reason(&mut ws).await, None);
+
+    // The rows keep nothing, as every failed answer's does.
+    let messages = messages_in(&ts, &owner, chat).await;
+    let assistant = assistant_id(&ts).await;
+    let answers: Vec<&Value> = messages
+        .iter()
+        .filter(|message| message["sender_id"].as_i64() == Some(assistant))
+        .collect();
+    assert_eq!(answers.len(), 4, "{messages:?}");
+    assert!(
+        answers.iter().all(|answer| answer["body"] == ""),
+        "{answers:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_refusal_on_a_mention_tells_the_whole_family_it_was_refused() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+    let family_chat = ts.family_chat_id(&owner).await;
+    // The OTHER member's socket: the family watches the answer arrive, so
+    // the family is told why it did not.
+    let mut ws = connect_ws(&ts, &member).await;
+
+    mock.fail_chat(Some(chat_refusal()));
+    say(
+        &ts,
+        &owner,
+        family_chat,
+        "@ai a question the filter refuses",
+    )
+    .await;
+    let frame = next_frame_of_type(&mut ws, "ai_error").await;
+    assert_eq!(frame["chat_id"].as_i64(), Some(family_chat));
+    assert_eq!(frame["reason"], "refused", "{frame}");
+
+    mock.fail_chat(Some(ordinary_bad_request()));
+    say(
+        &ts,
+        &owner,
+        family_chat,
+        "@ai a question on a misconfigured server",
+    )
+    .await;
+    assert_eq!(next_ai_error_reason(&mut ws).await, None);
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_refused_draw_says_it_was_refused() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ai_chat_id(&ts, &owner).await;
+    let mut ws = connect_ws(&ts, &owner).await;
+
+    mock.fail_images(Some(images_refusal()));
+    say(&ts, &owner, chat, "/draw something the filter refuses").await;
+    assert_eq!(
+        next_ai_error_reason(&mut ws).await.as_deref(),
+        Some("refused")
+    );
+
+    // The images deployment falling over is not a refusal.
+    mock.fail_images(Some(Failure::Http(
+        500,
+        json!({"error": {"code": "InternalServerError", "message": "The server had an error."}}),
+    )));
+    say(&ts, &owner, chat, "/draw a cat in a hat").await;
+    assert_eq!(next_ai_error_reason(&mut ws).await, None);
+}
+
+/// The model asked for the picture itself and the images deployment's
+/// filter refused the description it wrote: the same refusal a `/draw`
+/// gets. A bad tool call, by contrast, is the MODEL's mistake and carries no
+/// reason (`a_bad_tool_call_is_an_error_not_a_silent_nothing`).
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_refused_picture_the_model_asked_for_says_it_was_refused() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ai_chat_id(&ts, &owner).await;
+    let mut ws = connect_ws(&ts, &owner).await;
+
+    mock.answer_with_tool_call("draw_picture", r#"{"prompt": "a refused picture"}"#);
+    mock.fail_images(Some(images_refusal()));
+    say(&ts, &owner, chat, "draw me something").await;
+    assert_eq!(
+        next_ai_error_reason(&mut ws).await.as_deref(),
+        Some("refused")
+    );
+    assert_eq!(
+        mock.to_deployment(IMAGES_DEPLOYMENT).len(),
+        1,
+        "the description did reach the images deployment, which refused it"
+    );
+
+    // A blank prompt never gets that far, and is not a refusal.
+    mock.answer_with_tool_call("draw_picture", r#"{"prompt": "   "}"#);
+    say(&ts, &owner, chat, "and another").await;
+    assert_eq!(next_ai_error_reason(&mut ws).await, None);
+}
+
+/// The backdrop answers over HTTP, so its refusal is a CODE: `picture_refused`,
+/// a terminal 400, with the note untouched and nothing written or counted —
+/// while any other provider failure stays the transient `internal` it was.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_refused_backdrop_answers_picture_refused() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let note_id = pin_event(&ts, &owner, "A title the filter refuses").await;
+
+    mock.fail_images(Some(images_refusal()));
+    let refused = ts
+        .post(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}/backdrop"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(refused.status(), 400);
+    let body: Value = refused.json().await.expect("JSON");
+    assert_eq!(body["error"]["code"], "picture_refused", "{body}");
+    assert!(
+        !body.to_string().contains("content_safety_violation")
+            && !body.to_string().contains("content filters"),
+        "none of the provider's own text reaches a client: {body}"
+    );
+
+    let board: Value = ts
+        .get(&owner, "/families/mine/board")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let note = board["notes"]
+        .as_array()
+        .expect("notes")
+        .iter()
+        .find(|note| note["id"].as_i64() == Some(note_id))
+        .expect("the event")
+        .clone();
+    assert!(note.get("attachment").is_none(), "no backdrop: {note}");
+    assert_eq!(stored_blobs(&ts), 0, "nothing written");
+    let stats: Value = ts
+        .get(&owner, "/families/mine/stats")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(
+        stats["totals"]["ai"]["images"].as_i64().unwrap_or(0),
+        0,
+        "a refused picture is not a picture on the bill: {stats}"
+    );
+
+    mock.fail_images(Some(Failure::Http(
+        500,
+        json!({"error": {"code": "InternalServerError", "message": "The server had an error."}}),
+    )));
+    assert_error(
+        ts.post(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}/backdrop"),
+            json!({}),
+        )
+        .await,
+        500,
+        "internal",
     )
     .await;
 }

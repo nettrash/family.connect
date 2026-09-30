@@ -265,7 +265,7 @@ fun ThreadScreen(
                                 blockedUserIds = blockedUserIds,
                                 revealedMessages = revealedMessages,
                                 isStreaming = false,
-                                answerFailed = false,
+                                answerFailure = null,
                                 myUserId = myUserId,
                                 memberNames = memberNames,
                                 memberAvatars = memberAvatars,

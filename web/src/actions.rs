@@ -14,7 +14,7 @@ use yew::Callback;
 use crate::api::{self, ApiError, FamilyPatch, NewNote, NotePatch};
 use crate::live::{Live, Opening, Panel, Viewing};
 use crate::media::{MediaLoader, Variant};
-use crate::model::{Attachment, Reaction};
+use crate::model::{AiFailure, Attachment, Reaction};
 use crate::outbox::Wake;
 use crate::socket::ClientFrame;
 use crate::staged::Prepared;
@@ -386,6 +386,18 @@ pub fn board_failure(error: &ApiError) -> String {
         Some("invalid_attachment") => t("The board pins photos only.").to_string(),
         Some("not_in_family") => t("You're not in a family, so there is no board.").to_string(),
         _ => error.detail(),
+    }
+}
+
+/// What to tell the author whose event got no backdrop. `picture_refused`
+/// is the provider's own filter declining the title, and it says what a
+/// refused answer says — once, and not behind "Couldn't draw that.", which
+/// would read as a fault worth a retry (docs/protocol.md, "Board"). Every
+/// other failure is led by what did not happen, as the board's always are.
+pub fn backdrop_failure(error: &ApiError) -> String {
+    match error.code() {
+        Some("picture_refused") => AiFailure::Refused.sentence().to_string(),
+        _ => format!("{} {}", t("Couldn't draw that."), board_failure(error)),
     }
 }
 
@@ -1414,7 +1426,10 @@ impl Actions {
                         }
                         Err(error) => {
                             this.board_refused(session, &error, Some(note_id), &Callback::noop());
-                            this.fail_with(session, &error, t("Couldn't draw that."));
+                            if error != ApiError::Unauthorized {
+                                let text = backdrop_failure(&error);
+                                live.update(session, |state| state.failure = Some(text));
+                            }
                         }
                     }
                     done.emit(());
@@ -2155,6 +2170,33 @@ mod tests {
         assert!(board_failure(&refusal("not_note_author")).contains("Only the person who wrote"));
         assert_eq!(board_failure(&refusal("validation")), "for developers");
         assert!(fc_text::board::COLORS.contains(&random_color().as_str()));
+    }
+
+    /// A backdrop the provider's filter refused says what a refused answer
+    /// says, and nothing of the server's English; any other failure is still
+    /// led by what did not happen.
+    #[wasm_bindgen_test]
+    fn a_refused_backdrop_says_the_refusal_sentence() {
+        let refusal = |code: &str| ApiError::Server {
+            code: code.into(),
+            message: "for developers".into(),
+        };
+        assert_eq!(
+            backdrop_failure(&refusal("picture_refused")),
+            "The assistant's provider refused that. Try putting it another way."
+        );
+        assert_eq!(
+            backdrop_failure(&refusal("internal")),
+            "Couldn't draw that. for developers"
+        );
+        assert_eq!(
+            backdrop_failure(&refusal("note_not_found")),
+            "Couldn't draw that. That note has been taken down."
+        );
+        assert_eq!(
+            backdrop_failure(&ApiError::Answered { status: 502 }),
+            "Couldn't draw that. The server answered 502."
+        );
     }
 
     /// A save that changed nothing is answered at once and sends nothing.

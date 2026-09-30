@@ -412,6 +412,7 @@
     <string name="s_assistant_mention_sees_quoted_pictures_and_recent">这条回复提到了助手，所以助手将看到你回复的那些照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
     <string name="s_assistant_mention_sees_both_and_recent">这条回复提到了助手，所以助手将看到这里的照片和你回复的那些照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
     <string name="s_assistant_answer_failed">助手没能完成这条回复。请再问一次。</string>
+    <string name="s_assistant_provider_refused">助手的服务提供方拒绝了这个请求。换个说法试试。</string>
     <string name="s_assistant_vision">允许助手查看照片</string>
     <string name="s_assistant_vision_explanation">当某人在自己与助手的聊天中给问题附上照片、在家庭聊天中给提到助手的消息附上照片，或在提到助手的同时回复一张照片时，这张照片会随问题一起发送给模型，每次提问最多 4 张。没有指给助手看的照片绝不会发送，除非打开了“助手可以查看最近的照片”，否则更早消息中的也不会，视频、文件、语音和位置也一样。默认关闭；关闭时，任何照片都不会被发送。</string>
     <string name="e_change_assistant_vision_failed">无法更改该设置</string>

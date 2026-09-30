@@ -11,6 +11,7 @@
 package me.nettrash.familyconnect.ui.chat
 
 import com.google.common.truth.Truth.assertThat
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
@@ -18,6 +19,8 @@ import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import me.nettrash.familyconnect.data.net.dto.PollCodec
 import me.nettrash.familyconnect.data.net.dto.PollDto
 import me.nettrash.familyconnect.data.net.dto.PollOptionDto
+import me.nettrash.familyconnect.data.net.ws.ServerFrame
+import me.nettrash.familyconnect.data.repo.AssistantFailure
 import org.junit.Test
 
 class AssistantAnswerTest {
@@ -190,5 +193,33 @@ class AssistantAnswerTest {
                 streamingIds = emptySet(), failedIds = emptySet(),
             ),
         ).isFalse()
+    }
+
+    /**
+     * A refusal by the provider's own filter says to put it another way —
+     * "ask again" would only earn the same refusal (docs/protocol.md, "The
+     * assistant": `ai_error`'s `reason`).
+     */
+    @Test
+    fun `a refused answer says the provider refused it`() {
+        val failure = AssistantFailure.of(ServerFrame.AiError(chatId = 1, messageId = 100, reason = "refused"))
+        assertThat(failure).isEqualTo(AssistantFailure.REFUSED)
+        assertThat(AssistantAnswer.failureSentence(failure)).isEqualTo(R.string.s_assistant_provider_refused)
+    }
+
+    /** No reason at all keeps the sentence every failure always had. */
+    @Test
+    fun `a failure with no reason keeps the old sentence`() {
+        val failure = AssistantFailure.of(ServerFrame.AiError(chatId = 1, messageId = 100))
+        assertThat(failure).isEqualTo(AssistantFailure.STOPPED)
+        assertThat(AssistantAnswer.failureSentence(failure)).isEqualTo(R.string.s_assistant_answer_failed)
+    }
+
+    /** An unknown reason is absent: the old sentence, never a guess. */
+    @Test
+    fun `an unknown reason keeps the old sentence`() {
+        val failure = AssistantFailure.of(ServerFrame.AiError(chatId = 1, messageId = 100, reason = "quota_spent"))
+        assertThat(failure).isEqualTo(AssistantFailure.STOPPED)
+        assertThat(AssistantAnswer.failureSentence(failure)).isEqualTo(R.string.s_assistant_answer_failed)
     }
 }

@@ -387,6 +387,7 @@
   "The Assistant": "Ассистент",
   "The answer comes back as a message in that chat, where everyone in the chat can read it.": "Ответ приходит сообщением в этот чат, и его видят все, кто в нём есть.",
   "The assistant on this server can't look at pictures, so it will be told a photo is here but won't be shown it.": "Ассистент на этом сервере не умеет смотреть картинки. Ему сообщат, что фото есть, но не покажут его.",
+  "The assistant's provider refused that. Try putting it another way.": "Сервис ассистента отказался это выполнить. Попробуй сформулировать иначе.",
   "The board is empty": "Доска пуста",
   "The board is full. Take a note down to make room for this one.": "Доска заполнена. Сними одну заметку, чтобы освободить место для этой.",
   "The board pins photos only.": "На доску можно прикрепить только фото.",

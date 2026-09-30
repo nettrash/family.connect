@@ -37042,6 +37042,59 @@
           }
         }
       }
+    },
+    "The assistant's provider refused that. Try putting it another way." : {
+      "comment" : "Shown in place of an assistant's reply when the AI provider's own content filter refused the question, the answer or a picture description (ai_error reason \"refused\"). Asking again unchanged would be refused again, so it asks for different words.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Anbieter des Assistenten hat das abgelehnt. Versuch es anders zu formulieren."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El proveedor del asistente lo rechazó. Prueba a decirlo de otra manera."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le fournisseur de l'assistant a refusé. Essaie de le formuler autrement."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アシスタントの提供元に断られました。別の言い方で試してみてください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сервис ассистента отказался это выполнить. Попробуй сформулировать иначе."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добављач асистента је то одбио. Покушај да то кажеш другачије."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dobavljač asistenta je to odbio. Pokušaj da to kažeš drugačije."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "助手的服务提供方拒绝了这个请求。换个说法试试。"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

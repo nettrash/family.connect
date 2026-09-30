@@ -1018,7 +1018,9 @@ public sealed partial class ChatsView : UserControl
         // The body as drawn: an answer still being written shows what has streamed so far.
         var body = connection.Answers.BodyOf(message);
         var awaited = BubbleRules.Awaited(message, body, Reader, assistantChat, assistantId);
-        var failed = connection.Answers.Failed(message);
+        // What a failed answer says, remembered with the failure: the provider's refusal, or "ask again".
+        var failure = connection.Answers.FailureSentence(message, say);
+        var failed = failure is not null;
         var shown = bubble with { Message = message with { Body = body } };
         // A STICKER (docs/protocol.md, "How it is drawn"): one flagged photo and no words. A message from before stickers,
         // or from a server that ignores the flag, is not one, and is drawn as the photo in a balloon it always was.
@@ -1082,7 +1084,7 @@ public sealed partial class ChatsView : UserControl
         var words = new TextBlock
         {
             // An answer not written yet is a cursor, not a blank bubble — or says it stopped.
-            Text = awaited ? (failed ? say.Get("Couldn't answer that. Ask again.") : "▍") : BubbleText.Words(shown, list, say),
+            Text = awaited ? (failure ?? "▍") : BubbleText.Words(shown, list, say),
             TextWrapping = TextWrapping.Wrap,
             IsTextSelectionEnabled = bubble.Reads && !awaited,
             FontStyle = bubble.Reads && !(awaited && failed) ? Windows.UI.Text.FontStyle.Normal : Windows.UI.Text.FontStyle.Italic,
@@ -1108,12 +1110,12 @@ public sealed partial class ChatsView : UserControl
         {
             stack.Children.Add(laidOut ?? words);
         }
-        if (bubble.Reads && !awaited && failed)
+        if (bubble.Reads && !awaited && failure is { } stoppedPartWay)
         {
             // It stopped part-way: what arrived stays, and the row says so.
             stack.Children.Add(new TextBlock
             {
-                Text = say.Get("Couldn't answer that. Ask again."),
+                Text = stoppedPartWay,
                 FontSize = 12,
                 FontStyle = Windows.UI.Text.FontStyle.Italic,
                 TextWrapping = TextWrapping.Wrap,

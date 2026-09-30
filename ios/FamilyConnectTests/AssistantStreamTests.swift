@@ -307,6 +307,123 @@ struct AssistantStreamTests {
         #expect(harness.message(1339)?.body == "Here you go.")
     }
 
+    // MARK: - WHY it failed (protocol.md, "The assistant")
+
+    private static let askAgain = "Couldn't answer that. Ask again."
+    private static let refusedByProvider =
+        "The assistant's provider refused that. Try putting it another way."
+
+    /// The sentence each failure draws. Asking again in the same words gets
+    /// the same refusal, so a refused answer must not tell the member to.
+    @Test("each failure says its own sentence")
+    func eachFailureHasItsSentence() {
+        #expect(AssistantFailure.stopped.sentence.key == Self.askAgain)
+        #expect(AssistantFailure.refused.sentence.key == Self.refusedByProvider)
+        #expect(AssistantFailure(reason: .refused) == .refused)
+        #expect(AssistantFailure(reason: nil) == .stopped)
+    }
+
+    @Test("a refused answer is remembered as refused")
+    func aRefusalIsRemembered() throws {
+        let harness = try makeHarness(host: "ai-refused.test")
+        defer { harness.tearDown() }
+        let coordinator = harness.coordinator
+
+        coordinator.handle(frame: .message(placeholder(id: 1339)))
+        coordinator.handle(frame: .aiError(chatID: 42, messageID: 1339, reason: .refused))
+
+        #expect(coordinator.assistantAnswerFailed(messageID: 1339))
+        #expect(!coordinator.isAwaitingAssistant(messageID: 1339))
+        // Asked again — which is what every redraw does — it is still the
+        // refusal, not the plain failure.
+        #expect(coordinator.assistantFailure(messageID: 1339) == .refused)
+        #expect(coordinator.assistantFailure(messageID: 1339)?.sentence.key == Self.refusedByProvider)
+    }
+
+    /// Absent means any other failure, exactly as before the field existed.
+    @Test("a failure without a reason keeps the old sentence")
+    func noReasonKeepsTheOldSentence() throws {
+        let harness = try makeHarness(host: "ai-no-reason.test")
+        defer { harness.tearDown() }
+        let coordinator = harness.coordinator
+
+        coordinator.handle(frame: .message(placeholder(id: 1339)))
+        coordinator.handle(frame: .aiError(chatID: 42, messageID: 1339))
+
+        #expect(coordinator.assistantFailure(messageID: 1339) == .stopped)
+        #expect(coordinator.assistantFailure(messageID: 1339)?.sentence.key == Self.askAgain)
+        // A row nothing failed has no sentence at all.
+        #expect(coordinator.assistantFailure(messageID: 4242) == nil)
+    }
+
+    /// End to end from the wire: a reason this client does not know is the
+    /// failure it would have been without one — the old sentence.
+    @Test("an unknown reason from the wire behaves as absent")
+    func anUnknownReasonIsAbsent() throws {
+        let harness = try makeHarness(host: "ai-unknown-reason.test")
+        defer { harness.tearDown() }
+        let coordinator = harness.coordinator
+
+        let frame = try APICoding.decoder().decode(ServerFrame.self, from: Data(
+            #"{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "overloaded"}"#.utf8))
+        coordinator.handle(frame: .message(placeholder(id: 1339)))
+        coordinator.handle(frame: frame)
+
+        #expect(coordinator.assistantFailure(messageID: 1339) == .stopped)
+    }
+
+    /// The reason lives and dies with the failure: an answer that lands
+    /// afterwards takes both away, and a row re-fanned as working is not
+    /// left saying the provider refused it.
+    @Test("the refusal clears with the failure it belongs to")
+    func theRefusalClearsWithTheFailure() throws {
+        let harness = try makeHarness(host: "ai-refused-clears.test")
+        defer { harness.tearDown() }
+        let coordinator = harness.coordinator
+
+        coordinator.handle(frame: .message(placeholder(id: 1339)))
+        coordinator.handle(frame: .aiError(chatID: 42, messageID: 1339, reason: .refused))
+        coordinator.handle(frame: .messageEdited(
+            placeholder(id: 1339, body: "Here you go.", editSeq: 12)))
+        #expect(coordinator.assistantFailure(messageID: 1339) == nil)
+
+        coordinator.handle(frame: .message(placeholder(id: 1340)))
+        coordinator.handle(frame: .aiError(chatID: 42, messageID: 1340, reason: .refused))
+        coordinator.handle(frame: .message(placeholder(id: 1340)))
+        #expect(coordinator.assistantFailure(messageID: 1340) == nil)
+        #expect(coordinator.isAwaitingAssistant(messageID: 1340))
+    }
+
+    // MARK: - A refused backdrop (protocol.md, "Board")
+
+    /// `picture_refused` is the provider's filter refusing the title; every
+    /// other failure is still "Couldn't draw that." — including a 400 with
+    /// any other code.
+    @Test("a refused backdrop is told apart from a failed one")
+    func aRefusedBackdropIsItsOwnOutcome() async throws {
+        let harness = try makeHarness(host: "ai-backdrop-refused.test")
+        defer { harness.tearDown() }
+
+        StubURLProtocol.register(host: harness.host) { _ in
+            .json(400, #"{"error": {"code": "picture_refused", "message": "the assistant's provider refused to draw this"}}"#)
+        }
+        let refused = await harness.coordinator.drawBackdrop(noteID: 5)
+        #expect(refused == .refused)
+        #expect(refused.failureMessage == String(localized: "The assistant's provider refused that. Try putting it another way."))
+
+        StubURLProtocol.register(host: harness.host) { _ in
+            .json(400, #"{"error": {"code": "validation", "message": "not an event"}}"#)
+        }
+        let invalid = await harness.coordinator.drawBackdrop(noteID: 5)
+        #expect(invalid == .failed)
+        #expect(invalid.failureMessage == String(localized: "Couldn't draw that."))
+
+        StubURLProtocol.register(host: harness.host) { _ in
+            .json(403, #"{"error": {"code": "pictures_unavailable", "message": "no images"}}"#)
+        }
+        #expect(await harness.coordinator.drawBackdrop(noteID: 5) == .failed)
+    }
+
     /// MY OWN message is never the assistant's answer, whatever it carries.
     /// An empty own row is a send in flight, not something to draw a cursor
     /// on.

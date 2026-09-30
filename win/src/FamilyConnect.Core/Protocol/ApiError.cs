@@ -125,6 +125,13 @@ public static class ErrorCodes
     public const string InvalidPoll = "invalid_poll";
     public const string PollClosed = "poll_closed";
     public const string PicturesUnavailable = "pictures_unavailable";
+
+    /// <summary>
+    /// The provider's own filter refused to draw a backdrop's title (docs/protocol.md, "Board"): a
+    /// 400, so terminal — asking again with the same title gets the same refusal.
+    /// </summary>
+    public const string PictureRefused = "picture_refused";
+
     public const string CallsDisabled = "calls_disabled";
     public const string VideoCallsDisabled = "video_calls_disabled";
     public const string InvalidCall = "invalid_call";
@@ -158,7 +165,7 @@ public static class ErrorCodes
         MessageTooLong, MessageNotFound, NotMessageAuthor, InvalidEmoji, NoteNotFound,
         NotNoteAuthor, InvalidNoteColor, InvalidNoteSize, InvalidNoteFont, InvalidNoteKind,
         InvalidRsvp, InvalidTask, InvalidLanguage, BoardFull, InvalidPagination, DeviceNotFound,
-        InvalidPoll, PollClosed, PicturesUnavailable, CallsDisabled, VideoCallsDisabled,
+        InvalidPoll, PollClosed, PicturesUnavailable, PictureRefused, CallsDisabled, VideoCallsDisabled,
         InvalidCall, CallNotFound, CallBusy, PeerBusy, PeerUnreachable, AvatarTooLarge,
         InvalidImage, AttachmentTooLarge, InvalidAttachment, AttachmentNotFound,
         AttachmentExpired, AttachmentAlreadyUsed, StorageFull, PackFull, PackItemTooLarge,

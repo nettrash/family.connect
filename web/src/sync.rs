@@ -1181,8 +1181,14 @@ fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
             });
             None
         }
-        ServerFrame::AiError { message_id, .. } => {
-            live.update(session, |state| state.store.apply_ai_error(message_id));
+        ServerFrame::AiError {
+            message_id,
+            failure,
+            ..
+        } => {
+            live.update(session, |state| {
+                state.store.apply_ai_error(message_id, failure)
+            });
             None
         }
         ServerFrame::MemberJoined { user } => {

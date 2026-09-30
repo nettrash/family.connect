@@ -856,9 +856,9 @@ internal sealed class NoteSheet
                 backdrop.Content = BackdropLabel(Current ?? note);
                 // The preview is where the author sees what arrived.
                 DrawPreview();
-                if (answer.Error is not null)
+                if (answer.Error is { } error)
                 {
-                    ShowProblem(problem, say.Get("Couldn't draw that."));
+                    ShowProblem(problem, NoteSheetText.BackdropFailure(error, say));
                 }
             };
             row.Children.Add(backdrop);
