@@ -50,6 +50,39 @@ object AssistantConsent {
     ): Boolean =
         isAvailable(processor) && agreedAt.isNullOrBlank() && reachesTheModel(chatKind, body)
 
+    /** What becomes of a sticker tapped in a composer. */
+    enum class StickerGate {
+        /** It goes. */
+        SEND,
+
+        /** It would reach the model and this member has not agreed: ask first, send nothing. */
+        ASK,
+
+        /** It would reach a model whose owner the server will not name: it goes nowhere. */
+        WITHHELD,
+    }
+
+    /**
+     * A sticker is a send like any other, and in the member's own `ai` chat
+     * it is a photo to the assistant — so it goes through the SAME two
+     * questions a typed message does, never around them. One function for
+     * every composer that has a sticker button (the chat's and the
+     * thread's), so neither can grow a way past the question.
+     *
+     * A sticker has no body, so in the family chat it can never say `@ai`
+     * and always goes.
+     */
+    fun stickerGate(
+        chatKind: String?,
+        hasAssistant: Boolean,
+        processor: String?,
+        agreedAt: String?,
+    ): StickerGate = when {
+        isWithheldFromAnUnnamedAssistant(chatKind, "", hasAssistant, processor) -> StickerGate.WITHHELD
+        isRequired(chatKind, "", processor, agreedAt) -> StickerGate.ASK
+        else -> StickerGate.SEND
+    }
+
     /**
      * Would this message reach a model whose owner the server will not
      * name, so this client must hold it back entirely?

@@ -191,7 +191,16 @@ struct MacMessageRow: View {
                 // `preview: true` — a hidden row fetches nothing a visible
                 // row would not have fetched yet, so the poster frame and
                 // never the 90 MB video.
-                _ = attachmentStore.image(id: attachment.id, preview: true)
+                //
+                // A STICKER is the exception that proves it: a visible one
+                // draws from its ORIGINAL bytes and never asks for a
+                // preview (docs/protocol.md, "And it has no preview"), so
+                // that is what a hidden one asks for too.
+                if attachment.sticker {
+                    _ = attachmentStore.stickerImage(id: attachment.id)
+                } else {
+                    _ = attachmentStore.image(id: attachment.id, preview: true)
+                }
             }
         }
         // The map has no loader to ask — the `Map` view IS the request,
@@ -455,7 +464,11 @@ struct MacMessageRow: View {
             if canViewThread {
                 Button("View thread", action: onOpenThread)
             }
-            if canEdit, isMine, !message.body.isEmpty {
+            // `!isSticker` says what the body test only implies: a
+            // sticker has no body today, and "Edit" must stay off it on
+            // the day something else about that changes
+            // (`MessagePresentation.offersEdit`).
+            if canEdit, isMine, !isSticker, !message.body.isEmpty {
                 Button("Edit", action: onEdit)
             }
             Divider()
@@ -747,7 +760,9 @@ struct MacMessageRow: View {
     /// composition as the phone's, from the same blocks.
     @ViewBuilder
     private func attachmentStack(_ attachments: [AttachmentDTO]) -> some View {
-        if attachments.count == 1, let attachment = attachments.first {
+        if isSticker, let attachment = attachments.first {
+            stickerTile(attachment)
+        } else if attachments.count == 1, let attachment = attachments.first {
             singleAttachment(attachment)
         } else {
             let media = AttachmentAlbum.media(of: attachments)
@@ -818,6 +833,29 @@ struct MacMessageRow: View {
         }
     }
 
+    /// A sticker: the picture alone, in the one fixed box every sticker on
+    /// this client is drawn in, fitted whole (docs/protocol.md, "How it is
+    /// drawn"). No tile, no clip, no hairline and no placeholder wash —
+    /// each of those is a rectangle, and a rectangle behind a transparent
+    /// picture is the balloon this message does not have.
+    ///
+    /// The photo tile's own click pair, in its order: a double click
+    /// hearts, a click shows it larger. No drag-out — a sticker is not a
+    /// file somebody keeps on their Desktop, and the pack is how it is
+    /// kept.
+    private func stickerTile(_ attachment: AttachmentDTO) -> some View {
+        StickerImage(attachmentID: attachment.id)
+            .frame(width: StickerPack.messageBox, height: StickerPack.messageBox)
+            .contentShape(Rectangle())
+            .hoverCursor(.pointingHand)
+            .onTapGesture(count: 2) { quickHeart() }
+            .onTapGesture(count: 1) { onOpenAttachment(attachment) }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Sticker")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { onOpenAttachment(attachment) }
+    }
+
     /// The file promise one tile offers the rest of the Mac.
     ///
     /// The coordinator and the callback are copied into local lets before
@@ -844,8 +882,12 @@ struct MacMessageRow: View {
     /// other bare treatment (MessagePresentation.isMediaOnly has the rule
     /// and why files, audio and places stay in a balloon).
     private var isMediaOnly: Bool {
-        MessagePresentation.isMediaOnly(message, isStreaming: isStreaming)
+        // A sticker is bare on its own terms, quote or no quote.
+        isSticker || MessagePresentation.isMediaOnly(message, isStreaming: isStreaming)
     }
+
+    /// True when the message is a sticker — one flagged picture, no words.
+    private var isSticker: Bool { MessagePresentation.isSticker(message) }
 
     /// No fill behind the content — emoji-only or media-only. Everything
     /// that adapts to "nothing behind me" keys off this, never off one

@@ -95,6 +95,12 @@ pub mod codes {
     pub const PICTURES_UNAVAILABLE: &str = "pictures_unavailable";
     pub const INVALID_LANGUAGE: &str = "invalid_language";
     pub const BOARD_FULL: &str = "board_full";
+    /// The family's sticker pack (docs/protocol.md, "Sticker pack"). `pack`
+    /// and not `sticker`, which in this codebase already means a board note.
+    pub const PACK_FULL: &str = "pack_full";
+    pub const PACK_ITEM_TOO_LARGE: &str = "pack_item_too_large";
+    pub const PACK_ITEM_NOT_FOUND: &str = "pack_item_not_found";
+    pub const NOT_PACK_ITEM_AUTHOR: &str = "not_pack_item_author";
     pub const INVALID_EMOJI: &str = "invalid_emoji";
     pub const INVALID_PAGINATION: &str = "invalid_pagination";
     pub const DEVICE_NOT_FOUND: &str = "device_not_found";

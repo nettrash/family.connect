@@ -68,6 +68,11 @@ pub struct PostMessageRequest {
     /// (protocol.md, "Mentioning a member").
     #[serde(default)]
     pub mentions: Option<Vec<Mention>>,
+    /// Optional: `true` sends the message's ONE attachment as a chat
+    /// sticker (protocol.md, "Sticker pack"). Absent and `false` are the
+    /// same statement: an ordinary message.
+    #[serde(default)]
+    pub sticker: Option<bool>,
 }
 
 /// At most this many members on one message (protocol.md, "Mentioning a
@@ -323,7 +328,7 @@ pub async fn attach_attachments(
     let message_ids: Vec<i64> = messages.iter().map(|message| message.id).collect();
     let rows = sqlx::query(
         "SELECT message_id, id, kind, mime, size_bytes, width, height, duration_ms,
-                has_preview, name, latitude, longitude, accuracy_m
+                has_preview, name, latitude, longitude, accuracy_m, sticker
          FROM attachments
          WHERE message_id = ANY($1)
          ORDER BY message_id, position, id",
@@ -537,7 +542,7 @@ fn model_surface(chat_kind: &str, body: &str) -> Option<ModelSurface> {
 /// Returns `(message, created)`: `created == false` means the
 /// `(chat, sender, client_msg_id)` triple already existed and the original
 /// message is returned — the caller must not fan out again.
-// Nine arguments, two over clippy's threshold. Grouping them into a struct
+// Eleven arguments, four over clippy's threshold. Grouping them into a struct
 // would be a parameter object nothing else ever constructs — the call sites
 // are two, both in this crate, and each argument is a distinct thing the
 // caller genuinely has.
@@ -560,6 +565,11 @@ pub async fn create_message(
     // The members this message names, in the sender's order; empty means
     // none (protocol.md, "Mentioning a member").
     mentions: &[Mention],
+    // True when the message's one attachment is sent as a chat STICKER
+    // (protocol.md, "Sticker pack") — the picture is then stamped with the
+    // flag every read carries. Nothing else about the send is different,
+    // which is the whole reason a sticker is a copy and not a reference.
+    sticker: bool,
     // Which language to answer an assistant question in, from the sending
     // device (docs/protocol.md, "The assistant"). None outside an assistant
     // chat, and harmless there too.
@@ -608,6 +618,34 @@ pub async fn create_message(
             return Err(ApiError::bad_request(
                 codes::INVALID_POLL,
                 "a message carries a poll or an attachment, not both",
+            ));
+        }
+        // The same exclusion, said for a client that sent the flag with no
+        // picture beside it: a sticker is an attachment, and a poll carries
+        // none.
+        if sticker {
+            return Err(ApiError::bad_request(
+                codes::INVALID_POLL,
+                "a message is a poll or a sticker, not both",
+            ));
+        }
+    }
+
+    // A STICKER IS ITS OWN MESSAGE (protocol.md, "Sticker pack"): exactly
+    // one picture and no words. Checked here, before any id is looked up,
+    // because both rules are about the shape of the send rather than about
+    // what it names; what the picture itself must be is checked at the
+    // claim, which is the first place its type and size are known.
+    if sticker {
+        if attachment_ids.len() != 1 {
+            return Err(ApiError::bad_request(
+                codes::INVALID_ATTACHMENT,
+                "a sticker is a message's one and only attachment",
+            ));
+        }
+        if !body.trim().is_empty() {
+            return Err(ApiError::validation(
+                "a sticker is sent without a body — it is its own message",
             ));
         }
     }
@@ -792,6 +830,7 @@ pub async fn create_message(
                         sender_id,
                         message.id,
                         position as i16,
+                        sticker,
                     )
                     .await?,
                 ));
@@ -815,6 +854,30 @@ pub async fn create_message(
                 return Err(ApiError::bad_request(
                     codes::INVALID_ATTACHMENT,
                     "a location is always a message's only attachment",
+                ));
+            }
+            // WHAT A STICKER MAY BE MADE OF (protocol.md, "Sticker pack"):
+            // a photo, WebP or PNG, no larger than one pack item. Checked
+            // AFTER the claim for the reason the location rule is — only
+            // the claimed row says what the upload is — and refused the
+            // same way: returning drops the transaction, flag and all.
+            //
+            // Whether the pack HOLDS these bytes is deliberately not asked.
+            // The message is a copy: an item removed between the tap and
+            // the send must still go, and so must one an outbox held for a
+            // day.
+            if sticker
+                && let Some(picture) = claimed.first()
+                && (picture.kind != Attachment::KIND_PHOTO
+                    || !Attachment::is_sticker_mime(&picture.mime)
+                    || picture.size > state.cfg.limits.max_pack_item_bytes as i64)
+            {
+                return Err(ApiError::bad_request(
+                    codes::INVALID_ATTACHMENT,
+                    format!(
+                        "a sticker is a WebP or PNG photo of at most {} bytes",
+                        state.cfg.limits.max_pack_item_bytes
+                    ),
                 ));
             }
             // Both fields, always together: the legacy `attachment` is the
@@ -984,6 +1047,21 @@ pub async fn apply_edit(
             "only the author can edit this message",
         ));
     }
+    // A STICKER HAS NO BODY, and an edit is not a way to give it one
+    // (protocol.md, "Sticker pack"): the send refuses words beside the flag,
+    // and this path would otherwise let them in afterwards — for good, since
+    // an edit to an empty body is refused too. Asked here rather than beside
+    // the call check above, so that the answer is only ever given to the
+    // message's own author about a message in this chat.
+    let is_sticker: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM attachments WHERE message_id = $1 AND sticker)",
+    )
+    .bind(message_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if is_sticker {
+        return Err(ApiError::validation("a sticker cannot be edited"));
+    }
 
     let current_body: String = locked.get("body");
     let changed = current_body != body;
@@ -1094,9 +1172,10 @@ pub fn merge_attachment_ids(
 /// stamping `position` — the index into the sender's `attachment_ids`
 /// array, which is the order every read returns.
 ///
-/// Claimable once, by its uploader only — by one message or one board note,
-/// never both. The `message_id IS NULL AND note_id IS NULL` guard in the
-/// UPDATE is the real guarantee (0025 removed the unique index that used to
+/// Claimable once, by its uploader only — by one message, one board note or
+/// one item of the family's sticker pack, never two of them (0048 added the
+/// third). The `message_id IS NULL AND note_id IS NULL AND pack_item_id IS
+/// NULL` guard in the UPDATE is the real guarantee (0025 removed the unique index that used to
 /// forbid a second attachment per MESSAGE — claiming stays
 /// once-per-ATTACHMENT); the check below exists to answer with the
 /// protocol's error rather than silence.
@@ -1108,17 +1187,22 @@ async fn claim_attachment(
     uploader_id: i64,
     message_id: i64,
     position: i16,
+    // Stamped with the claim, in the one statement, so the flag and the
+    // message it belongs to cannot land apart (protocol.md, "Sticker pack").
+    sticker: bool,
 ) -> Result<Attachment, ApiError> {
     let row = sqlx::query(
-        "UPDATE attachments SET message_id = $3, position = $4
+        "UPDATE attachments SET message_id = $3, position = $4, sticker = $5
          WHERE id = $1 AND uploader_id = $2 AND message_id IS NULL AND note_id IS NULL
+           AND pack_item_id IS NULL
          RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name,
-                   latitude, longitude, accuracy_m",
+                   latitude, longitude, accuracy_m, sticker",
     )
     .bind(attachment_id)
     .bind(uploader_id)
     .bind(message_id)
     .bind(position)
+    .bind(sticker)
     .fetch_optional(&mut **tx)
     .await?;
     if let Some(row) = row {
@@ -1127,10 +1211,11 @@ async fn claim_attachment(
 
     // Tell "already claimed" apart from "not yours / no such thing" — the
     // first is worth retrying differently, the second is not.
-    // A picture pinned to the board is as taken as one on a message: one
-    // owner per upload is what lets deleting either take the bytes with it.
+    // A picture pinned to the board, or added to the family's sticker pack,
+    // is as taken as one on a message: one owner per upload is what lets
+    // deleting any of them take the bytes with it.
     let taken: Option<bool> = sqlx::query_scalar(
-        "SELECT message_id IS NOT NULL OR note_id IS NOT NULL
+        "SELECT message_id IS NOT NULL OR note_id IS NOT NULL OR pack_item_id IS NOT NULL
          FROM attachments WHERE id = $1 AND uploader_id = $2",
     )
     .bind(attachment_id)
@@ -1140,7 +1225,7 @@ async fn claim_attachment(
     if taken == Some(true) {
         return Err(ApiError::conflict(
             codes::ATTACHMENT_ALREADY_USED,
-            "that attachment is already on another message or pinned to the board",
+            "that attachment is already on another message, pinned to the board or in the sticker pack",
         ));
     }
     // The third answer, and the one a client can act on: an upload THIS
@@ -1449,7 +1534,7 @@ pub async fn list_chats(
     let mut preview_attachments: HashMap<i64, Vec<Attachment>> = HashMap::new();
     if !preview_ids.is_empty() {
         let attachment_rows = sqlx::query(
-            "SELECT message_id, id, kind, mime, size_bytes, has_preview, name
+            "SELECT message_id, id, kind, mime, size_bytes, has_preview, name, sticker
              FROM attachments
              WHERE message_id = ANY($1)
              ORDER BY message_id, position, id",
@@ -1474,6 +1559,10 @@ pub async fn list_chats(
                     latitude: None,
                     longitude: None,
                     accuracy_m: None,
+                    // The flag DOES come along: it is what lets a chat
+                    // row say "Sticker" where it would say "Photo"
+                    // (protocol.md, "Sticker pack").
+                    sticker: row.get("sticker"),
                 });
         }
     }
@@ -1743,6 +1832,7 @@ pub async fn post_message(
         &attachment_ids,
         req.poll.as_ref(),
         req.mentions.as_deref().unwrap_or(&[]),
+        req.sticker.unwrap_or(false),
         language.as_deref(),
     )
     .await?;

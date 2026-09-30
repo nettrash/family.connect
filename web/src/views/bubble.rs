@@ -16,6 +16,7 @@ use crate::views::avatar::Avatar;
 use crate::views::body::Body;
 use crate::views::poll::PollView;
 use crate::views::reactions::{chips, details, EmojiPicker, QUICK_REACTIONS};
+use crate::views::stickers::StickerTile;
 
 /// The page's body text size, in CSS pixels (styles.css `body`).
 const BODY_PX: f64 = 15.0;
@@ -337,8 +338,18 @@ pub fn bubble(props: &BubbleProps) -> Html {
     let can_view_thread = acked
         && !props.in_thread
         && (message.thread_root_id.is_some() || message.reply_count.is_some());
-    let can_edit =
-        acked && mine && !props.in_thread && !message.body.is_empty() && message.call.is_none();
+    // "Edit" is NEVER offered on a sticker — said here in so many words,
+    // and not left to a sticker happening to have no body: the server
+    // refuses the edit (`validation`) because words on a message drawn
+    // with no bubble have nowhere to go (docs/protocol.md, "And it cannot
+    // be edited"), and a sticker that one day arrived WITH a body would
+    // otherwise be offered one.
+    let can_edit = acked
+        && mine
+        && !props.in_thread
+        && !message.body.is_empty()
+        && message.call.is_none()
+        && message.sticker().is_none();
     // Choosing the emoji that is already mine takes it off — the menu and
     // the picker TOGGLE, the Mac's `toggleReaction`; only the chips never
     // remove.
@@ -523,6 +534,13 @@ pub fn bubble(props: &BubbleProps) -> Html {
         Html::default()
     };
 
+    // A STICKER (docs/protocol.md, "How it is drawn" — the chat kind, not a
+    // board note): the picture alone, with no balloon, in the one box every
+    // sticker is drawn in. Decided from the flag the send put on the
+    // attachment; without it this is an ordinary photo and everything below
+    // draws it as one, exactly as before there were stickers.
+    let sticker = message.sticker().cloned();
+
     // Nothing but photos and videos, and nothing above them: the pictures
     // ARE the message, and draw without a balloon round them (the Mac's
     // bare media row).
@@ -602,6 +620,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
                 message.call.is_some().then_some("is-call"),
                 emoji_size.is_some().then_some("is-emoji-only"),
                 media_only.then_some("is-media-only"),
+                sticker.is_some().then_some("is-chat-sticker"),
             )}
             ondblclick={on_double}
         >
@@ -617,7 +636,12 @@ pub fn bubble(props: &BubbleProps) -> Html {
                 </span>
             }
             { quote.unwrap_or_default() }
-            if !message.attachments().is_empty() {
+            if let Some(sticker) = sticker {
+                <StickerTile
+                    attachment={sticker}
+                    on_open={props.on_action.reform(Action::OpenSticker)}
+                />
+            } else if !message.attachments().is_empty() {
                 <AttachmentStack
                     attachments={message.attachments().to_vec()}
                     mine={mine && !media_only}
@@ -884,6 +908,82 @@ mod tests {
         root.remove();
     }
 
+    /// A sticker is drawn WITHOUT a bubble, in its own fixed box, from the
+    /// original bytes — never as a photo tile — and a click asks to show it
+    /// larger. The same attachment without the flag is the photo it always
+    /// was: that is what an older server, or an ordinary send, leaves it as.
+    #[wasm_bindgen_test]
+    async fn a_sticker_draws_bare_and_a_plain_photo_draws_as_before() {
+        use crate::model::Attachment;
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let picture = |sticker: bool| Attachment {
+            id: 90,
+            kind: "photo".into(),
+            mime: Some("image/webp".into()),
+            size: Some(18_234),
+            width: Some(512),
+            height: Some(256),
+            // True by inheritance, as dedup can make it: still no preview
+            // is asked for.
+            has_preview: true,
+            sticker,
+            ..Attachment::default()
+        };
+        let mut sent = message(101, ANNA, "");
+        sent.attachments = Some(vec![picture(true)]);
+        let (root, handle) = render(props(sent, actions.clone())).await;
+        assert!(root
+            .query_selector(".bubble.is-chat-sticker")
+            .unwrap()
+            .is_some());
+        let tile = root
+            .query_selector(".chat-sticker")
+            .unwrap()
+            .expect("the sticker's own box")
+            .dyn_into::<HtmlElement>()
+            .unwrap();
+        assert!(
+            root.query_selector(".tile").unwrap().is_none(),
+            "not a photo tile"
+        );
+        let style = tile.get_attribute("style").unwrap_or_default();
+        assert!(
+            style.contains("width:160px") && style.contains("height:160px"),
+            "one fixed box, whatever the picture's own size: {style}"
+        );
+        tile.click();
+        assert_eq!(*actions.borrow(), vec![Action::OpenSticker(picture(true))]);
+        handle.destroy();
+        root.remove();
+
+        let mut photo = message(102, ANNA, "");
+        photo.attachments = Some(vec![picture(false)]);
+        let (root, handle) = render(props(photo, actions.clone())).await;
+        assert!(root
+            .query_selector(".bubble.is-chat-sticker")
+            .unwrap()
+            .is_none());
+        assert!(root.query_selector(".chat-sticker").unwrap().is_none());
+        assert!(
+            root.query_selector(".tile").unwrap().is_some(),
+            "the photo it always was"
+        );
+        handle.destroy();
+        root.remove();
+
+        // A blocked member's sticker is hidden like any message of theirs:
+        // the placeholder, and no picture.
+        let mut blocked = message(103, ANNA, "");
+        blocked.attachments = Some(vec![picture(true)]);
+        let mut hidden = props(blocked, actions.clone());
+        hidden.hidden = true;
+        let (root, handle) = render(hidden).await;
+        assert!(root.query_selector(".chat-sticker").unwrap().is_none());
+        assert!(text(&root).contains("Hidden — blocked member"));
+        handle.destroy();
+        root.remove();
+    }
+
     /// A menu item that ACTS closes the menu — found end to end: after
     /// "Block" the menu stayed open under the hidden row, and after a reveal
     /// the next "⋯" merely closed it again.
@@ -1098,14 +1198,19 @@ mod tests {
         let reported = Rc::new(RefCell::new(Vec::new()));
         let member_reports = Rc::new(RefCell::new(Vec::new()));
         // Sender 2 is the assistant in these fixtures (`assistant_user_id`).
-        let mut reply = props(message(101, 2, "Your grandmother was born in 1812."), actions.clone());
+        let mut reply = props(
+            message(101, 2, "Your grandmother was born in 1812."),
+            actions.clone(),
+        );
         reply.on_report_assistant = {
             let reported = reported.clone();
             Callback::from(move |message_id: i64| reported.borrow_mut().push(message_id))
         };
         reply.on_report = {
             let member_reports = member_reports.clone();
-            Callback::from(move |target: (i64, Option<i64>)| member_reports.borrow_mut().push(target))
+            Callback::from(move |target: (i64, Option<i64>)| {
+                member_reports.borrow_mut().push(target)
+            })
         };
         let (root, handle) = render(reply).await;
 
@@ -1189,6 +1294,45 @@ mod tests {
         );
         handle.destroy();
         root.remove();
+    }
+
+    /// "EDIT" IS NEVER OFFERED ON A STICKER — its author's own included,
+    /// and by the rule itself rather than by a sticker having no words: one
+    /// that arrived WITH a body is still not editable. Everything else a
+    /// message can have done to it is still there, and the same message of
+    /// mine without the flag — a photo with a caption — is edited as ever.
+    #[wasm_bindgen_test]
+    async fn edit_is_never_offered_on_a_sticker() {
+        use crate::model::Attachment;
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let picture = |sticker: bool| Attachment {
+            id: 90,
+            kind: "photo".into(),
+            mime: Some("image/webp".into()),
+            sticker,
+            ..Attachment::default()
+        };
+        let menu = |body: &'static str, sticker: bool| {
+            let actions = actions.clone();
+            async move {
+                let mut mine = message(101, ME, body);
+                mine.attachments = Some(vec![picture(sticker)]);
+                let (root, handle) = render(props(mine, actions)).await;
+                click(&root, ".more");
+                settle().await;
+                let rows = labels(&root, ".menu [role=menuitem]");
+                handle.destroy();
+                root.remove();
+                rows
+            }
+        };
+        for body in ["", "words a sticker should never have"] {
+            let rows = menu(body, true).await;
+            assert!(!rows.contains(&"Edit".to_string()), "{body:?}: {rows:?}");
+            assert!(rows.contains(&"Reply".to_string()), "{rows:?}");
+        }
+        let captioned = menu("a caption", false).await;
+        assert!(captioned.contains(&"Edit".to_string()), "{captioned:?}");
     }
 
     /// Where Reply would do nothing — the open-polls list has no composer —

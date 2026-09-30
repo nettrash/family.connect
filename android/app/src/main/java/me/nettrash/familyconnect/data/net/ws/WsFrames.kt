@@ -36,6 +36,7 @@ import me.nettrash.familyconnect.data.net.dto.MessageDto
 import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.NewPollDto
 import me.nettrash.familyconnect.data.net.dto.NoteDto
+import me.nettrash.familyconnect.data.net.dto.PackItemDto
 import me.nettrash.familyconnect.data.net.dto.PollDto
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.UserDto
@@ -82,6 +83,12 @@ sealed interface ClientFrame {
          * (protocol.md, "Mentioning a member"). Omitted the same way.
          */
         val mentions: List<MentionDto>? = null,
+        /**
+         * Optional: `true` sends the one attachment as a STICKER
+         * (protocol.md, "Sticker pack"). Omitted the same way — an ordinary
+         * send never carries the key at all.
+         */
+        val sticker: Boolean? = null,
     ) : ClientFrame
 
     @Serializable
@@ -289,6 +296,17 @@ sealed interface ServerFrame {
     @Serializable
     @SerialName("board_note")
     data class BoardNote(val note: NoteDto) : ServerFrame
+
+    /**
+     * One item of the family's sticker pack in whatever state it now has —
+     * added, or a tombstone — to every connection of every member, the
+     * actor's own included. Never notifies, never counts as unread, and is
+     * not filtered by blocks: an item is a picture the family keeps, not
+     * something a person said (protocol.md, "Sticker pack").
+     */
+    @Serializable
+    @SerialName("pack_item")
+    data class PackItem(val item: PackItemDto) : ServerFrame
 
     /**
      * One fragment of the assistant's reply, as it is generated.

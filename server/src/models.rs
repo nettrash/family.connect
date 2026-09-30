@@ -871,6 +871,15 @@ pub struct Attachment {
     /// not as "perfectly accurate".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accuracy_m: Option<i32>,
+    /// True when (and only when) the message carrying this photo was sent
+    /// as a chat STICKER (docs/protocol.md, "Sticker pack") — absent on the
+    /// wire otherwise, so an ordinary photo never carries `"sticker":
+    /// false`. Not to be confused with a board note, which this codebase
+    /// also calls a sticker: this is the flag a client reads to draw the
+    /// picture without a bubble, and a client that does not know it draws
+    /// the photo it still is.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub sticker: bool,
 }
 
 impl Attachment {
@@ -880,11 +889,16 @@ impl Attachment {
     ///
     /// A file is not on this list and never will be: `kind=file` accepts any
     /// type and verifies none (protocol.md, "Files").
-    pub const ACCEPTED: [(&'static str, &'static str); 11] = [
+    pub const ACCEPTED: [(&'static str, &'static str); 12] = [
         ("image/jpeg", "photo"),
         ("image/png", "photo"),
         ("image/heic", "photo"),
         ("image/heif", "photo"),
+        // WebP arrived with the family's stickers — transparency and
+        // animation in one small file — and is a photo like the others:
+        // the upload does not know what it will become (protocol.md,
+        // "Sticker pack").
+        ("image/webp", "photo"),
         ("video/mp4", "video"),
         ("video/quicktime", "video"),
         // Audio. m4a/aac is what both phones record into, and mp3/wav/ogg
@@ -911,6 +925,17 @@ impl Attachment {
     /// usable. Deliberately the least interesting type there is.
     pub const DEFAULT_FILE_MIME: &'static str = "application/octet-stream";
     pub const MAX_NAME_LEN: usize = 255;
+
+    /// What a chat sticker may be made of — a pack item's picture, and the
+    /// one attachment of a sticker message (docs/protocol.md, "Sticker
+    /// pack"). WebP for transparency and animation; PNG because an Apple
+    /// device can decode a WebP and cannot write one, and a pack only some
+    /// members could add to is not the family's.
+    pub const STICKER_MIMES: [&'static str; 2] = ["image/webp", "image/png"];
+
+    pub fn is_sticker_mime(mime: &str) -> bool {
+        Self::STICKER_MIMES.contains(&mime)
+    }
 
     pub fn kind_for(mime: &str) -> Option<&'static str> {
         Self::ACCEPTED
@@ -965,6 +990,81 @@ impl Attachment {
             latitude: row.try_get("latitude").unwrap_or_default(),
             longitude: row.try_get("longitude").unwrap_or_default(),
             accuracy_m: row.try_get("accuracy_m").unwrap_or_default(),
+            // The same forgiveness, and for a better reason still: most
+            // SELECTs have no business with this column — a note's picture
+            // and a pack item's are never stickers — and those read false.
+            sticker: row.try_get("sticker").unwrap_or_default(),
+        }
+    }
+}
+
+/// One sticker of a family's pack (docs/protocol.md, "Sticker pack").
+///
+/// NOT a board note, which this codebase also calls a sticker — hence
+/// `pack` in every name here. A tombstone is the same object with
+/// `deleted: true` and no content, for the reason a note's is: the change
+/// feed has to be able to say "this item is gone", and an absent row cannot
+/// say anything.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PackItem {
+    pub id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<i64>,
+    /// A few words for a screen reader, when whoever added the item gave
+    /// any. Never drawn over the picture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The picture: an ordinary `kind=photo` attachment, readable by every
+    /// member of the family. It never carries the `sticker` flag, which is
+    /// a message's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<Attachment>,
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub created_at: Option<time::OffsetDateTime>,
+    pub pack_seq: i64,
+    /// Present and true ONLY on a tombstone; absent otherwise, so a live
+    /// item never carries `"deleted": false`.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub deleted: bool,
+}
+
+impl PackItem {
+    /// The longest label, in characters — a display name's length, because
+    /// it is read out the same way (protocol.md's Limits table).
+    pub const MAX_LABEL_CHARS: usize = 64;
+
+    /// Build from a `pack_items` row. A removed item keeps only its id and
+    /// seq: whatever it showed is gone, and sending the adder or the label
+    /// of something that no longer exists would be a small leak for no
+    /// reader. The picture is attached by the caller, which knows whether
+    /// it is reading one item or a page of them.
+    pub fn from_row(row: &PgRow) -> Self {
+        let deleted = row
+            .get::<Option<time::OffsetDateTime>, _>("deleted_at")
+            .is_some();
+        if deleted {
+            return Self {
+                id: row.get("id"),
+                added_by: None,
+                label: None,
+                attachment: None,
+                created_at: None,
+                pack_seq: row.get("pack_seq"),
+                deleted: true,
+            };
+        }
+        Self {
+            id: row.get("id"),
+            added_by: Some(row.get("added_by")),
+            label: row.get("label"),
+            attachment: None,
+            created_at: Some(row.get("created_at")),
+            pack_seq: row.get("pack_seq"),
+            deleted: false,
         }
     }
 }
@@ -1752,5 +1852,52 @@ mod tests {
             Attachment::ascii_filename(&long).len(),
             Attachment::MAX_NAME_LEN
         );
+    }
+
+    /// `sticker` is on the wire when — and only when — it is true: an
+    /// ordinary photo never carries `"sticker": false`, and a reader that
+    /// finds the key missing (every attachment a shipped server ever sent)
+    /// reads a photo (protocol.md, "Sticker pack").
+    #[test]
+    fn the_sticker_flag_is_absent_unless_true() {
+        let photo = Attachment {
+            id: 90,
+            kind: "photo".to_string(),
+            mime: "image/webp".to_string(),
+            size: 4096,
+            width: None,
+            height: None,
+            duration_ms: None,
+            has_preview: false,
+            name: None,
+            latitude: None,
+            longitude: None,
+            accuracy_m: None,
+            sticker: false,
+        };
+        let json = serde_json::to_value(&photo).expect("serializes");
+        assert!(json.get("sticker").is_none(), "{json}");
+        let back: Attachment = serde_json::from_value(json).expect("parses without the key");
+        assert!(!back.sticker);
+
+        let sticker = Attachment {
+            sticker: true,
+            ..photo
+        };
+        let json = serde_json::to_value(&sticker).expect("serializes");
+        assert_eq!(json["sticker"], true);
+    }
+
+    /// WebP is a photo, and a sticker is WebP or PNG — not the JPEG and
+    /// HEIC a camera makes, which have no transparency to show the chat
+    /// through.
+    #[test]
+    fn webp_is_a_photo_and_stickers_are_webp_or_png() {
+        assert_eq!(Attachment::kind_for("image/webp"), Some("photo"));
+        assert!(Attachment::is_sticker_mime("image/webp"));
+        assert!(Attachment::is_sticker_mime("image/png"));
+        for other in ["image/jpeg", "image/heic", "image/gif", "video/mp4", ""] {
+            assert!(!Attachment::is_sticker_mime(other), "{other}");
+        }
     }
 }

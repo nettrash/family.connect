@@ -740,6 +740,17 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
     /// radius in metres it believed the fix good to. Absent means UNKNOWN,
     /// which is drawn as a plain pin — never as perfect precision.
     let accuracyM: Int?
+    /// True when (and only when) the message that carries this was sent as
+    /// a STICKER (docs/protocol.md, "Sticker pack"): still a `kind=photo`
+    /// in every other respect, drawn without a bubble and from the original
+    /// bytes. ABSENT on the wire when false — never `false` — so it is a
+    /// defaulted Bool, written back out only when true. A pack item's own
+    /// attachment never carries it: the flag is a message's.
+    ///
+    /// Not to be confused with the board's "sticker note", which is the
+    /// other thing this codebase calls a sticker and has nothing to do
+    /// with this field.
+    let sticker: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -754,6 +765,79 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         case latitude
         case longitude
         case accuracyM = "accuracy_m"
+        case sticker
+    }
+
+    init(
+        id: Int64,
+        kind: String,
+        mime: String,
+        size: Int64,
+        width: Int?,
+        height: Int?,
+        durationMS: Int?,
+        hasPreview: Bool,
+        name: String?,
+        latitude: Double?,
+        longitude: Double?,
+        accuracyM: Int?,
+        sticker: Bool = false
+    ) {
+        self.id = id
+        self.kind = kind
+        self.mime = mime
+        self.size = size
+        self.width = width
+        self.height = height
+        self.durationMS = durationMS
+        self.hasPreview = hasPreview
+        self.name = name
+        self.latitude = latitude
+        self.longitude = longitude
+        self.accuracyM = accuracyM
+        self.sticker = sticker
+    }
+
+    /// Hand-written for the reason `UserDTO`'s is: a property default is
+    /// not a decoding fallback, and `sticker` is absent from every
+    /// attachment that is not one — which is nearly all of them, and all of
+    /// them on a server that predates the pack. Every other field decodes
+    /// exactly as the synthesized initialiser did.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int64.self, forKey: .id)
+        kind = try container.decode(String.self, forKey: .kind)
+        mime = try container.decode(String.self, forKey: .mime)
+        size = try container.decode(Int64.self, forKey: .size)
+        width = try container.decodeIfPresent(Int.self, forKey: .width)
+        height = try container.decodeIfPresent(Int.self, forKey: .height)
+        durationMS = try container.decodeIfPresent(Int.self, forKey: .durationMS)
+        hasPreview = try container.decode(Bool.self, forKey: .hasPreview)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
+        longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
+        accuracyM = try container.decodeIfPresent(Int.self, forKey: .accuracyM)
+        sticker = try container.decodeIfPresent(Bool.self, forKey: .sticker) ?? false
+    }
+
+    /// And the writing half, because MessageEntity stores the set in the
+    /// wire shape: absent-not-false, like every optional field here, so a
+    /// stored photo stays byte-identical to what it was before the flag.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(mime, forKey: .mime)
+        try container.encode(size, forKey: .size)
+        try container.encodeIfPresent(width, forKey: .width)
+        try container.encodeIfPresent(height, forKey: .height)
+        try container.encodeIfPresent(durationMS, forKey: .durationMS)
+        try container.encode(hasPreview, forKey: .hasPreview)
+        try container.encodeIfPresent(name, forKey: .name)
+        try container.encodeIfPresent(latitude, forKey: .latitude)
+        try container.encodeIfPresent(longitude, forKey: .longitude)
+        try container.encodeIfPresent(accuracyM, forKey: .accuracyM)
+        if sticker { try container.encode(true, forKey: .sticker) }
     }
 
     var isVideo: Bool { kind == Kind.video }
@@ -793,8 +877,14 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
             name: name,
             latitude: latitude,
             longitude: longitude,
-            accuracyM: accuracyM)
+            accuracyM: accuracyM,
+            sticker: sticker)
     }
+
+    /// The types a sticker may be (docs/protocol.md, "What a sticker is
+    /// made of"): WebP, which carries transparency and animation, and PNG,
+    /// which an Apple device can also WRITE.
+    static let stickerMIMEs: Set<String> = ["image/webp", "image/png"]
 
     /// What the bubble calls it: the name for a file, a word for the rest.
     var displayName: String {
@@ -1343,6 +1433,17 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
     /// It rides along on the call every client already makes on resync, so
     /// learning whether a board catch-up is needed costs no extra request.
     let maxBoardSeq: Int64?
+    /// The sticker pack's cursor, omitted while the pack has never been
+    /// written to — the board's arrangement, on the same call
+    /// (docs/protocol.md, "Sticker pack").
+    let maxPackSeq: Int64?
+    /// How many stickers one family's pack may hold, and how many bytes one
+    /// of them may be. ALWAYS present on a server that has packs, so their
+    /// ABSENCE is the capability check: a server that predates the pack
+    /// sends neither, and this client then offers no sticker button and no
+    /// pack management rather than discovering a 404 when somebody taps.
+    let maxPackItems: Int?
+    let maxPackItemBytes: Int?
 
     enum CodingKeys: String, CodingKey {
         case family
@@ -1350,6 +1451,9 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         case formerMembers = "former_members"
         case assistant
         case maxBoardSeq = "max_board_seq"
+        case maxPackSeq = "max_pack_seq"
+        case maxPackItems = "max_pack_items"
+        case maxPackItemBytes = "max_pack_item_bytes"
         case blockedUserIDs = "blocked_user_ids"
         case nextOwnerUserID = "next_owner_user_id"
     }
@@ -1361,7 +1465,10 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         assistant: AssistantDTO? = nil,
         maxBoardSeq: Int64? = nil,
         blockedUserIDs: [Int64] = [],
-        nextOwnerUserID: Int64? = nil
+        nextOwnerUserID: Int64? = nil,
+        maxPackSeq: Int64? = nil,
+        maxPackItems: Int? = nil,
+        maxPackItemBytes: Int? = nil
     ) {
         self.blockedUserIDs = blockedUserIDs
         self.nextOwnerUserID = nextOwnerUserID
@@ -1370,6 +1477,9 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         self.formerMembers = formerMembers
         self.assistant = assistant
         self.maxBoardSeq = maxBoardSeq
+        self.maxPackSeq = maxPackSeq
+        self.maxPackItems = maxPackItems
+        self.maxPackItemBytes = maxPackItemBytes
     }
 
     /// Hand-written for the reason UserDTO's is: a property default is not
@@ -1383,6 +1493,9 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         formerMembers = try container.decodeIfPresent([MemberDTO].self, forKey: .formerMembers) ?? []
         assistant = try container.decodeIfPresent(AssistantDTO.self, forKey: .assistant)
         maxBoardSeq = try container.decodeIfPresent(Int64.self, forKey: .maxBoardSeq)
+        maxPackSeq = try container.decodeIfPresent(Int64.self, forKey: .maxPackSeq)
+        maxPackItems = try container.decodeIfPresent(Int.self, forKey: .maxPackItems)
+        maxPackItemBytes = try container.decodeIfPresent(Int.self, forKey: .maxPackItemBytes)
         blockedUserIDs = try container.decodeIfPresent([Int64].self, forKey: .blockedUserIDs) ?? []
         nextOwnerUserID = try container.decodeIfPresent(Int64.self, forKey: .nextOwnerUserID)
     }
@@ -1536,6 +1649,86 @@ nonisolated struct BoardChangesResponse: Codable, Equatable, Sendable {
 
 nonisolated struct NoteResponse: Codable, Equatable, Sendable {
     let note: NoteDTO
+}
+
+/// One sticker of the family's pack (docs/protocol.md, "Sticker pack").
+///
+/// "Pack" on the wire, "sticker" to people — and NOT the board's sticker
+/// note, which is `NoteDTO` above. The vocabulary is split on purpose so no
+/// type has to be read twice to know which is meant.
+///
+/// A TOMBSTONE is the same object with `deleted: true` and nothing else but
+/// `id` and `pack_seq`, for the reason a note's is: the change feed has to
+/// be able to say "this one is gone". Every content field is therefore
+/// optional.
+nonisolated struct PackItemDTO: Codable, Equatable, Sendable {
+    let id: Int64
+    /// Who added it. Still names them after they have left or deleted their
+    /// account — the item is the family's, and stays.
+    let addedBy: Int64?
+    /// An ordinary `kind=photo` attachment whose bytes ARE the sticker. It
+    /// never carries `sticker: true`; that flag is a message's.
+    let attachment: AttachmentDTO?
+    /// A few words for a screen reader, present when (and only when)
+    /// whoever added it gave some. Never drawn over the picture.
+    let label: String?
+    let createdAt: Date?
+    let packSeq: Int64
+    let deleted: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case addedBy = "added_by"
+        case attachment
+        case label
+        case createdAt = "created_at"
+        case packSeq = "pack_seq"
+        case deleted
+    }
+
+    var isTombstone: Bool { deleted == true }
+
+    init(
+        id: Int64,
+        addedBy: Int64? = nil,
+        attachment: AttachmentDTO? = nil,
+        label: String? = nil,
+        createdAt: Date? = nil,
+        packSeq: Int64,
+        deleted: Bool? = nil
+    ) {
+        self.id = id
+        self.addedBy = addedBy
+        self.attachment = attachment
+        self.label = label
+        self.createdAt = createdAt
+        self.packSeq = packSeq
+        self.deleted = deleted
+    }
+}
+
+/// `GET /families/mine/pack` — the WHOLE pack as it now stands, in the
+/// order the items were added, with no tombstones. `maxPackSeq` is 0 for a
+/// pack nobody has ever written to.
+nonisolated struct PackResponse: Codable, Equatable, Sendable {
+    let items: [PackItemDTO]
+    let maxPackSeq: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case items
+        case maxPackSeq = "max_pack_seq"
+    }
+}
+
+/// `GET /families/mine/pack/changes` — one catch-up page, tombstones
+/// included, ascending by `pack_seq`.
+nonisolated struct PackChangesResponse: Codable, Equatable, Sendable {
+    let items: [PackItemDTO]
+}
+
+/// `POST /families/mine/pack` — the item, new (201) or already there (200).
+nonisolated struct PackItemResponse: Codable, Equatable, Sendable {
+    let item: PackItemDTO
 }
 
 nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {

@@ -39,8 +39,38 @@
       }
     },
     "+%lld": {},
+    "A few words for a screen reader. They are never drawn over the picture.": {
+      "de": "Ein paar Worte für einen Screenreader. Sie werden nie über das Bild gezeichnet.",
+      "es": "Unas palabras para un lector de pantalla. Nunca se dibujan sobre la imagen.",
+      "fr": "Quelques mots pour un lecteur d'écran. Ils ne sont jamais affichés sur l'image.",
+      "ja": "スクリーンリーダー用の短い説明です。画像の上に表示されることはありません。",
+      "ru": "Несколько слов для экранного диктора. Поверх картинки они не показываются.",
+      "sr": "Неколико речи за читач екрана. Никада се не исписују преко слике.",
+      "sr-Latn": "Nekoliko reči za čitač ekrana. Nikada se ne ispisuju preko slike.",
+      "zh-Hans": "给屏幕阅读器用的几个字，不会显示在图片上。"
+    },
     "A photo is still being pinned. Add the next one when it is on the board.": {},
+    "A sticker's label can be at most %lld characters.": {
+      "de": "Die Beschreibung eines Stickers darf höchstens %lld Zeichen lang sein.",
+      "es": "La descripción de un sticker puede tener como máximo %lld caracteres.",
+      "fr": "La description d'un sticker peut contenir au maximum %lld caractères.",
+      "ja": "スタンプの説明は%lld文字までです。",
+      "ru": "Подпись стикера может быть не длиннее %lld символов.",
+      "sr": "Опис стикера може да има највише %lld знака.",
+      "sr-Latn": "Opis stikera može da ima najviše %lld znaka.",
+      "zh-Hans": "贴纸的说明最多 %lld 个字符。"
+    },
     "Add Event": {},
+    "Animated stickers must be WebP.": {
+      "de": "Animierte Sticker müssen WebP sein.",
+      "es": "Los stickers animados tienen que ser WebP.",
+      "fr": "Les stickers animés doivent être au format WebP.",
+      "ja": "アニメーションするスタンプはWebPである必要があります。",
+      "ru": "Анимированные стикеры должны быть в формате WebP.",
+      "sr": "Анимирани стикери морају да буду WebP.",
+      "sr-Latn": "Animirani stikeri moraju da budu WebP.",
+      "zh-Hans": "动态贴纸必须是 WebP。"
+    },
     "Call with %@": {},
     "Caption": {},
     "Chat": {},
@@ -81,6 +111,16 @@
       "sr": "Настави да ради када се прозор затвори",
       "sr-Latn": "Nastavi da radi kada se prozor zatvori",
       "zh-Hans": "关闭窗口后继续运行"
+    },
+    "Label (optional)": {
+      "de": "Beschreibung (optional)",
+      "es": "Descripción (opcional)",
+      "fr": "Description (facultatif)",
+      "ja": "説明（任意）",
+      "ru": "Подпись (необязательно)",
+      "sr": "Опис (необавезно)",
+      "sr-Latn": "Opis (neobavezno)",
+      "zh-Hans": "说明（可选）"
     },
     "Leave and Delete": {},
     "Locations": {},

@@ -105,12 +105,15 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         IReadOnlyList<long>? attachmentIds = null,
         IReadOnlyList<string>? pollOptions = null,
         IReadOnlyList<MentionDto>? mentions = null,
+        bool sticker = false,
         CancellationToken ct = default) =>
         Send<MessageResponse>(HttpMethod.Post, $"/chats/{chatId}/messages", new SendRequest(
             clientMsgId, body, replyToMessageId,
             attachmentIds is { Count: > 0 } ? [.. attachmentIds] : null,
             pollOptions is { Count: > 0 } ? new PollRequest([.. pollOptions]) : null,
-            mentions is { Count: > 0 } ? [.. mentions] : null), ct: ct);
+            mentions is { Count: > 0 } ? [.. mentions] : null,
+            // Present only when true: absent is an ordinary message, to every server there is.
+            sticker ? true : null), ct: ct);
 
     /// <summary>
     /// The reconnect catch-up: strictly newer, OLDEST FIRST — the opposite direction to a history
@@ -265,6 +268,50 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
 
     public Task<ApiResult<Nothing>> DeleteNote(long noteId, CancellationToken ct = default) =>
         Send<Nothing>(HttpMethod.Delete, $"/families/mine/board/notes/{noteId}", ct: ct);
+
+    // ---- the sticker pack -------------------------------------------------
+
+    /// <summary>
+    /// The WHOLE pack as it now stands, in the order its items were added — a full read, which
+    /// REPLACES what a client holds (docs/protocol.md, "Sticker pack"). Not paged: a pack is at
+    /// most <c>max_pack_items</c>.
+    /// </summary>
+    public Task<ApiResult<PackResponse>> Pack(CancellationToken ct = default) =>
+        Send<PackResponse>(HttpMethod.Get, "/families/mine/pack", ct: ct);
+
+    /// <summary>The pack's catch-up, tombstones included, looped until a short page.</summary>
+    public Task<ApiResult<PackChangesResponse>> PackChanges(
+        long afterSeq, int limit = 50, CancellationToken ct = default) =>
+        Send<PackChangesResponse>(
+            HttpMethod.Get, $"/families/mine/pack/changes?after_seq={afterSeq}&limit={limit}", ct: ct);
+
+    /// <summary>
+    /// Claim an upload as a pack item — the third way an attachment is claimed. ANY member may.
+    /// </summary>
+    /// <remarks>
+    /// <c>201</c> and <c>200</c> both answer an item, and both are success: a <c>200</c> is the
+    /// pack ALREADY holding it — a retry of the same id, or bytes it has under another id, in
+    /// which case the item's attachment id is NOT the one sent. Adding the same sticker twice is
+    /// not an error and not two stickers. WHICH of the two it was is <see cref="ApiResult{T}.Status"/>,
+    /// and nothing else says it: the actor's own <c>pack_item</c> frame can land before this
+    /// answer does, so "did this device already hold the item" is not the question.
+    /// </remarks>
+    public Task<ApiResult<PackItemResponse>> AddToPack(
+        long attachmentId, string? label = null, CancellationToken ct = default) =>
+        Send<PackItemResponse>(
+            HttpMethod.Post, "/families/mine/pack",
+            // An empty label is no label, and no label is no key.
+            string.IsNullOrWhiteSpace(label)
+                ? new { attachment_id = attachmentId }
+                : (object)new { attachment_id = attachmentId, label = label.Trim() },
+            ct: ct);
+
+    /// <summary>
+    /// Take an item out: whoever added it, or the family's owner. Idempotent — removing one
+    /// already removed is <c>204</c> too — and nothing ever sent with that sticker is touched.
+    /// </summary>
+    public Task<ApiResult<Nothing>> RemoveFromPack(long itemId, CancellationToken ct = default) =>
+        Send<Nothing>(HttpMethod.Delete, $"/families/mine/pack/{itemId}", ct: ct);
 
     // ---- this account ----------------------------------------------------
 
@@ -735,13 +782,14 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
     private static async Task<ApiResult<T>> Body<T>(
         HttpResponseMessage response, T? noContent, CancellationToken ct)
     {
+        var status = (int)response.StatusCode;
         if (typeof(T) == typeof(Nothing))
         {
-            return ApiResult<T>.Success((T)(object)Nothing.Value);
+            return ApiResult<T>.Success((T)(object)Nothing.Value, status);
         }
         if (response.StatusCode == HttpStatusCode.NoContent && noContent is not null)
         {
-            return ApiResult<T>.Success(noContent);
+            return ApiResult<T>.Success(noContent, status);
         }
         var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         var value = Wire.Decode<T>(text);
@@ -749,8 +797,8 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         // TERMINAL, not transient: repeating the call will produce the same body.
         return value is null
             ? ApiResult<T>.Failure(new ApiError(
-                ErrorCodes.Validation, "the answer could not be read", (int)response.StatusCode))
-            : ApiResult<T>.Success(value);
+                ErrorCodes.Validation, "the answer could not be read", status))
+            : ApiResult<T>.Success(value, status);
     }
 
     /// <summary>

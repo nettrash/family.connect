@@ -234,6 +234,20 @@ pub struct Roster {
     /// there is anything past this client's board cursor to catch up on.
     #[serde(default)]
     pub max_board_seq: i64,
+    /// The sticker pack's high-water mark, the same way — OMITTED while the
+    /// pack has never been written to, which reads here as 0
+    /// (docs/protocol.md, "Sticker pack").
+    #[serde(default)]
+    pub max_pack_seq: i64,
+    /// How many stickers a family's pack may hold, and how many bytes one
+    /// may be. ALWAYS present on a server that has packs — so their absence
+    /// is how this client knows the server predates them, and offers no
+    /// sticker button and no pack there rather than finding a 404 when
+    /// somebody clicks one.
+    #[serde(default)]
+    pub max_pack_items: Option<i64>,
+    #[serde(default)]
+    pub max_pack_item_bytes: Option<i64>,
     /// The family itself — the owner's invite code and switches with it.
     #[serde(default)]
     pub family: Option<Family>,
@@ -655,6 +669,53 @@ pub struct Attachment {
     pub longitude: Option<f64>,
     #[serde(default)]
     pub accuracy_m: Option<f64>,
+    /// This attachment was SENT as a sticker (docs/protocol.md, "Sticker
+    /// pack" — the chat kind, not a board note). Present only when true,
+    /// set by the send and never changed; a pack item's own attachment
+    /// never carries it. A client that has not heard of it draws a photo,
+    /// which is what the attachment otherwise is.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sticker: bool,
+}
+
+fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
+/// One sticker of the family's pack (docs/protocol.md, "Sticker pack").
+///
+/// A TOMBSTONE carries only `id`, `deleted` and `pack_seq`, which is why
+/// everything else is optional here, as it is on a [`Note`]; a live item
+/// always has who added it and its picture, and one that arrives without
+/// them is a server fault the pack refuses rather than drawing an empty
+/// square.
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+pub struct PackItem {
+    pub id: i64,
+    pub pack_seq: i64,
+    #[serde(default)]
+    pub deleted: bool,
+    /// Who added it — still named after they have left or deleted their
+    /// account, and resolved the way their old messages are.
+    #[serde(default)]
+    pub added_by: Option<i64>,
+    /// An ordinary `kind=photo` attachment whose bytes are the sticker.
+    #[serde(default)]
+    pub attachment: Option<Attachment>,
+    /// A few words for a screen reader, when whoever added it gave some.
+    /// Never drawn over the picture.
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+impl PackItem {
+    /// Whether this copy can be shown and sent: a tombstone cannot, and
+    /// neither can a live item missing what every live item has.
+    pub fn is_usable(&self) -> bool {
+        !self.deleted && self.added_by.is_some() && self.attachment.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -743,6 +804,17 @@ impl Message {
 
     pub fn mentions(&self) -> &[Mention] {
         self.mentions.as_deref().unwrap_or(&[])
+    }
+
+    /// The sticker this message IS, if it is one: exactly one attachment, a
+    /// photo, flagged by the send (docs/protocol.md, "Sending one"). Anything
+    /// else — no flag, a flag from a server that one day puts it on an
+    /// album — is drawn as what its attachments otherwise are.
+    pub fn sticker(&self) -> Option<&Attachment> {
+        match self.attachments() {
+            [only] if only.sticker && only.kind == "photo" => Some(only),
+            _ => None,
+        }
     }
 }
 
@@ -969,6 +1041,114 @@ mod tests {
             !broken.is_drawable(),
             "a live note with no author or place is refused"
         );
+    }
+
+    /// A sticker message as the server sends one, and the photo an older
+    /// server (or an ordinary send) leaves it as: the flag is present only
+    /// when true, and never written back as `false`.
+    #[wasm_bindgen_test]
+    fn a_sticker_is_a_photo_with_one_more_field() {
+        let sent: Message = serde_json::from_str(
+            r#"{"id": 1400, "chat_id": 42, "sender_id": 9, "body": "",
+                "created_at": "2026-09-30T10:00:00Z",
+                "attachments": [{"id": 90, "kind": "photo", "mime": "image/webp",
+                                 "size": 18234, "width": 512, "height": 512,
+                                 "has_preview": false, "sticker": true}],
+                "attachment": {"id": 90, "kind": "photo", "sticker": true}}"#,
+        )
+        .expect("reads");
+        assert_eq!(sent.sticker().map(|attachment| attachment.id), Some(90));
+        let plain: Message = serde_json::from_str(
+            r#"{"id": 1401, "chat_id": 42, "sender_id": 9, "body": "",
+                "created_at": "2026-09-30T10:00:00Z",
+                "attachments": [{"id": 91, "kind": "photo", "mime": "image/webp"}]}"#,
+        )
+        .expect("reads");
+        assert!(plain.sticker().is_none(), "absent is an ordinary photo");
+        assert!(!plain.attachments()[0].sticker);
+        // Never two: a sticker is its own message.
+        let mut album = sent.clone();
+        let again = album.attachments()[0].clone();
+        album.attachments.as_mut().expect("has some").push(again);
+        assert!(album.sticker().is_none());
+        // THE ONE TEST, the same on every client: exactly ONE attachment,
+        // of kind photo, carrying `sticker: true`. The flag on anything
+        // that is not a photo is not a sticker, and neither is a message
+        // with no attachment at all.
+        for kind in ["video", "file", "audio", "location"] {
+            let mut other = sent.clone();
+            other.attachments.as_mut().expect("has some")[0].kind = kind.into();
+            assert!(other.sticker().is_none(), "a flagged {kind}");
+        }
+        let mut bare = sent.clone();
+        bare.attachments = None;
+        assert!(bare.sticker().is_none());
+        // A body beside it does not change what it is drawn as: the test
+        // is the attachment's, and only the attachment's.
+        let mut worded = sent.clone();
+        worded.body = "words".into();
+        assert!(worded.sticker().is_some());
+        // Written only when true — the outbox keeps its rows as JSON.
+        let kept = serde_json::to_value(&plain.attachments()[0]).expect("encodes");
+        assert!(kept.get("sticker").is_none());
+        let kept = serde_json::to_value(&sent.attachments()[0]).expect("encodes");
+        assert_eq!(kept["sticker"], true);
+    }
+
+    /// A pack item live, labelled, and as a tombstone — which carries
+    /// nothing but its id, its seq and that it is gone.
+    #[wasm_bindgen_test]
+    fn a_pack_item_reads_every_shape_the_protocol_gives_it() {
+        let live: PackItem = serde_json::from_str(
+            r#"{"id": 5, "added_by": 7, "created_at": "2026-09-30T10:00:00Z", "pack_seq": 12,
+                "attachment": {"id": 71, "kind": "photo", "mime": "image/webp", "size": 18234,
+                               "width": 512, "height": 512, "has_preview": false},
+                "label": "party cat", "invented": [1, 2]}"#,
+        )
+        .expect("an item this client can read");
+        assert!(live.is_usable());
+        assert_eq!(live.label.as_deref(), Some("party cat"));
+        let attachment = live.attachment.as_ref().expect("its picture");
+        assert_eq!(attachment.id, 71);
+        assert!(
+            !attachment.sticker,
+            "the flag is a message's, never an item's"
+        );
+
+        let gone: PackItem = serde_json::from_str(r#"{"id": 5, "deleted": true, "pack_seq": 14}"#)
+            .expect("a tombstone reads");
+        assert!(gone.deleted && !gone.is_usable());
+        assert_eq!(gone.added_by, None);
+
+        let broken: PackItem =
+            serde_json::from_str(r#"{"id": 6, "pack_seq": 15, "added_by": 7}"#).expect("reads");
+        assert!(
+            !broken.is_usable(),
+            "a live item with no picture is refused"
+        );
+    }
+
+    /// The pack's mark and the two limits ride on the roster — and their
+    /// absence is a server from before packs.
+    #[wasm_bindgen_test]
+    fn the_roster_says_whether_the_server_has_packs() {
+        let roster: Roster = serde_json::from_str(
+            r#"{"members": [], "max_pack_seq": 14, "max_pack_items": 200,
+                "max_pack_item_bytes": 524288}"#,
+        )
+        .expect("reads");
+        assert_eq!(roster.max_pack_seq, 14);
+        assert_eq!(roster.max_pack_items, Some(200));
+        assert_eq!(roster.max_pack_item_bytes, Some(524_288));
+        // A pack never written to: the limits, and no mark.
+        let untouched: Roster = serde_json::from_str(
+            r#"{"members": [], "max_pack_items": 200, "max_pack_item_bytes": 524288}"#,
+        )
+        .expect("reads");
+        assert_eq!(untouched.max_pack_seq, 0);
+        let older: Roster = serde_json::from_str(r#"{"members": []}"#).expect("reads");
+        assert_eq!(older.max_pack_items, None);
+        assert_eq!(older.max_pack_item_bytes, None);
     }
 
     #[wasm_bindgen_test]

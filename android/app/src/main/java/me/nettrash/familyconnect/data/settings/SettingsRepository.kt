@@ -111,6 +111,31 @@ data class SettingsState(
      */
     val boardSeenContentSeq: Long = 0,
     /**
+     * Highest pack_seq applied on this device; 0 = nothing yet. The
+     * sticker pack's own sync cursor, the board's twin (docs/protocol.md,
+     * "Sticker pack").
+     */
+    val packCursor: Long = 0,
+    /**
+     * The pack's two ceilings, from `GET /families/mine`. **0 means the
+     * server has no packs** (or has not said yet): the field is always
+     * present on a server that has them, so its absence is the whole of the
+     * capability check — no sticker button, no pack management.
+     *
+     * Stored rather than held in memory so the sticker button is there on
+     * a launch with no network, which is exactly when a cached pack is
+     * worth having.
+     */
+    val packMaxItems: Int = 0,
+    val packMaxItemBytes: Long = 0,
+    /**
+     * The pack items this DEVICE sent most recently, newest first — what
+     * the sticker panel puts at the top. Never on the wire and never
+     * synced: it says something about a person's habits and nothing about
+     * the family's pack (docs/protocol.md, "Sticker pack").
+     */
+    val packRecents: List<Long> = emptyList(),
+    /**
      * The assistant's reserved account id, or null when the server has no
      * assistant configured.
      *
@@ -283,6 +308,26 @@ interface SettingsRepository {
     suspend fun setBoardSeenContentSeq(seq: Long)
 
     /**
+     * The sticker pack's catch-up cursor: the highest pack_seq this device
+     * has APPLIED. Account- and family-scoped like the board's — and,
+     * unlike the board's, also set back to 0 when this member leaves a
+     * family, because pack seqs are server-wide and another family's pack
+     * must never be caught up from this one's mark.
+     */
+    suspend fun setPackCursor(seq: Long)
+
+    /**
+     * Record what `GET /families/mine` said the pack's ceilings are. Null
+     * for either means the server predates packs, and is stored as 0 — a
+     * complete state-set, so a server rolled back to an older build takes
+     * the sticker button away again.
+     */
+    suspend fun setPackLimits(maxItems: Int?, maxItemBytes: Long?)
+
+    /** REPLACE the recently-sent list (newest first). Device-local. */
+    suspend fun setPackRecents(itemIds: List<Long>)
+
+    /**
      * Record (or clear) the assistant the server just reported. Account-
      * scoped, so it goes with the session on logout — a different server
      * may have no assistant, or a differently named one.
@@ -404,6 +449,12 @@ class DataStoreSettingsRepository @Inject constructor(
         // that updates has a meaningful value for the old one and none for
         // the new (BoardBadge.contentMarkSeed).
         val BOARD_SEEN_CONTENT_SEQ = longPreferencesKey("board_seen_content_seq")
+        val PACK_CURSOR = longPreferencesKey("pack_cursor")
+        val PACK_MAX_ITEMS = intPreferencesKey("pack_max_items")
+        val PACK_MAX_ITEM_BYTES = longPreferencesKey("pack_max_item_bytes")
+        // One joined string rather than a string SET: the order is the
+        // whole meaning of "recent", and a set has none.
+        val PACK_RECENTS = stringPreferencesKey("pack_recents")
         // Stored inverted so a missing key reads as "on", like the link
         // preview key above.
         val MAP_PREVIEWS_DISABLED = booleanPreferencesKey("map_previews_disabled")
@@ -459,6 +510,15 @@ class DataStoreSettingsRepository @Inject constructor(
             boardCursor = prefs[Keys.BOARD_CURSOR] ?: 0L,
             boardSeenNoteId = prefs[Keys.BOARD_SEEN_NOTE_ID] ?: 0L,
             boardSeenContentSeq = prefs[Keys.BOARD_SEEN_CONTENT_SEQ] ?: 0L,
+            packCursor = prefs[Keys.PACK_CURSOR] ?: 0L,
+            packMaxItems = prefs[Keys.PACK_MAX_ITEMS] ?: 0,
+            packMaxItemBytes = prefs[Keys.PACK_MAX_ITEM_BYTES] ?: 0L,
+            // `toLongOrNull`, for the block list's reason: a corrupt entry
+            // must not throw inside the map every screen collects.
+            packRecents = prefs[Keys.PACK_RECENTS]
+                ?.split(',')
+                ?.mapNotNull(String::toLongOrNull)
+                .orEmpty(),
             mapPreviewsEnabled = prefs[Keys.MAP_PREVIEWS_DISABLED] != true,
             assistantUserId = prefs[Keys.ASSISTANT_USER_ID],
             assistantName = prefs[Keys.ASSISTANT_NAME],
@@ -544,6 +604,21 @@ class DataStoreSettingsRepository @Inject constructor(
             val current = prefs[Keys.BOARD_SEEN_CONTENT_SEQ] ?: 0L
             if (seq > current) prefs[Keys.BOARD_SEEN_CONTENT_SEQ] = seq
         }
+    }
+
+    override suspend fun setPackCursor(seq: Long) {
+        dataStore.edit { it[Keys.PACK_CURSOR] = seq }
+    }
+
+    override suspend fun setPackLimits(maxItems: Int?, maxItemBytes: Long?) {
+        dataStore.edit {
+            it[Keys.PACK_MAX_ITEMS] = maxItems ?: 0
+            it[Keys.PACK_MAX_ITEM_BYTES] = maxItemBytes ?: 0L
+        }
+    }
+
+    override suspend fun setPackRecents(itemIds: List<Long>) {
+        dataStore.edit { it[Keys.PACK_RECENTS] = itemIds.joinToString(",") }
     }
 
     override suspend fun setMapPreviewsEnabled(enabled: Boolean) {

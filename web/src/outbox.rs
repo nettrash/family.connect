@@ -37,7 +37,14 @@ use crate::store::{lost_in_reload, Outgoing};
 /// be read — a picked file moved, changed or deleted before it went up.
 pub const LOCAL_FILE_GONE: &str = "local_file_gone";
 
-pub const TERMINAL_CODES: [&str; 13] = [
+/// Not the server's either: a queued STICKER whose bytes a reload took, and
+/// whose pack item was removed before the network came back — so there is
+/// nothing left to fetch them from again (sync.rs). The server would call
+/// it `attachment_not_found`, and the words for that one tell a person to
+/// attach the thing again, which is exactly what nobody can do here.
+pub const STICKER_GONE: &str = "sticker_gone";
+
+pub const TERMINAL_CODES: [&str; 14] = [
     "validation",
     "message_empty",
     "message_too_long",
@@ -51,6 +58,7 @@ pub const TERMINAL_CODES: [&str; 13] = [
     "attachment_too_large",
     "not_in_family",
     LOCAL_FILE_GONE,
+    STICKER_GONE,
 ];
 
 pub fn is_terminal(error: &ApiError) -> bool {
@@ -84,6 +92,9 @@ pub fn refusal(error: &ApiError) -> String {
             "Not sent: a file was moved, changed or deleted before it could go. Attach it again.",
         )
         .to_string(),
+        Some(STICKER_GONE) => {
+            t("Not sent: that sticker is no longer in the family's stickers.").to_string()
+        }
         Some("attachment_expired") => {
             t("Not sent: its attachments expired on the server. Attach them again.").to_string()
         }
@@ -199,8 +210,10 @@ pub async fn drain<S, SF, U, UF, N, NF>(
                 let bytes = live
                     .read(|state| state.store.bytes.get(&item.provisional_id).cloned())
                     .unwrap_or_default();
-                if !item.is_location() && bytes.file.is_none() {
+                if !item.survives_reload() && bytes.file.is_none() {
                     // Nothing to upload and nothing that can bring it back.
+                    // (A sticker's bytes are the pack's: the upload fetches
+                    // them again, so a reload does not end one.)
                     live.update(session, |state| {
                         state
                             .store
@@ -1033,5 +1046,113 @@ mod tests {
                 .map(String::as_str),
             Some(crate::store::lost_in_reload())
         );
+    }
+
+    /// A sticker whose bytes a reload took is NOT failed: the upload is
+    /// handed the row with nothing in its hands, and fetches the pack's
+    /// picture itself (sync.rs). A photo in the same state fails at once.
+    #[wasm_bindgen_test]
+    async fn a_sticker_without_its_bytes_still_goes_up() {
+        let live = signed_in();
+        live.now(|state| {
+            state.store.queue_send(
+                42,
+                "sticker".into(),
+                Draft {
+                    attachments: vec![crate::staged::Prepared {
+                        kind: "photo".into(),
+                        mime: "image/webp".into(),
+                        size: 18_234,
+                        file: Some(web_sys::Blob::new().expect("a blob")),
+                        source_attachment_id: Some(71),
+                        ..crate::staged::Prepared::default()
+                    }],
+                    sticker: true,
+                    ..Draft::default()
+                },
+            );
+            state.store.bytes.clear();
+        });
+
+        let run = run_with_uploads(&live, vec![Answer::Deliver(101)], vec![Ok(501)]).await;
+
+        assert_eq!(run.uploaded, vec![-1], "handed to the upload, not refused");
+        assert_eq!(run.claimed, vec![vec![501]]);
+        assert!(live.read(|state| state.store.outbox.is_empty()));
+    }
+
+    /// A sticker whose bytes a reload took AND whose pack item has gone
+    /// since has nothing left to be a copy of: it fails at once, and says
+    /// what happened — not "attach it again", which nobody can do with a
+    /// sticker that is no longer anywhere.
+    #[wasm_bindgen_test]
+    async fn a_sticker_whose_source_is_gone_fails_saying_so() {
+        let live = signed_in();
+        live.now(|state| {
+            state.store.queue_send(
+                42,
+                "sticker".into(),
+                Draft {
+                    attachments: vec![crate::staged::Prepared {
+                        kind: "photo".into(),
+                        mime: "image/webp".into(),
+                        size: 18_234,
+                        file: Some(web_sys::Blob::new().expect("a blob")),
+                        source_attachment_id: Some(71),
+                        ..crate::staged::Prepared::default()
+                    }],
+                    sticker: true,
+                    ..Draft::default()
+                },
+            );
+            state.store.bytes.clear();
+        });
+
+        let run = run_with_uploads(&live, Vec::new(), vec![Err(server(STICKER_GONE))]).await;
+
+        assert!(
+            run.naps.is_empty(),
+            "nothing about it gets better by waiting"
+        );
+        assert!(run.sent.is_empty());
+        let said = live.read(|state| state.store.failed_sends(42));
+        let said = said.get("sticker").expect("failed, in words");
+        assert_eq!(
+            said,
+            "Not sent: that sticker is no longer in the family's stickers."
+        );
+        assert!(!said.contains("Attach"), "there is nothing to attach again");
+    }
+
+    /// A refused sticker fails like any refused message, at once and
+    /// saying why: `invalid_attachment` is what the server answers for a
+    /// picture that may not be one.
+    #[wasm_bindgen_test]
+    async fn a_refused_sticker_fails_at_once() {
+        let live = signed_in();
+        live.now(|state| {
+            state.store.queue_send(
+                42,
+                "sticker".into(),
+                Draft {
+                    attachments: vec![photo()],
+                    sticker: true,
+                    ..Draft::default()
+                },
+            );
+        });
+
+        let run = run_with_uploads(
+            &live,
+            vec![Answer::Fail(server("invalid_attachment"))],
+            vec![Ok(501)],
+        )
+        .await;
+
+        assert_eq!(run.sent, vec!["sticker"]);
+        assert!(run.naps.is_empty(), "a refusal is not retried");
+        assert!(live
+            .read(|state| state.store.failed_sends(42))
+            .contains_key("sticker"));
     }
 }

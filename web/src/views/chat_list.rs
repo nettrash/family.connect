@@ -53,6 +53,10 @@ pub fn preview(message: &Message, my_user_id: i64, blocked: &HashSet<i64>) -> St
         .first()
         .map(|attachment| attachment.kind.as_str())
     {
+        // A sticker says so, where a photo's row says so of a photo
+        // (docs/protocol.md, "How it is drawn") — the `last_message`
+        // preview carries the flag for exactly this.
+        Some("photo") if message.sticker().is_some() => t("Sticker").to_string(),
         Some("photo") if attachments.len() > 1 => tn("%lld Photos", attachments.len() as i64),
         Some("photo") => t("Photo").to_string(),
         Some("video") => t("Video").to_string(),
@@ -189,6 +193,30 @@ mod tests {
             preview(&message(9, "first line\nsecond"), 7, &blocked),
             "first line"
         );
+    }
+
+    /// A sticker's row says "Sticker"; the same photo without the flag
+    /// says "Photo"; and a blocked member's is the hidden row like any
+    /// other message of theirs.
+    #[wasm_bindgen_test]
+    fn a_stickers_row_says_sticker() {
+        let picture = |sticker: bool| Attachment {
+            id: 90,
+            kind: "photo".into(),
+            mime: Some("image/webp".into()),
+            sticker,
+            ..Default::default()
+        };
+        let mut sent = message(9, "");
+        sent.attachments = Some(vec![picture(true)]);
+        assert_eq!(preview(&sent, 7, &HashSet::new()), "Sticker");
+        assert_eq!(
+            preview(&sent, 7, &HashSet::from([9])),
+            "Hidden — blocked member"
+        );
+        let mut photo = message(9, "");
+        photo.attachments = Some(vec![picture(false)]);
+        assert_eq!(preview(&photo, 7, &HashSet::new()), "Photo");
     }
 
     /// A call record's body is an English placeholder the list never shows.

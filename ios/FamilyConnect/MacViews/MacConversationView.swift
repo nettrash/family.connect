@@ -126,6 +126,9 @@ struct MacConversationView: View {
     /// way to prime the composer, and it takes the answer as an argument,
     /// so a third kind of banner cannot forget it either.
     @State private var composerPriming: ComposerPriming?
+    /// The sticker being shown larger (docs/protocol.md, "Tapping one shows
+    /// it larger").
+    @State private var viewingSticker: AttachmentDTO?
     /// The message being rewritten; mutually exclusive with a reply, the
     /// same rule the phone has — you are answering or rewriting, not both.
     @State private var editTarget: (messageID: Int64, original: String)?
@@ -557,6 +560,9 @@ struct MacConversationView: View {
                 },
                 onCancel: { showPollComposer = false })
         }
+        .sheet(item: $viewingSticker) { sticker in
+            StickerViewer(attachment: sticker)
+        }
         .navigationTitle(chat?.title ?? "")
         .navigationSubtitle(typingLine ?? "")
         .toolbar {
@@ -912,7 +918,14 @@ struct MacConversationView: View {
                                 onTapQuote: { jumpToMessage($0, proxy: proxy) },
                                 onTapMention: { openMember($0) },
                                 onOpenAttachment: { attachment in
-                                    if attachment.isFile {
+                                    if MessagePresentation.isSticker(row.message) {
+                                        // Shown larger on a small sheet of
+                                        // its own, not in the photo
+                                        // window: a sticker has one thing
+                                        // to do about it, and that window
+                                        // pages, zooms and saves.
+                                        viewingSticker = attachment
+                                    } else if attachment.isFile {
                                         openFile(attachment)
                                     } else {
                                         // Its own window, which is what
@@ -1640,6 +1653,17 @@ struct MacConversationView: View {
                 // mid-upload would arm a second, concurrent send.
                 .disabled(composerIsBusy)
 
+                // The family's stickers, one click from the composer
+                // (docs/protocol.md, "In the panel, one tap sends"). Absent
+                // rather than disabled where there is nothing behind it —
+                // see `showsStickers`.
+                if showsStickers {
+                    StickerComposerButton(side: composerControl, glyph: 16) { item in
+                        sendSticker(item)
+                    }
+                    .disabled(composerIsBusy)
+                }
+
                 if showsAssistantMention {
                     Button {
                         insertAssistantMention()
@@ -1826,6 +1850,53 @@ struct MacConversationView: View {
     /// on a server that actually has an assistant. An absent `assistant`
     /// on `GET /families/mine` is the whole capability check
     /// (docs/protocol.md, "Mentioning the assistant in the family chat").
+    /// Whether the composer offers the sticker button at all — the phone's
+    /// rule (`StickerDoor`): in EVERY chat a message can be sent in, the
+    /// assistant's own included, and absent only where there is nothing
+    /// behind it — a server that predates the pack omits its limits, and a
+    /// button there would open onto a 404.
+    private var showsStickers: Bool { stickerDoor != .absent }
+
+    private var stickerDoor: StickerDoor {
+        StickerDoor.of(
+            offersStickers: AppSettings.offersStickers,
+            chatKind: chat?.kind,
+            hasAssistant: AppSettings.assistantUserID != nil,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt)
+    }
+
+    /// The sticker door, and a send door like any other — so it reads the
+    /// quote and clears it together. The draft is NOT touched: a sticker is
+    /// its own message. The quote goes only once the send is QUEUED; a
+    /// sticker whose bytes are neither here nor reachable leaves the
+    /// composer as it was, with a sentence saying why.
+    ///
+    /// In the assistant's chat, before a member has agreed, it goes through
+    /// the consent question exactly as words do (`send`) — the sheet holds
+    /// the sticker and it goes on a yes — never around it.
+    private func sendSticker(_ item: PackItemSnapshot) {
+        switch stickerDoor {
+        case .absent:
+            return
+        case .asksFirst:
+            afterAssistantConsent = { sendSticker(item) }
+            showAssistantConsent = true
+            return
+        case .open:
+            break
+        }
+        let quote = replyDraft
+        Task {
+            guard await coordinator.sendSticker(item, replyTo: quote, in: chatID) != nil else {
+                mediaNotice = .failed(String(
+                    localized: "Couldn't send that sticker. Check your connection and try again."))
+                return
+            }
+            if replyDraft == quote { replyDraft = nil }
+        }
+    }
+
     private var showsAssistantMention: Bool {
         chat?.kind == "family" && AppSettings.assistantUserID != nil
             // And a server that names nobody offers no assistant here

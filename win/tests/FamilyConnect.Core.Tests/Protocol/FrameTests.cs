@@ -340,4 +340,120 @@ public class FrameTests
             new ServerFrame.CallAnswer("c", "v=0"),
             ServerFrame.Parse(ClientFrames.CallAnswer("c", "v=0")));
     }
+
+    // ---- the sticker pack (docs/protocol.md, "Sticker pack") ---------------------------------
+
+    [Fact]
+    public void APackItemFrameCarriesALiveItem()
+    {
+        var frame = ServerFrame.Parse(
+            """
+            {"type": "pack_item", "item": {"id": 5, "added_by": 7,
+             "attachment": {"id": 71, "kind": "photo", "mime": "image/webp", "size": 40960,
+                            "width": 512, "height": 512, "has_preview": false},
+             "created_at": "2026-09-13T10:00:00Z", "pack_seq": 12, "label": "party cat"}}
+            """);
+        var item = Assert.IsType<ServerFrame.PackItem>(frame).Item;
+        Assert.Equal(5, item.Id);
+        Assert.Equal(7, item.AddedBy);
+        Assert.Equal(12, item.PackSeq);
+        Assert.Equal("party cat", item.Label);
+        Assert.False(item.Deleted);
+        Assert.Equal(71, item.Attachment!.Id);
+        Assert.Equal("image/webp", item.Attachment.Mime);
+        // A pack item's attachment NEVER carries the flag: that is a message's.
+        Assert.False(item.Attachment.Sticker);
+    }
+
+    /// <summary>A tombstone is the id, the flag and the seq — and nothing else.</summary>
+    [Fact]
+    public void APackItemFrameCarriesATombstone()
+    {
+        var frame = ServerFrame.Parse(
+            """{"type": "pack_item", "item": {"id": 5, "deleted": true, "pack_seq": 14}}""");
+        var item = Assert.IsType<ServerFrame.PackItem>(frame).Item;
+        Assert.True(item.Deleted);
+        Assert.Equal(5, item.Id);
+        Assert.Equal(14, item.PackSeq);
+        Assert.Null(item.Attachment);
+        Assert.Null(item.Label);
+        Assert.Equal(0, item.AddedBy);
+    }
+
+    [Fact]
+    public void APackItemFrameWithNoItemIsNoFrame()
+    {
+        Assert.Null(ServerFrame.Parse("""{"type": "pack_item"}"""));
+    }
+
+    /// <summary>
+    /// The flag is on the ATTACHMENT, present only when true — in <c>attachments</c> and in the
+    /// legacy singular — and it is what makes the message a sticker.
+    /// </summary>
+    [Fact]
+    public void AStickerMessageIsOneFlaggedPhotoAndNoWords()
+    {
+        var frame = ServerFrame.Parse(
+            """
+            {"type": "message", "message": {"id": 1340, "chat_id": 42, "sender_id": 9,
+             "client_msg_id": null, "body": "", "created_at": "2026-09-13T10:00:00Z",
+             "attachments": [{"id": 90, "kind": "photo", "mime": "image/webp", "size": 40960,
+                              "width": 512, "height": 512, "has_preview": false, "sticker": true}],
+             "attachment": {"id": 90, "kind": "photo", "mime": "image/webp", "size": 40960,
+                            "width": 512, "height": 512, "has_preview": false, "sticker": true}}}
+            """);
+        var message = Assert.IsType<ServerFrame.Message>(frame).Value;
+        Assert.True(Assert.Single(message.Media).Sticker);
+        Assert.True(message.Attachment!.Sticker);
+        Assert.Equal(90, message.StickerPicture!.Id);
+    }
+
+    /// <summary>
+    /// OLD MESSAGES, AND OLD SERVERS: a photo without the flag is a photo — the field is absent,
+    /// never false — and nothing about it is drawn differently than it ever was.
+    /// </summary>
+    [Fact]
+    public void APhotoWithoutTheFlagIsNotASticker()
+    {
+        var plain = Wire.Decode<MessageDto>(
+            """
+            {"id": 1, "chat_id": 42, "sender_id": 9, "client_msg_id": null, "body": "",
+             "created_at": "2026-09-13T10:00:00Z",
+             "attachments": [{"id": 90, "kind": "photo", "mime": "image/webp", "size": 40960}]}
+            """)!;
+        Assert.False(plain.Media[0].Sticker);
+        Assert.Null(plain.StickerPicture);
+
+        MessageDto With(string body, params AttachmentDto[] media) =>
+            new(1, 42, 9, null, body, "2026-09-13T10:00:00Z", Attachments: media);
+        var flagged = new AttachmentDto(90, "photo", "image/webp", 40960, Sticker: true);
+        Assert.NotNull(With("", flagged).StickerPicture);
+        // THE ONE TEST, the same on every client: exactly ONE attachment, kind photo, sticker: true.
+        Assert.Null(With("", flagged, flagged).StickerPicture);
+        Assert.Null(With("", flagged with { Kind = "video" }).StickerPicture);
+        Assert.Null(With("", flagged with { Sticker = false }).StickerPicture);
+        Assert.Null(With("", flagged, flagged with { Id = 91, Sticker = false }).StickerPicture);
+        Assert.Null(With("").StickerPicture);
+        // And NOTHING ELSE is asked. Words beside the flag are a shape the server refuses; were one ever stored, every
+        // client must still agree on what it is, and the rule they share does not read the body or the type.
+        Assert.NotNull(With("look", flagged).StickerPicture);
+        Assert.NotNull(With("", flagged with { Mime = "image/jpeg" }).StickerPicture);
+    }
+
+    [Fact]
+    public void ASendSaysStickerOnlyWhenItIsOne()
+    {
+        var sticker = System.Text.Json.JsonDocument.Parse(
+            ClientFrames.Send(42, "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01", "", attachmentIds: [90], sticker: true)).RootElement;
+        Assert.Equal("send", sticker.GetProperty("type").GetString());
+        Assert.True(sticker.GetProperty("sticker").GetBoolean());
+        Assert.Equal("", sticker.GetProperty("body").GetString());
+        Assert.Equal(90, sticker.GetProperty("attachment_ids")[0].GetInt64());
+
+        // Absent on an ordinary message — never false — so a server that predates stickers reads
+        // exactly the frame it always read.
+        var plain = System.Text.Json.JsonDocument.Parse(
+            ClientFrames.Send(42, "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01", "Dinner at 7?", attachmentIds: [90])).RootElement;
+        Assert.False(plain.TryGetProperty("sticker", out _));
+    }
 }

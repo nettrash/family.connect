@@ -620,4 +620,31 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">Until you agree, nothing you write is sent to %1$s and the assistant does not answer you.</string>
     <string name="s_consent_stopping_takes_effect_at_once">What you write to the assistant is sent to %1$s. Stopping takes effect at once; what has already been sent cannot be taken back.</string>
     <string name="s_couldnt_save_your_answer">Couldn\'t save your answer. Try again.</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">Sticker</string>
+    <string name="s_stickers">Stickers</string>
+    <string name="s_family_stickers">Family stickers</string>
+    <string name="s_family_stickers_count">%1$d of %2$d</string>
+    <string name="s_family_stickers_explanation">Anyone in the family can add a sticker. Whoever added one, or the family owner, can remove it.</string>
+    <string name="s_recently_used">Recently used</string>
+    <string name="s_no_stickers_yet">No stickers yet</string>
+    <string name="s_no_stickers_hint">Add some on the Family screen.</string>
+    <string name="s_add_sticker">Add sticker</string>
+    <string name="s_add_to_family_stickers">Add to family stickers</string>
+    <string name="s_sticker_label">Description (optional)</string>
+    <string name="s_sticker_label_hint">A few words for a screen reader. It is never drawn over the picture.</string>
+    <string name="s_remove_sticker">Remove sticker</string>
+    <string name="s_remove_sticker_q">Remove this sticker?</string>
+    <string name="s_remove_sticker_explanation">It leaves the family\'s stickers. Messages already sent keep it.</string>
+    <string name="s_sticker_added">Added to family stickers</string>
+    <string name="s_sticker_already_in_pack">Already in family stickers</string>
+    <string name="s_sticker_pack_full">The family\'s stickers have reached their limit of %1$d. Remove one to add another.</string>
+    <string name="s_sticker_too_large">That one is too big. A sticker can be at most %1$s.</string>
+    <string name="s_sticker_add_failed">Couldn\'t add the sticker. Try again.</string>
+    <string name="s_sticker_unreadable">That picture couldn\'t be read.</string>
+    <string name="s_sticker_animated_must_be_webp">Animated stickers must be WebP. This one can\'t be added.</string>
+    <string name="s_sticker_label_too_long">A description can be at most %1$d characters.</string>
+    <string name="s_sticker_remove_not_allowed">Only whoever added a sticker, or the family owner, can remove it.</string>
+    <string name="s_sticker_remove_failed">Couldn\'t remove the sticker. Try again.</string>
+    <string name="s_sticker_not_available_offline">That sticker isn\'t on this phone yet. Try again when you\'re online.</string>
 </resources>

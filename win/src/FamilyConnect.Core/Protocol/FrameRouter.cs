@@ -33,7 +33,7 @@ namespace FamilyConnect.Core.Protocol;
 /// message it names is one this device does not hold — the state is dropped, the cursor is not.
 /// </para>
 /// </remarks>
-public sealed class FrameRouter(ChatStore chats, BoardStore board)
+public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pack = null)
 {
     /// <summary>A message that is NEW — the only frame that may raise a notification.</summary>
     /// <remarks>
@@ -58,6 +58,13 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board)
 
     /// <summary>The wall changed: a note created, edited, moved, or taken down.</summary>
     public event Action<NoteDto>? BoardChanged;
+
+    /// <summary>
+    /// The family's sticker pack changed: an item added, or one removed. Never a notification and
+    /// never an unread count — and not filtered by blocks: an item is a picture the family keeps,
+    /// not something a person said (docs/protocol.md, "What does not touch the pack").
+    /// </summary>
+    public event Action<PackItemDto>? PackChanged;
 
     /// <summary>The roster changed — a join, a leave, a deleted account, a new owner.</summary>
     public event Action? RosterChanged;
@@ -150,6 +157,14 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board)
                 // as a catch-up page does — and as the answer to our own write does not.
                 board.Apply(note.Note, SeqRoute.LiveFrame);
                 BoardChanged?.Invoke(note.Note);
+                break;
+
+            case ServerFrame.PackItem item when pack is not null:
+                // Under the `pack_seq` guard, exactly as a note is applied under its own; and the
+                // store decides whether the cursor follows, because a frame may move it only once
+                // this connection has caught up.
+                pack.Apply(item.Item, SeqRoute.LiveFrame);
+                PackChanged?.Invoke(item.Item);
                 break;
 
             case ServerFrame.MemberJoined joined:

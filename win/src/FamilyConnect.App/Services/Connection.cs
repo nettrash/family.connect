@@ -27,15 +27,36 @@ internal sealed class Connection : IAsyncDisposable
         // sign-in as somebody else must not be drawn as the previous person's "You".
         Chats = new ChatStore(Cache, () => Session.State.Me?.Id ?? 0);
         Board = new BoardStore(Cache);
+        Pack = new PackStore(Cache);
         Outbox = new OutboxStore(Cache);
         Socket = new ChatSocket(() => new ClientWebSocketAdapter(), () => Api.SocketUrl, Tokens);
         Staging = new FolderMediaStore(AppFolders.StagingPath);
         Media = new MediaOutbox(Outbox, Api, Staging);
         Sending = new SendPipeline(Socket, Outbox, Chats, Api, uploads: PushMediaAsync);
-        Router = new FrameRouter(Chats, Board);
+        Router = new FrameRouter(Chats, Board, Pack);
         Attachments = new AttachmentCache(Api, new FileBlobStore(AppFolders.BlobsPath));
+        // A sticker on its way out is bytes this device already holds: kept under the id the server just gave them, so
+        // the message it becomes is drawn at once rather than downloaded back.
+        Media.Landed += (row, attachment, staged) =>
+        {
+            if (!row.Sticker)
+            {
+                return;
+            }
+            try
+            {
+                Attachments.Remember(attachment, staged.Bytes);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                Diagnostics.Write($"keeping a sent sticker's bytes: {e.GetType().Name}");
+            }
+        };
         Avatars = new AvatarCache(Api, new FileBlobStore(AppFolders.BlobsPath));
-        Live = new LiveConnection(Session, Socket, new Resync(Api, Chats, Board, Sending), Sending, Router);
+        // The family's stickers: the pack this device keeps, and the bytes under their attachment ids in the same
+        // cache every other picture is kept in.
+        Stickers = new PackModel(Pack, Chats, Api, Attachments);
+        Live = new LiveConnection(Session, Socket, new Resync(Api, Chats, Board, Sending, Pack), Sending, Router);
         // What the live frames leave on screen and nowhere else, listened for from the start so a frame that lands
         // while no conversation is open is not lost.
         PeerReads = new PeerReads();
@@ -74,6 +95,12 @@ internal sealed class Connection : IAsyncDisposable
     public ChatStore Chats { get; }
 
     public BoardStore Board { get; }
+
+    /// <summary>The family's sticker pack, kept as the board is kept (docs/protocol.md, "Sticker pack").</summary>
+    public PackStore Pack { get; }
+
+    /// <summary>What the window asks of the pack: the panel, who may remove what, and add, remove and send.</summary>
+    public PackModel Stickers { get; }
 
     public OutboxStore Outbox { get; }
 

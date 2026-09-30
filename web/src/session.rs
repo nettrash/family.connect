@@ -3,7 +3,10 @@
 //! `sessionStorage`, NOT `localStorage` (docs/protocol.md, "A browser is a
 //! client too"): the token is the whole credential, and one that outlives
 //! the tab is one left behind on a shared machine. Closing the tab is a
-//! sign-out.
+//! sign-out. Two small things are kept by the DEVICE instead, in
+//! `localStorage`, and neither is a credential or a word anybody wrote: the
+//! board's seen-marks, and which stickers were used last — which a sign-out
+//! takes.
 //!
 //! Every accessor is total. Storage can be absent or throw — a private
 //! window, a browser configured to block site data — and a chat client that
@@ -35,10 +38,11 @@ fn storage() -> Option<web_sys::Storage> {
     window()?.session_storage().ok()?
 }
 
-/// The board's two seen-marks, under the account's id — the ONE thing this
-/// client keeps past the tab (docs/protocol.md, "A browser is a client
-/// too"). Two numbers: how far this browser has shown that account the wall,
-/// and nothing of what is on it. Kept for the tab alone they would count the
+/// The board's two seen-marks, under the account's id — one of the two
+/// things this client keeps past the tab (docs/protocol.md, "A browser is a
+/// client too"; the other is the sticker recents below, which a sign-out
+/// takes). Two numbers: how far this browser has shown that account the
+/// wall, and nothing of what is on it. Kept for the tab alone they would count the
 /// whole wall as new at every sign-in, and a badge that always cries wolf is
 /// a badge nobody reads.
 const BOARD_MARKS_KEY: &str = "fc.board.seen.";
@@ -91,6 +95,63 @@ pub fn save_board_marks(user_id: i64, marks: fc_text::board::Marks) {
     }
 }
 
+/// Which stickers this person used last on this DEVICE — the pack items'
+/// ids, newest first, and nothing else (docs/protocol.md, "Sticker pack":
+/// which stickers somebody used most recently is that device's own
+/// business, and is never on the wire).
+///
+/// Kept in `localStorage`, beside the board's marks and NOT beside the
+/// token: the rule every client keeps is that the recents are the
+/// device's, survive a restart, and go at sign-out. `sessionStorage` is the
+/// tab's — a browser closed and opened again would forget them, and a
+/// second tab would never have had them. What stops them being left behind
+/// on a shared machine is [`clear`], which takes them with the token; they
+/// are one account's besides, and another account reads none of them.
+///
+/// Every access is guarded like every other here: `localStorage` can be
+/// absent, and can THROW — on the accessor, on a read, on a write (a
+/// private window, site data blocked, a quota of nought) — and each of
+/// those is "nothing kept", never a panic.
+const PACK_RECENTS_KEY: &str = "fc.pack.recent";
+
+/// The recents as stored: whose they are, and the ids.
+#[derive(Debug, Serialize, Deserialize)]
+struct SavedRecents {
+    user_id: i64,
+    ids: Vec<i64>,
+}
+
+/// The recents this device keeps for `user_id` — none when it has sent no
+/// sticker as that account, and none where storage is absent, blocked or
+/// holds something that cannot be read.
+pub fn pack_recents(user_id: i64) -> Vec<i64> {
+    lasting()
+        .and_then(|storage| storage.get_item(PACK_RECENTS_KEY).ok()?)
+        .and_then(|json| serde_json::from_str::<SavedRecents>(&json).ok())
+        .filter(|saved| saved.user_id == user_id && user_id != 0)
+        .map(|mut saved| {
+            saved.ids.truncate(fc_text::pack::RECENTS_MAX);
+            saved.ids
+        })
+        .unwrap_or_default()
+}
+
+/// `id` was just sent: it goes first. Answers the list as it now stands,
+/// which is what the panel draws — whether or not storage took it.
+pub fn use_pack_item(user_id: i64, id: i64) -> Vec<i64> {
+    let ids = fc_text::pack::used(&pack_recents(user_id), id);
+    if user_id != 0 {
+        let saved = SavedRecents {
+            user_id,
+            ids: ids.clone(),
+        };
+        if let (Some(storage), Ok(json)) = (lasting(), serde_json::to_string(&saved)) {
+            let _ = storage.set_item(PACK_RECENTS_KEY, &json);
+        }
+    }
+    ids
+}
+
 pub fn token() -> Option<String> {
     storage()?
         .get_item(TOKEN_KEY)
@@ -109,6 +170,12 @@ pub fn clear() {
         let _ = storage.remove_item(TOKEN_KEY);
         let _ = storage.remove_item(OUTBOX_KEY);
         let _ = storage.remove_item(AWAITING_KEY);
+    }
+    // The one thing a sign-out takes from `localStorage`: which stickers
+    // this person reached for. The board's marks stay — that is what they
+    // are for.
+    if let Some(storage) = lasting() {
+        let _ = storage.remove_item(PACK_RECENTS_KEY);
     }
 }
 
@@ -185,9 +252,167 @@ mod tests {
             mentions: Vec::new(),
             poll: Some(vec!["Yes".into(), "No".into()]),
             items: Vec::new(),
+            sticker: false,
             attempts: 2,
             failed: None,
         }
+    }
+
+    /// THE STICKER RECENTS ARE THE DEVICE'S: the last sixteen, kept where a
+    /// restart finds them and gone at sign-out — the same on every client.
+    /// They were once in `sessionStorage`, where closing the browser
+    /// forgot them and a second tab never had them. So: they are written
+    /// to `localStorage` and nothing of them to `sessionStorage`, they are
+    /// still there when everything the TAB held is gone (which is what a
+    /// restart is), they are one account's, there are never more than
+    /// sixteen, and a sign-out takes them.
+    #[wasm_bindgen_test]
+    fn the_sticker_recents_are_kept_for_the_device_and_go_at_sign_out() {
+        let tab = storage().expect("session storage in the test browser");
+        let local = lasting().expect("local storage in the test browser");
+        let was = local.get_item(PACK_RECENTS_KEY).expect("reads");
+        let _ = local.remove_item(PACK_RECENTS_KEY);
+        // What other tests of this page had in the tab, to put back.
+        let (token, outbox, awaiting) = (
+            tab.get_item(TOKEN_KEY).expect("reads"),
+            tab.get_item(OUTBOX_KEY).expect("reads"),
+            tab.get_item(AWAITING_KEY).expect("reads"),
+        );
+        let tab_keys = || -> Vec<String> {
+            (0..tab.length().expect("a length"))
+                .filter_map(|index| tab.key(index).expect("a key"))
+                .filter(|key| key.starts_with("fc.pack"))
+                .collect()
+        };
+
+        assert!(pack_recents(9101).is_empty());
+        assert_eq!(use_pack_item(9101, 5), vec![5]);
+        assert_eq!(use_pack_item(9101, 8), vec![8, 5]);
+        assert_eq!(use_pack_item(9101, 5), vec![5, 8], "once, and first");
+        assert!(
+            local.get_item(PACK_RECENTS_KEY).expect("reads").is_some(),
+            "kept by the device"
+        );
+        assert_eq!(tab_keys(), Vec::<String>::new(), "and not by the tab");
+
+        // A RESTART: everything the tab held is gone — the token with it —
+        // and the recents are read back as they were.
+        let held: Vec<String> = (0..tab.length().expect("a length"))
+            .filter_map(|index| tab.key(index).expect("a key"))
+            .filter(|key| key.starts_with("fc."))
+            .collect();
+        for key in held {
+            tab.remove_item(&key).expect("removes");
+        }
+        assert!(super::token().is_none(), "the tab's session is over");
+        assert_eq!(pack_recents(9101), vec![5, 8], "a restart keeps them");
+        assert!(pack_recents(9102).is_empty(), "another account has none");
+
+        // The last sixteen, and no more — also of a list somebody else
+        // wrote longer.
+        for id in 100..130 {
+            use_pack_item(9101, id);
+        }
+        let kept = pack_recents(9101);
+        assert_eq!(kept.len(), fc_text::pack::RECENTS_MAX);
+        assert_eq!(kept[0], 129, "newest first");
+        assert_eq!(kept[15], 114, "the seventeenth went");
+        let long: Vec<i64> = (1..=40).collect();
+        local
+            .set_item(
+                PACK_RECENTS_KEY,
+                &serde_json::to_string(&SavedRecents {
+                    user_id: 9101,
+                    ids: long,
+                })
+                .expect("writes"),
+            )
+            .expect("writes");
+        assert_eq!(pack_recents(9101).len(), fc_text::pack::RECENTS_MAX);
+
+        // Another account on the same device starts its own, and the first
+        // one's are not handed to it.
+        assert_eq!(use_pack_item(9102, 3), vec![3]);
+        assert!(pack_recents(9101).is_empty());
+
+        local
+            .set_item(PACK_RECENTS_KEY, "{not a list")
+            .expect("writes");
+        assert!(pack_recents(9102).is_empty());
+
+        // Nobody signed in keeps nothing — but the panel still gets its
+        // order for this tab.
+        let _ = local.remove_item(PACK_RECENTS_KEY);
+        assert_eq!(use_pack_item(0, 3), vec![3]);
+        assert!(local.get_item(PACK_RECENTS_KEY).expect("reads").is_none());
+
+        // SIGNING OUT takes them with the token.
+        use_pack_item(9101, 5);
+        clear();
+        assert!(pack_recents(9101).is_empty(), "gone at sign-out");
+        assert!(local.get_item(PACK_RECENTS_KEY).expect("reads").is_none());
+
+        for (key, value) in [
+            (TOKEN_KEY, token),
+            (OUTBOX_KEY, outbox),
+            (AWAITING_KEY, awaiting),
+        ] {
+            if let Some(value) = value {
+                let _ = tab.set_item(key, &value);
+            }
+        }
+        if let Some(value) = was {
+            let _ = local.set_item(PACK_RECENTS_KEY, &value);
+        }
+    }
+
+    /// STORAGE CAN THROW, and every access to the recents is guarded: a
+    /// browser whose `localStorage` refuses to be read, written or removed
+    /// from keeps nothing, says nothing, and the panel still gets its order
+    /// for as long as the tab is open. Made to throw here the way a blocked
+    /// one does — from the methods themselves.
+    #[wasm_bindgen_test]
+    fn the_sticker_recents_survive_a_storage_that_throws() {
+        use js_sys::{Function, Reflect};
+        use wasm_bindgen::JsValue;
+        let local = lasting().expect("local storage in the test browser");
+        let _ = local.remove_item(PACK_RECENTS_KEY);
+        assert_eq!(use_pack_item(9103, 4), vec![4]);
+
+        let prototype = Reflect::get(
+            &Reflect::get(&window().expect("a window"), &JsValue::from_str("Storage"))
+                .expect("Storage"),
+            &JsValue::from_str("prototype"),
+        )
+        .expect("its prototype");
+        let throws = Function::new_no_args("throw new DOMException('blocked', 'SecurityError')");
+        let methods = ["getItem", "setItem", "removeItem"];
+        let originals: Vec<JsValue> = methods
+            .iter()
+            .map(|name| Reflect::get(&prototype, &JsValue::from_str(name)).expect("a method"))
+            .collect();
+        for name in methods {
+            Reflect::set(&prototype, &JsValue::from_str(name), &throws).expect("replaced");
+        }
+        let (read, used, again) = (
+            pack_recents(9103),
+            use_pack_item(9103, 6),
+            use_pack_item(9103, 7),
+        );
+        clear();
+        for (name, original) in methods.iter().zip(&originals) {
+            Reflect::set(&prototype, &JsValue::from_str(name), original).expect("put back");
+        }
+
+        assert!(read.is_empty(), "unreadable reads as nothing");
+        assert_eq!(used, vec![6], "and the send still gets its order");
+        assert_eq!(again, vec![7]);
+        assert_eq!(
+            pack_recents(9103),
+            vec![4],
+            "nothing was written, and nothing removed, while it threw"
+        );
+        let _ = local.remove_item(PACK_RECENTS_KEY);
     }
 
     /// The marks outlive a sign-out (that is what they are for), belong to

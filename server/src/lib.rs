@@ -28,6 +28,7 @@ pub mod handlers_call;
 pub mod handlers_chat;
 pub mod handlers_device;
 pub mod handlers_family;
+pub mod handlers_pack;
 pub mod handlers_poll;
 pub mod handlers_report;
 pub mod handlers_stats;

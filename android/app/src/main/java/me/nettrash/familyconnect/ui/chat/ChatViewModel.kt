@@ -1248,6 +1248,53 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
+     * A sticker was tapped in the panel: decide whether it may go, and hand
+     * [go] the quote it answers.
+     *
+     * The sticker itself is sent by StickerViewModel — the pack is not this
+     * model's — but two things about a send ARE this model's, and a sticker
+     * is a send like any other (docs/protocol.md, "Sending one"):
+     *
+     *  - THE REPLY DRAFT. A sticker may be a reply, which is how one
+     *    answers something. Read and cleared together, as [send] does, so
+     *    the quote does not silently ride on the next message too.
+     *  - NOTHING REACHES THE MODEL UNASKED. In the member's own `ai` chat a
+     *    sticker is a photo to the assistant, so the consent question is
+     *    asked first, exactly as for words; the server would refuse it with
+     *    `assistant_consent_required` otherwise, and that is a red bubble
+     *    where a question belongs. A server that names no processor gets
+     *    nothing at all. (In the family chat a sticker has no body and so
+     *    can never say `@ai`.)
+     *
+     * The typed draft is left alone: one tap sends the sticker, not the
+     * sentence somebody was in the middle of.
+     */
+    fun beginStickerSend(go: (ReplyToDto?) -> Unit) {
+        // An edit has borrowed the composer; the button is disabled then,
+        // and this is the same answer for anything that got past it.
+        if (_editTarget.value != null) return
+        viewModelScope.launch {
+            val settingsState = settings.state.first()
+            when (
+                AssistantConsent.stickerGate(
+                    chatKind = chat.value?.kind,
+                    hasAssistant = settingsState.assistantUserId != null,
+                    processor = settingsState.assistantProcessor,
+                    agreedAt = settingsState.assistantConsentAt,
+                )
+            ) {
+                AssistantConsent.StickerGate.WITHHELD -> Unit
+                AssistantConsent.StickerGate.ASK -> _assistantConsentAsked.value = true
+                AssistantConsent.StickerGate.SEND -> {
+                    val quote = _replyDraft.value
+                    _replyDraft.value = null
+                    go(quote)
+                }
+            }
+        }
+    }
+
+    /**
      * Prepare and send a picked photo or video.
      *
      * Not optimistic, unlike [send]: the bubble appears once the server

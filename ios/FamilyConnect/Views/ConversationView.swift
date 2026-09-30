@@ -265,6 +265,9 @@ struct ConversationView: View {
     /// The album being viewed full-screen: the message's media and the
     /// one that was tapped. A lone photo is an album of one.
     @State private var viewingAlbum: AttachmentAlbum?
+    /// The sticker being shown larger (docs/protocol.md, "Tapping one shows
+    /// it larger") — its own small sheet, not a page of the photo viewer.
+    @State private var viewingSticker: AttachmentDTO?
     /// A downloaded file on its way to Quick Look.
     @State private var previewedFile: URL?
 
@@ -1184,7 +1187,9 @@ struct ConversationView: View {
                                     openThread(serverID: message.serverID, threadRootID: message.threadRootID)
                                 },
                                 onOpenAttachment: { attachment in
-                                    if attachment.isFile {
+                                    if MessagePresentation.isSticker(message) {
+                                        viewingSticker = attachment
+                                    } else if attachment.isFile {
                                         openFile(attachment)
                                     } else {
                                         // The whole message's media, opened
@@ -1648,6 +1653,18 @@ struct ConversationView: View {
                     // out-of-process picker needs no PhotoKit reference and
                     // no usage description, and nothing here reads a PHAsset.
                     matching: isAssistantChat ? .images : .any(of: [.images, .videos]))
+                // The family's stickers, one tap from the composer
+                // (docs/protocol.md, "In the panel, one tap sends"). Absent
+                // rather than disabled where there is nothing behind it —
+                // see `showsStickers`.
+                if showsStickers {
+                    StickerComposerButton(side: composerControl, glyph: attachGlyph) { item in
+                        sendSticker(item)
+                    }
+                    // The same guard the attach menu carries: an edit has
+                    // borrowed the composer, or a send is already running.
+                    .disabled(composerIsBusy)
+                }
                 if showsAssistantMention {
                     Button {
                         insertAssistantMention()
@@ -2094,6 +2111,7 @@ struct ConversationView: View {
             showFilePicker: $showFilePicker,
             previewedFile: $previewedFile,
             viewingAlbum: $viewingAlbum,
+            viewingSticker: $viewingSticker,
             showCamera: $showCamera,
             onPickedMedia: stagePickedMedia,
             onPickedFiles: stagePickedFiles,
@@ -2584,7 +2602,9 @@ struct ConversationView: View {
                         // In a chain: a reply, or a root somebody answered.
                         let canViewThread = message.serverID != nil
                             && (message.threadRootID != nil || message.replyCount > 0)
-                        let canEdit = message.serverID != nil && message.senderID == currentUserID
+                        // Never on a sticker — see `offersEdit`.
+                        let canEdit = MessagePresentation.offersEdit(
+                            MessageSnapshot(message), currentUserID: currentUserID)
                         let attachment = message.attachmentSnapshot
                         // A photo sent without a caption has nothing to copy.
                         let canCopy = !message.body.isEmpty
@@ -2873,6 +2893,81 @@ struct ConversationView: View {
         // events and actually empties the field.
         Task { @MainActor in
             model.draft = ""
+        }
+    }
+
+    /// Whether the composer offers the sticker button at all.
+    ///
+    /// In EVERY chat a message can be sent in — the family's, a one-to-one,
+    /// and the assistant's own (docs/protocol.md, "Sending one"). "Absent
+    /// rather than disabled" where there is nothing behind it: a server
+    /// that predates the pack says so by omitting its limits, and a button
+    /// there would open onto a 404 ("What old clients and old servers do").
+    /// `StickerDoor` holds the rule, for this composer, the Mac's and the
+    /// thread's alike.
+    ///
+    /// In the assistant's chat a sticker is a photo to the assistant as it
+    /// is to everything else on the server, under the rules in "Pictures" —
+    /// and a message like any other, so it goes through the consent
+    /// question (`sendSticker`), never around it.
+    ///
+    /// And on a phone it steps aside while there is something in the
+    /// composer: a sticker is its own message — it takes no caption and no
+    /// attachment — so with words typed or a photo staged the button has
+    /// nothing to offer, and the width it would take is the field's. The
+    /// Mac has the room and keeps it always.
+    private var showsStickers: Bool {
+        stickerDoor != .absent
+            && staged.isEmpty
+            && model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var stickerDoor: StickerDoor {
+        StickerDoor.of(
+            offersStickers: AppSettings.offersStickers,
+            chatKind: chat?.kind,
+            hasAssistant: AppSettings.assistantUserID != nil,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt)
+    }
+
+    /// The sticker door, and a send door like any other — so it reads the
+    /// quote and clears it together (a sticker may be a reply, which is how
+    /// one answers something). The draft is NOT touched: a sticker is its
+    /// own message, and words already typed are still going somewhere else.
+    ///
+    /// The quote is cleared only once the send is QUEUED. The one way it is
+    /// not is a sticker whose bytes are neither on this device nor
+    /// reachable, and that leaves the composer exactly as it was, with a
+    /// sentence saying why.
+    ///
+    /// In the assistant's chat, before a member has agreed, it is the SAME
+    /// question words get and by the same road (`send`): the consent sheet,
+    /// holding the sticker, which goes when the answer is yes. The server
+    /// would refuse it with `assistant_consent_required` regardless; asking
+    /// here is what keeps the sticker in hand.
+    private func sendSticker(_ item: PackItemSnapshot) {
+        switch stickerDoor {
+        case .absent:
+            return
+        case .asksFirst:
+            afterAssistantConsent = { sendSticker(item) }
+            showAssistantConsent = true
+            return
+        case .open:
+            break
+        }
+        let quote = replyDraft
+        Task {
+            guard await coordinator.sendSticker(item, replyTo: quote, in: chatID) != nil else {
+                composerNotice = String(
+                    localized: "Couldn't send that sticker. Check your connection and try again.")
+                return
+            }
+            if replyDraft == quote {
+                withAnimation(.spring(duration: 0.25)) { replyDraft = nil }
+            }
+            replyStartedFromHistory = false
         }
     }
 
@@ -3390,6 +3485,7 @@ private struct AttachmentSurfaces: ViewModifier {
     @Binding var showFilePicker: Bool
     @Binding var previewedFile: URL?
     @Binding var viewingAlbum: AttachmentAlbum?
+    @Binding var viewingSticker: AttachmentDTO?
     @Binding var showCamera: Bool
 
     let onPickedMedia: ([PhotosPickerItem]) -> Void
@@ -3427,6 +3523,9 @@ private struct AttachmentSurfaces: ViewModifier {
             .quickLookPreview($previewedFile)
             .fullScreenCover(item: $viewingAlbum) { album in
                 AttachmentViewer(album: album, onShare: onShareAttachment)
+            }
+            .sheet(item: $viewingSticker) { sticker in
+                StickerViewer(attachment: sticker)
             }
     }
 }

@@ -15,7 +15,8 @@ use yew::prelude::*;
 use crate::actions::Action;
 use crate::live::Opening;
 use crate::location;
-use crate::model::{Assistant, ChatListItem, Family, Member, Message};
+use crate::model::{Assistant, ChatListItem, Family, Member, Message, PackItem};
+use crate::pack::Gate;
 use crate::prep;
 use crate::recorder::{Listening, Recording};
 use crate::staged::Prepared;
@@ -31,6 +32,7 @@ use crate::views::composer::{resolve_mentions, Composer, Editing, Pictures, Repl
 use crate::views::consent::AssistantConsentDialog;
 use crate::views::poll::PollComposer;
 use crate::views::report::{AssistantReportDialog, ReportDialog, ReportTarget};
+use crate::views::stickers::StickerMenu;
 use fc_text::assistant_pictures::{self, Candidate};
 
 #[derive(Properties, PartialEq)]
@@ -83,6 +85,12 @@ pub struct ConversationProps {
     #[prop_or_default]
     pub family: Option<Family>,
     pub support_contact: Option<String>,
+    /// The family's sticker pack, in the order the panel shows it — and
+    /// None where there is no sticker button at all: a server that predates
+    /// packs, or an account in no family (docs/protocol.md, "What old
+    /// clients and old servers do").
+    #[prop_or_default]
+    pub stickers: Option<Vec<PackItem>>,
     /// Whether this member has agreed that their words may go to the model
     /// (docs/protocol.md, "Consenting to the assistant").
     #[prop_or_default]
@@ -988,6 +996,64 @@ pub fn conversation(props: &ConversationProps) -> Html {
             on_busy={notice.clone()}
         />
     };
+    // THE STICKER BUTTON, beside the paperclip, in EVERY chat a message can
+    // be sent in, wherever this server has packs: the family chat, a
+    // one-to-one chat, and the assistant's own. One click sends: its own
+    // message, no caption, answering whatever the box was answering.
+    //
+    // In the assistant's chat a sticker is a photograph shown to the model
+    // (docs/protocol.md, "Sending one"), so the click goes through the
+    // question every message there does and never round it ("Consenting
+    // to the assistant"): while this member has not agreed, it raises the
+    // consent screen INSTEAD of sending — picking again once the answer is
+    // recorded sends it, as pressing Send again does for words — and on a
+    // server that names nobody it says so and sends nothing.
+    let sticker_gate =
+        crate::pack::send_gate(is_ai, props.assistant.as_ref(), props.agreed_to_assistant);
+    let sticker_menu = props.stickers.clone().map(|items| {
+        let on_pick = {
+            let on_action = props.on_action.clone();
+            let replying = replying.clone();
+            let pinned = pinned.clone();
+            let consent_open = consent_open.clone();
+            let notice = notice.clone();
+            Callback::from(move |item_id: i64| {
+                match sticker_gate {
+                    Gate::Send => {}
+                    Gate::Ask => {
+                        consent_open.set(true);
+                        return;
+                    }
+                    Gate::Withheld => {
+                        notice.emit(
+                            fc_text::assistant_consent::unnamed_processor_notice().to_string(),
+                        );
+                        return;
+                    }
+                }
+                let reply_to_message_id = *replying;
+                replying.set(None);
+                // Your own message is always shown, wherever you were.
+                *pinned.borrow_mut() = true;
+                on_action.emit(Action::SendSticker {
+                    chat_id,
+                    item_id,
+                    reply_to_message_id,
+                });
+            })
+        };
+        html! {
+            <StickerMenu
+                {items}
+                // An edit in progress is the one thing a sticker waits for:
+                // the box is somebody else's words until it is done.
+                busy={editing.is_some().then(|| t("Finish editing before attaching something.").to_string())}
+                {on_pick}
+                on_busy={notice.clone()}
+            />
+        }
+    });
+    let attach_menu = html! { <>{ attach_menu }{ sticker_menu.unwrap_or_default() }</> };
     let composer_busy = *preparing || *locating || recording_on;
 
     let poll_dialog = (*poll_open).then(|| {
@@ -1011,7 +1077,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                         reply_to_message_id: *replying,
                         mentions,
                         poll: Some(options),
-                        attachments: Vec::new(),
+                        ..Draft::default()
                     },
                 });
                 replying.set(None);

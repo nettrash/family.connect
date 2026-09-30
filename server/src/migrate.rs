@@ -258,6 +258,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "assistant_consent",
         sql: include_str!("../migrations/0047_assistant_consent.sql"),
     },
+    Migration {
+        version: 48,
+        name: "sticker_pack",
+        sql: include_str!("../migrations/0048_sticker_pack.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

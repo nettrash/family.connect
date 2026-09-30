@@ -430,9 +430,27 @@ class MessageRepository @Inject constructor(
          * server reads the same `@Name` out of them.
          */
         mentions: List<MentionDto>? = null,
+        /**
+         * Send the ONE item as a STICKER (docs/protocol.md, "Sticker pack"
+         * → "Sending one"): its original bytes, no preview, no caption, and
+         * `sticker: true` on the send. The flag rides on the row's own
+         * attachment (`AttachmentDto.sticker`), so the bubble draws bare
+         * from the first frame and a retry after a process death still
+         * sends a sticker and not a photo.
+         *
+         * Everything else about it is this function unchanged — the outbox,
+         * `client_msg_id` dedup, the background upload — because nothing on
+         * the send path is new. That is what makes a sticker sendable with
+         * no network: it is queued exactly as a photo is.
+         */
+        sticker: Boolean = false,
     ): String? {
         val named = mentions?.takeIf { it.isNotEmpty() }
         if (prepared.isEmpty()) return null
+        // A sticker is exactly ONE attachment with NO body; anything else
+        // the server refuses (`invalid_attachment`, `validation`), so it is
+        // refused here before a row could be written for it.
+        if (sticker && (prepared.size != 1 || caption.isNotBlank())) return null
         val me = settings.state.first().myUserId ?: return null
         val clientMsgId = UUID.randomUUID().toString()
 
@@ -466,10 +484,23 @@ class MessageRepository @Inject constructor(
         // poll plays with its option ids. Without it the sender watches an
         // empty bubble for the length of the upload.
         val items = pendingAttachmentDao.itemsFor(clientMsgId)
-        val placeholders = items.map { it.placeholderDto() }
+        val placeholders = items.map { it.placeholderDto().asSticker(sticker) }
         val body = caption.trim()
         val now = clock.now()
         val first = placeholders.first()
+        // A sticker has no preview to seed, by design — its bubble draws
+        // the ORIGINAL bytes, so those are what it is given. BEFORE the
+        // row, unlike the posters below: a sticker's bubble asks for its
+        // file ONCE when it composes and nothing observable tells it to ask
+        // again (a poster lands in a state map the tile is reading), so a
+        // row that reached the screen ahead of its bytes would stay a grey
+        // square until the upload landed — which, with no network, is not
+        // soon.
+        if (sticker) {
+            items.forEach { item ->
+                item.localPath?.let { path -> posterCache.seedOriginal(item.placeholderId, File(path)) }
+            }
+        }
         messageDao.insert(
             MessageEntity(
                 clientMsgId = clientMsgId,
@@ -537,9 +568,13 @@ class MessageRepository @Inject constructor(
             if (row.serverId != null || row.status == MessageStatus.FAILED) return
             val items = pendingAttachmentDao.itemsFor(clientMsgId)
             if (items.isEmpty()) return
+            // Off the ROW, before its placeholders are replaced below: the
+            // item rows know nothing of stickers, and the row is what
+            // survived the process death this whole path exists for.
+            val sticker = row.isPendingSticker
 
             for (item in items.filter { it.attachmentId == null }) {
-                if (!uploadItem(clientMsgId, item)) return
+                if (!uploadItem(clientMsgId, item, sticker)) return
             }
 
             // Everything landed: write the real set onto the row and hand
@@ -547,7 +582,7 @@ class MessageRepository @Inject constructor(
             // this message from a text one.
             val done = pendingAttachmentDao.itemsFor(clientMsgId)
             if (done.any { it.attachmentId == null }) return
-            val attachments = done.mapNotNull { it.uploadedDto() }
+            val attachments = done.mapNotNull { it.uploadedDto()?.asSticker(sticker) }
             messageDao.applyOwnAttachments(
                 clientMsgId,
                 attachments.first().id,
@@ -560,6 +595,7 @@ class MessageRepository @Inject constructor(
                 row.replyToMessageId,
                 attachments.map { it.id },
                 mentions = pendingMentionsOf(row),
+                sticker = sticker,
             )
         } finally {
             mediaUploads.remove(clientMsgId)
@@ -567,7 +603,12 @@ class MessageRepository @Inject constructor(
     }
 
     /** One item's bytes, its preview and its bookkeeping. */
-    private suspend fun uploadItem(clientMsgId: String, item: PendingAttachmentEntity): Boolean {
+    private suspend fun uploadItem(
+        clientMsgId: String,
+        item: PendingAttachmentEntity,
+        /** The send is a sticker: no preview goes up, and the bytes are kept under the real id. */
+        sticker: Boolean = false,
+    ): Boolean {
         val uploaded = if (item.kind == AttachmentDto.KIND_LOCATION) {
             attachmentApi.uploadLocation(
                 latitude = item.latitude ?: 0.0,
@@ -604,7 +645,20 @@ class MessageRepository @Inject constructor(
         // Per-item and best-effort: a failed preview costs a thumbnail,
         // never the send.
         var hasPreview = false
-        val poster = item.previewPath?.let { path -> runCatching { File(path).readBytes() }.getOrNull() }
+        // Never for a sticker, whatever is on disk: a preview is a JPEG,
+        // and "a client uploads none for a pack item or a sticker message"
+        // (docs/protocol.md, "Sticker pack").
+        val poster = if (sticker) {
+            null
+        } else {
+            item.previewPath?.let { path -> runCatching { File(path).readBytes() }.getOrNull() }
+        }
+        if (sticker) {
+            // Under the server's id too, so the bubble does not download
+            // back the bytes this device sent a moment ago when its
+            // placeholder id is swapped for the real one.
+            item.localPath?.let { path -> posterCache.seedOriginal(attachment.id, File(path)) }
+        }
         if (poster != null) {
             // Seeded BEFORE the upload, so a failure still leaves this
             // device holding the only copy of the pixels (issue #54).
@@ -717,6 +771,7 @@ class MessageRepository @Inject constructor(
             row.attachmentIds,
             pendingPollOf(row),
             pendingMentionsOf(row),
+            row.isPendingSticker,
         )
     }
 
@@ -732,6 +787,19 @@ class MessageRepository @Inject constructor(
      * The members a not-yet-acked message must be re-sent naming — off the
      * row, for the same reason as the poll's options.
      */
+    /**
+     * Whether a not-yet-acked row is a sticker send — off the row, for the
+     * same reason as the poll's options and the mentions: the flag a retry
+     * must carry has to survive the process that set it. It lives on the
+     * row's one attachment, where the server's own copy will put it.
+     */
+    private val MessageEntity.isPendingSticker: Boolean
+        get() = serverId == null && attachmentList.singleOrNull()?.isSticker == true
+
+    /** Stamp — or leave alone — the flag a sticker's attachment carries. */
+    private fun AttachmentDto.asSticker(sticker: Boolean): AttachmentDto =
+        if (sticker) copy(sticker = true) else this
+
     private fun pendingMentionsOf(row: MessageEntity): List<MentionDto>? {
         if (row.serverId != null) return null
         return MentionsCodec.decode(row.mentionsJson).takeIf { it.isNotEmpty() }
@@ -797,6 +865,7 @@ class MessageRepository @Inject constructor(
                     row.attachmentIds,
                     pendingPollOf(row),
                     pendingMentionsOf(row),
+                    row.isPendingSticker,
                 )
             }
         }
@@ -817,14 +886,23 @@ class MessageRepository @Inject constructor(
         attachmentIds: List<Long>?,
         poll: NewPollDto? = null,
         mentions: List<MentionDto>? = null,
+        /**
+         * The send is a STICKER. Becomes `sticker: true` on the frame or
+         * the request, and is OMITTED for every other message — never
+         * `false`, so an ordinary send stays byte-identical to what it was.
+         */
+        sticker: Boolean = false,
     ) {
         if (attachmentIds?.any { it < 0 } == true) {
             scope.launch { uploadPending(clientMsgId) }
             return
         }
+        val stickerFlag = if (sticker) true else null
         val overSocket = socket.state.value == SocketState.Open &&
             socket.trySend(
-                ClientFrame.Send(chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions),
+                ClientFrame.Send(
+                    chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag,
+                ),
             )
         if (overSocket) {
             pendingAcks[clientMsgId] = scope.launch {
@@ -832,11 +910,11 @@ class MessageRepository @Inject constructor(
                 pendingAcks.remove(clientMsgId)
                 // No ack in time — the frame may or may not have landed.
                 // REST with the same client_msg_id is safe either way.
-                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions)
+                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag)
             }
         } else {
             scope.launch {
-                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions)
+                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag)
             }
         }
     }
@@ -849,11 +927,12 @@ class MessageRepository @Inject constructor(
         attachmentIds: List<Long>?,
         poll: NewPollDto? = null,
         mentions: List<MentionDto>? = null,
+        sticker: Boolean? = null,
     ) {
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // ack won the race
         val result =
-            chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions)
+            chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, sticker)
         when (result) {
             is ApiResult.Ok -> ackMessage(clientMsgId, result.value.message, chainLive = true)
             else -> recordSendFailure(clientMsgId, result)
@@ -895,10 +974,14 @@ class MessageRepository @Inject constructor(
             if (recoverable) {
                 Log.i(TAG, "uploads expired for $clientMsgId; sending the bytes again")
                 pendingAttachmentDao.forgetUploads(clientMsgId)
+                // The flag goes back onto the placeholders it is about to
+                // be read from: a sticker whose upload expired in the outbox
+                // must go up again as a sticker, not as a photo.
+                val sticker = row.isPendingSticker
                 messageDao.applyOwnAttachments(
                     clientMsgId,
                     items.first().placeholderId,
-                    AttachmentsCodec.encode(items.map { it.placeholderDto() }),
+                    AttachmentsCodec.encode(items.map { it.placeholderDto().asSticker(sticker) }),
                 )
                 scope.launch { uploadPending(clientMsgId) }
                 return
@@ -1767,6 +1850,8 @@ class MessageRepository @Inject constructor(
             val location: String = "Location",
             val file: String = "File",
             val photo: String = "Photo",
+            /** A message sent as a sticker (docs/protocol.md, "Sticker pack"). */
+            val sticker: String = "Sticker",
             val videos: (Int) -> String = { "$it Videos" },
             val audios: (Int) -> String = { "$it Audio" },
             val files: (Int) -> String = { "$it Files" },
@@ -1788,6 +1873,7 @@ class MessageRepository @Inject constructor(
                         location = r.getString(R.string.s_location),
                         file = r.getString(R.string.s_file),
                         photo = r.getString(R.string.s_photo),
+                        sticker = r.getString(R.string.s_sticker),
                         videos = { r.getQuantityString(R.plurals.p_videos, it, it) },
                         audios = { r.getQuantityString(R.plurals.p_audio, it, it) },
                         files = { r.getQuantityString(R.plurals.p_files, it, it) },
@@ -1850,6 +1936,11 @@ class MessageRepository @Inject constructor(
                 attachment.isLocation ->
                     attachment.name?.takeIf { it.isNotEmpty() } ?: labels.location
                 attachment.isFile -> attachment.name?.takeIf { it.isNotEmpty() } ?: labels.file
+                // "On a chat-list row it is the word 'Sticker', in the
+                // reader's language, where a photo's row says so of a
+                // photo." Decided by the flag the attachment carries, which
+                // a `last_message` preview carries too.
+                attachment.isSticker -> labels.sticker
                 else -> labels.photo
             }
         }

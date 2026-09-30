@@ -55,6 +55,8 @@ struct MacFamilyView: View {
     @State private var capCommit: Task<Void, Never>?
     /// The member whose birthday the owner is editing; nil while closed.
     @State private var editingBirthday: MemberDTO?
+    /// The family's sticker pack, on a sheet of its own.
+    @State private var showsStickers = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,6 +78,10 @@ struct MacFamilyView: View {
                         }
                     }
                 }
+                // Outside the owner's block on purpose: ANYBODY in the
+                // family may add a sticker, and whoever added one may take
+                // it out (docs/protocol.md, "The pack").
+                stickersSection
                 membersSection
             }
             if let errorText {
@@ -108,6 +114,11 @@ struct MacFamilyView: View {
         // Sized by the view itself — see MacSettingsView's note.
         .sheet(item: $resetting) { member in
             ResetPasswordView(member: member)
+        }
+        .sheet(isPresented: $showsStickers) {
+            // A stack for the title and the toolbar's Add — the pack view
+            // is the phone's pushed screen, given a bar of its own here.
+            NavigationStack { StickerPackView() }
         }
         .sheet(item: $editingBirthday) { member in
             // The roster draws SwiftData, and applyMemberBirthday writes
@@ -419,6 +430,24 @@ struct MacFamilyView: View {
                         .foregroundStyle(.red)
                 }
                 .disabled(busy)
+            }
+        }
+    }
+
+    /// The family's sticker pack. Absent on a server that predates it —
+    /// the limits it omits are the capability check.
+    @ViewBuilder
+    private var stickersSection: some View {
+        if AppSettings.offersStickers {
+            Section("Family Stickers") {
+                HStack {
+                    Text("Pictures everyone in the family can send as stickers in a chat.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Manage…") { showsStickers = true }
+                }
             }
         }
     }

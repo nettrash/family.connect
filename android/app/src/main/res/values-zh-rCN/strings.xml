@@ -553,4 +553,31 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">在你同意之前，你写的内容不会发给 %1$s，助手也不会回答你。</string>
     <string name="s_consent_stopping_takes_effect_at_once">你写给助手的内容会发给 %1$s。停止后立即生效；已经发出去的收不回来。</string>
     <string name="s_couldnt_save_your_answer">没能保存你的选择。请再试一次。</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">贴纸</string>
+    <string name="s_stickers">贴纸</string>
+    <string name="s_family_stickers">家庭贴纸</string>
+    <string name="s_family_stickers_count">%1$d / %2$d</string>
+    <string name="s_family_stickers_explanation">家里的任何人都可以添加贴纸。添加的人或家庭所有者可以移除它。</string>
+    <string name="s_recently_used">最近使用</string>
+    <string name="s_no_stickers_yet">还没有贴纸</string>
+    <string name="s_no_stickers_hint">在“家庭”页面添加一些吧。</string>
+    <string name="s_add_sticker">添加贴纸</string>
+    <string name="s_add_to_family_stickers">添加到家庭贴纸</string>
+    <string name="s_sticker_label">描述（可选）</string>
+    <string name="s_sticker_label_hint">给屏幕阅读器的几个字，不会显示在图片上。</string>
+    <string name="s_remove_sticker">移除贴纸</string>
+    <string name="s_remove_sticker_q">移除这张贴纸？</string>
+    <string name="s_remove_sticker_explanation">它会从家庭贴纸中移除。已发送的消息仍会保留它。</string>
+    <string name="s_sticker_added">已添加到家庭贴纸</string>
+    <string name="s_sticker_already_in_pack">已在家庭贴纸中</string>
+    <string name="s_sticker_pack_full">家庭已有 %1$d 张贴纸。移除一张才能再添加。</string>
+    <string name="s_sticker_too_large">这张太大了。贴纸最大为 %1$s。</string>
+    <string name="s_sticker_add_failed">无法添加贴纸，请重试。</string>
+    <string name="s_sticker_unreadable">无法读取这张图片。</string>
+    <string name="s_sticker_animated_must_be_webp">动态贴纸必须是 WebP 格式。无法添加这一张。</string>
+    <string name="s_sticker_label_too_long">描述最多 %1$d 个字符。</string>
+    <string name="s_sticker_remove_not_allowed">只有添加贴纸的人或家庭所有者可以移除它。</string>
+    <string name="s_sticker_remove_failed">无法移除贴纸，请重试。</string>
+    <string name="s_sticker_not_available_offline">这张贴纸还不在这部手机上。联网后再试一次。</string>
 </resources>

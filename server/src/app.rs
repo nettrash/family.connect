@@ -11,7 +11,7 @@ use axum::routing::{delete, get, patch, post, put};
 use crate::state::AppState;
 use crate::{
     handlers_attachment, handlers_auth, handlers_avatar, handlers_board, handlers_call,
-    handlers_chat, handlers_device, handlers_family, handlers_poll, handlers_report,
+    handlers_chat, handlers_device, handlers_family, handlers_pack, handlers_poll, handlers_report,
     handlers_stats, ws,
 };
 
@@ -235,6 +235,22 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/families/mine/board/notes/{note_id}/tasks/{item_id}",
             put(handlers_board::put_task_done),
+        )
+        // Sticker pack — CHAT stickers, one pack per family; not the board's
+        // notes, which the code also calls stickers (docs/protocol.md,
+        // "Sticker pack"). Any member may add; whoever added an item, or
+        // the owner, may remove it.
+        .route(
+            "/api/v1/families/mine/pack",
+            get(handlers_pack::get_pack).post(handlers_pack::add_pack_item),
+        )
+        .route(
+            "/api/v1/families/mine/pack/changes",
+            get(handlers_pack::get_pack_changes),
+        )
+        .route(
+            "/api/v1/families/mine/pack/{item_id}",
+            delete(handlers_pack::remove_pack_item),
         )
         // Devices
         .route("/api/v1/devices", post(handlers_device::register_device))
