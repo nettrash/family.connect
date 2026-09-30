@@ -1400,7 +1400,9 @@ pub async fn delete_rsvp(
 /// history, no language instruction — the `/draw` rule unchanged, which is
 /// also why this takes no request body: a prompt from the client would be a
 /// second way to send words to a model from a screen that is not the
-/// assistant's chat.
+/// assistant's chat. A title the images deployment refuses also goes, once
+/// and alone, to the text deployment to be reworded — still the title and
+/// nothing else (`handlers_ai::draw_or_reword`).
 ///
 /// THE MODEL IS CALLED WITH NO LOCK HELD. The board's row lock serialises
 /// every write to a family's wall, and an image model takes seconds — so
@@ -1460,7 +1462,13 @@ pub async fn draw_backdrop(
     // (`picture_refused`): the same title gets the same refusal, and an
     // `internal` would have a client retry it for nothing. Every other
     // failure stays `internal` — the provider failing is transient.
-    let image = crate::ai::generate_image(&state.http, &route, &state.cfg.ai.images, title.trim())
+    //
+    // A refused title is reworded once by the text deployment and the
+    // rewrite drawn, exactly as a refused `/draw` is: the one shared
+    // `draw_or_reword`, so the three paths cannot drift. Only when that
+    // does not produce a picture either is the answer `picture_refused`
+    // (protocol.md, "A refused description is reworded once").
+    let drawn = crate::handlers_ai::draw_or_reword(&state, &route, "backdrop", title.trim())
         .await
         .map_err(|error| {
             let refused = crate::ai::is_refusal(&error);
@@ -1479,12 +1487,13 @@ pub async fn draw_backdrop(
     // holds ONE backdrop (a unique index over `attachments(note_id)` says
     // so), so the row it replaces has to go in the same breath as the new
     // one arrives.
-    let written = crate::handlers_ai::write_picture(&state, &format!("ai-note-{note_id}"), &image)
-        .await
-        .map_err(|error| {
-            tracing::warn!(%error, "could not write a drawn backdrop");
-            ApiError::Internal(error)
-        })?;
+    let written =
+        crate::handlers_ai::write_picture(&state, &format!("ai-note-{note_id}"), &drawn.image)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, "could not write a drawn backdrop");
+                ApiError::Internal(error)
+            })?;
 
     let mut tx = state.pool.begin().await?;
     lock_board(&mut tx, family_id).await?;
@@ -1560,18 +1569,20 @@ pub async fn draw_backdrop(
         crate::handlers_attachment::remove_if_unreferenced(&state, &key).await?;
     }
 
-    // What it cost, for Family Statistics: one image and no tokens, as a
-    // `/draw` is — and no message, because there is none (protocol.md,
-    // "Family statistics"). Best effort, like the chat's own accounting: a
-    // picture the family can see must not fail because a counter did not
-    // save.
+    // What it cost, for Family Statistics: one image, as a `/draw` is — no
+    // tokens unless the title had to be reworded, and then the rewrite's —
+    // and no message, because there is none (protocol.md, "Family
+    // statistics"). Best effort, like the chat's own accounting: a picture
+    // the family can see must not fail because a counter did not save.
     if let Err(error) = sqlx::query(
         "INSERT INTO ai_usage (user_id, family_id, message_id, prompt_tokens,
                                completion_tokens, images)
-         VALUES ($1, $2, NULL, 0, 0, 1)",
+         VALUES ($1, $2, NULL, $3, $4, 1)",
     )
     .bind(auth.user_id)
     .bind(family_id)
+    .bind(drawn.usage.prompt_tokens)
+    .bind(drawn.usage.completion_tokens)
     .execute(&state.pool)
     .await
     {

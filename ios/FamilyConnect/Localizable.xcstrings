@@ -37095,6 +37095,59 @@
           }
         }
       }
+    },
+    "Describe people and things in general words — real names and brands are often refused." : {
+      "comment" : "Shown while the member is asking the assistant for a picture (a draft beginning /draw, or an event backdrop), because the picture provider's content filter refuses most real people's names and brands.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Beschreibe Menschen und Dinge allgemein — echte Namen und Marken werden oft abgelehnt."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Describe a las personas y las cosas con palabras generales: los nombres reales y las marcas se suelen rechazar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Décris les personnes et les choses en termes généraux — les vrais noms et les marques sont souvent refusés."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "人や物は一般的な言葉で説明してください。実在の人物名やブランド名は断られることがよくあります。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Описывай людей и предметы общими словами — настоящие имена и бренды часто отклоняются."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Опиши људе и ствари општим речима — права имена и брендови се често одбијају."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opiši ljude i stvari opštim rečima — prava imena i brendovi se često odbijaju."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请用笼统的词语描述人和事物——真实姓名和品牌常常会被拒绝。"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

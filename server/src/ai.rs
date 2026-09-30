@@ -33,6 +33,14 @@
 //! nothing else (protocol.md, "Drawing without being told to"). The model
 //! decides WHETHER; the server still decides WHAT leaves and TO WHOM.
 //!
+//! Since 2026-09-30 a description the images deployment REFUSES goes once
+//! more to the text deployment, alone under a fixed instruction, to be
+//! reworded without real names or brands ([`rephrase_description`]) — the
+//! same string to the same provider, and nothing with it (protocol.md, "A
+//! refused description is reworded once"). Whether and when that happens is
+//! the caller's (`handlers_ai::draw_or_reword`); what is SENT is decided
+//! here, like every other request.
+//!
 //! WHICH DEPLOYMENT a request goes to is not decided here either. It arrives
 //! as a [`ModelRoute`] built by `config.rs`, so "text, vision or images?" is
 //! answered once, by the caller that knows what was asked, rather than three
@@ -169,6 +177,22 @@ pub struct Usage {
     pub prompt_tokens: i32,
     #[serde(default)]
     pub completion_tokens: i32,
+}
+
+impl Usage {
+    /// Two requests' worth, for the one reply that made both — the text
+    /// model deciding to draw and the text model rewording a refused
+    /// description are two bills against one picture (protocol.md, "Family
+    /// statistics"). Saturating, because a provider reporting nonsense must
+    /// not panic the reply it already paid for.
+    pub fn plus(self, other: Usage) -> Usage {
+        Usage {
+            prompt_tokens: self.prompt_tokens.saturating_add(other.prompt_tokens),
+            completion_tokens: self
+                .completion_tokens
+                .saturating_add(other.completion_tokens),
+        }
+    }
 }
 
 /// The name of the one tool a draw-capable server declares.
@@ -941,6 +965,91 @@ fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+/// What the text deployment is told when it is asked to reword a refused
+/// description — the whole of the system prompt on that request.
+///
+/// The server's own words and never the operator's configured prompt: that
+/// one is about answering a family, and this request answers nobody. It
+/// names what the images filter refuses, says what to keep, and asks for
+/// the rewrite ALONE, because whatever comes back is sent to the images
+/// deployment verbatim — "Sure! Here is the description:" would be drawn.
+/// It asks for the description's own language to be kept, because a
+/// `/draw` goes as written and a rewrite is not a translation (protocol.md,
+/// "Asking for a picture").
+pub const REPHRASE_INSTRUCTION: &str = "You reword descriptions of pictures for an image generator \
+     that refuses any description naming a real person, a public figure, a brand, a logo, or a trademarked \
+     or copyrighted character. Rewrite the description you are given so that it keeps everything that is \
+     to be drawn — the subjects, the scene, the style and the mood — but names none of those: describe each \
+     of them in general words instead, by how they look and what they are doing, never by name. Keep the \
+     language the description is written in. Answer with ONLY the rewritten description — no quotes, no \
+     explanation, nothing before or after it.";
+
+/// The request that rewords a refused description: the fixed instruction,
+/// and the description as the one user turn.
+///
+/// That is the whole of it, and the reason it is its own function is so a
+/// test can pin it: no thread, no transcript, no member's name, no language
+/// line, no picture and no tool — the string the images deployment was just
+/// sent, going to the same provider's text deployment, and nothing with it
+/// (protocol.md, "A refused description is reworded once").
+fn rephrase_request(description: &str) -> (&'static str, [ChatTurn; 1]) {
+    (REPHRASE_INSTRUCTION, [ChatTurn::user(description)])
+}
+
+/// Check a rewrite before it may leave for the images deployment.
+///
+/// Held to a draw prompt's bounds — trimmed, not blank, at most `max_chars`
+/// characters (the message-body ceiling, as for `ToolCall::draw_prompt`) —
+/// and refused rather than repaired, like every other prompt. One more:
+/// a rewrite that is the description again would be the same refusal
+/// bought twice, so it is not sent.
+fn checked_rewrite(rewrite: &str, description: &str, max_chars: usize) -> Result<String> {
+    let rewrite = rewrite.trim();
+    if rewrite.is_empty() {
+        bail!("the rewrite came back empty");
+    }
+    // Characters, never bytes, for the reason `draw_prompt` gives.
+    let chars = rewrite.chars().count();
+    if chars > max_chars {
+        bail!("the rewrite is {chars} characters, over the {max_chars} allowed");
+    }
+    if rewrite == description.trim() {
+        bail!("the rewrite is the description unchanged");
+    }
+    Ok(rewrite.to_string())
+}
+
+/// Ask the TEXT deployment, once, to reword a description the images
+/// deployment refused, and hand back the rewrite and what it cost.
+///
+/// `route` is the text route (`[ai]`): the same provider the member already
+/// agreed to, and the request is [`rephrase_request`] and nothing else. It
+/// streams like every other text request — one request shape, one parser —
+/// but nobody is streamed to: the words are the server's to check, not a
+/// reply. A tool call cannot come back, because none is declared.
+///
+/// Every way this can fail is an error, and the caller turns every one of
+/// them into the refusal the member would have had without it: the request
+/// failing or being refused, an answer the filter ended, and a rewrite
+/// [`checked_rewrite`] turns away. Neither the description nor the rewrite
+/// is in any error this returns — a provider's error is logged by its
+/// identifying fields alone ([`loggable_detail`]), and the checks above name
+/// counts, not words.
+pub async fn rephrase_description(
+    client: &reqwest::Client,
+    route: &ModelRoute,
+    description: &str,
+    max_chars: usize,
+) -> Result<(String, Usage)> {
+    let (instruction, turns) = rephrase_request(description);
+    let streamed = stream_reply(client, route, instruction, &turns, &[], |_| {}).await?;
+    if streamed.text.trim().is_empty() && finish_is_refusal(&streamed.finish_reason) {
+        return Err(anyhow::Error::new(Refused).context("the rewrite was filtered"));
+    }
+    let rewrite = checked_rewrite(&streamed.text, description, max_chars)?;
+    Ok((rewrite, streamed.usage))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1477,6 +1586,142 @@ mod tests {
             &mut |_| {},
         );
         assert!(drafts.is_empty(), "{drafts:?}");
+    }
+
+    // -- rewording a refused description ---------------------------------------
+
+    /// WHAT LEAVES on a rewrite, pinned field for field: the server's fixed
+    /// instruction as the system turn, the description as the one user turn,
+    /// and the body every text request has — no tool, no history, no
+    /// language line, no picture (protocol.md, "A refused description is
+    /// reworded once").
+    #[test]
+    fn a_rewrite_request_is_the_description_and_nothing_else() {
+        let description = "Taylor Swift singing to our cat";
+        let (instruction, turns) = rephrase_request(description);
+        let body = request_body(&route(), instruction, &turns, &[]);
+        assert_eq!(
+            body,
+            json!({
+                "messages": [
+                    {"role": "system", "content": REPHRASE_INSTRUCTION},
+                    {"role": "user", "content": "Taylor Swift singing to our cat"},
+                ],
+                "max_tokens": 1024,
+                "stream": true,
+                "stream_options": {"include_usage": true},
+                "model": "test-gpt-oss",
+            })
+        );
+        assert!(body.get("tools").is_none(), "no tool is declared: {body}");
+        assert!(
+            !body.to_string().contains("data:image"),
+            "no picture travels: {body}"
+        );
+    }
+
+    /// The instruction names every kind of thing the images filter refuses,
+    /// asks for the rewrite alone — whatever comes back is drawn verbatim —
+    /// and keeps the description's language, because a rewrite is not a
+    /// translation.
+    #[test]
+    fn the_rewrite_instruction_says_what_to_drop_what_to_keep_and_what_to_answer() {
+        for named in [
+            "real person",
+            "public figure",
+            "brand",
+            "trademarked",
+            "copyrighted character",
+            "general words",
+            "keeps everything that is to be drawn",
+            "Keep the language",
+            "ONLY the rewritten description",
+        ] {
+            assert!(
+                REPHRASE_INSTRUCTION.contains(named),
+                "the instruction must say {named:?}: {REPHRASE_INSTRUCTION}"
+            );
+        }
+        // It is the server's own words, never the operator's prompt, and it
+        // is not an instruction about answering anybody.
+        assert!(!REPHRASE_INSTRUCTION.contains("family"));
+    }
+
+    /// A rewrite is held to a draw prompt's bounds — trimmed, not blank,
+    /// counted in characters — and refused rather than cut. The description
+    /// handed back unchanged is refused too: it would be the same refusal
+    /// bought twice.
+    #[test]
+    fn a_rewrite_is_held_to_a_draw_prompts_bounds() {
+        let description = "Pikachu at Anna's birthday";
+        assert_eq!(
+            checked_rewrite(
+                "  a small yellow cartoon creature at a birthday party \n",
+                description,
+                4000
+            )
+            .expect("an ordinary rewrite"),
+            "a small yellow cartoon creature at a birthday party"
+        );
+        assert!(checked_rewrite("", description, 4000).is_err(), "empty");
+        assert!(
+            checked_rewrite(" \n\t", description, 4000).is_err(),
+            "blank"
+        );
+        assert!(
+            checked_rewrite(" Pikachu at Anna's birthday ", description, 4000).is_err(),
+            "unchanged"
+        );
+        assert!(
+            checked_rewrite("a cat", description, 5).is_ok(),
+            "at the bound"
+        );
+        assert!(
+            checked_rewrite("a cat", description, 4).is_err(),
+            "over it — refused, never cut"
+        );
+        // Five Cyrillic letters are five, whatever their encoding.
+        assert_eq!(
+            checked_rewrite("кошка", description, 5).expect("five"),
+            "кошка"
+        );
+        assert!(checked_rewrite("кошка", description, 4).is_err());
+        // What an error says is a count, never the words.
+        let error = format!(
+            "{:#}",
+            checked_rewrite("a lilac hedgehog", description, 3).expect_err("over")
+        );
+        assert!(!error.contains("hedgehog"), "{error}");
+        let error = format!(
+            "{:#}",
+            checked_rewrite(description, description, 4000).expect_err("unchanged")
+        );
+        assert!(!error.contains("Pikachu"), "{error}");
+    }
+
+    /// Two requests' tokens, added — and a provider reporting nonsense
+    /// saturates rather than panicking a reply it already paid for.
+    #[test]
+    fn usage_adds_and_saturates() {
+        let a = Usage {
+            prompt_tokens: 40,
+            completion_tokens: 9,
+        };
+        let b = Usage {
+            prompt_tokens: 12,
+            completion_tokens: 3,
+        };
+        let sum = a.plus(b);
+        assert_eq!((sum.prompt_tokens, sum.completion_tokens), (52, 12));
+        let huge = Usage {
+            prompt_tokens: i32::MAX,
+            completion_tokens: i32::MAX,
+        };
+        let sum = huge.plus(a);
+        assert_eq!(
+            (sum.prompt_tokens, sum.completion_tokens),
+            (i32::MAX, i32::MAX)
+        );
     }
 
     #[test]
