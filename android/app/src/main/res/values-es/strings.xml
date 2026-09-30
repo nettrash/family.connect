@@ -552,6 +552,7 @@
     <string name="s_draw_another_backdrop">Dibujar otro fondo</string>
     <string name="s_drawing">Dibujando…</string>
     <string name="s_draw_failed">No se pudo dibujar.</string>
+    <string name="s_describe_in_general_words">Describe a las personas y las cosas con palabras generales: los nombres reales y las marcas se suelen rechazar.</string>
     <string name="s_tick_failed">No se pudo marcar.</string>
     <string name="s_no_calendar_app">No hay app de calendario donde añadirlo.</string>
     <string name="s_the_assistant">El asistente</string>

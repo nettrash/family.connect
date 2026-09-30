@@ -2838,7 +2838,10 @@ pub(crate) struct Drawn {
 ///
 /// Consent is not looked at here, and needs no second look: this follows
 /// only a first attempt that was already allowed to run, to the same
-/// provider the member agreed to.
+/// provider the member agreed to. Every caller asks it before it gets here —
+/// a `/draw` and the model's own call at the send (`handlers_chat`), the
+/// backdrop in `handlers_board::draw_backdrop` — so the rewrite inherits
+/// that answer rather than repeating it.
 pub(crate) async fn draw_or_reword(
     state: &AppState,
     route: &ModelRoute,

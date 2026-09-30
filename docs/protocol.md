@@ -1067,6 +1067,12 @@ attachment afterwards in every respect — claimed by that one note, served to t
 statistics, swept with the note — and it is made the way a `/draw` picture is, by the server's own
 process with no upload and nobody to authenticate.
 
+**It needs the author's consent to the assistant** (*amended 2026-09-30*), for the reason a `/draw`
+does: the title is the author's own words going to the model. Without it the answer is
+`assistant_consent_required` (403) and nothing is sent — not to the images deployment and not, on a
+refusal, to the text deployment. See "Consenting to the assistant", which says what a client does
+with that answer.
+
 **A title the provider's filter refuses to draw answers `picture_refused` (400)** — decided exactly
 where a refused `/draw` is (see "The assistant": the provider's structured error fields, never its
 wording alone), and only once the one rewrite has been tried and has not produced a backdrop
@@ -1077,6 +1083,17 @@ note is untouched: the backdrop it had, if any, stays, nothing is counted and no
 Every OTHER failure of the provider stays what it always was, `internal` (500), which is transient.
 Before this code existed a refusal was an `internal` too, which a client rightly retried to no
 purpose; an old client that does not know `picture_refused` treats it as the terminal 4xx it is.
+
+**It is SLOW, and a client waits for it as such** (*amended 2026-09-30*). It is the one request in
+this protocol whose answer waits on the model: one picture being drawn, or — when the title is
+refused and reworded — a picture, a rewrite and a second picture, one after another, each bounded
+by the server's `[ai] timeout_secs`. That is routinely longer than the 15 or 20 seconds that suit
+an ordinary JSON call, so a client gives this request a timeout of its OWN, no shorter than 90 s —
+the reference proxy's read timeout on `/api/v1/`, past which the proxy answers for the server anyway
+— the way it gives an upload one. A client that stops waiting shows the failure a backdrop shows,
+and that is true: the server stops drawing when the connection closes, so nothing is written,
+counted or bound to the note afterwards. And were one ever to land after all, it takes a
+`board_seq` like any other change, so the board feed shows the wall as it is either way.
 
 Asking again REPLACES it: the note's picture is otherwise fixed at creation, and this is the one
 exception, because a family who dislikes what the model drew should not have to take the event down
@@ -1980,9 +1997,19 @@ to lose would be its own surprise — and consenting again resumes from there.
 
 **Without consent the server refuses**, and refuses the same way everywhere it would otherwise
 call the model: a message to an `ai` chat, an `@ai` mention in the family chat, a picture for it to
-look at, a `/draw`. The answer is `assistant_consent_required` (403). It is a REFUSAL and not a
-silent drop, because a message that vanishes is a bug report; the client shows the consent screen
-and offers to send again.
+look at, a `/draw`, an event's backdrop on the board. The answer is `assistant_consent_required`
+(403). It is a REFUSAL and not a silent drop, because a message that vanishes is a bug report; the
+client shows the consent screen and offers to send again.
+
+*Amended 2026-09-30:* the backdrop was missing from that list, and the server did not ask it there:
+`POST /families/mine/board/notes/{id}/backdrop` sent the author's event title to the images model
+whether or not the author had agreed — and, once a refused description began to be reworded, to the
+text model as well. The title is words the author wrote, going to `processor`, which is exactly
+what this section is about. The server now asks the author's consent before anything is drawn and
+answers `assistant_consent_required` (403) without it, with nothing sent anywhere. A client that
+reads `assistant_consent_at` as null asks before it offers "Draw a backdrop" — or offers it and
+shows the consent screen on this answer, then asks again — exactly as it would before a `/draw`. A
+client that predates this treats it as the backdrop failing, which it did.
 
 **`ai_history` carries only the words of members who have consented.** This is the half that is
 easy to miss and the one that matters most: a member who declined still writes in the family chat,
@@ -3150,7 +3177,9 @@ the only user turn. No thread, no transcript, no member's name, no language line
 no tool. It is the string that was just sent to the images deployment, going to the same provider
 — `processor` — that the member already agreed to (see "Consenting to the assistant", whose
 disclosure says so). Nothing about who may ask changes: the rewrite follows only a first attempt
-that was already allowed to run, under exactly the checks that attempt passed.
+that was already allowed to run, under exactly the checks that attempt passed — the member's own
+consent to the assistant among them, on every one of the three paths, the backdrop included (see
+"Consenting to the assistant").
 
 - **Success looks exactly like a first-time success**: the same `photo` attachment on the same row,
   the same `message_edited`, the same single notification — or, on the board, the same backdrop and
@@ -3160,10 +3189,14 @@ that was already allowed to run, under exactly the checks that attempt passed.
   asked for a picture and got one.
 - **Failure is exactly the refusal it would have been without this**: `ai_error` with
   `"reason": "refused"`, or `picture_refused` (400) for a backdrop, with nothing stored and nothing
-  counted. That covers the rewrite request failing or being refused, a rewrite that is empty, longer
-  than a draw prompt may be (the message-body ceiling, 4000 characters by default — never cut) or
-  the description unchanged, and the images deployment refusing the rewrite too, or failing on it
-  in any other way: the member's description WAS refused, and that is what they are told.
+  counted. That covers the rewrite request failing or being refused, a rewrite the model did not
+  FINISH — one whose stream ended on anything but `finish_reason: "stop"`: the filter's
+  `content_filter`, however many words had streamed before it, the token ceiling's `length`, or no
+  reason at all, because words cut off part-way are a fragment and not a description — a rewrite
+  that is empty, longer than a draw prompt may be (the message-body ceiling, 4000 characters by
+  default — never cut) or the description unchanged, and the images deployment refusing the rewrite
+  too, or failing on it in any other way: the member's description WAS refused, and that is what
+  they are told.
 - **Only a refusal starts it.** A `5xx`, a timeout, any other `4xx`, a picture that could not be
   stored and a malformed `draw_picture` call are the failures they always were, and the text
   deployment is asked nothing.
@@ -4358,7 +4391,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /families/mine/board/notes` | `{text, color, x, y, size?, font?, kind?, attachment_id?, starts_at?, ends_at?, place?, mentions?, items?}` → `201 {note: Note}`. `mentions: [{user_id, name}]` names members of this family, at most 20, each once, each a name the `text` says after an `@` — the same rules and the same grammar as a message's (`validation` otherwise, see "Board"). Caller becomes the author. `size` defaults to `medium`, `font` to `plain` and `kind` to `text` when absent. `attachment_id` claims one photo this caller uploaded: REQUIRED by `kind: "photo"` (whose `text` may then be empty), optional on `kind: "event"` (the backdrop), refused on a text note. `starts_at` is required by — and only accepted on — an event, with `ends_at` and `place` optional there and nowhere else. Errors: `validation` (text empty on a text note or > 280; an `attachment_id` without the kind, or the kind without one), `invalid_note_kind`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `invalid_attachment` (not a photo), `attachment_not_found`, `attachment_already_used`, `attachment_expired`, `board_full` (409, over the note ceiling), `not_in_family`. An event also answers `validation` for a missing or unparseable `starts_at`, an `ends_at` before it, a `place` over 200 characters, or any of the three on a note that is not an event. `items: [{text}]` is the TASK LIST's lines, accepted on — and only on — `kind: "tasks"`, whose `text` is its title: at most 20, each trimmed, non-empty and at most 100 characters, `validation` otherwise. An `id` on a created item is refused: ids are the server's. |
 | `PATCH /families/mine/board/notes/{id}` | `{text?, color?, size?, font?, x?, y?, starts_at?, ends_at?, place?, mentions?, items?}` → `200 {note: Note}`. `mentions` REPLACES the list — a note's names are re-decided on every edit, unlike a message's, because an edit to a note notifies nobody (see "Board"); sending `text` without `mentions` clears them. A note's KIND and its picture are fixed at creation: neither is patchable, and a photo note's caption may be set to empty here. An event's `starts_at`, `ends_at` and `place` are the AUTHOR'S, like its title — `place` may be sent empty to clear it, `ends_at` null to clear it — and are refused on any other kind. `items` REPLACES a task list's lines and is the author's too (refused on any other kind): an entry `{id, text}` whose `id` the note holds is that item, rewritten and moved, and KEEPS ITS TICK; an entry `{text}` is new; an item left out is gone; an `id` that is not this note's is `validation`, and a `done` sent here is ignored (see "Board"). Any member may send `x`/`y`; only the author may send `text`, `color`, `size` or `font` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `validation`, `not_in_family`. |
 | `PUT /families/mine/board/notes/{id}/rsvp` | `{answer}` → `200 {note: Note}`. Records the caller as `going`, `maybe` or `no` on an event — an idempotent state-set, not a toggle, and ANY member may send it. Re-sending the answer already held is a no-op: no new seq, no fan-out. Errors: `invalid_rsvp` (400 — not one of the three, or the note is not an event), `note_not_found` (404), `not_in_family`. |
-| `POST /families/mine/board/notes/{id}/backdrop` | → `200 {note: Note}`. Asks the assistant for a picture to sit behind an EVENT, drawn from the note's TITLE and nothing else (reworded once by the text deployment when the images deployment refuses it — "A refused description is reworded once"); the AUTHOR only. No request body: the prompt is the title (see "Board"). Replaces the backdrop it has, taking the old picture's row and bytes with it — the one way a note's picture changes after creation. Costs one image against the family's count (and the rewrite's tokens, when there was one), takes a `board_seq`, notifies nobody and leaves `content_seq` alone. Errors: `pictures_unavailable` (403 — this server has no images deployment; `assistant.images` on `GET /families/mine` is what a client checks first), `picture_refused` (400 — the provider's own filter refused to draw this title, and the one rewrite did not produce a backdrop either; terminal, and the note is untouched), `note_not_found` (404), `not_note_author` (403), `validation` (the note is not an event), `storage_full`, `not_in_family`; any other provider failure is `internal` (500). |
+| `POST /families/mine/board/notes/{id}/backdrop` | → `200 {note: Note}`. Asks the assistant for a picture to sit behind an EVENT, drawn from the note's TITLE and nothing else (reworded once by the text deployment when the images deployment refuses it — "A refused description is reworded once"); the AUTHOR only. No request body: the prompt is the title (see "Board"). Replaces the backdrop it has, taking the old picture's row and bytes with it — the one way a note's picture changes after creation. Costs one image against the family's count (and the rewrite's tokens, when there was one), takes a `board_seq`, notifies nobody and leaves `content_seq` alone. SLOW — it waits on the model, up to three calls in a row — so a client gives it a timeout of its own, no shorter than 90 s, never its ordinary request timeout; a request whose connection closes first draws nothing (see "Board"). Errors: `pictures_unavailable` (403 — this server has no images deployment; `assistant.images` on `GET /families/mine` is what a client checks first), `assistant_consent_required` (403 — the author has not agreed that their words may go to the model; nothing was sent, see "Consenting to the assistant"), `picture_refused` (400 — the provider's own filter refused to draw this title, and the one rewrite did not produce a backdrop either; terminal, and the note is untouched), `note_not_found` (404), `not_note_author` (403), `validation` (the note is not an event), `storage_full`, `not_in_family`; any other provider failure is `internal` (500). |
 | `PUT /families/mine/board/notes/{id}/tasks/{item_id}` | `{done}` → `200 {note: Note}`. Ticks or unticks one line of a task list — an idempotent state-set, not a toggle, and ANY member may send it; the server records who. Re-sending the state already held is a no-op: no new seq, no fan-out. Errors: `invalid_task` (400 — the note is not a task list, or the item is not one of its lines), `note_not_found` (404), `not_in_family`. |
 | `DELETE /families/mine/board/notes/{id}/rsvp` | → `200 {note: Note}`. Retracts the caller's answer; idempotent (retracting nothing returns the event unchanged and burns no seq). Errors: `invalid_rsvp` (the note is not an event), `note_not_found`, `not_in_family`. |
 | `DELETE /families/mine/board/notes/{id}` | → `204`. Author only. Idempotent: deleting an already-deleted note is still `204` and takes no new seq. A photo note's picture goes with it. Errors: `note_not_found`, `not_note_author`, `not_in_family`. |

@@ -72,18 +72,40 @@ nonisolated enum BackdropOutcome: Equatable, Sendable {
     /// `picture_refused`: the provider's own filter would not draw this
     /// title. Terminal — the same title gets the same refusal.
     case refused
+    /// `assistant_consent_required` (403): the author has not agreed that
+    /// their words may go to the model, and the title is their words.
+    /// Nothing was sent. Not a failure to report but the consent question
+    /// to ask — the screen asks before it offers, and this is the backstop
+    /// for a consent withdrawn on another device (protocol.md, "Consenting
+    /// to the assistant").
+    case consentRequired
     /// Anything else: no images deployment, a transport failure, the
     /// provider's own failure (`internal`), a picture that never landed.
     case failed
 
     /// Sorted from what the request threw. Only the protocol's code decides
-    /// a refusal; a 400 with any other code is an ordinary failure.
+    /// a refusal; a 400 with any other code is an ordinary failure, and so
+    /// is a 403 with any code but the consent one.
     init(error: Error) {
-        if case APIError.conflict(let code, _) = error, code == "picture_refused" {
+        switch error {
+        case APIError.conflict(let code, _) where code == "picture_refused":
             self = .refused
-        } else {
+        case APIError.forbidden(let code) where code == "assistant_consent_required":
+            self = .consentRequired
+        default:
             self = .failed
         }
+    }
+
+    /// Does the screen answer this by showing the consent sheet — and
+    /// drawing again on a yes?
+    ///
+    /// Only for the consent refusal, and only where this client can ask
+    /// the question at all: a server that names no processor cannot be
+    /// consented to (`AssistantConsent.isAvailable`), so there the answer
+    /// is the failure it always was.
+    func asksForConsent(processor: String?) -> Bool {
+        self == .consentRequired && AssistantConsent.isAvailable(processor: processor)
     }
 
     /// What the sheet says, nil when there is nothing to say. A refusal
@@ -94,7 +116,9 @@ nonisolated enum BackdropOutcome: Equatable, Sendable {
         case .drawn: nil
         case .refused:
             String(localized: "The assistant's provider refused that. Try putting it another way.")
-        case .failed: String(localized: "Couldn't draw that.")
+        // Shown only where the question cannot be asked
+        // (`asksForConsent`): then it is simply the backdrop failing.
+        case .consentRequired, .failed: String(localized: "Couldn't draw that.")
         }
     }
 }

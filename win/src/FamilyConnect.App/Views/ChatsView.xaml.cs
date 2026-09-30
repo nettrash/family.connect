@@ -8,6 +8,7 @@ using Microsoft.UI.Input;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
@@ -226,6 +227,7 @@ public sealed partial class ChatsView : UserControl
         AutomationProperties.SetName(AskPictureButton, say.Get("Ask for a picture"));
         AskAssistantButton.Click += (_, _) => PutInComposer(AssistantText.WithAssistantMention(ComposerBox.Text));
         AskPictureButton.Click += (_, _) => PutInComposer(AssistantText.WithDrawToken(ComposerBox.Text));
+        PictureHintText.Text = PictureHint.Sentence(say);
 
         ViewerSave.Content = say.Get("Save…");
         ToolTipService.SetToolTip(ViewerSave, say.Get("Save a copy"));
@@ -536,6 +538,34 @@ public sealed partial class ChatsView : UserControl
         AskAssistantButton.Visibility = ask ? Visibility.Visible : Visibility.Collapsed;
         AskPictureButton.Visibility = picture ? Visibility.Visible : Visibility.Collapsed;
         ShowStickerButton();
+        DrawPictureHint();
+    }
+
+    /// <summary>
+    /// The line under a picture request that says what the images model refuses (<see cref="PictureHint"/>): drawn with the
+    /// draft, and told to a screen reader as it appears — the member is typing, not looking for it — and as the composer's
+    /// help text for as long as it stands.
+    /// </summary>
+    private void DrawPictureHint()
+    {
+        var kind = open is { } chat ? connection.Chats.Chat(chat.ChatId)?.Chat.Kind : null;
+        var shown = PictureHint.ForComposer(kind, ComposerBox.Text, connection.Session.State.Assistant, editing is not null);
+        var appearing = shown && PictureHintText.Visibility != Visibility.Visible;
+        PictureHintText.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+        AutomationProperties.SetHelpText(ComposerBox, shown ? PictureHintText.Text : string.Empty);
+        if (!appearing)
+        {
+            return;
+        }
+        try
+        {
+            FrameworkElementAutomationPeer.FromElement(PictureHintText)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+        }
+        catch (Exception e)
+        {
+            // An announcement is a courtesy: the line is on the screen and in the composer's help text either way.
+            Diagnostics.Write($"announcing the picture hint: {e.GetType().Name}");
+        }
     }
 
     /// <summary>
@@ -4960,6 +4990,7 @@ public sealed partial class ChatsView : UserControl
         }
         PictureNoticeText.Text = said ?? string.Empty;
         PictureNoticeText.Visibility = said is null ? Visibility.Collapsed : Visibility.Visible;
+        DrawPictureHint();
         DrawConsentBar();
     }
 

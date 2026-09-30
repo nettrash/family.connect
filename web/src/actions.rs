@@ -5,6 +5,7 @@
 //! optimistic, what waits for the answer, what a failure undoes, which
 //! answers may and may not move a cursor) here, next to the others.
 
+use fc_text::assistant_consent;
 use fc_text::i18n::{t, t1};
 use std::rc::Rc;
 
@@ -191,10 +192,11 @@ pub enum Action {
     /// Ask the assistant for a picture to sit behind an event — the
     /// AUTHOR's, drawn from the note's own title (docs/protocol.md,
     /// "Board"). `done` hears when it is in or refused, so a button that
-    /// said "drawing…" can stop saying it either way.
+    /// said "drawing…" can stop saying it either way — and whether the
+    /// answer was the consent question, which the sheet asks.
     DrawBackdrop {
         note_id: i64,
-        done: Callback<()>,
+        done: Callback<Backdrop>,
     },
     /// Peek at a note a block hides.
     RevealNote {
@@ -387,6 +389,26 @@ pub fn board_failure(error: &ApiError) -> String {
         Some("not_in_family") => t("You're not in a family, so there is no board.").to_string(),
         _ => error.detail(),
     }
+}
+
+/// How asking for an event's backdrop ended, for the button that asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backdrop {
+    /// Drawn, or refused with a sentence on the bar: either way the button
+    /// is a button again.
+    Settled,
+    /// The author has not agreed that their words may go to the model, so
+    /// nothing was sent: the consent screen is the answer, and pressing
+    /// the button again once it is answered asks again — as Send does for
+    /// words in the assistant's chat.
+    AskConsent,
+}
+
+/// Is this refusal the server asking for the author's consent first
+/// (`assistant_consent_required`, docs/protocol.md, "Consenting to the
+/// assistant")? Nothing was sent; it is a question, not a failure.
+pub fn asks_for_consent(error: &ApiError) -> bool {
+    error.code() == Some("assistant_consent_required")
 }
 
 /// What to tell the author whose event got no backdrop. `picture_refused`
@@ -1419,10 +1441,46 @@ impl Actions {
                 });
             }
             Action::DrawBackdrop { note_id, done } => {
+                // NEVER ROUND THE CONSENT QUESTION: the title is the
+                // author's words going to the model, so a backdrop is asked
+                // about exactly as a `/draw` is. The sheet asks instead of
+                // emitting this (views/board.rs); this is the same test made
+                // again where the request is, so that no other door can be
+                // opened onto the model.
+                let ask = live.read(|state| {
+                    assistant_consent::is_required_for_backdrop(
+                        state
+                            .store
+                            .assistant
+                            .as_ref()
+                            .and_then(|assistant| assistant.processor.as_deref()),
+                        state.store.assistant_consent_at().is_some(),
+                    )
+                });
+                if ask {
+                    done.emit(Backdrop::AskConsent);
+                    return;
+                }
+                // No deadline of this client's own, on purpose: this is the
+                // one request that waits on the model — up to three calls
+                // in a row — and the protocol's floor for it is 90 s, which
+                // is the proxy's own read timeout; the ordinary calls carry
+                // none either (api.rs). A connection that closes first draws
+                // nothing (docs/protocol.md, "Board").
                 spawn_local(async move {
-                    match api::draw_backdrop(&token, note_id).await {
+                    let outcome = match api::draw_backdrop(&token, note_id).await {
                         Ok(note) => {
                             live.update(session, |state| state.store.board.apply(note));
+                            Backdrop::Settled
+                        }
+                        // The server's word over this tab's copy — consent
+                        // withdrawn on another device since the last `/me`:
+                        // nothing was sent, and the answer is the consent
+                        // screen, not a failure (docs/protocol.md,
+                        // "Consenting to the assistant").
+                        Err(error) if asks_for_consent(&error) => {
+                            live.update(session, |state| state.store.set_assistant_consent(None));
+                            Backdrop::AskConsent
                         }
                         Err(error) => {
                             this.board_refused(session, &error, Some(note_id), &Callback::noop());
@@ -1430,9 +1488,10 @@ impl Actions {
                                 let text = backdrop_failure(&error);
                                 live.update(session, |state| state.failure = Some(text));
                             }
+                            Backdrop::Settled
                         }
-                    }
-                    done.emit(());
+                    };
+                    done.emit(outcome);
                 });
             }
             Action::RevealNote { note_id } => {
@@ -2196,6 +2255,119 @@ mod tests {
         assert_eq!(
             backdrop_failure(&ApiError::Answered { status: 502 }),
             "Couldn't draw that. The server answered 502."
+        );
+        assert!(asks_for_consent(&refusal("assistant_consent_required")));
+        assert!(!asks_for_consent(&refusal("picture_refused")));
+        assert!(!asks_for_consent(&refusal("not_note_author")));
+        assert!(!asks_for_consent(&ApiError::Answered { status: 403 }));
+    }
+
+    /// A BACKDROP NEVER GOES ROUND THE CONSENT QUESTION (docs/protocol.md,
+    /// "Consenting to the assistant", amended 2026-09-30): until the author
+    /// has agreed nothing is asked of the server and the answer is the
+    /// consent screen; agreed, it is asked; and a server that answers
+    /// `assistant_consent_required` all the same — consent withdrawn on
+    /// another device — is taken at its word: no failure on the bar, this
+    /// tab's copy of the answer cleared, and the consent screen again.
+    #[wasm_bindgen_test]
+    async fn a_backdrop_waits_for_consent_and_takes_the_servers_word_for_it() {
+        use crate::fake_server::{Answer, FakeServer};
+        const ROUTE: &str = "/families/mine/board/notes/6/backdrop";
+        let refuse_with = Rc::new(RefCell::new("assistant_consent_required"));
+        let server = {
+            let refuse_with = refuse_with.clone();
+            FakeServer::answering(move |asked| {
+                if asked.line() == format!("POST {ROUTE}") {
+                    let code = *refuse_with.borrow();
+                    let status = if code == "picture_refused" { 400 } else { 403 };
+                    Answer::refusal(status, code)
+                } else {
+                    Answer::refusal(404, "not_found")
+                }
+            })
+        };
+        let actions = actions();
+        actions.live.now(|state| {
+            state.store.account = Some(crate::model::Me::default());
+            state.store.assistant = Some(crate::model::Assistant {
+                user_id: 2,
+                display_name: "Assistant".into(),
+                mention: Some("@ai".into()),
+                draw: Some("/draw".into()),
+                vision: false,
+                images: true,
+                processor: Some("Microsoft — Azure OpenAI".into()),
+            });
+        });
+        let draw = |actions: &Actions| {
+            let heard = Rc::new(RefCell::new(Vec::new()));
+            let sink = heard.clone();
+            actions.handle(Action::DrawBackdrop {
+                note_id: 6,
+                done: Callback::from(move |outcome: Backdrop| sink.borrow_mut().push(outcome)),
+            });
+            heard
+        };
+        let settle = |heard: Rc<RefCell<Vec<Backdrop>>>| async move {
+            for _ in 0..40 {
+                if !heard.borrow().is_empty() {
+                    break;
+                }
+                gloo_timers::future::TimeoutFuture::new(25).await;
+            }
+            let heard = heard.borrow().clone();
+            heard
+        };
+        let agreed = |actions: &Actions| {
+            actions
+                .live
+                .read(|state| state.store.assistant_consent_at().is_some())
+        };
+
+        // Not agreed: the question, at once, and nothing sent.
+        let heard = draw(&actions);
+        assert_eq!(
+            *heard.borrow(),
+            vec![Backdrop::AskConsent],
+            "answered at once"
+        );
+        gloo_timers::future::TimeoutFuture::new(50).await;
+        assert!(
+            server.lines(&[ROUTE]).is_empty(),
+            "nothing reached the server"
+        );
+
+        // Agreed here, withdrawn elsewhere: the server's word wins.
+        actions.live.now(|state| {
+            state
+                .store
+                .set_assistant_consent(Some("2026-09-30T10:00:00Z".into()))
+        });
+        assert_eq!(settle(draw(&actions)).await, vec![Backdrop::AskConsent]);
+        assert_eq!(server.lines(&[ROUTE]), vec![format!("POST {ROUTE}")]);
+        assert!(!agreed(&actions), "this tab no longer believes it agreed");
+        assert!(
+            actions.live.read(|state| state.failure.is_none()),
+            "a question, not a failure"
+        );
+        // …so pressing again asks again, without troubling the server.
+        assert_eq!(*draw(&actions).borrow(), vec![Backdrop::AskConsent]);
+        gloo_timers::future::TimeoutFuture::new(50).await;
+        assert_eq!(server.lines(&[ROUTE]).len(), 1);
+
+        // Any other refusal is the failure it always was.
+        actions.live.now(|state| {
+            state
+                .store
+                .set_assistant_consent(Some("2026-09-30T10:00:00Z".into()))
+        });
+        *refuse_with.borrow_mut() = "picture_refused";
+        assert_eq!(settle(draw(&actions)).await, vec![Backdrop::Settled]);
+        assert_eq!(server.lines(&[ROUTE]).len(), 2);
+        assert!(agreed(&actions), "a refused title withdraws nothing");
+        assert_eq!(
+            actions.live.read(|state| state.failure.clone()).as_deref(),
+            Some("The assistant's provider refused that. Try putting it another way.")
         );
     }
 

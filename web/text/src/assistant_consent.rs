@@ -39,6 +39,22 @@ pub fn is_required(chat_kind: &str, body: &str, processor: Option<&str>, agreed:
     is_available(processor) && !agreed && reaches_the_model(chat_kind, body)
 }
 
+/// Must this member be asked before an event's BACKDROP is drawn?
+///
+/// The backdrop is drawn from the event's title — words the author wrote —
+/// and the title goes to `processor`'s images deployment, and on a refusal
+/// to its text deployment as well, exactly as a `/draw` does; without the
+/// author's consent the server answers `assistant_consent_required` and
+/// sends nothing (docs/protocol.md, "Board" and "Consenting to the
+/// assistant", both amended 2026-09-30). So it is asked the question a
+/// `/draw` in the assistant's own chat is, and there is no body to test:
+/// the title always reaches the model. A server that names nobody offers
+/// no backdrop at all (`assistant_pictures::server_draws`), so there is
+/// nothing here to withhold.
+pub fn is_required_for_backdrop(processor: Option<&str>, agreed: bool) -> bool {
+    is_required("ai", "", processor, agreed)
+}
+
 /// Would this message reach a model whose owner the server will not name,
 /// so this client must hold it back entirely?
 ///
@@ -176,6 +192,31 @@ mod tests {
             true,
             Some("Azure OpenAI")
         ));
+    }
+
+    /// An event's backdrop asks exactly what a `/draw` in the assistant's
+    /// chat asks: before the author has agreed, whatever the title says.
+    #[test]
+    fn a_backdrop_is_asked_about_as_a_draw_is() {
+        // (processor, agreed, asked)
+        for (processor, agreed, asked) in [
+            (Some("Azure OpenAI"), false, true),
+            (Some("Azure OpenAI"), true, false),
+            // Nobody named: no question to ask — and no backdrop offered.
+            (None, false, false),
+            (Some("  "), false, false),
+        ] {
+            assert_eq!(
+                is_required_for_backdrop(processor, agreed),
+                asked,
+                "{processor:?} agreed={agreed}"
+            );
+            assert_eq!(
+                is_required_for_backdrop(processor, agreed),
+                is_required("ai", "/draw a birthday cake", processor, agreed),
+                "the same question as a /draw: {processor:?} agreed={agreed}"
+            );
+        }
     }
 
     /// The case that must NOT be swallowed.

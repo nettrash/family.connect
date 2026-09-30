@@ -49,6 +49,9 @@ public class ApiClientTests
             return this;
         }
 
+        /// <summary>How long each request waits before it is answered, in order; a missing entry answers at once.</summary>
+        public Queue<TimeSpan> Delays { get; } = new();
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -56,6 +59,11 @@ public class ApiClientTests
             Bodies.Add(request.Content is null
                 ? null
                 : await request.Content.ReadAsStringAsync(cancellationToken));
+            if (Delays.TryDequeue(out var delay))
+            {
+                // A slow server: the deadline, when it passes, cancels this wait exactly as it would the socket.
+                await Task.Delay(delay, cancellationToken);
+            }
             if (replies.Count == 0)
             {
                 throw new InvalidOperationException($"no reply queued for {request.RequestUri}");
@@ -252,6 +260,72 @@ public class ApiClientTests
         var body = Assert.Single(handler.Bodies)!;
         Assert.Contains("{\"text\":\"Milk and eggs\",\"id\":11}", body, StringComparison.Ordinal);
         Assert.Contains("{\"text\":\"Jam\"}", body, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A backdrop the author has not agreed to (docs/protocol.md, "Consenting to the assistant", amended 2026-09-30):
+    /// a refusal with nothing sent, read as its code — the one the board answers with the consent question.
+    /// </summary>
+    [Fact]
+    public async Task ABackdropWithoutConsentIsRefusedByItsCode()
+    {
+        var (client, handler) = Client(new Fake().Then(
+            HttpStatusCode.Forbidden,
+            """{"error": {"code": "assistant_consent_required", "message": "agree first"}}"""));
+        var answer = await client.DrawBackdrop(12);
+        Assert.False(answer.Ok);
+        Assert.Equal(ErrorCodes.AssistantConsentRequired, answer.Error!.Code);
+        Assert.Equal(403, answer.Error.Status);
+        Assert.False(answer.Error.Transient);
+        // A write, and a refusal: asked once, never repeated here.
+        Assert.Single(handler.Sent);
+    }
+
+    /// <summary>
+    /// SLOW (docs/protocol.md, "Board", amended 2026-09-30): the backdrop gets "a timeout of its own, no shorter than
+    /// 90 s … never its ordinary request timeout" — and the HttpClient the app builds must not cap it, because
+    /// <see cref="HttpClient.Timeout"/> applies to every request sent through it.
+    /// </summary>
+    [Fact]
+    public void TheBackdropHasADeadlineOfItsOwnThatNothingCaps()
+    {
+        Assert.True(ApiClient.BackdropTimeout >= TimeSpan.FromSeconds(90));
+        Assert.True(ApiClient.BackdropTimeout > ApiClient.OrdinaryTimeout);
+        using var http = ApiClient.NewHttpClient();
+        Assert.Equal(Timeout.InfiniteTimeSpan, http.Timeout);
+        var client = new ApiClient(http, ServerUrl.Normalise("chat.example.com")!, new MemoryTokenStore("t0ken"));
+        Assert.Equal(ApiClient.BackdropTimeout, client.BackdropDeadline);
+        Assert.Equal(ApiClient.OrdinaryTimeout, client.RequestDeadline);
+    }
+
+    /// <summary>
+    /// The same rule, run: a server slower than the ORDINARY deadline fails an ordinary request, and still answers a
+    /// backdrop — the backdrop does not ride on the timeout every other call gets.
+    /// </summary>
+    [Fact]
+    public async Task ABackdropOutlastsTheOrdinaryDeadline()
+    {
+        // One reply only: a request whose deadline passes never takes its reply off the queue.
+        var handler = new Fake()
+            .Then(HttpStatusCode.OK,
+                """{"note": {"id": 12, "author_id": 7, "kind": "event", "text": "Lunch", "board_seq": 12}}""");
+        var slow = TimeSpan.FromMilliseconds(400);
+        handler.Delays.Enqueue(slow);
+        handler.Delays.Enqueue(slow);
+        handler.Delays.Enqueue(slow);
+        var client = new ApiClient(
+            new HttpClient(handler), ServerUrl.Normalise("chat.example.com")!, new MemoryTokenStore("t0ken"))
+        {
+            RequestDeadline = TimeSpan.FromMilliseconds(50),
+            BackdropDeadline = TimeSpan.FromSeconds(30),
+        };
+        // A read, so it is tried twice — and both run out of time.
+        var board = await client.Board();
+        Assert.False(board.Ok);
+        Assert.Equal(ErrorCodes.Transport, board.Error!.Code);
+        var drawn = await client.DrawBackdrop(12);
+        Assert.True(drawn.Ok);
+        Assert.Equal(12, drawn.Value!.Note.Id);
     }
 
     [Fact]

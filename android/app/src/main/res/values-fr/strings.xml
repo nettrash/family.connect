@@ -552,6 +552,7 @@
     <string name="s_draw_another_backdrop">Dessiner un autre fond</string>
     <string name="s_drawing">Dessin en cours…</string>
     <string name="s_draw_failed">Impossible de dessiner cela.</string>
+    <string name="s_describe_in_general_words">Décris les personnes et les choses en termes généraux — les vrais noms et les marques sont souvent refusés.</string>
     <string name="s_tick_failed">Impossible de cocher cette tâche.</string>
     <string name="s_no_calendar_app">Aucune app de calendrier pour l\'ajouter.</string>
     <string name="s_the_assistant">L’assistant</string>

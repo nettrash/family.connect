@@ -572,6 +572,7 @@
     <string name="s_draw_another_backdrop">Нарисовать другой фон</string>
     <string name="s_drawing">Рисует…</string>
     <string name="s_draw_failed">Не удалось нарисовать.</string>
+    <string name="s_describe_in_general_words">Описывай людей и предметы общими словами — настоящие имена и бренды часто отклоняются.</string>
     <string name="s_tick_failed">Не удалось отметить.</string>
     <string name="s_no_calendar_app">Нет приложения календаря, куда добавить.</string>
     <string name="s_the_assistant">Ассистент</string>

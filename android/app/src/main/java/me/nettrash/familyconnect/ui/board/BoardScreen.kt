@@ -121,6 +121,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.ui.components.isWideWindow
+import me.nettrash.familyconnect.ui.components.AssistantConsentDialog
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.repo.BackdropOutcome
 import java.time.Instant
@@ -163,6 +164,8 @@ import kotlin.math.roundToInt
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import me.nettrash.familyconnect.ui.chat.BlockedMessageRule
+import me.nettrash.familyconnect.ui.chat.PictureDescriptionHint
+import me.nettrash.familyconnect.ui.chat.PictureDescriptionHintText
 
 /** The six names the protocol allows. Unknown values fall back to yellow. */
 object NoteColors {
@@ -1245,6 +1248,7 @@ fun BoardScreen(
     val memberNames by viewModel.memberNames.collectAsStateWithLifecycle()
     val mentionRoster by viewModel.mentionRoster.collectAsStateWithLifecycle()
     val canDraw by viewModel.canDraw.collectAsStateWithLifecycle()
+    val assistantConsentAsk by viewModel.assistantConsentAsk.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var editing by remember { mutableStateOf<NoteDraft?>(null) }
 
@@ -1516,6 +1520,19 @@ fun BoardScreen(
                     viewModel.deleteNote(id)
                 }
             },
+        )
+    }
+
+    // The consent screen, raised by a backdrop that would send the event's
+    // title to the model (docs/protocol.md, "Consenting to the assistant")
+    // — the chat's own. After the note, so it opens over it.
+    assistantConsentAsk?.let { ask ->
+        AssistantConsentDialog(
+            processor = ask.processor,
+            familyHistory = ask.familyHistory,
+            familyVision = ask.familyVision,
+            onAgree = viewModel::agreeToTheAssistant,
+            onDismiss = viewModel::dismissAssistantConsent,
         )
     }
 }
@@ -2149,11 +2166,14 @@ internal fun NoteDialog(
                     Spacer(Modifier.size(8.dp))
                     // A copy for this reader's own calendar — anybody's —
                     // and the picture behind it, which is the author's.
+                    // One answer for the button and for the hint under it,
+                    // so neither can appear without the other.
+                    val offersBackdrop = PictureDescriptionHint.onBackdrop(canEdit, canDraw)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(onClick = onAddToCalendar) {
                             Text(stringResource(R.string.s_add_to_calendar))
                         }
-                        if (canEdit && canDraw) {
+                        if (offersBackdrop) {
                             TextButton(
                                 onClick = {
                                     // An image model takes seconds, and a
@@ -2162,7 +2182,13 @@ internal fun NoteDialog(
                                         drawing = true
                                         onDrawBackdrop { outcome ->
                                             drawing = false
-                                            drewBackdrop = outcome.picture
+                                            // Only a picture that LANDED
+                                            // replaces the one drawn here:
+                                            // a failed or unasked redraw
+                                            // leaves the note's backdrop as
+                                            // it was (docs/protocol.md,
+                                            // "Board"), and so the banner.
+                                            outcome.picture?.let { drewBackdrop = it }
                                             // A title the provider's own
                                             // filter refused gets the same
                                             // refusal every time, so it is
@@ -2174,6 +2200,14 @@ internal fun NoteDialog(
                                                 BackdropOutcome.Refused ->
                                                     R.string.s_assistant_provider_refused
                                                 BackdropOutcome.Failed -> R.string.s_draw_failed
+                                                // The consent screen asked,
+                                                // and "Not Now" was the
+                                                // answer: nothing to report.
+                                                // (ConsentRequired is asked,
+                                                // never handed back here.)
+                                                BackdropOutcome.Declined,
+                                                BackdropOutcome.ConsentRequired,
+                                                -> null
                                             }
                                             if (said != null) {
                                                 Toast.makeText(
@@ -2199,6 +2233,15 @@ internal fun NoteDialog(
                                 )
                             }
                         }
+                    }
+                    // The event's title IS the description (only the title
+                    // leaves the server), so what the provider's filter
+                    // tends to refuse is said here, where the author can
+                    // still reword it (docs/protocol.md, "Board").
+                    if (offersBackdrop) {
+                        PictureDescriptionHintText(
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                        )
                     }
                     Spacer(Modifier.size(16.dp))
                 }

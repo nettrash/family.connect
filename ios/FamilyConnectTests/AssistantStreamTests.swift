@@ -424,6 +424,38 @@ struct AssistantStreamTests {
         #expect(await harness.coordinator.drawBackdrop(noteID: 5) == .failed)
     }
 
+    /// `assistant_consent_required` is the consent question, not a failure:
+    /// the screen shows the consent sheet and draws again on a yes — where
+    /// it CAN ask, which is a server that names its processor. Anywhere
+    /// else it is the backdrop failing, which is what an older client
+    /// shows too (protocol.md, "Consenting to the assistant").
+    @Test("a backdrop refused for consent asks the question")
+    func aBackdropRefusedForConsentAsks() async throws {
+        let harness = try makeHarness(host: "ai-backdrop-consent.test")
+        defer { harness.tearDown() }
+
+        StubURLProtocol.register(host: harness.host) { _ in
+            .json(403, #"{"error": {"code": "assistant_consent_required", "message": "ask first"}}"#)
+        }
+        let outcome = await harness.coordinator.drawBackdrop(noteID: 5)
+        #expect(outcome == .consentRequired)
+        #expect(outcome.asksForConsent(processor: "Example AI"))
+        // Nobody to name, nobody to ask: it is a failure there.
+        #expect(!outcome.asksForConsent(processor: nil))
+        #expect(!outcome.asksForConsent(processor: "  "))
+        #expect(outcome.failureMessage == String(localized: "Couldn't draw that."))
+
+        // Nothing else asks: not the other 403, not a refusal, not a 500.
+        for other in [BackdropOutcome.failed, .refused, .drawn(attachmentID: 9)] {
+            #expect(!other.asksForConsent(processor: "Example AI"), "\(other)")
+        }
+        // The code decides, never the status alone.
+        #expect(BackdropOutcome(error: APIError.forbidden(code: "not_note_author")) == .failed)
+        #expect(BackdropOutcome(error: APIError.forbidden(code: nil)) == .failed)
+        #expect(BackdropOutcome(
+            error: APIError.conflict(code: "assistant_consent_required", message: nil)) == .failed)
+    }
+
     /// MY OWN message is never the assistant's answer, whatever it carries.
     /// An empty own row is a send in flight, not something to draw a cursor
     /// on.

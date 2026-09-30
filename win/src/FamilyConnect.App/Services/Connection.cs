@@ -18,7 +18,9 @@ internal sealed class Connection : IAsyncDisposable
     public Connection(Uri server, string cachePath)
     {
         Server = server;
-        Http = new HttpClient();
+        // No HttpClient.Timeout: it would cap the backdrop's own 120 s deadline at the ordinary one. The API client
+        // gives every request its deadline itself (docs/protocol.md, "Board").
+        Http = ApiClient.NewHttpClient();
         Tokens = new LockerTokenStore(server);
         Api = new ApiClient(Http, server, Tokens);
         Cache = Database.Open(cachePath);

@@ -123,4 +123,36 @@ class AssistantConsentTest {
                 .isEqualTo(AssistantConsent.StickerGate.SEND)
         }
     }
+
+    /**
+     * An event's backdrop is drawn from its title — the author's words, to
+     * `processor` — so it asks exactly as a `/draw` does (docs/protocol.md,
+     * "Consenting to the assistant", amended 2026-09-30).
+     */
+    @Test
+    fun `a backdrop asks first, and only once`() {
+        assertThat(AssistantConsent.backdropGate(processor, null))
+            .isEqualTo(AssistantConsent.BackdropGate.ASK)
+        assertThat(AssistantConsent.backdropGate(processor, ""))
+            .isEqualTo(AssistantConsent.BackdropGate.ASK)
+        assertThat(AssistantConsent.backdropGate(processor, "2026-09-30T08:00:00Z"))
+            .isEqualTo(AssistantConsent.BackdropGate.DRAW)
+    }
+
+    @Test
+    fun `a backdrop is never drawn by an assistant the server will not name`() {
+        assertThat(AssistantConsent.backdropGate(null, null))
+            .isEqualTo(AssistantConsent.BackdropGate.WITHHELD)
+        assertThat(AssistantConsent.backdropGate("  ", "2026-09-30T08:00:00Z"))
+            .isEqualTo(AssistantConsent.BackdropGate.WITHHELD)
+        // And so it is not offered: there would be no consent to ask.
+        assertThat(AssistantConsent.offersBackdrop(serverCanDraw = true, processor = null)).isFalse()
+        assertThat(AssistantConsent.offersBackdrop(serverCanDraw = true, processor = "")).isFalse()
+    }
+
+    @Test
+    fun `a backdrop is offered where the server can draw and names who draws`() {
+        assertThat(AssistantConsent.offersBackdrop(serverCanDraw = true, processor = processor)).isTrue()
+        assertThat(AssistantConsent.offersBackdrop(serverCanDraw = false, processor = processor)).isFalse()
+    }
 }

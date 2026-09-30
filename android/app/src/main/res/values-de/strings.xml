@@ -546,6 +546,7 @@
     <string name="s_draw_another_backdrop">Anderen Hintergrund zeichnen</string>
     <string name="s_drawing">Zeichnet …</string>
     <string name="s_draw_failed">Konnte nicht gezeichnet werden.</string>
+    <string name="s_describe_in_general_words">Beschreibe Menschen und Dinge allgemein — echte Namen und Marken werden oft abgelehnt.</string>
     <string name="s_tick_failed">Konnte nicht abgehakt werden.</string>
     <string name="s_no_calendar_app">Keine Kalender-App zum Hinzufügen.</string>
     <string name="s_the_assistant">Der Assistent</string>

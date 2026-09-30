@@ -41,6 +41,8 @@ import kotlinx.coroutines.CoroutineScope
 import android.net.Uri
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.ui.chat.AssistantConsent
+import me.nettrash.familyconnect.ui.chat.ChatViewModel
 import me.nettrash.familyconnect.util.BoardBadge
 import me.nettrash.familyconnect.util.badgeMarks
 import me.nettrash.familyconnect.util.marks
@@ -326,17 +328,65 @@ class BoardViewModel @Inject constructor(
     }
 
     /**
+     * The backdrop, with the consent question in front of it: the title is
+     * the author's words going to the model, so it is asked about as a
+     * `/draw` is (docs/protocol.md, "Consenting to the assistant").
+     */
+    private val backdrops = BackdropRequests(
+        scope = viewModelScope,
+        gate = {
+            val settingsState = settings.state.first()
+            AssistantConsent.backdropGate(
+                processor = settingsState.assistantProcessor,
+                agreedAt = settingsState.assistantConsentAt,
+            )
+        },
+        draw = { noteId -> boardRepository.drawBackdrop(noteId) },
+        agree = { familyRepository.setAssistantConsent(true) },
+    )
+
+    /**
      * Ask the assistant for an event's backdrop — the author's, and it
      * takes seconds, so the caller hears when it has landed, or why it
-     * did not (docs/protocol.md, "Board").
+     * did not (docs/protocol.md, "Board"). An author who has not agreed to
+     * the assistant is asked first, and the caller hears only once that
+     * question is answered.
      */
     fun drawBackdrop(noteId: Long, onSettled: (BackdropOutcome) -> Unit = {}) {
-        viewModelScope.launch { onSettled(boardRepository.drawBackdrop(noteId)) }
+        backdrops.request(noteId, onSettled)
     }
 
-    /** Whether this SERVER can draw at all (`assistant.images`). */
+    /**
+     * What the consent screen must say, or null while it is not up — the
+     * chat's own screen and shape, raised by a backdrop.
+     */
+    val assistantConsentAsk: StateFlow<ChatViewModel.AssistantConsentAsk?> =
+        combine(backdrops.asking, settings.state) { asking, settingsState ->
+            val processor = settingsState.assistantProcessor
+            if (!asking || processor.isNullOrBlank()) {
+                null
+            } else {
+                ChatViewModel.AssistantConsentAsk(
+                    processor = processor,
+                    familyHistory = settingsState.familyAiHistory,
+                    familyVision = settingsState.familyAiVision,
+                )
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Agree — the stamp is the server's — and draw the backdrop that was waiting. */
+    fun agreeToTheAssistant() = backdrops.agreed()
+
+    /** "Not Now": the screen closes and nothing was sent. */
+    fun dismissAssistantConsent() = backdrops.dismissed()
+
+    /**
+     * Whether this server can draw a backdrop at all (`assistant.images`)
+     * and names who would draw it (`assistant.processor`), without which
+     * there is no consent to ask and so nothing to offer.
+     */
     val canDraw: StateFlow<Boolean> = settings.state
-        .map { it.assistantImages }
+        .map { AssistantConsent.offersBackdrop(it.assistantImages, it.assistantProcessor) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     fun deleteNote(id: Long) {

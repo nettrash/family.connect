@@ -1019,6 +1019,35 @@ fn checked_rewrite(rewrite: &str, description: &str, max_chars: usize) -> Result
     Ok(rewrite.to_string())
 }
 
+/// The rewrite a finished stream carries, or why there is none.
+///
+/// A rewrite is drawn only when the model SAID it had finished it
+/// (`finish_reason: "stop"`). Any other ending leaves a fragment, and a
+/// fragment is not a description: the filter stopping it (`content_filter`)
+/// is a refusal whatever words had streamed by then — "a blonde pop singer"
+/// cut off mid-sentence would be drawn as though it were the whole of what
+/// was meant — and the token ceiling (`length`, which a reasoning model can
+/// reach before it has written much), a stream that never said, or any
+/// other word is a rewrite that did not arrive. The chat path holds the
+/// same line for a tool call the filter ended ("a call the provider cut off
+/// is a fragment"). Checked BEFORE [`checked_rewrite`], because a fragment
+/// passes every one of its checks. The error names the finish reason — the
+/// provider's own word for what went wrong — and never the words.
+fn finished_rewrite(streamed: &Streamed, description: &str, max_chars: usize) -> Result<String> {
+    if finish_is_refusal(&streamed.finish_reason) {
+        return Err(anyhow::Error::new(Refused).context("the rewrite was filtered"));
+    }
+    if streamed.finish_reason != "stop" {
+        let reason = if streamed.finish_reason.is_empty() {
+            "(none given)"
+        } else {
+            streamed.finish_reason.as_str()
+        };
+        bail!("the rewrite did not finish (finish_reason {reason})");
+    }
+    checked_rewrite(&streamed.text, description, max_chars)
+}
+
 /// Ask the TEXT deployment, once, to reword a description the images
 /// deployment refused, and hand back the rewrite and what it cost.
 ///
@@ -1030,11 +1059,13 @@ fn checked_rewrite(rewrite: &str, description: &str, max_chars: usize) -> Result
 ///
 /// Every way this can fail is an error, and the caller turns every one of
 /// them into the refusal the member would have had without it: the request
-/// failing or being refused, an answer the filter ended, and a rewrite
-/// [`checked_rewrite`] turns away. Neither the description nor the rewrite
-/// is in any error this returns — a provider's error is logged by its
-/// identifying fields alone ([`loggable_detail`]), and the checks above name
-/// counts, not words.
+/// failing or being refused, an answer the model did not finish — the filter
+/// or the token ceiling ending it, whatever it had said by then
+/// ([`finished_rewrite`]) — and a rewrite [`checked_rewrite`] turns away.
+/// Neither the description nor the rewrite is in any error this returns — a
+/// provider's error is logged by its identifying fields alone
+/// ([`loggable_detail`]), and the checks above name a finish reason or a
+/// count, never words.
 pub async fn rephrase_description(
     client: &reqwest::Client,
     route: &ModelRoute,
@@ -1043,10 +1074,7 @@ pub async fn rephrase_description(
 ) -> Result<(String, Usage)> {
     let (instruction, turns) = rephrase_request(description);
     let streamed = stream_reply(client, route, instruction, &turns, &[], |_| {}).await?;
-    if streamed.text.trim().is_empty() && finish_is_refusal(&streamed.finish_reason) {
-        return Err(anyhow::Error::new(Refused).context("the rewrite was filtered"));
-    }
-    let rewrite = checked_rewrite(&streamed.text, description, max_chars)?;
+    let rewrite = finished_rewrite(&streamed, description, max_chars)?;
     Ok((rewrite, streamed.usage))
 }
 
@@ -1697,6 +1725,51 @@ mod tests {
             checked_rewrite(description, description, 4000).expect_err("unchanged")
         );
         assert!(!error.contains("Pikachu"), "{error}");
+    }
+
+    /// Only a rewrite the model FINISHED is drawn. Words the filter cut
+    /// short are a refusal however many of them streamed first, and words
+    /// cut off by the token ceiling — or by a stream that never said why it
+    /// stopped — are no rewrite at all. Before this the filter counted only
+    /// when nothing had been written, and "a blonde pop singer", ended by
+    /// the filter mid-sentence, passed every check and was drawn.
+    #[test]
+    fn a_rewrite_the_model_did_not_finish_is_never_drawn() {
+        let description = "Taylor Swift singing to our cat";
+        let ended = |text: &str, finish_reason: &str| Streamed {
+            text: text.to_string(),
+            finish_reason: finish_reason.to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            finished_rewrite(
+                &ended("a blonde pop singer singing to a cat", "stop"),
+                description,
+                4000
+            )
+            .expect("finished"),
+            "a blonde pop singer singing to a cat"
+        );
+        // Case, as Azure's word is compared everywhere else.
+        for filtered in ["content_filter", "CONTENT_FILTER"] {
+            let error =
+                finished_rewrite(&ended("a blonde pop singer", filtered), description, 4000)
+                    .expect_err("filtered with words already out");
+            assert!(is_refusal(&error), "{filtered}: {error:#}");
+            assert!(!format!("{error:#}").contains("singer"), "{error:#}");
+        }
+        for unfinished in ["length", "", "tool_calls"] {
+            let error =
+                finished_rewrite(&ended("a blonde pop singer", unfinished), description, 4000)
+                    .expect_err("not finished");
+            assert!(!is_refusal(&error), "{unfinished:?}: {error:#}");
+            let said = format!("{error:#}");
+            assert!(!said.contains("singer"), "{said}");
+            assert!(said.contains("finish_reason"), "{said}");
+        }
+        // A finished rewrite is still held to the bounds after that.
+        assert!(finished_rewrite(&ended("   ", "stop"), description, 4000).is_err());
     }
 
     /// Two requests' tokens, added — and a provider reporting nonsense

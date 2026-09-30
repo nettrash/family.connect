@@ -100,6 +100,10 @@ public class ApiErrorTests
         Assert.Contains(ErrorCodes.PicturesUnavailable, ErrorCodes.All);
         Assert.Contains(ErrorCodes.PictureRefused, ErrorCodes.All);
         Assert.Contains(ErrorCodes.InvalidTask, ErrorCodes.All);
+        // Raised by the endpoints but missing from the document's list, so missing from this one too — and a
+        // REST answer carrying it is still the terminal refusal it is, because its status says so.
+        Assert.DoesNotContain(ErrorCodes.AssistantConsentRequired, ErrorCodes.All);
+        Assert.False(new ApiError(ErrorCodes.AssistantConsentRequired, "x", 403).Transient);
         // This client's own name for "it never got there" is NOT one of the protocol's.
         Assert.DoesNotContain(ErrorCodes.Transport, ErrorCodes.All);
         Assert.All(ErrorCodes.All, code => Assert.DoesNotContain("_", code[..1]));

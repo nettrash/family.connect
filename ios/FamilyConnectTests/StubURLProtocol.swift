@@ -22,6 +22,9 @@ struct RecordedRequest: @unchecked Sendable {
     let url: URL
     let headers: [String: String]
     let body: Data?
+    /// How long the client said it would wait for this one — what a test
+    /// reads to pin a request's own budget (the backdrop's, say).
+    var timeoutInterval: TimeInterval = 0
 
     func bodyJSON() -> [String: Any]? {
         guard let body else { return nil }
@@ -111,7 +114,8 @@ final class StubURLProtocol: URLProtocol {
             method: request.httpMethod ?? "GET",
             url: url,
             headers: request.allHTTPHeaderFields ?? [:],
-            body: Self.drainBody(of: request))
+            body: Self.drainBody(of: request),
+            timeoutInterval: request.timeoutInterval)
 
         let handler: Handler? = {
             Self.lock.lock(); defer { Self.lock.unlock() }

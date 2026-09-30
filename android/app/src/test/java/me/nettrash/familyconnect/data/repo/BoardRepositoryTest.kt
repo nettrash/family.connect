@@ -867,4 +867,27 @@ class BoardRepositoryTest {
         boardApi.backdropFailure = ApiResult.NetworkError(java.io.IOException("offline"))
         assertThat(repository.drawBackdrop(5L)).isEqualTo(BackdropOutcome.Failed)
     }
+
+    /**
+     * `assistant_consent_required` is the server saying this author has not
+     * agreed that their words may go to the model: nothing was sent, and it
+     * is a QUESTION to ask rather than a failure to report — told apart by
+     * its code, since `pictures_unavailable` and `not_note_author` are 403s
+     * too (docs/protocol.md, "Consenting to the assistant", 2026-09-30).
+     */
+    @Test
+    fun `a backdrop the author has not consented to asks, and changes nothing`() = runTest(dispatcher) {
+        val repository = repository()
+        boardApi.backdropFailure = ApiResult.HttpError(
+            status = 403,
+            code = "assistant_consent_required",
+            message = "the assistant needs your consent first",
+        )
+
+        assertThat(repository.drawBackdrop(5L)).isEqualTo(BackdropOutcome.ConsentRequired)
+        assertThat(noteDao.findById(5)).isNull()
+
+        boardApi.backdropFailure = ApiResult.HttpError(status = 403, code = "not_note_author", message = null)
+        assertThat(repository.drawBackdrop(5L)).isEqualTo(BackdropOutcome.Failed)
+    }
 }

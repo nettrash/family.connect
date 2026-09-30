@@ -1372,6 +1372,10 @@ enum ChatAnswer {
     Tool(ScriptedCall),
     /// A failure, as `chat_failure` would fail.
     Fail(Failure),
+    /// These words, then this `finish_reason` instead of `stop` — an answer
+    /// the provider ENDED part-way: its filter (`content_filter`) or the
+    /// token ceiling (`length`) stopping it after words were already out.
+    Ended(String, &'static str),
 }
 
 #[derive(Default)]
@@ -1392,6 +1396,9 @@ struct MockProvider {
     /// Failures for the NEXT images requests, one each, before
     /// `images_failure` is consulted — "refuse the first, draw the second".
     images_queue: std::sync::Mutex<std::collections::VecDeque<Failure>>,
+    /// How long the images deployment takes over each answer, while a test
+    /// says it is slow — for the client that stops waiting.
+    images_delay: std::sync::Mutex<Option<Duration>>,
 }
 
 impl MockProvider {
@@ -1526,6 +1533,9 @@ async fn mock_chat(
     let failure = match queued {
         Some(ChatAnswer::Words(words)) => return event_stream(words_stream(&words)),
         Some(ChatAnswer::Tool(call)) => return event_stream(tool_call_stream(&call)),
+        Some(ChatAnswer::Ended(words, finish_reason)) => {
+            return event_stream(words_stream_ending(&words, finish_reason));
+        }
         Some(ChatAnswer::Fail(failure)) => Some(failure),
         None => mock.chat_failure.lock().expect("mock lock").clone(),
     };
@@ -1581,6 +1591,11 @@ fn event_stream(events: String) -> axum::response::Response {
 /// answer in this file reports, so a test can see which request they came
 /// from.
 fn words_stream(words: &str) -> String {
+    words_stream_ending(words, "stop")
+}
+
+/// The same words, ended with `finish_reason` instead of `stop`.
+fn words_stream_ending(words: &str, finish_reason: &str) -> String {
     let mut out = String::new();
     if !words.is_empty() {
         out.push_str(&format!(
@@ -1588,7 +1603,10 @@ fn words_stream(words: &str) -> String {
             json!({"choices": [{"delta": {"content": words}}]})
         ));
     }
-    out.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n");
+    out.push_str(&format!(
+        "data: {}\n\n",
+        json!({"choices": [{"delta": {}, "finish_reason": finish_reason}]})
+    ));
     out.push_str(
         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":5}}\n\n",
     );
@@ -1656,6 +1674,10 @@ async fn mock_images(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     mock.capture(&format!("/images/{deployment}"), body);
+    let delay = *mock.images_delay.lock().expect("mock lock");
+    if let Some(delay) = delay {
+        tokio::time::sleep(delay).await;
+    }
     let queued = mock.images_queue.lock().expect("mock lock").pop_front();
     let failure = queued.or_else(|| mock.images_failure.lock().expect("mock lock").clone());
     if let Some(Failure::Http(status, body)) = failure {
@@ -6413,6 +6435,20 @@ async fn a_rewrite_that_fails_or_is_unusable_is_the_refusal_it_always_was() {
             ChatAnswer::Fail(chat_refusal()),
         ),
         ("the rewrite filtered", ChatAnswer::Fail(Failure::Filtered)),
+        // Words already out when the provider ended it: a fragment, and
+        // never drawn — the filter's ending is a refusal, the token
+        // ceiling's is no rewrite.
+        (
+            "a rewrite the filter cut short",
+            ChatAnswer::Ended(
+                "a lilac hedgehog in the style of".to_string(),
+                "content_filter",
+            ),
+        ),
+        (
+            "a rewrite cut off at the token ceiling",
+            ChatAnswer::Ended("a lilac hedgehog in the style of".to_string(), "length"),
+        ),
         ("an empty rewrite", ChatAnswer::Words(String::new())),
         (
             "a rewrite over the draw prompt's bound",
@@ -6686,4 +6722,129 @@ async fn a_refused_backdrop_is_reworded_once() {
 
     log.assert_says_only("reworded and drawn");
     log.assert_says_only("refused_again");
+}
+
+/// A member who has not agreed to the assistant is refused a backdrop, the
+/// way a `/draw` refuses them: `assistant_consent_required`, and NOTHING
+/// sent — not the title to the images deployment, and so never to the text
+/// deployment to be reworded either. Before this the backdrop asked no
+/// consent at all, and a refused title went on to a second recipient.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_backdrop_needs_the_authors_consent_to_the_assistant() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, owner_id) = ts
+        .register_without_assistant_consent("owner", "Olive")
+        .await;
+    ts.create_family(&owner, "The Smiths").await;
+    let note_id = pin_event(&ts, &owner, REFUSED_DESCRIPTION).await;
+
+    // Scripted so that, were the title sent, it would be refused and
+    // reworded — every recipient this path has.
+    mock.fail_images_once(images_refusal());
+    mock.queue_chat([ChatAnswer::Words(REWRITE.to_string())]);
+    assert_error(
+        ts.post(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}/backdrop"),
+            json!({}),
+        )
+        .await,
+        403,
+        "assistant_consent_required",
+    )
+    .await;
+    assert!(
+        mock.calls().is_empty(),
+        "nothing may leave without consent: {:?}",
+        mock.calls()
+    );
+    assert_eq!(stored_blobs(&ts), 0);
+
+    // Agreeing is all it takes: the same request now draws — refused,
+    // reworded, drawn, as for anybody who agreed.
+    ts.agree_to_the_assistant(owner_id).await;
+    let drawn = ts
+        .post(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}/backdrop"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(drawn.status(), 200);
+    assert_eq!(
+        prompts_sent_to_images(&mock),
+        vec![REFUSED_DESCRIPTION.to_string(), REWRITE.to_string()]
+    );
+}
+
+/// A backdrop is the one request that waits on the model, and a reworded
+/// one waits on three calls in a row — longer than some clients' ordinary
+/// request timeout. A client that gives up has been told the backdrop
+/// failed, and that must stay TRUE: the server stops drawing when the
+/// connection goes, so nothing is written, counted or bound to the note
+/// afterwards (docs/protocol.md, "Board").
+///
+/// The wait afterwards is generous and can only make this pass late, never
+/// fail falsely: a slow machine that has not yet finished a drawing it
+/// should have abandoned passes vacuously rather than failing.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_backdrop_the_client_stopped_waiting_for_is_not_drawn_later() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let note_id = pin_event(&ts, &owner, REFUSED_DESCRIPTION).await;
+
+    // Refused, reworded, then a second picture slower than the client will
+    // wait: each images call takes 1.5 s, and the client gives up at 2 s —
+    // inside the second one.
+    *mock.images_delay.lock().expect("mock lock") = Some(Duration::from_millis(1500));
+    mock.fail_images_once(images_refusal());
+    mock.queue_chat([ChatAnswer::Words(REWRITE.to_string())]);
+    let impatient = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    let gave_up = impatient
+        .post(ts.url(&format!("/families/mine/board/notes/{note_id}/backdrop")))
+        .bearer_auth(&owner)
+        .json(&json!({}))
+        .send()
+        .await;
+    assert!(
+        gave_up.as_ref().is_err_and(reqwest::Error::is_timeout),
+        "the client was meant to give up: {gave_up:?}"
+    );
+
+    // Long past the moment the second picture would have arrived.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(stored_blobs(&ts), 0, "nothing written");
+    let board: Value = ts
+        .get(&owner, "/families/mine/board")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let note = board["notes"]
+        .as_array()
+        .expect("notes")
+        .iter()
+        .find(|note| note["id"].as_i64() == Some(note_id))
+        .expect("the event")
+        .clone();
+    assert!(note["attachment"].is_null(), "no backdrop landed: {note}");
+    let stats: Value = ts
+        .get(&owner, "/families/mine/stats")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(
+        stats["totals"]["ai"]["images"].as_i64().unwrap_or(0),
+        0,
+        "nothing counted: {stats}"
+    );
 }

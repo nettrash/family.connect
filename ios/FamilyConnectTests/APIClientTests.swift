@@ -273,6 +273,53 @@ struct APIClientTests {
         #expect(json?["body"] as? String == "Dinner at 7?")
     }
 
+    // MARK: - The backdrop's own timeout
+
+    /// The backdrop waits on the model — up to three calls in a row — so
+    /// it has a budget of its own, no shorter than the protocol's 90 s,
+    /// and every other call keeps the ordinary 15 s (docs/protocol.md,
+    /// "Board" — "It is SLOW").
+    @Test("the backdrop waits at least 90 s; an ordinary call does not")
+    func backdropHasItsOwnTimeout() async throws {
+        let host = "api-backdrop-timeout.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        let client = makeClient(host: host) { request in
+            request.url.path().hasSuffix("/backdrop")
+                ? .json(200, Self.eventNoteJSON)
+                : .json(404, #"{"error": {"code": "note_not_found", "message": "gone"}}"#)
+        }
+
+        let note = try await client.drawBackdrop(noteID: 5)
+        #expect(note.id == 5)
+        await #expect(throws: APIError.self) {
+            _ = try await client.patchNote(id: 5, x: 0.5)
+        }
+
+        let log = StubURLProtocol.requests(host: host)
+        #expect(log.count == 2)
+        let backdrop = try #require(log.first { $0.url.path().hasSuffix("/backdrop") })
+        #expect(backdrop.method == "POST")
+        #expect(backdrop.timeoutInterval >= 90)
+        let ordinary = try #require(log.first { $0.method == "PATCH" })
+        #expect(ordinary.timeoutInterval == 15)
+    }
+
+    /// The consent refusal arrives as the 403 it is, with its code, so the
+    /// screen can tell it from `pictures_unavailable` (the other 403).
+    @Test("the backdrop's consent refusal keeps its code")
+    func backdropConsentRefusal() async throws {
+        let host = "api-backdrop-consent.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        let client = makeClient(host: host) { _ in
+            .json(403, #"{"error": {"code": "assistant_consent_required", "message": "ask first"}}"#)
+        }
+        await #expect(throws: APIError.forbidden(code: "assistant_consent_required")) {
+            _ = try await client.drawBackdrop(noteID: 5)
+        }
+        // A POST: refused once, never retried.
+        #expect(StubURLProtocol.requests(host: host).count == 1)
+    }
+
     // MARK: - Fixtures
 
     static let meActiveJSON = """
@@ -280,6 +327,12 @@ struct APIClientTests {
      "family": {"id": 3, "name": "The Smiths", "join_policy": "approval", "created_at": "2026-08-01T10:00:00Z"},
      "role": "owner",
      "pending_join_request": null}
+    """
+
+    static let eventNoteJSON = """
+    {"note": {"id": 5, "author_id": 7, "text": "Picnic", "color": "blue", "kind": "event",
+     "starts_at": "2026-10-04T12:00:00Z", "x": 0.4, "y": 0.4,
+     "created_at": "2026-09-30T10:00:00Z", "board_seq": 12}}
     """
 
     static func messageJSON(id: Int64, chatID: Int64, senderID: Int64, clientMsgID: String, body: String) -> String {
