@@ -260,6 +260,60 @@ internal static class Dialogs
     }
 
     /// <summary>
+    /// Adding a sticker: the few words it may be given, for a screen reader (docs/protocol.md, "label"). OPTIONAL —
+    /// Add with the box empty adds it with none — and fixed once the item is added, which is why it is asked here.
+    /// Answers whether to add, and the label as it will be sent.
+    /// </summary>
+    /// <remarks>
+    /// AN OVER-LONG LABEL IS REFUSED HERE, IN WORDS, with the dialog still open and nothing sent: 64 characters,
+    /// counted the way the server counts them (<see cref="PackLabel"/>). The box's own MaxLength is not used for
+    /// this — it counts UTF-16 units, and would stop thirty-three emoji that the server takes.
+    /// </remarks>
+    /// <param name="name">Which picture this is, when several were chosen at once: the file's name.</param>
+    public static async Task<(bool Add, string? Label)> StickerLabelAsync(XamlRoot root, IStringCatalog say, string? name = null)
+    {
+        var box = new TextBox { Header = say.Get("Label (optional)") };
+        var problem = Problem();
+        var content = Column();
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            content.Children.Add(Secondary(name));
+        }
+        content.Children.Add(box);
+        content.Children.Add(Footnote(say.Get("A few words for a screen reader. They are never drawn over the picture.")));
+        content.Children.Add(problem);
+        var dialog = Create(root, say.Get("Add a sticker"), content);
+        dialog.PrimaryButtonText = say.Get("Add");
+        dialog.CloseButtonText = say.Get("Cancel");
+        void Judge()
+        {
+            var tooLong = PackLabel.TooLong(box.Text);
+            dialog.IsPrimaryButtonEnabled = !tooLong;
+            if (tooLong)
+            {
+                ShowProblem(problem, PackText.LabelTooLong(say));
+            }
+            else
+            {
+                problem.Visibility = Visibility.Collapsed;
+            }
+        }
+        box.TextChanged += (_, _) => Judge();
+        dialog.PrimaryButtonClick += (_, args) =>
+        {
+            // Enter in the box presses this whether or not the button is enabled.
+            if (PackLabel.TooLong(box.Text))
+            {
+                args.Cancel = true;
+                Judge();
+            }
+        };
+        return await dialog.ShowAsync() == ContentDialogResult.Primary
+            ? (true, PackLabel.Clean(box.Text))
+            : (false, null);
+    }
+
+    /// <summary>
     /// The assistant question, asked once before anything a member writes goes to the model
     /// (docs/protocol.md, "Consenting to the assistant"). Answers whether they agreed.
     /// </summary>

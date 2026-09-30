@@ -4042,7 +4042,10 @@ mod tests {
             .expect("the event with a picture draws it");
         // An event with none keeps its colour, exactly as it always did.
         assert!(
-            stickers[1].query_selector(".note-backdrop").unwrap().is_none(),
+            stickers[1]
+                .query_selector(".note-backdrop")
+                .unwrap()
+                .is_none(),
             "and an event without one draws no ground"
         );
         // It is NOT the content: a photo note's picture is the thing pinned
@@ -4114,15 +4117,25 @@ mod tests {
         // is drawn 55 wide and the full 110 tall — the picture's own shape,
         // and every pixel of it.
         let (width, height) = (px(&stickers[0], "width"), px(&stickers[0], "height"));
-        assert!((width - 55.0).abs() < 0.5, "the card hugs the picture: {width}");
-        assert!((height - 110.0).abs() < 0.5, "and fills the card's height: {height}");
+        assert!(
+            (width - 55.0).abs() < 0.5,
+            "the card hugs the picture: {width}"
+        );
+        assert!(
+            (height - 110.0).abs() < 0.5,
+            "and fills the card's height: {height}"
+        );
         assert!(
             ((width / height) - 0.5).abs() < 0.01,
             "which is the picture's own shape: {width}x{height}"
         );
         // A captioned one keeps its whole card — the words need the paper —
         // and fits the picture into the strip above them.
-        assert_eq!(px(&stickers[1], "width"), 150.0, "the captioned card stands");
+        assert_eq!(
+            px(&stickers[1], "width"),
+            150.0,
+            "the captioned card stands"
+        );
         assert_eq!(px(&stickers[1], "height"), 110.0);
         // FITTED, not filled: the rule that was wrong. Asserted on the
         // shipped stylesheet through the shipped markup — the bytes never
@@ -4298,7 +4311,10 @@ mod tests {
         assert_eq!(groups.len(), 3, "going, maybe and can't: {groups:?}");
         assert!(groups[0].contains("Anna"), "{groups:?}");
         assert!(groups[1].contains("Gran"), "{groups:?}");
-        assert!(groups[2].contains("Me"), "the reader is among them: {groups:?}");
+        assert!(
+            groups[2].contains("Me"),
+            "the reader is among them: {groups:?}"
+        );
         handle.destroy();
         root.remove();
     }

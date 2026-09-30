@@ -334,4 +334,73 @@ public class SendPipelineTests : IDisposable
         Assert.Equal(1, await first.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal(1, posts);
     }
+
+    // ---- a sticker is a message (docs/protocol.md, "Sending one") ------------------------------
+
+    /// <summary>
+    /// The flag rides the frame — and nothing else about the send is new: the same row, the same
+    /// dedup key, the same ack.
+    /// </summary>
+    [Fact]
+    public async Task AStickerGoesOverTheSocketWithItsFlag()
+    {
+        var harness = Build();
+        harness.Socket.Answers = frame => new ServerFrame.Ack(IdOf(frame), Delivered(IdOf(frame)));
+        var row = harness.Pipeline.Enqueue(42, string.Empty, attachmentIds: [90], sticker: true);
+        Assert.True(row.Sticker);
+
+        Assert.Equal(1, await harness.Pipeline.FlushAsync());
+
+        var frame = System.Text.Json.JsonDocument.Parse(Assert.Single(harness.Socket.Sent)).RootElement;
+        Assert.True(frame.GetProperty("sticker").GetBoolean());
+        Assert.Equal(90, frame.GetProperty("attachment_ids")[0].GetInt64());
+        Assert.Equal("", frame.GetProperty("body").GetString());
+        Assert.Empty(harness.Outbox.All());
+    }
+
+    /// <summary>
+    /// An unanswered frame falls back to REST with the SAME row — flag included — and a sticker
+    /// that still owes its upload is never posted at all: it would land as an empty message.
+    /// </summary>
+    [Fact]
+    public async Task AStickerFallsBackToRestStillASticker()
+    {
+        var harness = Build(row => ApiResult<MessageResponse>.Success(
+            new MessageResponse(Delivered(row.ClientMsgId))));
+        harness.Socket.IsConnected = false;
+        var owing = harness.Pipeline.Enqueue(
+            42, string.Empty, pendingFiles: ["0123456789abcdef0123456789abcdef"], sticker: true);
+
+        Assert.Equal(0, await harness.Pipeline.FlushAsync());
+        Assert.Empty(harness.Posted);
+
+        harness.Outbox.Uploaded(owing.ClientMsgId, 90, "0123456789abcdef0123456789abcdef");
+        Assert.Equal(1, await harness.Pipeline.FlushAsync());
+
+        var posted = Assert.Single(harness.Posted);
+        Assert.True(posted.Sticker);
+        Assert.Equal([90L], posted.AttachmentIds!);
+        Assert.Empty(harness.Outbox.All());
+    }
+
+    /// <summary>
+    /// A refusal about the picture is terminal and shown: <c>invalid_attachment</c> is what the
+    /// server answers for a sticker that is not one, and no retry would change it.
+    /// </summary>
+    [Fact]
+    public async Task ARefusedStickerIsShownFailedLikeAnyRefusedMessage()
+    {
+        var harness = Build();
+        harness.Socket.Answers = frame =>
+            new ServerFrame.Error(ErrorCodes.InvalidAttachment, "not a sticker", IdOf(frame), null);
+        harness.Pipeline.Enqueue(42, string.Empty, attachmentIds: [90], sticker: true);
+
+        Assert.Equal(0, await harness.Pipeline.FlushAsync());
+
+        var (row, error) = Assert.Single(harness.Refusals);
+        Assert.True(row.Sticker);
+        Assert.Equal(ErrorCodes.InvalidAttachment, error.Code);
+        Assert.True(Assert.Single(harness.Outbox.All()).Failed);
+        Assert.Empty(harness.Posted);
+    }
 }

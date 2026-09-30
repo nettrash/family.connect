@@ -89,7 +89,12 @@ public class ApiErrorTests
     [Fact]
     public void TheCanonicalCodesAreAllHereAndAllDistinct()
     {
-        Assert.Equal(61, ErrorCodes.All.Length);
+        Assert.Equal(65, ErrorCodes.All.Length);
+        // The sticker pack's four, as the document lists them.
+        Assert.Contains(ErrorCodes.PackFull, ErrorCodes.All);
+        Assert.Contains(ErrorCodes.PackItemTooLarge, ErrorCodes.All);
+        Assert.Contains(ErrorCodes.PackItemNotFound, ErrorCodes.All);
+        Assert.Contains(ErrorCodes.NotPackItemAuthor, ErrorCodes.All);
         Assert.Equal(ErrorCodes.All.Length, ErrorCodes.All.Distinct().Count());
         Assert.Contains(ErrorCodes.OwnerCannotLeave, ErrorCodes.All);
         Assert.Contains(ErrorCodes.PicturesUnavailable, ErrorCodes.All);

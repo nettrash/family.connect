@@ -44,6 +44,17 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         /// `mentions`, absent when nil (docs/protocol.md, "Mentioning a
         /// member").
         mentions: [MentionDTO]?)
+    /// A STICKER (docs/protocol.md, "Sending one"): the same `send` frame on
+    /// the wire, with `"sticker": true`, exactly one attachment and an empty
+    /// body. Its own case rather than one more associated value on `.send`
+    /// because a sticker is its own message — it has no body, no poll and
+    /// names nobody — so the case cannot even express the combinations the
+    /// server refuses (`validation`, `invalid_poll`).
+    case sendSticker(
+        chatID: Int64,
+        clientMsgID: String,
+        replyToMessageID: Int64?,
+        attachmentID: Int64)
     case read(chatID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64)
     case ping
@@ -73,6 +84,7 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         case lastReadMessageID = "last_read_message_id"
         case poll
         case mentions
+        case sticker
         case callID = "call_id"
         case sdp
         case candidate
@@ -105,6 +117,16 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
                 var poll = container.nestedContainer(keyedBy: NewPollKeys.self, forKey: .poll)
                 try poll.encode(pollOptions, forKey: .options)
             }
+        case .sendSticker(let chatID, let clientMsgID, let replyToMessageID, let attachmentID):
+            try container.encode("send", forKey: .type)
+            try container.encode(chatID, forKey: .chatID)
+            try container.encode(clientMsgID, forKey: .clientMsgID)
+            // Present and EMPTY, as the protocol's example writes it: a
+            // sticker beside a non-empty body is `validation`.
+            try container.encode("", forKey: .body)
+            try container.encodeIfPresent(replyToMessageID, forKey: .replyToMessageID)
+            try container.encode([attachmentID], forKey: .attachmentIDs)
+            try container.encode(true, forKey: .sticker)
         case .read(let chatID, let lastReadMessageID):
             try container.encode("read", forKey: .type)
             try container.encode(chatID, forKey: .chatID)
@@ -345,6 +367,11 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     /// One board note in whatever state it now has — created, edited,
     /// moved, or a tombstone. Never notifies, never counts as unread.
     case boardNote(NoteDTO)
+    /// One item of the family's sticker pack in whatever state it now has —
+    /// added, or a tombstone (docs/protocol.md, "Sticker pack"). Reaches
+    /// every connection of every member, the actor's own included, and is
+    /// NOT filtered by blocks. Never notifies, never counts as unread.
+    case packItem(PackItemDTO)
     /// One fragment of the assistant's reply, as it is generated.
     ///
     /// COSMETIC: the row named by `messageID` is the truth, and its final
@@ -414,6 +441,7 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
         case reactionSeq = "reaction_seq"
         case reactions
         case note
+        case item
         case text
         case poll
         case callID = "call_id"
@@ -436,6 +464,8 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
             self = .messageEdited(try container.decode(MessageDTO.self, forKey: .message))
         case "board_note":
             self = .boardNote(try container.decode(NoteDTO.self, forKey: .note))
+        case "pack_item":
+            self = .packItem(try container.decode(PackItemDTO.self, forKey: .item))
         case "ai_delta":
             self = .aiDelta(
                 chatID: try container.decode(Int64.self, forKey: .chatID),

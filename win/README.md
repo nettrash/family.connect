@@ -7,7 +7,7 @@ The fourth client of the protocol in `docs/protocol.md`, alongside `ios/` (iOS +
 **Status: the whole client, run on Windows.** The core and the logic are the part of the client that
 has nothing to do with Windows — the wire, the local cache, the send queue, the board's arithmetic,
 the reconnect resync, the live frame router and the session gate — and they are tested wherever
-`dotnet` runs (426 + 479 tests). `FamilyConnect.App` is the WinUI 3 window over them, and it carries
+`dotnet` runs (505 + 554 tests). `FamilyConnect.App` is the WinUI 3 window over them, and it carries
 what the Mac and the web carry: the chats with threads, polls, reactions, edits, mentions, the
 assistant, link previews and every attachment kind; the board; the family and its owner's console;
 settings; one-to-one voice and video calls; notifications; the notification area; and files shared in
@@ -22,17 +22,20 @@ win/
   src/FamilyConnect.Core/
     Protocol/   ApiError, ServerUrl, Dtos, Frames, ApiClient, ChatSocket, SendPipeline,
                 SendRules, ReconnectBackoff, Resync, FrameRouter, ApiResult/ITokenStore
-    Store/      Database + Migrations (numbered), ChatStore, BoardStore, OutboxStore, Times
+    Store/      Database + Migrations (numbered), ChatStore, BoardStore, PackStore, OutboxStore, Times
     Board/      NoteText, NoteLook, BoardWall, BoardTasks, BoardPicture, NoteFitting, BoardBadge
     Text/       StringCatalog (the apps' English string IS the key), CallRecordText,
                 AttachmentText, NotifyText, Calendar (the .ics a client writes itself),
-                MediaPlan (what a picked video or sound file becomes before upload)
+                MediaPlan (what a picked video or sound file becomes before upload),
+                StickerFile (what a chat sticker's bytes say: its type, its size, whether it moves)
   src/FamilyConnect.App.Logic/
                 AppSession — which screen the app is on, and the three ways a session ends
                 LiveConnection — the socket, the resync, the outbox and the router under one policy
                 ChatList — the rows, their order, and the one line under each name
                 Conversation — one open chat: the window, paging back, the read marker, typing
                 Board — the wall: the stickers on it, the badge over it, the writes that change it
+                Pack — the family's CHAT stickers: the panel, who may remove what, add, remove, send
+                StickerLook — the one box a chat sticker is drawn in, and an animated one's clock
                 MediaOutbox — the uploads a queued message owes, and the bytes waiting for them
                 MediaEncoding — the numbers a Media Foundation profile is given for a plan, what a result
                                 must read back as, and which of source and result then goes
@@ -49,7 +52,7 @@ win/
                           locker), AppServices, AppFolders, the settings files, Toasts and
                           Attention, TrayIcon, StartupLaunch (the manifest's startup task),
                           ShareInbox, WindowPlacement, WebViewCallMedia, VoiceRecorder,
-                          MediaPreparing, LocationFinder
+                          MediaPreparing, LocationFinder, StickerImaging
                 Views/    ServerView, SignInView, DoorView, PendingView, OfflineView, ChatsView,
                           BoardView + NoteSheet, FamilyView, SettingsView, CallCardView, and the
                           sheets and cards they open (polls, emoji, dialogs)
@@ -144,6 +147,81 @@ failed transcode when it does not — every such clip then goes as the original,
 source's, and that it tone-maps HDR rather than clipping it (nothing here can tell — it needs an
 HDR clip and eyes). A voice note is read back as well, but only SAID when it is not what was asked
 for: there is no original to send in its place.
+
+**The family has a sticker pack, and "sticker" now means two things in this code** (docs/protocol.md,
+"Sticker pack"; issue #58). The board's cards have always been called stickers here (`Sticker`,
+`StickerFace`) and still are; the CHAT sticker — a small picture sent as its own message — is spelled
+`Pack` wherever it is kept or synced (`PackStore`, `PackModel`, the `pack_*` tables), as the wire spells
+it, and `Sticker…` only where it is drawn (`StickerFile`, `StickerLook`, `StickerImaging`,
+`StickerAnimator`). The two never meet.
+
+`PackStore` is `BoardStore` one table over, on purpose: a full read replaces what is held except an item
+above the read's own mark, a removal is remembered (`pack_gone`) whether it was seen as a tombstone, as a
+full read that left the item out or as this device's own delete, every write is guarded by `pack_seq`,
+and the cursor moves in three ways and no others. The one rule it keeps more strictly than the board does
+here is the third: **a `pack_item` frame moves the cursor only once this CONNECTION has caught up**
+(`Reconnected` when a socket opens, `CaughtUp` when the pass reaches the pack) — otherwise the newest add,
+landing before the pass, would step the feed past everything added or removed while the socket was down.
+And "caught up" is said of ONE connection: a pass names the connection it began on, and if the socket
+has reopened since, its word is dropped — everything it read is older than the socket now listening, and
+the pass that connection started is the one that says it (`PackStore.Connection`). The board has the same
+shape without this guard; that is older than the pack and has not been changed here.
+
+**A sticker is never prepared.** `MediaPreparing` redraws a photograph on white and writes a JPEG with a
+preview, which is exactly what would cost a sticker its transparency and its animation — so nothing about
+a sticker goes near it. A pack item and a sticker message are `StagedMedia` built from the ORIGINAL bytes
+with no preview (`PackModel.AddAsync`, `ToSendAsync`), and both are always drawn from the original,
+whatever `has_preview` says (`AttachmentFiles.SourceFor`). A sent sticker is a COPY: one click in the
+panel stages the item's cached bytes and queues an ordinary outbox row with `sticker` set, so it is
+written down before anything moves and lands whenever the network lets it. 512 × 512 is this client's
+rule only when it MAKES one: a WebP or PNG within the byte ceiling goes up as it is, whatever its pixel
+size; any other still picture Windows Imaging decodes (a JPEG, a HEIC, a still GIF…), and a still WebP
+or PNG over the ceiling and larger than the box, is fitted whole into the box and written as PNG with
+its alpha, never scaled up (`PackPicking`, `StickerImaging.MakeAsync`). **An animated picture that is
+not already an acceptable WebP — an animated GIF, an animated PNG that would have to be redrawn — is
+refused with a sentence** ("Animated stickers must be WebP."), never flattened to one frame. Adding
+offers an optional label, at most 64 characters counted as the server counts them (scalar values after
+trimming, `PackLabel`), refused in the dialog before any request. `MakeAsync` has not been run: that a
+HEIC decodes, that a photograph comes out the way its camera held it, and that the PNG keeps its alpha
+are to be seen on Windows.
+
+**New or already there is the HTTP status** (`201` / `200`, `ApiResult.Status`) — never whether the cache
+holds the item, because the actor's own `pack_item` frame is fanned out before the POST answers.
+`attachment_expired` at the claim is answered by one more upload and one more claim, and
+`pack_item_not_found` on a removal means the item is already gone: it is dropped and nothing is said.
+Recently used is the last 16, in the cache file (so per device and across restarts) and wiped at sign-out.
+
+It is drawn with no balloon, in one box (`StickerLook.Box`, 160) fitted whole from metadata. **Animated
+where this machine can, frame zero where it cannot**: XAML's `BitmapImage` plays a GIF by itself and is
+not documented to play anything else, so an animated WebP is asked of Windows Imaging frame by frame and
+cycled by one timer per view. That depends on the WebP Image Extension, which ships with Windows 11 and
+can be removed; without it a WebP is not decoded at all and the sticker is the word "Sticker" in its box
+— in a conversation, and in the panel and on the Family screen too, where the cell says the item's own
+label when it has one: one click in the panel sends, so a cell is never a blank square. That answer is
+REMEMBERED per view, so a redraw does not read the file and fail the decode again.
+**None of that has been run**: nothing on the Mac decodes through Windows Imaging, so whether build 22000
+hands out more than one frame of an animated WebP, whether those frames are whole pictures (they are
+only cycled if they are), and whether an APNG is more than its first frame (it is not expected to be)
+are all to be seen on Windows. The arithmetic around it — which frame is due, what is worth animating,
+what size to decode at — is `StickerAnimation`, and is tested.
+
+**Decoded frames are held to ONE budget per view, not one per sticker** (`StickerShelf`, tested). A single
+animated sticker may hold 48 MB of frames; a chat full of them would be gigabytes, in surfaces .NET's
+collector cannot see. So the conversation's stickers sit on a shelf of 96 MB: past it, the one drawn
+longest ago gives its frames back — disposed outright when no image is showing it, made a STILL (frame
+zero) when one is — and the newest, which is the one at the bottom of the chat, keeps moving. Stickers
+are decoded one at a time so that holds while they are being decoded too. The shelf also keeps each
+sticker's CLOCK: the conversation is rebuilt on every change, and an image made by a rebuild joins the
+animation where it was rather than sending every sticker on screen back to frame zero. `StickerAnimator`
+is the one place that knows which image shows which frame, so it is what disposes — and after a tick has
+failed, when it no longer knows, nothing is disposed at all. The disposing itself has not been run either.
+
+The sticker button is offered in every chat a message can be sent in — the family chat, a one-to-one
+chat, the assistant's chat — and by the thread's composer, where a sticker answers the chain's root
+(`PackSending`). In the assistant's own chat a sticker is a photo to the model, so the one click goes
+through the same consent question the Send button does there, and is not sent at all to an assistant
+whose owner the server will not name. It is not offered at all on a server that names no
+`max_pack_items`.
 
 **A preview is only asked for when the attachment says it has one.** The server generates none for
 a picture the assistant drew, and none at all for a file, audio or a location — so `has_preview` is

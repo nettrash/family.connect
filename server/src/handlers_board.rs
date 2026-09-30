@@ -386,6 +386,7 @@ async fn claim_picture(
     let row = sqlx::query(
         "UPDATE attachments SET note_id = $3
          WHERE id = $1 AND uploader_id = $2 AND message_id IS NULL AND note_id IS NULL
+           AND pack_item_id IS NULL
            AND kind = $4
          RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name,
                    latitude, longitude, accuracy_m",
@@ -418,7 +419,7 @@ async fn claim_picture(
         }
         return Err(ApiError::conflict(
             codes::ATTACHMENT_ALREADY_USED,
-            "that attachment is already on a message or another note",
+            "that attachment is already on a message, another note or in the sticker pack",
         ));
     }
     // The one a client can act on: an upload this caller made and the

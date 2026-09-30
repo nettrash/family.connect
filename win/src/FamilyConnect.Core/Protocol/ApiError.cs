@@ -140,6 +140,10 @@ public static class ErrorCodes
     public const string AttachmentExpired = "attachment_expired";
     public const string AttachmentAlreadyUsed = "attachment_already_used";
     public const string StorageFull = "storage_full";
+    public const string PackFull = "pack_full";
+    public const string PackItemTooLarge = "pack_item_too_large";
+    public const string PackItemNotFound = "pack_item_not_found";
+    public const string NotPackItemAuthor = "not_pack_item_author";
     public const string TooManyRequests = "too_many_requests";
     public const string Internal = "internal";
 
@@ -157,6 +161,7 @@ public static class ErrorCodes
         InvalidPoll, PollClosed, PicturesUnavailable, CallsDisabled, VideoCallsDisabled,
         InvalidCall, CallNotFound, CallBusy, PeerBusy, PeerUnreachable, AvatarTooLarge,
         InvalidImage, AttachmentTooLarge, InvalidAttachment, AttachmentNotFound,
-        AttachmentExpired, AttachmentAlreadyUsed, StorageFull, TooManyRequests, Internal,
+        AttachmentExpired, AttachmentAlreadyUsed, StorageFull, PackFull, PackItemTooLarge,
+        PackItemNotFound, NotPackItemAuthor, TooManyRequests, Internal,
     ];
 }

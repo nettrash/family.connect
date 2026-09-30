@@ -61,6 +61,11 @@ import me.nettrash.familyconnect.data.net.dto.MessageResponse
 import me.nettrash.familyconnect.data.net.dto.IceServersResponse
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
 import me.nettrash.familyconnect.data.net.BoardApi
+import me.nettrash.familyconnect.data.net.PackApi
+import me.nettrash.familyconnect.data.net.dto.PackChangesResponse
+import me.nettrash.familyconnect.data.net.dto.PackItemDto
+import me.nettrash.familyconnect.data.net.dto.PackItemResponse
+import me.nettrash.familyconnect.data.net.dto.PackResponse
 import me.nettrash.familyconnect.data.net.dto.BoardChangesResponse
 import me.nettrash.familyconnect.data.net.dto.BoardResponse
 import me.nettrash.familyconnect.data.net.dto.CreateNoteRequest
@@ -187,6 +192,21 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         }
     }
 
+    override suspend fun setPackCursor(seq: Long) {
+        _state.value = _state.value.copy(packCursor = seq)
+    }
+
+    override suspend fun setPackLimits(maxItems: Int?, maxItemBytes: Long?) {
+        _state.value = _state.value.copy(
+            packMaxItems = maxItems ?: 0,
+            packMaxItemBytes = maxItemBytes ?: 0L,
+        )
+    }
+
+    override suspend fun setPackRecents(itemIds: List<Long>) {
+        _state.value = _state.value.copy(packRecents = itemIds)
+    }
+
     override suspend fun setMapPreviewsEnabled(enabled: Boolean) {
         _state.value = _state.value.copy(mapPreviewsEnabled = enabled)
     }
@@ -292,7 +312,11 @@ class FakeChatSocket : ChatSocket {
     /** When false, trySend reports failure even while Open. */
     var sendSucceeds = true
 
+    override var connectionSerial: Long = 0L
+        private set
+
     override fun connect(wsUrl: String, token: String) {
+        if (_state.value != SocketState.Open) connectionSerial += 1
         _state.value = SocketState.Open
     }
 
@@ -307,6 +331,8 @@ class FakeChatSocket : ChatSocket {
     }
 
     fun setOpen(open: Boolean) {
+        // A new connection each time it opens, as the real socket counts.
+        if (open && _state.value != SocketState.Open) connectionSerial += 1
         _state.value = if (open) SocketState.Open else SocketState.Disconnected
     }
 
@@ -511,6 +537,9 @@ class FakeChatApi : ChatApi {
     /** Every mention list a REST send carried, in order (null = names nobody). */
     val postedMentions = mutableListOf<List<MentionDto>?>()
 
+    /** Every `sticker` flag a REST send carried, in order (null = an ordinary message). */
+    val postedStickerFlags = mutableListOf<Boolean?>()
+
     override suspend fun postMessage(
         chatId: Long,
         clientMsgId: String,
@@ -519,7 +548,9 @@ class FakeChatApi : ChatApi {
         attachmentIds: List<Long>?,
         poll: NewPollDto?,
         mentions: List<MentionDto>?,
+        sticker: Boolean?,
     ): ApiResult<MessageResponse> {
+        postedStickerFlags += sticker
         postedMessages += Triple(chatId, clientMsgId, body)
         postedReplyTargets += replyToMessageId
         postedAttachmentIds += attachmentIds
@@ -667,7 +698,13 @@ class FakeFamilyApi : FamilyApi {
 
     override suspend fun create(name: String): ApiResult<FamilyResponse> = createResult
     override suspend fun join(inviteCode: String): ApiResult<JoinResponse> = joinResult
-    override suspend fun mine(): ApiResult<FamilyMineResponse> = mineResult
+    /** Runs while `GET /families/mine` is "in flight" — for what happens meanwhile. */
+    var onMine: (() -> Unit)? = null
+
+    override suspend fun mine(): ApiResult<FamilyMineResponse> {
+        onMine?.invoke()
+        return mineResult
+    }
 
     var statsResult: ApiResult<FamilyStatsDto> =
         ApiResult.NetworkError(IllegalStateException("unscripted"))
@@ -1165,6 +1202,91 @@ fun messageDto(
     attachment = attachments?.firstOrNull(),
     attachments = attachments,
 )
+
+/**
+ * Scripted PackApi — the sticker pack's four endpoints, with the server's
+ * own two habits built in: an add takes the next seq, and a removal is
+ * idempotent.
+ */
+class FakePackApi : PackApi {
+    var pack: PackResponse = PackResponse(emptyList(), 0)
+    /** What `getPack` answers; defaults to [pack]. */
+    var packResult: (() -> ApiResult<PackResponse>)? = null
+    /** Pages the catch-up will serve, oldest first. */
+    var changePages: MutableList<List<PackItemDto>> = mutableListOf()
+    /** Every `after_seq` the change feed was asked from, in order. */
+    val changeRequests = mutableListOf<Long>()
+    var fullReads = 0
+
+    /** Every claim, as (attachment id, label). */
+    val added = mutableListOf<Pair<Long, String?>>()
+    val removed = mutableListOf<Long>()
+    var nextId = 5L
+    var nextSeq = 12L
+
+    /**
+     * What an add answers; null = a fresh `201` item for the claimed
+     * attachment. Suspending, so a test can do what the server does BEFORE
+     * it answers — deliver the `pack_item` frame.
+     */
+    var addResult: (suspend (Long, String?) -> ApiResult<PackItemResponse>)? = null
+    var removeResult: (Long) -> ApiResult<Unit> = { ApiResult.Ok(Unit) }
+
+    override suspend fun getPack(): ApiResult<PackResponse> {
+        fullReads += 1
+        return packResult?.invoke() ?: ApiResult.Ok(pack)
+    }
+
+    override suspend fun getPackChanges(afterSeq: Long, limit: Int): ApiResult<PackChangesResponse> {
+        changeRequests += afterSeq
+        return ApiResult.Ok(
+            PackChangesResponse(if (changePages.isEmpty()) emptyList() else changePages.removeAt(0)),
+        )
+    }
+
+    override suspend fun addItem(attachmentId: Long, label: String?): ApiResult<PackItemResponse> {
+        added += attachmentId to label
+        addResult?.let { return it(attachmentId, label) }
+        return ApiResult.Ok(
+            PackItemResponse(
+                packItemDto(id = nextId++, packSeq = nextSeq++, attachmentId = attachmentId, label = label),
+            ),
+        )
+    }
+
+    override suspend fun removeItem(id: Long): ApiResult<Unit> {
+        removed += id
+        return removeResult(id)
+    }
+}
+
+/** A live pack item as the wire carries one. */
+fun packItemDto(
+    id: Long,
+    packSeq: Long,
+    addedBy: Long = 7L,
+    attachmentId: Long = 70L + id,
+    mime: String = "image/webp",
+    size: Long = 2048,
+    label: String? = null,
+) = PackItemDto(
+    id = id,
+    addedBy = addedBy,
+    attachment = AttachmentDto(
+        id = attachmentId,
+        kind = AttachmentDto.KIND_PHOTO,
+        mime = mime,
+        size = size,
+        width = 512,
+        height = 512,
+    ),
+    createdAt = "2026-09-13T10:00:00Z",
+    packSeq = packSeq,
+    label = label,
+)
+
+/** `{"id": 5, "deleted": true, "pack_seq": 14}` — nothing else. */
+fun packTombstone(id: Long, packSeq: Long) = PackItemDto(id = id, packSeq = packSeq, deleted = true)
 
 /**
  * A `photo` attachment as the server reports one.

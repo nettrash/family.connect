@@ -566,4 +566,31 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">Bis du zustimmst, geht nichts von dem, was du schreibst, an %1$s, und der Assistent antwortet dir nicht.</string>
     <string name="s_consent_stopping_takes_effect_at_once">Was du dem Assistenten schreibst, geht an %1$s. Ein Stopp wirkt sofort; was schon gesendet wurde, lässt sich nicht zurückholen.</string>
     <string name="s_couldnt_save_your_answer">Deine Antwort konnte nicht gespeichert werden. Versuch es erneut.</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">Sticker</string>
+    <string name="s_stickers">Sticker</string>
+    <string name="s_family_stickers">Familiensticker</string>
+    <string name="s_family_stickers_count">%1$d von %2$d</string>
+    <string name="s_family_stickers_explanation">Jede und jeder in der Familie kann einen Sticker hinzufügen. Wer ihn hinzugefügt hat oder wem die Familie gehört, kann ihn entfernen.</string>
+    <string name="s_recently_used">Zuletzt verwendet</string>
+    <string name="s_no_stickers_yet">Noch keine Sticker</string>
+    <string name="s_no_stickers_hint">Füge welche auf dem Familienbildschirm hinzu.</string>
+    <string name="s_add_sticker">Sticker hinzufügen</string>
+    <string name="s_add_to_family_stickers">Zu Familienstickern hinzufügen</string>
+    <string name="s_sticker_label">Beschreibung (optional)</string>
+    <string name="s_sticker_label_hint">Ein paar Worte für den Screenreader. Sie werden nie über das Bild gezeichnet.</string>
+    <string name="s_remove_sticker">Sticker entfernen</string>
+    <string name="s_remove_sticker_q">Diesen Sticker entfernen?</string>
+    <string name="s_remove_sticker_explanation">Er verschwindet aus den Familienstickern. Bereits gesendete Nachrichten behalten ihn.</string>
+    <string name="s_sticker_added">Zu Familienstickern hinzugefügt</string>
+    <string name="s_sticker_already_in_pack">Schon in den Familienstickern</string>
+    <string name="s_sticker_pack_full">Die Familie hat bereits %1$d Sticker. Entferne einen, um einen neuen hinzuzufügen.</string>
+    <string name="s_sticker_too_large">Der ist zu groß. Ein Sticker darf höchstens %1$s haben.</string>
+    <string name="s_sticker_add_failed">Der Sticker konnte nicht hinzugefügt werden. Versuch es noch einmal.</string>
+    <string name="s_sticker_unreadable">Dieses Bild konnte nicht gelesen werden.</string>
+    <string name="s_sticker_animated_must_be_webp">Animierte Sticker müssen WebP sein. Dieser kann nicht hinzugefügt werden.</string>
+    <string name="s_sticker_label_too_long">Eine Beschreibung darf höchstens %1$d Zeichen lang sein.</string>
+    <string name="s_sticker_remove_not_allowed">Nur wer einen Sticker hinzugefügt hat oder wem die Familie gehört, kann ihn entfernen.</string>
+    <string name="s_sticker_remove_failed">Der Sticker konnte nicht entfernt werden. Versuch es noch einmal.</string>
+    <string name="s_sticker_not_available_offline">Dieser Sticker ist noch nicht auf diesem Handy. Versuch es noch einmal, wenn du online bist.</string>
 </resources>

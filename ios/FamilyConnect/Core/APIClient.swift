@@ -686,6 +686,11 @@ actor APIClient {
         let poll: NewPollRequest?
         /// The members this message names — absent when nil, like the rest.
         let mentions: [MentionDTO]?
+        /// `true` sends the message's one attachment as a STICKER
+        /// (docs/protocol.md, "Sending one"). nil — and so absent, never
+        /// `false` — on every ordinary message, which keeps an ordinary
+        /// send byte-identical to what it has always been.
+        let sticker: Bool?
         enum CodingKeys: String, CodingKey {
             case clientMsgID = "client_msg_id"
             case body
@@ -693,6 +698,7 @@ actor APIClient {
             case attachmentIDs = "attachment_ids"
             case poll
             case mentions
+            case sticker
         }
     }
 
@@ -716,7 +722,8 @@ actor APIClient {
         replyToMessageID: Int64? = nil,
         attachmentIDs: [Int64]? = nil,
         pollOptions: [String]? = nil,
-        mentions: [MentionDTO]? = nil
+        mentions: [MentionDTO]? = nil,
+        sticker: Bool = false
     ) async throws -> MessageDTO {
         let response: MessageResponse = try await request(
             "POST", "/chats/\(chatID)/messages",
@@ -726,7 +733,8 @@ actor APIClient {
                 replyToMessageID: replyToMessageID,
                 attachmentIDs: attachmentIDs,
                 poll: pollOptions.map { NewPollRequest(options: $0) },
-                mentions: mentions))
+                mentions: mentions,
+                sticker: sticker ? true : nil))
         return response.message
     }
 
@@ -1137,6 +1145,57 @@ actor APIClient {
 
     func markRead(chatID: Int64, lastReadMessageID: Int64) async throws {
         try await requestVoid("POST", "/chats/\(chatID)/read", body: ReadRequest(lastReadMessageID: lastReadMessageID))
+    }
+
+    // MARK: - Sticker pack
+
+    private struct AddPackItemRequest: Encodable {
+        let attachmentID: Int64
+        /// Omitted when nil: an empty label is no label.
+        let label: String?
+        enum CodingKeys: String, CodingKey {
+            case attachmentID = "attachment_id"
+            case label
+        }
+    }
+
+    /// `GET /families/mine/pack` — the whole pack as it now stands, in the
+    /// order added, tombstones excluded (docs/protocol.md, "Sticker pack").
+    func pack() async throws -> PackResponse {
+        try await request("GET", "/families/mine/pack")
+    }
+
+    /// One catch-up page, ascending by `pack_seq` and INCLUDING tombstones;
+    /// the caller loops (advancing `afterSeq`) until a short page.
+    func packChanges(afterSeq: Int64, limit: Int) async throws -> [PackItemDTO] {
+        let response: PackChangesResponse = try await request(
+            "GET", "/families/mine/pack/changes",
+            query: [
+                URLQueryItem(name: "after_seq", value: String(afterSeq)),
+                URLQueryItem(name: "limit", value: String(limit)),
+            ])
+        return response.items
+    }
+
+    /// Claim an upload as a pack item. `alreadyHeld` is the `200`: the pack
+    /// already holds those bytes, or this very claim was made before and
+    /// its answer lost — nothing was added, and the item that comes back
+    /// may carry a DIFFERENT attachment id from the one sent, because the
+    /// fresh upload was dropped for the one the pack already had.
+    func addPackItem(
+        attachmentID: Int64, label: String?
+    ) async throws -> (item: PackItemDTO, alreadyHeld: Bool) {
+        let bodyData = try? APICoding.encoder().encode(
+            AddPackItemRequest(attachmentID: attachmentID, label: label))
+        let (data, http) = try await perform(
+            "POST", "/families/mine/pack", query: [], bodyData: bodyData)
+        let response: PackItemResponse = try decodeResponse(data)
+        return (response.item, http.statusCode == 200)
+    }
+
+    /// Remove one. Whoever added it, or the family owner; idempotent.
+    func deletePackItem(id: Int64) async throws {
+        try await requestVoid("DELETE", "/families/mine/pack/\(id)")
     }
 
     // MARK: - Reactions

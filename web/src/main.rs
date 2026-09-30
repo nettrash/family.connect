@@ -11,10 +11,11 @@
 //! their quotes, threads, reactions, mentions, the assistant with its
 //! streamed answers and pictures, polls, edits, seen ticks, the unread
 //! divider, reports and blocks, over an outbox that survives a bad
-//! network); attachments; the family board; and the account — signing up,
-//! the family gate for an account in none, settings, the owner's family
-//! pane and everybody's profile pictures. What is not built yet is not
-//! stubbed either, because a stub is a claim that something works.
+//! network); attachments; stickers and the family's pack of them; the
+//! family board; and the account — signing up, the family gate for an
+//! account in none, settings, the owner's family pane and everybody's
+//! profile pictures. What is not built yet is not stubbed either, because
+//! a stub is a claim that something works.
 
 mod actions;
 mod api;
@@ -27,6 +28,7 @@ mod media;
 mod model;
 mod notify;
 mod outbox;
+mod pack;
 mod prep;
 mod recorder;
 mod session;
@@ -39,6 +41,8 @@ mod timeline;
 mod views;
 mod webcodecs;
 
+#[cfg(test)]
+mod fake_server;
 #[cfg(test)]
 mod layout_tests;
 
@@ -67,6 +71,7 @@ use views::gate::{FamilyGate, PendingApproval};
 use views::login::Login;
 use views::open_polls::OpenPollsPanel;
 use views::settings::SettingsPane;
+use views::stickers::StickerView;
 use views::thread_panel::ThreadPanel;
 use views::viewer::Viewer;
 
@@ -422,6 +427,8 @@ fn app() -> Html {
                 failed={store.failed_sends(chat_id)}
                 ai_failed={store.ai_failed.clone()}
                 family={store.family.clone()}
+                stickers={(store.pack.is_offered() && store.family.is_some()).then(|| store.pack.panel())}
+                agreed_to_assistant={store.assistant_consent_at().is_some()}
                 on_action={on_action.clone()}
             />
         }
@@ -532,12 +539,27 @@ fn app() -> Html {
                 join_requests={store.join_requests.clone()}
                 reports={store.reports.clone()}
                 support_contact={store.support_contact.clone()}
+                pack={store.pack.limits.map(|limits| (store.pack.listed(), limits))}
+                pack_adding={store.pack.adding}
                 on_action={on_action.clone()}
                 on_close={close_panel.clone()}
             />
         }),
         _ => None,
     };
+    // A sticker from a chat, shown larger — with the way to keep it, where
+    // there is a pack to keep it in.
+    let sticker_view = state.sticker_open.clone().map(|attachment| {
+        html! {
+            <StickerView
+                candidates={store.pack.candidates(&attachment)}
+                offered={store.pack.is_offered() && store.family.is_some()}
+                adding={store.pack.adding}
+                {attachment}
+                on_action={on_action.clone()}
+            />
+        }
+    });
 
     html! {
         <ContextProvider<Calls> context={calls.clone()}>
@@ -638,6 +660,7 @@ fn app() -> Html {
                         staged={store.staged.get(&item.chat.id).cloned().unwrap_or_default()}
                         family={store.family.clone()}
                         support_contact={store.support_contact.clone()}
+                        stickers={(store.pack.is_offered() && store.family.is_some()).then(|| store.pack.panel())}
                         agreed_to_assistant={store.assistant_consent_at().is_some()}
                         on_action={on_action.clone()}
                         now_ms={now}
@@ -651,6 +674,7 @@ fn app() -> Html {
                 { side_panel }
             </div>
             { viewer.unwrap_or_default() }
+            { sticker_view.unwrap_or_default() }
             if *confirming_sign_out {
                 <Confirm
                     title={t("Log out?")}

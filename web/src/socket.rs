@@ -144,6 +144,12 @@ pub enum ServerFrame {
     BoardNote {
         note: crate::model::Note,
     },
+    /// One sticker of the family's pack in whatever state it now has —
+    /// added, or a tombstone (docs/protocol.md, "Sticker pack"). Reaches
+    /// every member, a blocker included. Never unread, never notifies.
+    PackItem {
+        item: crate::model::PackItem,
+    },
     /// Somebody is calling: delivered to every connection the callee has.
     CallOffer {
         call_id: String,
@@ -397,6 +403,16 @@ mod tests {
         assert!(matches!(
             decode(r#"{"type": "board_note", "note": {"id": 12, "deleted": true, "board_seq": 91}}"#),
             Some(ServerFrame::BoardNote { ref note }) if note.deleted
+        ));
+        assert!(matches!(
+            decode(r#"{"type": "pack_item", "item": {"id": 5, "added_by": 7, "pack_seq": 12,
+                       "created_at": "2026-09-30T10:00:00Z",
+                       "attachment": {"id": 71, "kind": "photo", "mime": "image/webp"}}}"#),
+            Some(ServerFrame::PackItem { ref item }) if item.id == 5 && item.is_usable()
+        ));
+        assert!(matches!(
+            decode(r#"{"type": "pack_item", "item": {"id": 5, "deleted": true, "pack_seq": 14}}"#),
+            Some(ServerFrame::PackItem { ref item }) if item.deleted
         ));
     }
 

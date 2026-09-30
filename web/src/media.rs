@@ -36,15 +36,34 @@ pub enum Variant {
     /// protocol offers: a version is never reused for another picture, so a
     /// new one is simply a new entry (docs/protocol.md, `avatar_version`).
     Avatar(i64),
+    /// A STICKER's bytes — a pack item's picture, or the one attachment of
+    /// a sticker message. The same bytes `Original` would fetch, and ALWAYS
+    /// those: a sticker is never drawn from a preview, whatever
+    /// `has_preview` says, because a preview is a JPEG and a JPEG has no
+    /// transparency and one frame (docs/protocol.md, "And it has no
+    /// preview"). Its own variant because it needs its own bound: a panel
+    /// draws the whole pack at once, and `ORIGINAL_CAP` is sixteen.
+    Sticker,
 }
 
 impl Variant {
-    /// Which of the three bounds this counts against.
+    /// Which of the four bounds this counts against.
     fn kind(self) -> u8 {
         match self {
             Variant::Preview => 0,
             Variant::Original => 1,
             Variant::Avatar(_) => 2,
+            Variant::Sticker => 3,
+        }
+    }
+
+    /// The bytes of a queued attachment this variant draws from, if any.
+    fn staged(self, bytes: &crate::staged::StagedBytes) -> Option<Blob> {
+        match self {
+            Variant::Preview => bytes.preview.clone(),
+            Variant::Original | Variant::Sticker => bytes.file.clone(),
+            // A profile picture is never an outbox attachment.
+            Variant::Avatar(_) => None,
         }
     }
 }
@@ -59,6 +78,29 @@ pub const ORIGINAL_CAP: usize = 16;
 
 /// How many profile pictures are held: a family's faces, many times over.
 pub const AVATAR_CAP: usize = 200;
+
+/// How many stickers are held AT LEAST: a whole pack at the server's
+/// default of two hundred, and the ones in the chat on screen beside it.
+/// Each is at most the pack's per-item ceiling, and in practice a few tens
+/// of kilobytes — this is the client's cache of the pack's bytes, "for the
+/// tab and no longer" (docs/protocol.md, "A client keeps the pack").
+pub const STICKER_CAP: usize = 280;
+
+/// How many stickers are held beside the pack's own: the ones sent in the
+/// chat on screen, which are copies under ids of their own.
+pub const STICKER_MARGIN: usize = 80;
+
+/// The stickers' bound for THIS family. `max_pack_items` is the operator's
+/// to set, and a pack may hold more than it (a ceiling lowered under a
+/// family freezes its pack, it does not trim it), so the bound is whichever
+/// is larger — what the pack may hold or what it does — and the margin on
+/// top. A bound below the pack would let a panel evict its own cells while
+/// it draws them: every reopen fetching again what the last one let go,
+/// and a cell left holding a URL that has been revoked under it.
+pub fn sticker_cap(max_items: Option<i64>, held: usize) -> usize {
+    let allowed = max_items.map_or(0, |items| items.max(0) as usize);
+    STICKER_CAP.max(allowed.max(held).saturating_add(STICKER_MARGIN))
+}
 
 struct Entry {
     url: String,
@@ -81,6 +123,9 @@ struct Cache {
     /// for the session rather than asked for again on every draw. Never a
     /// failure that was only a bad minute: that is tried again.
     missing: std::collections::HashSet<(i64, Variant)>,
+    /// The stickers' bound as the loader last worked it out from the
+    /// family's pack ([`sticker_cap`]); never below [`STICKER_CAP`].
+    sticker_cap: usize,
 }
 
 impl Cache {
@@ -118,6 +163,7 @@ impl Cache {
             Variant::Preview => PREVIEW_CAP,
             Variant::Original => ORIGINAL_CAP,
             Variant::Avatar(_) => AVATAR_CAP,
+            Variant::Sticker => self.sticker_cap.max(STICKER_CAP),
         };
         let kind = key.1.kind();
         while self
@@ -178,6 +224,16 @@ impl MediaLoader {
             cache.revoke_all();
             cache.session = session;
         }
+        cache.sticker_cap = self.sticker_room();
+    }
+
+    /// How many stickers this family's pack needs held ([`sticker_cap`]),
+    /// from the pack as the tab holds it now.
+    fn sticker_room(&self) -> usize {
+        self.live.read(|state| {
+            let pack = &state.store.pack;
+            sticker_cap(pack.limits.map(|limits| limits.items), pack.items.len())
+        })
     }
 
     /// Let go of everything — at sign-out.
@@ -208,12 +264,11 @@ impl MediaLoader {
         }
         if id < 0 {
             let blob = self.live.read(|state| {
-                state.store.bytes.get(&id).and_then(|bytes| match variant {
-                    Variant::Preview => bytes.preview.clone(),
-                    Variant::Original => bytes.file.clone(),
-                    // A profile picture is never an outbox attachment.
-                    Variant::Avatar(_) => None,
-                })
+                state
+                    .store
+                    .bytes
+                    .get(&id)
+                    .and_then(|bytes| variant.staged(bytes))
             });
             return blob.and_then(|blob| self.cache.borrow_mut().insert((id, variant), blob));
         }
@@ -231,17 +286,19 @@ impl MediaLoader {
         }
     }
 
-    /// The bytes behind a cached entry, or behind a provisional id.
-    fn held(&self, id: i64, variant: Variant) -> Option<Blob> {
+    /// The bytes behind a cached entry, or behind a provisional id — what
+    /// a sticker is SENT from: the pack's own bytes, as cached, uploaded
+    /// again untouched (docs/protocol.md, "Sending one").
+    pub fn held(&self, id: i64, variant: Variant) -> Option<Blob> {
         if let Some(entry) = self.cache.borrow().entries.get(&(id, variant)) {
             return Some(entry.blob.clone());
         }
         self.live.read(|state| {
-            state.store.bytes.get(&id).and_then(|bytes| match variant {
-                Variant::Preview => bytes.preview.clone(),
-                Variant::Original => bytes.file.clone(),
-                Variant::Avatar(_) => None,
-            })
+            state
+                .store
+                .bytes
+                .get(&id)
+                .and_then(|bytes| variant.staged(bytes))
         })
     }
 
@@ -287,6 +344,7 @@ impl MediaLoader {
         let (session, token) = self.live.read(|state| (state.session, state.token.clone()));
         let live = self.live.clone();
         let cache = self.cache.clone();
+        let this = self.clone();
         spawn_local(async move {
             let fetched = match (token, variant) {
                 (Some(token), Variant::Avatar(_)) => match api::avatar_bytes(&token, id).await {
@@ -305,6 +363,10 @@ impl MediaLoader {
                     .ok(),
                 (None, _) => None,
             };
+            // The bound as the pack stands NOW: the limits may have
+            // arrived, or the pack grown, while these bytes were on their
+            // way.
+            cache.borrow_mut().sticker_cap = this.sticker_room();
             let url = fetched
                 .filter(|_| live.is_live(session))
                 .and_then(|blob| cache.borrow_mut().insert(key, blob));
@@ -489,6 +551,95 @@ mod tests {
         assert!(held.contains(&1), "used recently");
         assert!(!held.contains(&2), "the least recently used went");
         assert!(held.contains(&(ORIGINAL_CAP as i64 + 1)));
+    }
+
+    /// A sticker draws from the file itself — in the outbox and after —
+    /// and is bounded on its own, so a panel of the whole pack does not
+    /// push the photos just looked at out of the cache, nor they it.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn a_sticker_draws_from_the_file_and_has_its_own_bound() {
+        let loader = loader();
+        let session = loader.live.session();
+        loader.live.update(session, |state| {
+            state.store.bytes.insert(
+                -1,
+                StagedBytes {
+                    file: Some(blob("the sticker")),
+                    preview: None,
+                },
+            );
+        });
+        assert!(
+            loader.get(-1, Variant::Sticker).is_some(),
+            "a pending sticker draws from the bytes being sent"
+        );
+        assert!(loader.held(-1, Variant::Sticker).is_some());
+        assert_eq!(loader.get(-1, Variant::Preview), None, "it has no preview");
+        for id in 1..=(ORIGINAL_CAP as i64 + 8) {
+            loader
+                .cache
+                .borrow_mut()
+                .insert((id, Variant::Sticker), blob("x"));
+        }
+        let cache = loader.cache.borrow();
+        let stickers = cache
+            .entries
+            .keys()
+            .filter(|key| key.1 == Variant::Sticker)
+            .count();
+        assert_eq!(
+            stickers,
+            ORIGINAL_CAP + 9,
+            "not held to the originals' sixteen"
+        );
+    }
+
+    /// THE BOUND FOLLOWS THE PACK: an operator may allow more stickers
+    /// than the default, and a panel of that whole pack must not evict its
+    /// own cells — each eviction revokes a URL a cell may still be drawing
+    /// from, and every reopen would fetch again what the last let go.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn the_sticker_bound_is_at_least_the_whole_pack() {
+        assert_eq!(sticker_cap(None, 0), STICKER_CAP);
+        assert_eq!(sticker_cap(Some(200), 12), STICKER_CAP, "the default");
+        assert_eq!(sticker_cap(Some(500), 0), 500 + STICKER_MARGIN);
+        assert_eq!(
+            sticker_cap(Some(100), 450),
+            450 + STICKER_MARGIN,
+            "a pack frozen over a lowered ceiling is still drawn whole"
+        );
+        assert_eq!(sticker_cap(Some(-3), 0), STICKER_CAP, "nonsense is none");
+
+        let loader = loader();
+        let session = loader.live.session();
+        loader.live.update(session, |state| {
+            state.store.pack.limits = Some(crate::pack::Limits {
+                items: 500,
+                bytes: 524_288,
+            });
+        });
+        let first = {
+            loader.seed(1, Variant::Sticker, blob("x"));
+            loader.get(1, Variant::Sticker).expect("held")
+        };
+        for id in 2..=500 {
+            loader.seed(id, Variant::Sticker, blob("x"));
+        }
+        assert_eq!(
+            loader.cache.borrow().entries.len(),
+            500,
+            "every cell of a 500-sticker panel is held at once"
+        );
+        assert_eq!(
+            loader.get(1, Variant::Sticker),
+            Some(first),
+            "and the first one's URL was never revoked under it"
+        );
+        // Still a bound: past the pack and its margin the oldest goes.
+        for id in 501..=(500 + STICKER_MARGIN as i64 + 5) {
+            loader.seed(id, Variant::Sticker, blob("x"));
+        }
+        assert_eq!(loader.cache.borrow().entries.len(), 500 + STICKER_MARGIN);
     }
 
     /// A new session starts with nothing of the last one's.

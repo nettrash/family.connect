@@ -310,6 +310,35 @@ struct AppSessionTransitionTests {
         #expect(AppSettings.serverURL != nil)
     }
 
+    @Test("recently used stickers are this device's: they outlast a launch and a kick, and go at sign-out")
+    func stickerRecentsSurviveARestartAndGoAtSignOut() throws {
+        resetGlobals()
+        defer { resetGlobals() }
+        // An id no other suite sends — they share these defaults.
+        let sentinel: Int64 = 987_654_321
+        AppSettings.serverURL = URL(string: "https://family.example")!
+        let (session, _) = makeSession()
+        session.apply(me: MeResponse(user: Self.user, family: Self.family, role: "member", pendingJoinRequest: nil))
+        AppSettings.packRecents = StickerRecents.noting(sentinel, in: AppSettings.packRecents)
+
+        // PER DEVICE and past a restart: they are in the defaults DATABASE,
+        // under their own key, and not in anything that dies with the
+        // process — which is all "the next launch" reads.
+        let stored = UserDefaults.standard.array(forKey: "v1.pack.recents") as? [Int]
+        #expect(stored?.first == Int(sentinel))
+
+        // A kick or a leave keeps the session, and the list with it.
+        session.apply(me: MeResponse(user: Self.user, family: nil, role: nil, pendingJoinRequest: nil))
+        #expect(AppSettings.packRecents.contains(sentinel))
+
+        // Sign-out — by any road that ends the session — clears them, so
+        // they are not left on a shared device for whoever opens the panel
+        // next.
+        session.handleUnauthorized()
+        #expect(!AppSettings.packRecents.contains(sentinel))
+        #expect(UserDefaults.standard.object(forKey: "v1.pack.recents") == nil)
+    }
+
     @Test("handleUnauthorized: token gone, server kept, chat data purged, → needsAuth")
     func unauthorizedTransition() throws {
         resetGlobals()

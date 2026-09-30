@@ -28,6 +28,16 @@
 //! goes untouched. FILES go untouched; what kind each is, and what it is
 //! called, are fc_text::media's rules.
 //!
+//! A STICKER is none of the above, and above all not a photo
+//! (docs/protocol.md, "A sticker is NOT prepared before upload"): a JPEG has
+//! no transparency and one frame, which is exactly what makes a sticker one.
+//! A WebP or PNG that is already a sticker goes up BYTE FOR BYTE — animated
+//! or not, whatever its pixel size — and only a still picture that is not
+//! one yet is made into one: fitted whole into 512 × 512 on a canvas that
+//! is left TRANSPARENT, and written as PNG (or WebP, where this browser can
+//! write one and the PNG is over the pack's ceiling). Neither has a preview.
+//! Which of the two a picked file is, is fc_text::pack's decision.
+//!
 //! A PROFILE PICTURE is its own thing (ios `Core/AvatarImage.swift`): the
 //! largest centred square, at most 512 across, over white, as a JPEG stepped
 //! down in quality until it fits the byte budget fc_text::avatar keeps.
@@ -39,6 +49,7 @@ use std::rc::Rc;
 use fc_text::avatar;
 use fc_text::media::{self, Route};
 use fc_text::media_plan::{self, AudioPlan, Upload};
+use fc_text::pack;
 use futures::channel::oneshot;
 use futures::future::{select, Either};
 use gloo_timers::future::TimeoutFuture;
@@ -187,6 +198,146 @@ async fn photo(file: &File) -> Result<Prepared, PrepError> {
         preview,
         ..Prepared::default()
     })
+}
+
+/// How much of a picked file is read to decide what it is: the magic
+/// number, a WebP's animation flag, and a PNG's chunks up to its first
+/// `IDAT` — past any ordinary metadata (fc_text::pack::is_animated).
+const STICKER_HEAD: i32 = 64 * 1024;
+
+/// How much of a picked GIF is read to find out whether it MOVES. A GIF
+/// says so only by holding a second picture, which may be anywhere behind
+/// the first, so it is read whole — up to this, past which the looping
+/// extension in front of the first picture is taken at its word
+/// (fc_text::pack::is_animated).
+const GIF_READ: i32 = 32 * 1024 * 1024;
+
+/// A picture for the family's sticker pack (docs/protocol.md, "What a
+/// sticker is made of"). `max_bytes` is the server's `max_pack_item_bytes`.
+///
+/// NEVER through [`photo`]: that path draws over white and writes a JPEG.
+/// What comes back is `kind=photo` with the type the BYTES are, the
+/// original `Blob` itself when the file was a sticker already, and no
+/// preview — a preview is a JPEG, the same destruction by another door.
+pub async fn sticker(file: &Blob, max_bytes: u64) -> Result<Prepared, pack::Refusal> {
+    let mut head = head(file, STICKER_HEAD).await;
+    let size = file.size() as u64;
+    if pack::is_gif(&head) && size > head.len() as u64 {
+        head = self::head(file, GIF_READ).await;
+    }
+    match pack::plan(&head, size, max_bytes)? {
+        pack::Plan::AsGiven(mime) => {
+            // Decoded only to learn its size in pixels, and to find out NOW
+            // that it is a picture at all: the server checks twelve bytes,
+            // and a file cut short would otherwise become an empty square
+            // in everybody's panel. The bitmap is thrown away; what goes up
+            // is the file.
+            let bitmap = decode(file).await.ok_or(pack::Refusal::Unreadable)?;
+            let (width, height) = (bitmap.width(), bitmap.height());
+            bitmap.close();
+            Ok(Prepared {
+                kind: "photo".into(),
+                mime: mime.into(),
+                size: size as i64,
+                width: Some(i64::from(width)),
+                height: Some(i64::from(height)),
+                file: Some(file.clone()),
+                ..Prepared::default()
+            })
+        }
+        pack::Plan::Remake => {
+            let bitmap = decode(file).await.ok_or(pack::Refusal::Unreadable)?;
+            let (width, height) = pack::fit(bitmap.width(), bitmap.height());
+            let made = remade_sticker(&bitmap, width, height, max_bytes).await;
+            bitmap.close();
+            let (blob, mime) = made?;
+            Ok(Prepared {
+                kind: "photo".into(),
+                mime: mime.into(),
+                size: blob.size() as i64,
+                width: Some(i64::from(width)),
+                height: Some(i64::from(height)),
+                file: Some(blob),
+                ..Prepared::default()
+            })
+        }
+    }
+}
+
+/// `bitmap` drawn at `width`×`height` on a canvas with NOTHING under it, so
+/// what was transparent stays transparent, and written as a PNG — or, when
+/// that is over the ceiling, as the first WebP that fits, where this
+/// browser writes WebP at all. One that asks for WebP and is handed a PNG
+/// (Safari) has said it cannot, and the ladder stops there.
+async fn remade_sticker(
+    bitmap: &ImageBitmap,
+    width: u32,
+    height: u32,
+    max_bytes: u64,
+) -> Result<(Blob, &'static str), pack::Refusal> {
+    let unreadable = pack::Refusal::Unreadable;
+    let document = web_sys::window()
+        .and_then(|window| window.document())
+        .ok_or(unreadable)?;
+    let canvas: HtmlCanvasElement = document
+        .create_element("canvas")
+        .ok()
+        .and_then(|canvas| canvas.dyn_into().ok())
+        .ok_or(unreadable)?;
+    canvas.set_width(width);
+    canvas.set_height(height);
+    let context: CanvasRenderingContext2d = canvas
+        .get_context("2d")
+        .ok()
+        .flatten()
+        .and_then(|context| context.dyn_into().ok())
+        .ok_or(unreadable)?;
+    let _ = js_sys::Reflect::set(
+        &context,
+        &JsValue::from_str("imageSmoothingQuality"),
+        &JsValue::from_str("high"),
+    );
+    context
+        .draw_image_with_image_bitmap_and_dw_and_dh(
+            bitmap,
+            0.0,
+            0.0,
+            f64::from(width),
+            f64::from(height),
+        )
+        .map_err(|_| unreadable)?;
+    let png = to_blob(&canvas, pack::PNG, 1.0).await.ok_or(unreadable)?;
+    if png.size() as u64 <= max_bytes {
+        return Ok((png, pack::PNG));
+    }
+    for quality in pack::WEBP_QUALITIES {
+        let Some(webp) = to_blob(&canvas, pack::WEBP, quality).await else {
+            break;
+        };
+        if webp.type_() != pack::WEBP {
+            break;
+        }
+        if webp.size() as u64 <= max_bytes {
+            return Ok((webp, pack::WEBP));
+        }
+    }
+    Err(pack::Refusal::TooLarge)
+}
+
+/// Whether two blobs hold the same bytes — how a sticker in a chat is
+/// known to be one the pack already holds (docs/protocol.md, "Tapping one
+/// shows it larger"): nothing on the wire names the item a message was
+/// sent from, so the bytes are all there is to go by. Blobs that cannot be
+/// read are not the same.
+pub async fn same_bytes(one: &Blob, other: &Blob) -> bool {
+    if one.size() != other.size() {
+        return false;
+    }
+    let read = |blob: &Blob| JsFuture::from(blob.array_buffer());
+    let (Ok(one), Ok(other)) = (read(one).await, read(other).await) else {
+        return false;
+    };
+    js_sys::Uint8Array::new(&one).to_vec() == js_sys::Uint8Array::new(&other).to_vec()
 }
 
 /// A profile picture made from `file`, ready for `PUT /me/avatar`.
@@ -1380,5 +1531,223 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    // --- Stickers ---------------------------------------------------------
+
+    /// A half-transparent picture of `mime`, the way a canvas writes one.
+    async fn picture(width: u32, height: u32, mime: &str) -> Blob {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let canvas: HtmlCanvasElement = document
+            .create_element("canvas")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        canvas.set_width(width);
+        canvas.set_height(height);
+        let context: CanvasRenderingContext2d = canvas
+            .get_context("2d")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        context.set_fill_style_str("rgba(200, 30, 30, 0.5)");
+        context.fill_rect(0.0, 0.0, f64::from(width), f64::from(height));
+        to_blob(&canvas, mime, 0.9).await.unwrap()
+    }
+
+    fn bytes(bytes: &[u8]) -> Blob {
+        let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+        Blob::new_with_u8_array_sequence(&parts).unwrap()
+    }
+
+    /// The alpha of a picture's first pixel, as this browser decodes it.
+    async fn alpha(blob: &Blob) -> u8 {
+        let bitmap = decode(blob).await.expect("decodes");
+        let document = web_sys::window().unwrap().document().unwrap();
+        let canvas: HtmlCanvasElement = document
+            .create_element("canvas")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        canvas.set_width(bitmap.width());
+        canvas.set_height(bitmap.height());
+        let context: CanvasRenderingContext2d = canvas
+            .get_context("2d")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        context
+            .draw_image_with_image_bitmap(&bitmap, 0.0, 0.0)
+            .unwrap();
+        context.get_image_data(0.0, 0.0, 1.0, 1.0).unwrap().data()[3]
+    }
+
+    const PACK_CEILING: u64 = 524_288;
+
+    /// A WebP or PNG that is a sticker already goes up AS IT IS: the very
+    /// blob that was picked, declared as what its bytes are, at its own
+    /// pixel size, with no preview. The photo path would have made the same
+    /// file an opaque JPEG with one.
+    #[wasm_bindgen_test]
+    async fn a_finished_sticker_goes_up_byte_for_byte() {
+        let source = picture(96, 64, "image/png").await;
+        // Whatever the browser or the name said it was: the bytes decide.
+        let picked = file(&source, "sticker.jpg", "image/jpeg");
+        let prepared = sticker(&picked, PACK_CEILING).await.unwrap();
+        assert_eq!(prepared.kind, "photo");
+        assert_eq!(prepared.mime, "image/png");
+        assert_eq!((prepared.width, prepared.height), (Some(96), Some(64)));
+        assert_eq!(prepared.size, source.size() as i64);
+        assert!(prepared.preview.is_none(), "a sticker has no preview");
+        let sent = prepared.file.expect("its bytes");
+        assert!(same_bytes(&sent, &source).await, "untouched");
+        assert_eq!(alpha(&sent).await, alpha(&source).await);
+
+        // The same file through the PHOTO path, for the contrast that is
+        // the whole reason a sticker goes round it.
+        let photo = prepare(&file(&source, "a.png", "image/png"), &Job::default())
+            .await
+            .unwrap();
+        assert_eq!(photo.mime, "image/jpeg");
+        assert_eq!(alpha(photo.file.as_ref().unwrap()).await, 255, "opaque");
+
+        // A WebP, where this browser can make one to test with.
+        let webp = picture(200, 100, "image/webp").await;
+        if webp.type_() == "image/webp" {
+            let prepared = sticker(&webp, PACK_CEILING).await.unwrap();
+            assert_eq!(prepared.mime, "image/webp");
+            assert_eq!((prepared.width, prepared.height), (Some(200), Some(100)));
+            assert!(same_bytes(prepared.file.as_ref().unwrap(), &webp).await);
+        }
+    }
+
+    /// A still picture that is NOT a sticker yet is made into one: fitted
+    /// whole into 512 × 512, its proportions kept — and its TRANSPARENCY
+    /// kept, which is what the photo path's white canvas would have cost.
+    #[wasm_bindgen_test]
+    async fn a_larger_still_picture_is_fitted_into_512_with_its_transparency() {
+        // A PNG over the ceiling (the ceiling brought down to meet it).
+        let big = picture(1200, 600, "image/png").await;
+        let ceiling = big.size() as u64 - 1;
+        let prepared = sticker(&big, ceiling).await.unwrap();
+        assert_eq!((prepared.width, prepared.height), (Some(512), Some(256)));
+        assert!(matches!(prepared.mime.as_str(), "image/png" | "image/webp"));
+        assert!(prepared.size as u64 <= ceiling);
+        assert!(prepared.preview.is_none());
+        let made = prepared.file.expect("its bytes");
+        let head = head(&made, 64).await;
+        assert_eq!(fc_text::pack::type_of(&head), Some(prepared.mime.as_str()));
+        let seen = alpha(&made).await;
+        assert!(
+            (100..=155).contains(&seen),
+            "half-transparent in, half-transparent out: {seen}"
+        );
+
+        // A JPEG becomes a PNG, never scaled up.
+        let jpeg = picture(300, 200, "image/jpeg").await;
+        let prepared = sticker(&jpeg, PACK_CEILING).await.unwrap();
+        assert_eq!(prepared.mime, "image/png");
+        assert_eq!((prepared.width, prepared.height), (Some(300), Some(200)));
+    }
+
+    /// What cannot be a sticker is refused beside the picker, saying which:
+    /// an animated one over the ceiling is never flattened to fit, a file
+    /// that is not a picture is not uploaded as one, and a picture still
+    /// too big at 512 × 512 is too big.
+    #[wasm_bindgen_test]
+    async fn what_cannot_be_a_sticker_is_refused() {
+        use fc_text::pack::Refusal;
+        let mut animated = b"RIFF\x00\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00\x02\x00\x00\x00".to_vec();
+        animated.resize(400, 0);
+        assert_eq!(
+            sticker(&bytes(&animated), 100).await,
+            Err(Refusal::TooLarge),
+            "never re-encoded, so never made smaller"
+        );
+        // An animated PNG over the ceiling would have to be REMADE, which
+        // is one frame of it: refused as an animation, never flattened.
+        let mut apng = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        for (kind, length) in [(b"IHDR", 13u32), (b"acTL", 8), (b"IDAT", 4)] {
+            apng.extend_from_slice(&length.to_be_bytes());
+            apng.extend_from_slice(kind);
+            apng.resize(apng.len() + length as usize + 4, 0);
+        }
+        assert_eq!(
+            sticker(&bytes(&apng), 16).await,
+            Err(Refusal::Animated),
+            "an animated sticker must be a WebP"
+        );
+        // Twelve honest bytes and nothing behind them.
+        let mut cut_short = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        cut_short.extend_from_slice(&[0; 40]);
+        assert_eq!(
+            sticker(&bytes(&cut_short), PACK_CEILING).await,
+            Err(Refusal::Unreadable)
+        );
+        assert_eq!(
+            sticker(&bytes(b"just some words"), PACK_CEILING).await,
+            Err(Refusal::Unreadable)
+        );
+        let picture = picture(300, 300, "image/jpeg").await;
+        assert_eq!(sticker(&picture, 16).await, Err(Refusal::TooLarge));
+    }
+
+    /// A real 1 × 1 GIF of `frames` pictures, with `padding` bytes of
+    /// comment in front of the first — enough to push the second picture
+    /// past what is read of any other type.
+    fn gif(frames: usize, padding: usize) -> Blob {
+        let mut gif = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xFF\x00\x00\x00\x00\x00".to_vec();
+        let mut left = padding;
+        if left > 0 {
+            gif.extend_from_slice(&[0x21, 0xFE]);
+            while left > 0 {
+                let run = left.min(255);
+                gif.push(run as u8);
+                gif.extend(std::iter::repeat_n(b' ', run));
+                left -= run;
+            }
+            gif.push(0);
+        }
+        for _ in 0..frames {
+            gif.extend_from_slice(&[0x21, 0xF9, 4, 0, 10, 0, 0, 0]);
+            gif.extend_from_slice(&[0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0]);
+            gif.extend_from_slice(&[2, 2, 0x44, 0x01, 0]);
+        }
+        gif.push(0x3B);
+        bytes(&gif)
+    }
+
+    /// AN ANIMATED GIF IS REFUSED, IN WORDS, NEVER FLATTENED: made into a
+    /// sticker it would be frame zero of what was picked, stored as a still
+    /// PNG, with nothing said. A still GIF is a still picture and is made
+    /// into one like any other.
+    #[wasm_bindgen_test]
+    async fn an_animated_gif_is_refused_and_a_still_one_is_made_a_sticker() {
+        use fc_text::pack::Refusal;
+        let still = sticker(&gif(1, 0), PACK_CEILING).await.unwrap();
+        assert_eq!(still.mime, "image/png");
+        assert_eq!((still.width, still.height), (Some(1), Some(1)));
+        assert_eq!(
+            sticker(&gif(3, 0), PACK_CEILING).await,
+            Err(Refusal::Animated)
+        );
+        // The second picture is behind more than is read of any other
+        // type, and there is no loop block to give it away: a GIF is read
+        // whole before it is believed to be a still.
+        let padding = STICKER_HEAD as usize + 4_096;
+        assert_eq!(
+            sticker(&gif(2, padding), PACK_CEILING).await,
+            Err(Refusal::Animated)
+        );
+        assert!(sticker(&gif(1, padding), PACK_CEILING).await.is_ok());
+    }
+
+    #[wasm_bindgen_test]
+    async fn the_same_bytes_are_the_same_whatever_blob_holds_them() {
+        assert!(same_bytes(&bytes(b"abc"), &bytes(b"abc")).await);
+        assert!(!same_bytes(&bytes(b"abc"), &bytes(b"abd")).await);
+        assert!(!same_bytes(&bytes(b"abc"), &bytes(b"abcd")).await);
     }
 }

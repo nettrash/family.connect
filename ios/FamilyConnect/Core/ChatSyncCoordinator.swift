@@ -280,6 +280,13 @@ final class ChatSyncCoordinator {
     /// has not been written yet. Nothing in the app reads it.
     private(set) var pendingReadPost: Task<Void, Never>?
 
+    /// The resync the most recent `.connected` started.
+    ///
+    /// Test seam, `pendingDelivery`'s twin and kept for its reason: a test
+    /// that delivers a `.connected` event has started a task that touches
+    /// the store, and must outlive it. Nothing in the app reads it.
+    private(set) var pendingConnectResync: Task<Void, Never>?
+
     /// The coordinator owns its network collaborators; tests inject
     /// stub-session-backed instances through the same initializer.
     init(
@@ -488,11 +495,23 @@ final class ChatSyncCoordinator {
             // would be a poll (issue #54). Android hangs the same pass off
             // `connectivity.onAvailable`.
             attachmentStore?.repairPosters()
-            Task { await self.resync() }
+            // A NEW connection, and "caught up" belongs to one
+            // (docs/protocol.md, "Sticker pack"): whatever pass is still
+            // running began under the socket this one replaced, and must
+            // not earn the flag for it (`packConnection`).
+            packConnection += 1
+            pendingConnectResync = Task { await self.resync() }
         case .disconnected:
             // The socket's own loop is retrying; "offline" is reserved for
             // deliberate suspension.
             if connectionState == .connected { connectionState = .connecting }
+            // Whatever the pack did while the socket was down was missed,
+            // so the next frame's seq says nothing about what came before
+            // it — the catch-up on reconnect earns the flag back. Moving
+            // the number on, rather than lowering a flag, is what also
+            // stops a pass still in flight from raising it again after
+            // this line has run.
+            packConnection += 1
         case .unauthorized:
             // The token is dead (deleted account, revoked session): the
             // same 401 handling every REST call gets, so this device
@@ -524,6 +543,15 @@ final class ChatSyncCoordinator {
 
         case .boardNote(let note):
             applyNote(note)
+            saveContext()
+
+        case .packItem(let item):
+            applyPackItem(item)
+            // The frame moves the cursor ONLY once this connection has
+            // caught up (docs/protocol.md, "Sticker pack"): before that, a
+            // frame's seq sits above changes the catch-up has not fetched
+            // yet, and a cursor moved to it would skip them for good.
+            if packCaughtUp { packCursor = max(packCursor, item.packSeq) }
             saveContext()
 
         case .aiDelta(_, let messageID, let text):
@@ -1094,6 +1122,509 @@ final class ChatSyncCoordinator {
             saveContext()
             if page.count < limit { return }
         }
+    }
+
+    // MARK: - Sticker pack
+
+    /// The pack's catch-up cursor, persisted like the board's so a relaunch
+    /// resumes rather than re-reading the whole pack.
+    var packCursor: Int64 {
+        get { packCursorOverride ?? AppSettings.packCursor }
+        set {
+            if packCursorOverride != nil {
+                packCursorOverride = newValue
+            } else {
+                AppSettings.packCursor = newValue
+            }
+        }
+    }
+
+    /// Test seam, `currentUserIDOverride`'s twin: a test that sets this
+    /// keeps the cursor on the coordinator and out of the app's real
+    /// UserDefaults — which every suite in the bundle shares, and which a
+    /// sign-out test wipes. The app never sets it.
+    var packCursorOverride: Int64?
+
+    /// Which connection this is, counted from launch: it moves on every
+    /// `.connected` and every `.disconnected`, and on a purge of the pack.
+    ///
+    /// "Caught up" belongs to ONE connection (docs/protocol.md, "Sticker
+    /// pack"), and a flag cannot say whose it is. A resync is a long chain
+    /// of requests; the socket can drop and come back while one is still
+    /// running, and that pass — which read `max_pack_seq` and the feed
+    /// under the OLD socket — used to finish by setting a plain
+    /// `packCaughtUp = true` after the disconnect had cleared it. The new
+    /// connection's frames then moved the cursor over whatever the pack did
+    /// in the gap, and no later catch-up ever asked for it. So a pass
+    /// remembers the number it started under, and earns the flag only for
+    /// that number.
+    private(set) var packConnection = 0
+
+    /// The connection whose catch-up ran to its end, or nil for none.
+    private var packCaughtUpConnection: Int?
+
+    /// Whether THIS connection has caught the pack up — the condition under
+    /// which a `pack_item` frame may move the cursor. False from launch and
+    /// from every disconnect until a catch-up that BEGAN under this
+    /// connection has run to its end.
+    var packCaughtUp: Bool { packCaughtUpConnection == packConnection }
+
+    /// A pass finished: the flag goes up for the connection it started
+    /// under, which is a no-op when a reconnect has overtaken it.
+    private func markPackCaughtUp(for connection: Int) {
+        guard connection == packConnection else {
+            AppLog.sync.info("Pack catch-up was overtaken by a reconnect; not marking caught up")
+            return
+        }
+        packCaughtUpConnection = connection
+    }
+
+    /// Let go of the pack WHOLE: the items, the gone set and the cursor.
+    /// What a purge of the chat store calls, whatever the reason for it.
+    ///
+    /// THE CURSOR IS THE POINT. It lives in UserDefaults and the items live
+    /// in the store, and the two are wiped under different scopes: a kick
+    /// or a leave keeps the session — and with it every default — and takes
+    /// the family's rows. A cursor that outlived its items is a device that
+    /// believes it holds a pack it has just deleted. `catchUpPack` would
+    /// then find nothing newer than the cursor and fetch nothing, the
+    /// change feed would bring only what changed AFTER it, and a full read
+    /// of another family's pack — whose mark may well be lower, the
+    /// sequence being server-wide — would be refused as stale. The panel
+    /// stayed empty until a sign-out. "A client that holds no pack reads
+    /// the whole of it" (docs/protocol.md, "The pack"), and 0 is how this
+    /// client says it holds none.
+    ///
+    /// The flag goes too: whatever this connection had caught up with was
+    /// the pack that is gone, and a frame must not move a cursor that the
+    /// next catch-up has yet to set.
+    func forgetPack() {
+        // Row by row, not `delete(model:)`: that is a batch delete against
+        // the STORE, and it does not see a row this context has inserted
+        // and not yet saved — an item a frame delivered a moment ago would
+        // survive its own pack. A pack is a couple of hundred rows at most.
+        for item in (try? modelContext.fetch(FetchDescriptor<PackItemEntity>())) ?? [] {
+            modelContext.delete(item)
+        }
+        // The gone set with it — ids are the server's, and a different
+        // server hands out the same small numbers.
+        for gone in (try? modelContext.fetch(FetchDescriptor<GonePackItemEntity>())) ?? [] {
+            modelContext.delete(gone)
+        }
+        packCursor = 0
+        // A new number and not only a lowered flag: a catch-up of the pack
+        // that is gone may still be in flight, and must not raise it.
+        packCaughtUpConnection = nil
+        packConnection += 1
+        saveContext()
+    }
+
+    /// Apply one item under the per-item seq guard.
+    ///
+    /// The board's rule, item for item (docs/protocol.md, "Sticker pack"):
+    /// a removed id is never resurrected, an item is written only when the
+    /// incoming `pack_seq` is greater than the one held, and a tombstone
+    /// deletes the row and remembers the id. Returns whether it changed
+    /// anything.
+    ///
+    /// NOT filtered by blocks, deliberately: an item is a picture the
+    /// family keeps, not something a person said, and a panel one sticker
+    /// short for one member would be a quantity that moved when they
+    /// blocked somebody.
+    @discardableResult
+    func applyPackItem(_ dto: PackItemDTO) -> Bool {
+        // A tombstone is the last word, and the seq guard is no defence: a
+        // copy still in flight may carry a seq above the tombstone's.
+        if packItemIsGone(dto.id) { return false }
+        let existing = fetchPackItem(dto.id)
+        // STRICTLY greater, as the protocol writes it. An item never
+        // changes once added — there is no edit — so unlike a note there is
+        // no same-seq copy that could repair a row; the only later state is
+        // the tombstone, which always carries a higher seq.
+        if let existing, dto.packSeq <= existing.packSeq { return false }
+
+        if dto.isTombstone {
+            rememberPackItemGone(dto.id)
+            if let existing {
+                // The picture goes with it: the server has dropped the
+                // attachment row, and a cached file nothing names is only
+                // ever found by somebody looking through the caches.
+                attachmentStore?.forget(attachmentIDs: [existing.attachmentID])
+                modelContext.delete(existing)
+            }
+            return true
+        }
+        guard let attachment = dto.attachment, let addedBy = dto.addedBy else {
+            // A live item with no picture is a server bug; dropping it
+            // beats drawing an empty cell nobody can send.
+            return false
+        }
+        if let existing {
+            existing.addedBy = addedBy
+            existing.attachmentID = attachment.id
+            existing.mime = attachment.mime
+            existing.size = attachment.size
+            existing.width = attachment.width
+            existing.height = attachment.height
+            existing.label = dto.label
+            existing.createdAt = dto.createdAt ?? existing.createdAt
+            existing.packSeq = dto.packSeq
+        } else {
+            modelContext.insert(PackItemEntity(
+                itemID: dto.id,
+                addedBy: addedBy,
+                attachmentID: attachment.id,
+                mime: attachment.mime,
+                size: attachment.size,
+                width: attachment.width,
+                height: attachment.height,
+                label: dto.label,
+                createdAt: dto.createdAt ?? Date(),
+                packSeq: dto.packSeq))
+        }
+        return true
+    }
+
+    private func fetchPackItem(_ itemID: Int64) -> PackItemEntity? {
+        let descriptor = FetchDescriptor<PackItemEntity>(
+            predicate: #Predicate { $0.itemID == itemID })
+        return (try? modelContext.fetch(descriptor))?.first
+    }
+
+    /// Everything the pack holds, in the order it was added — the panel's
+    /// order, and the list "does the pack already hold this?" is asked of.
+    func packItems() -> [PackItemSnapshot] {
+        let descriptor = FetchDescriptor<PackItemEntity>(sortBy: [SortDescriptor(\.itemID)])
+        return ((try? modelContext.fetch(descriptor)) ?? []).map(\.snapshot)
+    }
+
+    /// Whether this device has been told that item is gone.
+    func packItemIsGone(_ id: Int64) -> Bool {
+        var descriptor = FetchDescriptor<GonePackItemEntity>(
+            predicate: #Predicate { $0.itemID == id })
+        descriptor.fetchLimit = 1
+        return ((try? modelContext.fetchCount(descriptor)) ?? 0) > 0
+    }
+
+    func rememberPackItemGone(_ id: Int64) {
+        guard !packItemIsGone(id) else { return }
+        modelContext.insert(GonePackItemEntity(itemID: id))
+    }
+
+    /// Full read of the pack. Answers whether the server was reached.
+    @discardableResult
+    func loadPack() async -> Bool {
+        guard let response = try? await api.pack() else { return false }
+        guard replacePack(with: response) else { return true }
+        packCursor = max(packCursor, response.maxPackSeq)
+        saveContext()
+        return true
+    }
+
+    /// The cache half of `loadPack`: everything but the cursor. Answers
+    /// false when the read was IGNORED.
+    ///
+    /// A full read REPLACES what is held — it never returns tombstones, so
+    /// an item it leaves out is an item that is gone — with the board's one
+    /// exception: an item held at a `pack_seq` ABOVE the read's
+    /// `max_pack_seq` arrived after the read was taken, and stays.
+    ///
+    /// And a read whose mark is below one this device has already applied
+    /// is ignored whole. `max_pack_seq` is read before the items and
+    /// changes commit in seq order, so such a read is simply OLDER than
+    /// what is held, and replacing from it would take away stickers that
+    /// exist.
+    @discardableResult
+    func replacePack(with response: PackResponse) -> Bool {
+        guard response.maxPackSeq >= packCursor else { return false }
+        let listed = Set(response.items.map(\.id))
+        let held = (try? modelContext.fetch(FetchDescriptor<PackItemEntity>())) ?? []
+        for item in held
+        where !listed.contains(item.itemID) && item.packSeq <= response.maxPackSeq {
+            rememberPackItemGone(item.itemID)
+            attachmentStore?.forget(attachmentIDs: [item.attachmentID])
+            modelContext.delete(item)
+        }
+        for item in response.items { applyPackItem(item) }
+        return true
+    }
+
+    /// Pack catch-up, after `GET /families/mine` has said where the server
+    /// is: a full read when nothing is held, the change feed otherwise —
+    /// `after_seq` pages until a short one, tombstones included.
+    ///
+    /// A pack nobody has written to since this device last looked costs no
+    /// request at all, and that includes the pack nobody has EVER written
+    /// to: its `max_pack_seq` is omitted, the cursor is 0, and there is
+    /// nothing a full read could return.
+    ///
+    /// `connection` is the connection `serverMaxSeq` was READ under — the
+    /// caller takes `packConnection` BEFORE the `GET /families/mine` that
+    /// produced the number, because a mark read under the old socket says
+    /// nothing about what the pack did before the new one came up. nil is
+    /// "this one, now", for a caller that has the mark in hand already.
+    /// What the pass reads is applied either way, item by item under the
+    /// guard; only the flag is withheld from a connection that did not run
+    /// it.
+    func catchUpPack(serverMaxSeq: Int64, connection: Int? = nil) async {
+        let connection = connection ?? packConnection
+        guard serverMaxSeq > packCursor else {
+            markPackCaughtUp(for: connection)
+            return
+        }
+        if packCursor == 0 {
+            // First sight: the current state in one request rather than
+            // the history of every sticker that ever came and went.
+            if await loadPack() { markPackCaughtUp(for: connection) }
+            return
+        }
+        let limit = 200
+        while true {
+            guard let page = try? await api.packChanges(afterSeq: packCursor, limit: limit)
+            else { return }
+            for item in page { applyPackItem(item) }
+            if let last = page.last { packCursor = max(packCursor, last.packSeq) }
+            saveContext()
+            if page.count < limit { break }
+        }
+        markPackCaughtUp(for: connection)
+    }
+
+    /// The pack's step of a resync: catch up, and when a reconnect
+    /// overtook the pass, run it again for the connection that did.
+    ///
+    /// The second half is what keeps "overtaken" from meaning "late". A
+    /// resync already running swallows the one the new connection asks for
+    /// (`isResyncing`), so without it the new connection would simply never
+    /// catch up: safe — its frames move no cursor — but whatever the pack
+    /// did in the gap would wait for the next reconnect. Bounded, because a
+    /// socket that flaps faster than a request answers is not something to
+    /// chase; the next `.connected` has a resync of its own.
+    func catchUpPackForThisConnection(
+        connection: Int, mine: FamilyMineResponse
+    ) async {
+        var connection = connection
+        var mine = mine
+        for _ in 0..<3 {
+            // Only against a server that has packs: one that predates them
+            // has no endpoint to ask.
+            guard mine.maxPackItems != nil else { return }
+            await catchUpPack(serverMaxSeq: mine.maxPackSeq ?? 0, connection: connection)
+            // Not overtaken — caught up, or a request failed and the next
+            // resync tries again. Either way there is nothing to redo.
+            guard connection != packConnection else { return }
+            connection = packConnection
+            guard let again = try? await api.myFamily() else { return }
+            mine = again
+        }
+    }
+
+    /// What became of an attempt to add a sticker.
+    enum PackAddOutcome: Equatable {
+        case added
+        /// The pack already held those bytes (the server's `200`). Not a
+        /// failure and not a second sticker.
+        case alreadyHeld
+        /// Said to the person, in words they can act on.
+        case failed(String)
+    }
+
+    /// Add a sticker to the family's pack: upload the bytes AS THEY ARE,
+    /// then claim them (docs/protocol.md, "The pack").
+    ///
+    /// No `MediaPrep`, no preview, no re-encode — `made` is either what
+    /// somebody picked, byte for byte, or the PNG `StickerPack.make` drew
+    /// from a picture that was not a sticker yet. Anybody in the family
+    /// may; the limits are the family's and are checked here first so the
+    /// refusal arrives beside the picker, with the server as the backstop.
+    func addSticker(_ made: StickerPack.Made, label: String?) async -> PackAddOutcome {
+        // The label first, because it is the one refusal that needs no
+        // request at all: over 64 is `validation` on the server, and asked
+        // there it would arrive after the picture had been uploaded for
+        // nothing. The sheet says the same sentence while it is typed; this
+        // is the backstop for any other way in.
+        let cleanLabel: String?
+        switch StickerPack.label(label) {
+        case .none: cleanLabel = nil
+        case .text(let text): cleanLabel = text
+        case .tooLong: return .failed(StickerPack.labelTooLongNotice)
+        }
+        if let ceiling = AppSettings.packMaxItemBytes, made.data.count > ceiling {
+            return .failed(Self.packFailure(APIError.payloadTooLarge))
+        }
+        guard StickerPack.hasRoom(count: packItems().count, limit: AppSettings.packMaxItems) else {
+            return .failed(Self.packFailure(APIError.conflict(code: "pack_full", message: nil)))
+        }
+        let fileURL = MediaPrep.temporaryURL(extension: made.mime == "image/png" ? "png" : "webp")
+        do {
+            try made.data.write(to: fileURL, options: .atomic)
+        } catch {
+            return .failed(Self.packFailure(error))
+        }
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        // Twice at most. `attachment_expired` means the unclaimed sweep
+        // took the upload between the two requests — the answer is "upload
+        // again", and the bytes are still in hand. ONCE, automatically and
+        // without a word; a second `attachment_expired` is no longer a
+        // race, and falls to the ordinary failure below and is shown.
+        for attempt in 0..<2 {
+            do {
+                let uploaded = try await api.uploadAttachment(
+                    fileURL: fileURL,
+                    mime: made.mime,
+                    kind: AttachmentDTO.Kind.photo,
+                    width: made.width,
+                    height: made.height,
+                    durationMS: nil)
+                let answer = try await api.addPackItem(
+                    attachmentID: uploaded.id, label: cleanLabel)
+                // Applied under the per-item guard, and the cursor does NOT
+                // move: the answer to this client's own add says nothing
+                // about another member's change with a lower seq that this
+                // device has not heard yet (the board's rule, and its
+                // reason).
+                applyPackItem(answer.item)
+                saveContext()
+                // The item's attachment id is the one to cache under — on a
+                // `200` it is the pack's EXISTING id, not the upload's.
+                if let id = answer.item.attachment?.id {
+                    attachmentStore?.seed(made.data, id: id, preview: false)
+                }
+                return answer.alreadyHeld ? .alreadyHeld : .added
+            } catch APIError.unauthorized {
+                session?.handleUnauthorized()
+                return .failed(Self.packFailure(APIError.unauthorized))
+            } catch APIError.notFound(let code) where code == "attachment_expired" && attempt == 0 {
+                continue
+            } catch {
+                AppLog.sync.info("Adding a sticker failed: \(Self.reason(error), privacy: .public)")
+                return .failed(Self.packFailure(error))
+            }
+        }
+        return .failed(Self.packFailure(APIError.decoding))
+    }
+
+    /// Why an add or a removal did not happen, as a person would be told
+    /// it. `pack_full` and `pack_item_too_large` are SAID, never swallowed:
+    /// the limit is the family's, and a sticker that silently did not
+    /// appear is one its adder will go looking for.
+    nonisolated static func packFailure(_ error: Error) -> String {
+        switch error as? APIError {
+        case .conflict(code: "pack_full"?, message: _):
+            return String(localized: "The family's stickers are full. Remove one to make room.")
+        case .payloadTooLarge:
+            return String(localized: "That picture is too big to be a sticker.")
+        case .conflict(code: "invalid_attachment"?, message: _):
+            return String(localized: "A sticker has to be a WebP or PNG picture.")
+        case .forbidden(code: "not_pack_item_author"?):
+            return String(localized: "Only whoever added a sticker, or the family owner, can remove it.")
+        case .transport, .throttled, .server:
+            return String(localized: "The sticker didn't reach the server. Check your connection and try again.")
+        default:
+            return String(localized: "The server refused it.")
+        }
+    }
+
+    /// Remove a sticker from the pack. Offered to whoever added it and to
+    /// the family's owner (`StickerPack.canRemove`); the server is the one
+    /// that decides. Answers nil when it is gone, or the sentence to show.
+    ///
+    /// Nothing that was ever SENT changes: a sticker message carries its
+    /// own copy of the picture under its own attachment id.
+    func removeSticker(id: Int64) async -> String? {
+        do {
+            try await api.deletePackItem(id: id)
+        } catch APIError.unauthorized {
+            session?.handleUnauthorized()
+            return Self.packFailure(APIError.unauthorized)
+        } catch APIError.notFound(code: "pack_item_not_found"?) {
+            // ALREADY GONE, which is what was asked for: somebody else
+            // removed it, or whoever added it has left the family. Whatever
+            // this device is still drawing is not the family's any more, so
+            // it is dropped below exactly as a `204` drops it — and nothing
+            // is said, because nothing went wrong. By its CODE and not by
+            // the bare 404: a path this server does not have is a 404 too,
+            // and that one is a failure the person should hear about.
+        } catch {
+            AppLog.sync.info("Removing a sticker failed: \(Self.reason(error), privacy: .public)")
+            return Self.packFailure(error)
+        }
+        // Remembered as well as deleted, so the answer to somebody else's
+        // change that was already in flight cannot put it back in the
+        // panel. The tombstone frame arrives too, and finds nothing to do.
+        rememberPackItemGone(id)
+        if let existing = fetchPackItem(id) {
+            attachmentStore?.forget(attachmentIDs: [existing.attachmentID])
+            modelContext.delete(existing)
+        }
+        saveContext()
+        return nil
+    }
+
+    /// Send a pack item as a sticker: one tap, no caption, no confirmation
+    /// (docs/protocol.md, "Sending one").
+    ///
+    /// The message is a COPY — it uploads the item's cached bytes again
+    /// (identical bytes are one file per family, so the copy costs an
+    /// upload and no disk) and the server never checks they are still in
+    /// the pack. Which is why this reads the bytes and then lets go of the
+    /// item: a sticker removed between the tap and the send still goes.
+    ///
+    /// Answers nil when there is nothing to send — the bytes are not on
+    /// this device and the server could not be asked for them.
+    func sendSticker(
+        _ item: PackItemSnapshot, replyTo: ReplyToDTO? = nil, in chatID: Int64
+    ) async -> String? {
+        guard let bytes = await attachmentStore?.originalBytes(id: item.attachmentID) else {
+            return nil
+        }
+        let localID = sendSticker(
+            bytes: bytes, mime: item.mime, width: item.width, height: item.height,
+            replyTo: replyTo, in: chatID)
+        if localID != nil {
+            AppSettings.packRecents = StickerRecents.noting(item.id, in: AppSettings.packRecents)
+        }
+        return localID
+    }
+
+    /// The send itself, from bytes in hand — the ordinary media outbox with
+    /// one flag, so a sticker sent with no network waits in the queue like
+    /// any photo does and goes on the next connect.
+    ///
+    /// The bytes are written out UNTOUCHED and handed over with no preview:
+    /// `MediaPrep.preparePhoto` is the door every photograph leaves by, and
+    /// a sticker does not go through it (docs/protocol.md, "A sticker is
+    /// never prepared").
+    @discardableResult
+    func sendSticker(
+        bytes: Data, mime: String, width: Int?, height: Int?,
+        replyTo: ReplyToDTO? = nil, in chatID: Int64
+    ) -> String? {
+        guard AttachmentDTO.stickerMIMEs.contains(mime), !bytes.isEmpty else { return nil }
+        let fileURL = MediaPrep.temporaryURL(extension: mime == "image/png" ? "png" : "webp")
+        guard (try? bytes.write(to: fileURL, options: .atomic)) != nil else { return nil }
+        let prepared = MediaPrep.Prepared(
+            fileURL: fileURL,
+            mime: mime,
+            kind: AttachmentDTO.Kind.photo,
+            width: width,
+            height: height,
+            durationMS: nil,
+            previewJPEG: nil)
+        guard let localID = sendMedia(
+            [prepared], caption: "", replyTo: replyTo, in: chatID, sticker: true)
+        else {
+            try? FileManager.default.removeItem(at: fileURL)
+            return nil
+        }
+        // The chat list says what it is from the moment it is queued —
+        // `enqueue` wrote the empty body, which reads as a blank row.
+        if let chat = fetchChat(chatID) {
+            chat.lastMessagePreview = String(localized: "Sticker")
+            saveContext()
+        }
+        return localID
     }
 
     /// The members a note's text names (docs/protocol.md, "Board").
@@ -2067,7 +2598,11 @@ final class ChatSyncCoordinator {
         caption: String,
         replyTo: ReplyToDTO? = nil,
         mentions: [MentionDTO]? = nil,
-        in chatID: Int64
+        in chatID: Int64,
+        /// The set is ONE picture going as a sticker (`sendSticker` is the
+        /// only caller that says so). It rides on the item row, so a send
+        /// resumed after a relaunch still says `sticker: true`.
+        sticker: Bool = false
     ) -> String? {
         guard !prepared.isEmpty else { return nil }
         guard let localID = enqueue(
@@ -2101,7 +2636,8 @@ final class ChatSyncCoordinator {
                 width: item.width,
                 height: item.height,
                 durationMS: item.durationMS,
-                name: item.name))
+                name: item.name,
+                sticker: sticker))
             staged += 1
         }
         guard staged > 0 else {
@@ -2134,6 +2670,18 @@ final class ChatSyncCoordinator {
     /// server for an id the server has never heard of.
     private func seedProvisionalPixels(_ items: [PendingMediaItemEntity]) {
         for item in items {
+            // A sticker has no preview by design (a preview is a JPEG), so
+            // the guard below would skip it and the pending bubble would
+            // ask the server for an id the server has never heard of. Its
+            // own bytes are its only pixels, and they are what it draws.
+            if item.sticker {
+                if let fileName = item.fileName,
+                   let full = PendingMediaStaging.url(for: fileName),
+                   let bytes = try? Data(contentsOf: full) {
+                    attachmentStore?.seed(bytes, id: item.provisionalAttachmentID, preview: false)
+                }
+                continue
+            }
             guard let previewName = item.previewFileName,
                   let url = PendingMediaStaging.url(for: previewName),
                   let jpeg = try? Data(contentsOf: url)
@@ -2620,6 +3168,11 @@ final class ChatSyncCoordinator {
                 return String(localized: "\(attachments.count) attachments")
             }
         }
+        // A sticker says so, where a photo's row says "Photo" — the same
+        // word the server puts in the push (docs/protocol.md, "Sending
+        // one"). Before the video arm only for reading order: a sticker is
+        // always a photo.
+        if attachment.sticker { return String(localized: "Sticker") }
         if attachment.isVideo { return String(localized: "Video") }
         if attachment.isAudio {
             return attachment.name.flatMap { $0.isEmpty ? nil : $0 }
@@ -2781,20 +3334,38 @@ final class ChatSyncCoordinator {
         // tap on a failed bubble, a relaunch — still carries the options a
         // poll cannot be created without.
         let pollOptions = pendingPollOptions(of: row)
+        // A sticker is exactly one attachment carrying the flag, and the
+        // flag is read off the ROW for the reason everything above is: a
+        // retry — a sweep, a relaunch, a tap on a failed bubble — must
+        // still say `sticker: true`, or the same bytes arrive as a
+        // photograph in a bubble (docs/protocol.md, "Sending one").
+        let stickerID: Int64? = {
+            let list = row.attachmentList
+            guard list.count == 1, let only = list.first, only.sticker else { return nil }
+            return only.id
+        }()
         row.state = .pending
         saveContext()
 
         // Leg 1: the socket, if it is up. A thrown notConnected skips the
         // ack race entirely and goes straight to REST.
         do {
-            try await socket.send(.send(
-                chatID: chatID,
-                clientMsgID: clientMsgID,
-                body: body,
-                replyToMessageID: replyToMessageID,
-                attachmentIDs: attachmentIDs,
-                pollOptions: pollOptions,
-                mentions: mentions))
+            if let stickerID {
+                try await socket.send(.sendSticker(
+                    chatID: chatID,
+                    clientMsgID: clientMsgID,
+                    replyToMessageID: replyToMessageID,
+                    attachmentID: stickerID))
+            } else {
+                try await socket.send(.send(
+                    chatID: chatID,
+                    clientMsgID: clientMsgID,
+                    body: body,
+                    replyToMessageID: replyToMessageID,
+                    attachmentIDs: attachmentIDs,
+                    pollOptions: pollOptions,
+                    mentions: mentions))
+            }
             if await waitForAck(clientMsgID: clientMsgID, timeout: ackTimeout) { return }
         } catch {
             // fall through to REST
@@ -2813,7 +3384,8 @@ final class ChatSyncCoordinator {
                 replyToMessageID: replyToMessageID,
                 attachmentIDs: attachmentIDs,
                 pollOptions: pollOptions,
-                mentions: mentions)
+                mentions: mentions,
+                sticker: stickerID != nil)
             _ = upsert(dto, bumpUnread: false, live: true)
         } catch APIError.unauthorized {
             session?.handleUnauthorized()
@@ -3051,6 +3623,13 @@ final class ChatSyncCoordinator {
             // that cannot say where the words go cannot ask the question
             // (protocol.md, "Consenting to the assistant").
             AppSettings.assistantProcessor = mine.assistant?.processor
+            // The pack's two limits, which double as the capability check:
+            // a server that predates the pack sends neither, and nil here
+            // is what takes the sticker button and the Family screen's pack
+            // away rather than leaving a door that answers 404
+            // (protocol.md, "What old clients and old servers do").
+            AppSettings.packMaxItems = mine.maxPackItems
+            AppSettings.packMaxItemBytes = mine.maxPackItemBytes
         }
 
         // 3. Chat list: server unread wins; direct chats the server
@@ -3132,8 +3711,16 @@ final class ChatSyncCoordinator {
         // 7. Board catch-up, on the third cursor. The family read already
         // told us the server's max, so a board nothing has happened on
         // costs no request at all.
+        //
+        // The pack's connection number is taken BEFORE the read: the mark
+        // below is only a promise about the connection it was read under
+        // (`packConnection`).
+        let packConnectionAtRead = packConnection
         if let mine = try? await api.myFamily() {
             await catchUpBoard(serverMaxSeq: mine.maxBoardSeq ?? 0)
+            // 7a. The sticker pack, on its own cursor and by the board's
+            // own rule.
+            await catchUpPackForThisConnection(connection: packConnectionAtRead, mine: mine)
         }
 
         // 6a. Repair any location that was stored without its coordinates.

@@ -95,6 +95,10 @@ struct FamilyConnectApp: App {
             PendingMediaItemEntity.self,
             BlockEntity.self,
             GoneNoteEntity.self,
+            // The family's sticker pack and its own gone set — additive, so
+            // a lightweight migration for a store that predates them.
+            PackItemEntity.self,
+            GonePackItemEntity.self,
         ])
         var configuration = ModelConfiguration(
             schema: schema,
@@ -241,7 +245,7 @@ struct FamilyConnectApp: App {
             session.applyBlockedIDs = { [weak coordinator] ids in
                 coordinator?.replaceBlocks(with: ids)
             }
-            session.clearChatStore = {
+            session.clearChatStore = { [weak coordinator] in
                 let context = container.mainContext
                 try? context.delete(model: MessageEntity.self)
                 // The unfinished half of any queued media send goes with
@@ -252,6 +256,15 @@ struct FamilyConnectApp: App {
                 try? context.delete(model: ChatEntity.self)
                 try? context.delete(model: MemberEntity.self)
                 try? context.delete(model: NoteEntity.self)
+                // The pack is the family's, like the board: the next account
+                // on this device may be in another family, or in none.
+                // Through the coordinator and not row by row here, because
+                // the pack is more than its rows: its cursor is a default,
+                // and a kick or a leave wipes the store WITHOUT wiping the
+                // defaults — so deleting only the rows left a cursor that
+                // said "caught up" over an empty pack, and the panel stayed
+                // empty after rejoining (`forgetPack`).
+                coordinator?.forgetPack()
                 // The block list goes too, and that is safe rather than
                 // lossy: it is server state, replaced wholesale from
                 // `blocked_user_ids` on the very first `GET /me` after the

@@ -262,6 +262,34 @@
                         <TextBlock x:Name="AssistantError" Margin="2,10,0,0" Style="{StaticResource Problem}" Visibility="Collapsed" />
                     </StackPanel>
                 </StackPanel>
+
+                <!--
+                    The family's stickers — the pictures sent in a chat, not the notes on the board. Everybody's card, not
+                    the owner's: anybody may add one, and whoever added it, or the owner, may take it out. Drawn only on a
+                    server that has packs (FamilyView.DrawStickers).
+                -->
+                <Border x:Name="StickersSection" Style="{StaticResource Card}" Visibility="Collapsed">
+                    <StackPanel>
+                        <StackPanel Style="{StaticResource CardHeader}">
+                            <FontIcon Style="{StaticResource CardIcon}" Glyph="&#xE899;" />
+                            <TextBlock x:Name="StickersHeading" Style="{StaticResource CardTitle}" />
+                        </StackPanel>
+                        <StackPanel Style="{StaticResource CardBody}">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="StickersCount" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <Button x:Name="AddStickerButton" Grid.Column="1" />
+                            </Grid>
+                            <TextBlock x:Name="StickersFootnote" Style="{StaticResource Footnote}" />
+                            <VariableSizedWrapGrid x:Name="StickersGrid" Orientation="Horizontal" MaximumRowsOrColumns="6" />
+                            <TextBlock x:Name="StickersNotice" Style="{StaticResource Footnote}" Visibility="Collapsed" />
+                            <TextBlock x:Name="StickersError" Style="{StaticResource Problem}" Visibility="Collapsed" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
             </StackPanel>
 
             <!-- The people: under the rules while narrow, beside them while wide. -->

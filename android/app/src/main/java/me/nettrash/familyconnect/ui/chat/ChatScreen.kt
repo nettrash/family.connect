@@ -153,6 +153,7 @@ import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.EmojiEmotions
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Flag
@@ -264,6 +265,11 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import me.nettrash.familyconnect.ui.stickers.ChatSticker
+import me.nettrash.familyconnect.ui.stickers.StickerNotices
+import me.nettrash.familyconnect.ui.stickers.StickerPanelSheet
+import me.nettrash.familyconnect.ui.stickers.StickerPreviewDialog
+import me.nettrash.familyconnect.ui.stickers.StickerViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
@@ -353,8 +359,20 @@ fun ChatScreen(
     /** Open another chat — the one-to-one a tapped mention leads to (docs/protocol.md, "Mentioning a member"). */
     onOpenChat: (Long) -> Unit = {},
     viewModel: ChatViewModel = hiltViewModel(),
+    /**
+     * The family's chat stickers: the panel, and the larger view a tap
+     * opens (docs/protocol.md, "Sticker pack"). Its own model because the
+     * thread screen and the Family screen need the same things.
+     */
+    stickerViewModel: StickerViewModel = hiltViewModel(),
 ) {
     val items by viewModel.items.collectAsStateWithLifecycle()
+    // Null on a server that predates packs, and then nothing about
+    // stickers is offered — no button, no "Add to family stickers".
+    val stickerLimits by stickerViewModel.limits.collectAsStateWithLifecycle()
+    var stickerPanelOpen by rememberSaveable { mutableStateOf(false) }
+    var viewingSticker by remember { mutableStateOf<AttachmentDto?>(null) }
+    StickerNotices(stickerViewModel)
     val mentionCandidates by viewModel.mentionCandidates.collectAsStateWithLifecycle()
     val chat by viewModel.chat.collectAsStateWithLifecycle()
     val typingUser by viewModel.typingUser.collectAsStateWithLifecycle()
@@ -1241,7 +1259,14 @@ fun ChatScreen(
                                     onOpenThread = { rootId -> chat?.id?.let { onOpenThread(it, rootId) } },
                                     onTapMention = { userId -> viewModel.openDirectChat(userId, onOpenChat) },
                                     onOpenAttachment = { attachment ->
-                                        if (attachment.isFile) {
+                                        if (attachment.isSticker) {
+                                            // Shown larger, with "Add to
+                                            // family stickers" — not the
+                                            // photo viewer, which zooms a
+                                            // photograph and would draw
+                                            // frame zero on black.
+                                            viewingSticker = attachment
+                                        } else if (attachment.isFile) {
                                             openFile(attachment)
                                         } else {
                                             // Built here, the one place the
@@ -1394,6 +1419,8 @@ fun ChatScreen(
                 onPasteTruncated = viewModel::reportPasteTruncated,
                 showsPoll = canCreatePoll,
                 onStartPoll = viewModel::beginPoll,
+                showsStickers = stickerLimits != null,
+                onOpenStickers = { stickerPanelOpen = true },
                 staged = staged,
                 onTakePhoto = { startCapture(false) },
                 onTakeVideo = { startCapture(true) },
@@ -1429,6 +1456,29 @@ fun ChatScreen(
                 onReviewAssistantConsent = viewModel::send,
             )
         }
+    }
+
+    if (stickerPanelOpen) {
+        StickerPanelSheet(
+            viewModel = stickerViewModel,
+            onPick = { item ->
+                // ONE TAP SENDS: no caption, no confirmation. The sheet
+                // closes so the sticker is seen landing in the thread.
+                stickerPanelOpen = false
+                viewModel.beginStickerSend { quote ->
+                    stickerViewModel.send(item, viewModel.chatId, quote)
+                }
+            },
+            onDismiss = { stickerPanelOpen = false },
+        )
+    }
+
+    viewingSticker?.let { attachment ->
+        StickerPreviewDialog(
+            attachment = attachment,
+            viewModel = stickerViewModel,
+            onDismiss = { viewingSticker = null },
+        )
     }
 
     pickerTarget?.let { target ->
@@ -1844,8 +1894,9 @@ private fun ReactionPickerPopup(
                     canSave = target.item.entity.attachment?.isFile == false,
                     canReply = target.item.entity.serverId != null,
                     canViewThread = canViewThread,
-                    canEdit = target.item.entity.serverId != null &&
-                        target.item.entity.senderId == myUserId,
+                    // The reader's own, and never a sticker — the rule is
+                    // [canEditMessage]'s, where a test holds it.
+                    canEdit = canEditMessage(target.item.entity, myUserId),
                     // Closing is the AUTHOR's, and one-way — the family
                     // owner does not outrank them here, exactly as with
                     // editing. Hidden once the poll is already closed:
@@ -2479,6 +2530,13 @@ internal fun MessageBubble(
     // below: an 18dp balloon corner over the tile's own 14dp corner at
     // zero inset would shave the tile into a shape neither of them has.
     val mediaOnly = remember(entity, isStreaming) { isMediaOnly(entity, isStreaming) }
+    // A STICKER is bare too, and more so: "drawn with NO BUBBLE — the
+    // picture alone, its transparency showing the chat behind it"
+    // (docs/protocol.md, "Sticker pack"). Unlike a bare photo it stays bare
+    // when it is a REPLY — replying with a sticker is how one answers
+    // something, and the quote then sits above it on the chat background.
+    val sticker = remember(entity) { stickerOf(entity) }
+    val bareMedia = mediaOnly || sticker != null
     // A reveal is a PEEK, not a setting: per row and per device, never on
     // the wire, never stored, and gone on the next launch. Keyed on the
     // message so a recycled row cannot inherit somebody else's reveal, and
@@ -2488,7 +2546,7 @@ internal fun MessageBubble(
     // A hidden row is never bare and never media-shaped: it draws one line
     // of placeholder text in an ordinary balloon, whatever the message
     // underneath it turns out to be.
-    val surfaceShape = if (mediaOnly && !isHidden) RectangleShape else bubbleShape
+    val surfaceShape = if (bareMedia && !isHidden) RectangleShape else bubbleShape
     // MARKDOWN FIRST, and the order is load-bearing. Markdown DELETES
     // characters (`**`, backticks, `](url)`), so detecting links over the
     // raw body and drawing the rendered one would leave every link after
@@ -2658,7 +2716,7 @@ internal fun MessageBubble(
             // emoji-only, and media-only (which also drops the inset and
             // the clip — see `surfaceShape`). One flag for both, so
             // nothing adapts to one half of the rule and not the other.
-            val isBare = (isEmojiOnly || mediaOnly) && !isHidden
+            val isBare = (isEmojiOnly || bareMedia) && !isHidden
             Surface(
                 shape = surfaceShape,
                 color = when {
@@ -2682,7 +2740,8 @@ internal fun MessageBubble(
                     isMine = isMine,
                     isStreaming = isStreaming,
                     answerFailed = answerFailed,
-                    mediaOnly = mediaOnly,
+                    mediaOnly = bareMedia,
+                    sticker = sticker,
                     emojiFontSize = emojiFontSize,
                     blocks = bodyBlocks,
                     memberNames = memberNames,
@@ -3613,6 +3672,12 @@ private fun BubbleContent(
      * the balloon's 12dp. Resolved by the caller, which owns the fill.
      */
     mediaOnly: Boolean = false,
+    /**
+     * The message's picture when it was sent as a STICKER, else null. Drawn
+     * in the one fixed box from its original bytes, in place of the photo
+     * tile (docs/protocol.md, "Sticker pack"). Resolved by the caller.
+     */
+    sticker: AttachmentDto? = null,
     /** Emoji-ladder size for an emoji-only body, else null. Resolved by the caller. */
     emojiFontSize: Float?,
     /**
@@ -3816,7 +3881,19 @@ private fun BubbleContent(
         // exactly as before, an album as a stack of cards, files and audio
         // as rows (see AttachmentGroup).
         val bubbleAttachments = entity.attachmentList
-        if (bubbleAttachments.isNotEmpty()) {
+        if (sticker != null) {
+            // Not an AttachmentGroup: that draws a photograph — cropped to
+            // its tile, from its preview when it has one. A sticker is
+            // fitted whole and drawn from its ORIGINAL bytes, which is the
+            // only copy with its transparency and its animation.
+            ChatSticker(
+                attachment = sticker,
+                onOpen = { onOpenAttachment(sticker) },
+                onLongPress = onTextLongPress,
+                onDoubleTap = onDoubleTap,
+                modifier = measureBlock,
+            )
+        } else if (bubbleAttachments.isNotEmpty()) {
             AttachmentGroup(
                 attachments = bubbleAttachments,
                 showMapPreviews = mapPreviewsEnabled,
@@ -5008,6 +5085,14 @@ private fun InputBar(
      */
     showsPoll: Boolean,
     onStartPoll: () -> Unit,
+    /**
+     * Offer the sticker panel. Only on a server that HAS packs — the
+     * absence of `max_pack_items` on `GET /families/mine` is the whole
+     * capability check, so there is no button that leads to a 404
+     * (docs/protocol.md, "Sticker pack").
+     */
+    showsStickers: Boolean = false,
+    onOpenStickers: () -> Unit = {},
     recordingMs: Long?,
     onStopRecording: () -> Unit,
     onCancelRecording: () -> Unit,
@@ -5312,6 +5397,24 @@ private fun InputBar(
                                 attachMenuOpen = false
                                 onTakeVideo()
                             },
+                        )
+                    }
+                }
+                if (showsStickers) {
+                    // Its own button rather than a line in the attach menu:
+                    // a sticker is SENT by the tap that picks it, which is a
+                    // different promise from everything in that menu — those
+                    // stage something for Send.
+                    IconButton(
+                        onClick = onOpenStickers,
+                        // An edit borrows the composer to rewrite one
+                        // message; a sticker is a new one.
+                        enabled = !isEditing,
+                        modifier = Modifier.size(44.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.EmojiEmotions,
+                            contentDescription = stringResource(R.string.s_stickers),
                         )
                     }
                 }

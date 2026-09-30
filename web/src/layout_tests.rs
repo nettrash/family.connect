@@ -333,6 +333,7 @@ fn props_with(
         unanswered_polls: 0,
         draft: String::new(),
         support_contact: None,
+        stickers: None,
         agreed_to_assistant: true,
         on_action,
         now_ms: 0.0,
@@ -925,6 +926,8 @@ async fn a_threads_box_says_what_goes_to_the_assistant() {
             ai_history_photos: false,
             ..Default::default()
         }),
+        stickers: None,
+        agreed_to_assistant: true,
         on_action: Callback::noop(),
     };
     let handle =
@@ -1321,5 +1324,629 @@ async fn a_long_preparation_says_how_far_it_is_and_can_be_called_off() {
     handle.destroy();
     TimeoutFuture::new(2_500).await;
     assert_eq!(staged_so_far(&log), 1, "only the one that was let finish");
+    root.remove();
+}
+
+/// The sticker button is beside the paperclip in EVERY chat a message can
+/// be sent in, wherever there is a pack to send from — the family chat, a
+/// one-to-one chat and the assistant's own — and nowhere there is none: a
+/// server that predates packs, an account in no family.
+#[wasm_bindgen_test]
+async fn the_sticker_button_is_there_only_where_a_pack_is() {
+    install_stylesheet();
+    let mount = |kind: &'static str, stickers: Option<Vec<crate::model::PackItem>>| async move {
+        let root = pane();
+        let (_, on_action) = recorder();
+        let mut props = props_with(vec![message(1)], None, on_action);
+        props.item.chat.kind = kind.into();
+        props.stickers = stickers;
+        let handle =
+            yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), props).render();
+        TimeoutFuture::new(50).await;
+        let there = root
+            .query_selector(".composer .pack-menu .tool")
+            .expect("a valid selector")
+            .is_some();
+        handle.destroy();
+        root.remove();
+        there
+    };
+    assert!(
+        mount("family", Some(Vec::new())).await,
+        "an empty pack still has a panel"
+    );
+    assert!(
+        mount("direct", Some(Vec::new())).await,
+        "any chat between people"
+    );
+    assert!(!mount("family", None).await, "a server from before packs");
+    assert!(
+        mount("ai", Some(Vec::new())).await,
+        "the assistant's chat too — through its consent question"
+    );
+    assert!(!mount("ai", None).await, "a server from before packs");
+}
+
+/// An assistant as `GET /families/mine` names one — or does not.
+fn assistant_answered_by(processor: Option<&str>) -> crate::model::Assistant {
+    crate::model::Assistant {
+        user_id: 2,
+        display_name: "Assistant".into(),
+        mention: Some("@ai".into()),
+        draw: Some("/draw".into()),
+        vision: true,
+        images: false,
+        processor: processor.map(str::to_string),
+    }
+}
+
+/// A media cache that already holds the pictures of [`pack_of`], so the
+/// panel's stickers are there to be clicked.
+fn loader_holding(count: i64) -> crate::media::MediaLoader {
+    let loader = crate::media::MediaLoader::new(crate::live::Live::new(
+        crate::live::AppState {
+            token: Some("t".into()),
+            ..Default::default()
+        },
+        Rc::new(|| {}),
+    ));
+    for id in 1..=count {
+        let parts = js_sys::Array::of1(&wasm_bindgen::JsValue::from_str("party cat"));
+        loader.seed(
+            700 + id,
+            crate::media::Variant::Sticker,
+            web_sys::Blob::new_with_str_sequence(&parts).expect("a blob"),
+        );
+    }
+    loader
+}
+
+/// Open the sticker panel under `composer` and click its first sticker.
+async fn pick_a_sticker(root: &Element, composer: &str) {
+    query(root, &format!("{composer} .pack-menu .tool"))
+        .dyn_into_html()
+        .click();
+    TimeoutFuture::new(50).await;
+    query(root, ".pack-panel .pack-cell:not([disabled])")
+        .dyn_into_html()
+        .click();
+    TimeoutFuture::new(50).await;
+}
+
+fn stickers_sent(log: &Rc<RefCell<Vec<Action>>>) -> usize {
+    log.borrow()
+        .iter()
+        .filter(|action| matches!(action, Action::SendSticker { .. }))
+        .count()
+}
+
+/// IN THE ASSISTANT'S CHAT A STICKER GOES THROUGH THE CONSENT QUESTION,
+/// never round it. One click there is a picture shown to the model, so
+/// until this member has agreed the click raises the screen that asks —
+/// the same one Send raises for words — and sends NOTHING; "Not Now"
+/// leaves it unsent; "I Agree" records the answer and still sends nothing
+/// by itself. Once agreed, one click sends, as anywhere. On a server that
+/// names nobody it says so and sends nothing, agreed or not.
+#[wasm_bindgen_test]
+async fn a_sticker_in_the_assistants_chat_goes_through_the_consent_question() {
+    let mount = |agreed: bool, processor: Option<&'static str>, on_action: Callback<Action>| async move {
+        let root = pane_of(600.0);
+        let mut props = props_with(vec![message(1)], None, on_action);
+        props.item.chat.kind = "ai".into();
+        props.assistant = Some(assistant_answered_by(processor));
+        props.agreed_to_assistant = agreed;
+        props.stickers = Some(pack_of(3));
+        let children = yew::html! { <Conversation ..props /> };
+        let handle = yew::Renderer::<WithMedia>::with_root_and_props(
+            root.clone().into(),
+            WithMediaProps {
+                loader: loader_holding(3),
+                children,
+            },
+        )
+        .render();
+        TimeoutFuture::new(50).await;
+        (root, handle)
+    };
+    let asking = |root: &Element| {
+        root.text_content()
+            .unwrap_or_default()
+            .contains("Before the assistant answers")
+    };
+
+    // Not yet agreed: asked, not sent.
+    let (log, on_action) = recorder();
+    let (root, handle) = mount(false, Some("Microsoft — Azure OpenAI"), on_action).await;
+    pick_a_sticker(&root, ".composer").await;
+    assert!(asking(&root), "the consent screen is up");
+    assert_eq!(stickers_sent(&log), 0, "and nothing went round it");
+    click_labelled(&root, ".dialog-actions button", "Not Now");
+    TimeoutFuture::new(50).await;
+    assert!(!asking(&root));
+    assert_eq!(stickers_sent(&log), 0, "declined: still unsent");
+    pick_a_sticker(&root, ".composer").await;
+    click_labelled(&root, ".dialog-actions button", "I Agree");
+    TimeoutFuture::new(50).await;
+    assert!(
+        log.borrow()
+            .iter()
+            .any(|action| matches!(action, Action::SetAssistantConsent { granted: true })),
+        "{:?}",
+        log.borrow()
+    );
+    assert_eq!(
+        stickers_sent(&log),
+        0,
+        "agreeing records the answer; the sticker is picked again to send"
+    );
+    handle.destroy();
+    root.remove();
+
+    // Agreed: one click sends, as in any chat.
+    let (log, on_action) = recorder();
+    let (root, handle) = mount(true, Some("Microsoft — Azure OpenAI"), on_action).await;
+    pick_a_sticker(&root, ".composer").await;
+    assert!(!asking(&root));
+    assert!(
+        log.borrow().iter().any(|action| matches!(
+            action,
+            Action::SendSticker {
+                chat_id: 42,
+                item_id: 1,
+                reply_to_message_id: None
+            }
+        )),
+        "{:?}",
+        log.borrow()
+    );
+    handle.destroy();
+    root.remove();
+
+    // Nobody named: nothing is sent, and the reason is said.
+    for agreed in [false, true] {
+        let (log, on_action) = recorder();
+        let (root, handle) = mount(agreed, None, on_action).await;
+        pick_a_sticker(&root, ".composer").await;
+        assert_eq!(stickers_sent(&log), 0);
+        assert!(!asking(&root), "there is no honest way to ask");
+        assert!(
+            notice_saying(&root, 200, |said| said
+                .contains("This server hasn't said which service answers"))
+            .await
+            .is_some(),
+            "{}",
+            root.text_content().unwrap_or_default()
+        );
+        handle.destroy();
+        root.remove();
+    }
+}
+
+/// A STICKER IS DRAWN WITH NO BUBBLE: no balloon behind it and no border
+/// round it, mine or anybody's — its transparency shows the chat — in a box
+/// that is the same for every sticker, with the picture fitted into it
+/// WHOLE. A property of the stylesheet, so it is checked against the
+/// shipped one; the class names are the ones views/bubble.rs and
+/// views/stickers.rs render.
+#[wasm_bindgen_test]
+async fn a_sticker_has_no_bubble_and_is_fitted_whole() {
+    install_stylesheet();
+    let root = fixed_root("position:fixed;top:0;left:0;width:600px;height:400px;");
+    // A 1×1 transparent GIF stands in for the picture: what is measured is
+    // the box, not the bytes.
+    let pixel = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+    root.set_inner_html(&format!(
+        r#"<div class="messages">
+             <div class="row"><article class="bubble is-mine is-media-only is-chat-sticker" id="mine">
+               <button class="chat-sticker" style="width:160px;height:160px"><img src="{pixel}" alt="Sticker"></button>
+               <div class="bubble-foot"><span class="meta">17:03</span></div></article></div>
+             <div class="row"><article class="bubble is-chat-sticker" id="theirs">
+               <div class="quote"><span class="quote-name">Anna</span><span class="quote-text">Dinner?</span></div>
+               <button class="chat-sticker" style="width:160px;height:160px"><img src="{pixel}" alt="Sticker"></button>
+             </article></div>
+             <div class="row"><article class="bubble is-mine" id="words"><p class="body">hi</p></article></div>
+           </div>"#
+    ));
+    TimeoutFuture::new(30).await;
+    let window = web_sys::window().expect("a window");
+    let style = |element: &Element, property: &str| {
+        window
+            .get_computed_style(element)
+            .expect("computes")
+            .expect("a style")
+            .get_property_value(property)
+            .expect("a value")
+    };
+    let clear = "rgba(0, 0, 0, 0)";
+    for id in ["#mine", "#theirs"] {
+        let bubble = query(&root, id);
+        assert_eq!(
+            style(&bubble, "background-color"),
+            clear,
+            "{id}: no balloon"
+        );
+        assert_eq!(style(&bubble, "border-top-color"), clear, "{id}: no border");
+        assert_eq!(style(&bubble, "padding-top"), "0px");
+        let sticker = query(&bubble, ".chat-sticker");
+        assert_eq!(
+            style(&sticker, "background-color"),
+            clear,
+            "{id}: the chat shows through"
+        );
+        let frame = sticker.get_bounding_client_rect();
+        assert_eq!(
+            (frame.width(), frame.height()),
+            (160.0, 160.0),
+            "{id}: the one box"
+        );
+        let picture = query(&sticker, "img");
+        assert_eq!(
+            style(&picture, "object-fit"),
+            "contain",
+            "{id}: whole, never cropped"
+        );
+        let drawn = picture.get_bounding_client_rect();
+        assert_eq!((drawn.width(), drawn.height()), (160.0, 160.0));
+    }
+    // An ordinary message still has its balloon: the rule is the sticker's.
+    assert_ne!(style(&query(&root, "#words"), "background-color"), clear);
+    // A sticker that answers something keeps its quote readable.
+    assert_ne!(
+        style(&query(&root, "#theirs .quote"), "background-color"),
+        clear
+    );
+    // Mine sits on my side of the chat, like any message of mine.
+    let mine = query(&root, "#mine").get_bounding_client_rect();
+    let theirs = query(&root, "#theirs").get_bounding_client_rect();
+    assert!(
+        mine.left() > theirs.left(),
+        "{} vs {}",
+        mine.left(),
+        theirs.left()
+    );
+    root.remove();
+}
+
+/// A sticker shown larger stays INSIDE its dialog, whatever its own pixel
+/// size: the picture fitted whole into a square stage, and the words and
+/// the buttons under it still readable. Found end to end — a percentage
+/// height in an auto-sized box let a big sticker open over the line that
+/// says whether the pack holds it.
+#[wasm_bindgen_test]
+async fn a_sticker_shown_larger_stays_inside_its_dialog() {
+    install_stylesheet();
+    let root = fixed_root("position:fixed;top:0;left:0;width:900px;height:700px;");
+    // Two thousand pixels square, as a finished sticker may be.
+    let big = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='2000' height='2000'%3E%3Crect width='2000' height='2000' fill='red'/%3E%3C/svg%3E";
+    root.set_inner_html(&format!(
+        r#"<div class="dialog-backdrop"><div class="dialog chat-sticker-view">
+             <h2>Sticker</h2>
+             <div class="chat-sticker-stage"><img src="{big}" alt="Sticker"></div>
+             <p class="footnote">Already in the family's stickers.</p>
+             <div class="dialog-actions"><button class="secondary">Close</button></div>
+           </div></div>"#
+    ));
+    TimeoutFuture::new(80).await;
+    let dialog = query(&root, ".dialog").get_bounding_client_rect();
+    let stage = query(&root, ".chat-sticker-stage").get_bounding_client_rect();
+    let picture = query(&root, ".chat-sticker-stage img").get_bounding_client_rect();
+    let words = query(&root, ".footnote").get_bounding_client_rect();
+    let close = query(&root, ".dialog-actions").get_bounding_client_rect();
+    assert!(
+        (stage.width() - stage.height()).abs() < 1.0 && stage.width() <= 512.0,
+        "a square no bigger than a made sticker: {}×{}",
+        stage.width(),
+        stage.height()
+    );
+    assert!(
+        picture.width() <= stage.width() + 0.5 && picture.height() <= stage.height() + 0.5,
+        "the picture is inside the stage: {}×{}",
+        picture.width(),
+        picture.height()
+    );
+    assert!(picture.bottom() <= words.top() + 0.5, "not over the words");
+    assert!(words.bottom() <= close.top() + 0.5);
+    assert!(
+        close.bottom() <= dialog.bottom() && dialog.bottom() <= viewport_height(),
+        "and the way out is on the screen"
+    );
+    root.remove();
+}
+
+/// A pack of `count` stickers, as a panel is handed one.
+fn pack_of(count: i64) -> Vec<crate::model::PackItem> {
+    (1..=count)
+        .map(|id| crate::model::PackItem {
+            id,
+            pack_seq: id,
+            added_by: Some(9),
+            attachment: Some(crate::model::Attachment {
+                id: 700 + id,
+                kind: "photo".into(),
+                mime: Some("image/webp".into()),
+                size: Some(11),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// A pane of a given width, as a phone's whole window is.
+fn pane_of(width: f64) -> HtmlElement {
+    install_stylesheet();
+    fixed_root(&format!(
+        "position:fixed;top:0;left:0;width:{width}px;height:480px;\
+         display:grid;grid-template-rows:minmax(0,1fr);"
+    ))
+}
+
+/// Where the open sticker panel is, against the pane it is in: asserts it
+/// is inside it on both sides, above the composer, no wider than it was
+/// designed to be — and that its last column of stickers is inside IT.
+fn assert_panel_is_on_screen(root: &Element, width: f64, pane: &str) {
+    let inside = query(root, pane).get_bounding_client_rect();
+    let panel = query(root, ".pack-panel").get_bounding_client_rect();
+    let composer = query(root, ".composer-wrap").get_bounding_client_rect();
+    assert!(
+        panel.left() >= inside.left() && panel.right() <= inside.right(),
+        "at {width}px the panel is {}..{} in a pane that is {}..{}",
+        panel.left(),
+        panel.right(),
+        inside.left(),
+        inside.right()
+    );
+    assert!(panel.width() <= 348.5, "{width}px: {} wide", panel.width());
+    assert!(
+        panel.width() >= (composer.width() - 32.0).min(348.0) - 0.5,
+        "{width}px: as wide as the composer has room for, not {}",
+        panel.width()
+    );
+    assert!(
+        panel.bottom() <= composer.top() + 0.5 && panel.top() >= inside.top(),
+        "{width}px: above the composer, under the top of the pane"
+    );
+    let cells = root
+        .query_selector_all(".pack-panel .pack-cell")
+        .expect("a valid selector");
+    assert!(cells.length() > 0, "the pack is drawn");
+    for index in 0..cells.length() {
+        let cell = cells
+            .item(index)
+            .expect("a cell")
+            .dyn_into::<Element>()
+            .expect("an element")
+            .get_bounding_client_rect();
+        assert!(
+            cell.left() >= panel.left() && cell.right() <= panel.right(),
+            "{width}px: sticker {index} is {}..{} in a panel that is {}..{}",
+            cell.left(),
+            cell.right(),
+            panel.left(),
+            panel.right()
+        );
+    }
+}
+
+/// THE STICKER PANEL STAYS ON THE SCREEN, at a phone's width as at a
+/// desk's. It once hung from the left edge of its own button — the second
+/// tool, some sixty pixels in — at a width worked out from the WINDOW, and
+/// so ran 27 pixels past the right edge of a 360-pixel phone, where the
+/// conversation clips it: the last column of stickers and the scrollbar
+/// were not there to be touched. A property of the stylesheet against the
+/// markup the view really renders, so both are the shipped ones.
+#[wasm_bindgen_test]
+async fn the_sticker_panel_stays_on_the_screen_at_a_phones_width() {
+    for width in [320.0, 360.0, 390.0, 600.0] {
+        let root = pane_of(width);
+        let (_, on_action) = recorder();
+        let mut props = props_with(vec![message(1)], None, on_action);
+        props.stickers = Some(pack_of(12));
+        let handle =
+            yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), props).render();
+        TimeoutFuture::new(50).await;
+        query(&root, ".composer .pack-menu .tool")
+            .dyn_into_html()
+            .click();
+        TimeoutFuture::new(50).await;
+        assert_panel_is_on_screen(&root, width, ".conversation");
+        handle.destroy();
+        root.remove();
+    }
+}
+
+#[derive(yew::Properties, PartialEq)]
+struct WithMediaProps {
+    loader: crate::media::MediaLoader,
+    children: yew::Html,
+}
+
+/// What the app gives every view: the tab's media cache.
+#[yew::function_component(WithMedia)]
+fn with_media(props: &WithMediaProps) -> yew::Html {
+    yew::html! {
+        <yew::ContextProvider<crate::media::MediaLoader> context={props.loader.clone()}>
+            { props.children.clone() }
+        </yew::ContextProvider<crate::media::MediaLoader>>
+    }
+}
+
+/// A THREAD HAS THE STICKER BUTTON TOO (ios ThreadView), wherever the chat
+/// has one — a server with packs — and what one click sends answers the
+/// ROOT, as every send from a thread does. Its panel stays inside the
+/// thread's pane, which is narrower than any phone. In a thread of the
+/// ASSISTANT'S chat the button is there as well, and the click goes
+/// through the consent question exactly as in the chat itself.
+#[wasm_bindgen_test]
+async fn a_thread_sends_a_sticker_to_its_root() {
+    use crate::media::{MediaLoader, Variant};
+    use crate::views::thread_panel::ThreadPanel;
+    let loader = MediaLoader::new(crate::live::Live::new(
+        crate::live::AppState {
+            token: Some("t".into()),
+            ..Default::default()
+        },
+        Rc::new(|| {}),
+    ));
+    let parts = js_sys::Array::of1(&wasm_bindgen::JsValue::from_str("party cat"));
+    loader.seed(
+        702,
+        Variant::Sticker,
+        web_sys::Blob::new_with_str_sequence(&parts).expect("a blob"),
+    );
+    let mount_agreed = |is_ai_chat: bool,
+                        stickers: Option<Vec<crate::model::PackItem>>,
+                        agreed_to_assistant: bool,
+                        on_action: Callback<Action>| {
+        let loader = loader.clone();
+        async move {
+            let root = pane_of(300.0);
+            let children = yew::html! {
+                <ThreadPanel
+                    chat_id={42}
+                    root_id={1}
+                    messages={vec![message(1), message(2)]}
+                    my_user_id={7}
+                    is_family_chat={!is_ai_chat}
+                    {is_ai_chat}
+                    names={std::collections::HashMap::<i64, String>::new()}
+                    members={Vec::<Member>::new()}
+                    assistant={is_ai_chat.then(|| assistant_answered_by(Some("Microsoft — Azure OpenAI")))}
+                    blocked={std::collections::HashSet::<i64>::new()}
+                    revealed={std::collections::HashSet::<i64>::new()}
+                    revealed_quotes={std::collections::HashSet::<(i64, u8)>::new()}
+                    failed={std::collections::HashMap::<String, String>::new()}
+                    ai_failed={std::collections::HashSet::<i64>::new()}
+                    {stickers}
+                    {agreed_to_assistant}
+                    {on_action}
+                />
+            };
+            let handle = yew::Renderer::<WithMedia>::with_root_and_props(
+                root.clone().into(),
+                WithMediaProps { loader, children },
+            )
+            .render();
+            TimeoutFuture::new(50).await;
+            (root, handle)
+        }
+    };
+
+    let mount = |is_ai_chat: bool,
+                 stickers: Option<Vec<crate::model::PackItem>>,
+                 on_action: Callback<Action>| {
+        mount_agreed(is_ai_chat, stickers, false, on_action)
+    };
+
+    let (log, on_action) = recorder();
+    let (root, handle) = mount(false, Some(pack_of(12)), on_action).await;
+    query(&root, ".thread-panel .composer .pack-menu .tool")
+        .dyn_into_html()
+        .click();
+    TimeoutFuture::new(50).await;
+    assert_panel_is_on_screen(&root, 300.0, ".thread-panel");
+    query(&root, ".pack-panel .pack-cell:not([disabled])")
+        .dyn_into_html()
+        .click();
+    TimeoutFuture::new(50).await;
+    assert!(
+        matches!(
+            log.borrow()[..],
+            [Action::SendSticker {
+                chat_id: 42,
+                item_id: 2,
+                reply_to_message_id: Some(1)
+            }]
+        ),
+        "{:?}",
+        log.borrow()
+    );
+    handle.destroy();
+    root.remove();
+
+    let (root, handle) = mount(false, None, Callback::noop()).await;
+    assert!(
+        root.query_selector(".pack-menu")
+            .expect("a valid selector")
+            .is_none(),
+        "a server from before packs"
+    );
+    handle.destroy();
+    root.remove();
+
+    // A thread of the assistant's chat: the button is there, and until
+    // this member has agreed the click asks instead of sending.
+    let asking = |root: &Element| {
+        root.text_content()
+            .unwrap_or_default()
+            .contains("Before the assistant answers")
+    };
+    let (log, on_action) = recorder();
+    let (root, handle) = mount(true, Some(pack_of(12)), on_action).await;
+    pick_a_sticker(&root, ".thread-panel .composer").await;
+    assert!(asking(&root), "the consent screen, from the thread");
+    assert_eq!(stickers_sent(&log), 0, "and nothing went round it");
+    click_labelled(&root, ".dialog-actions button", "I Agree");
+    TimeoutFuture::new(50).await;
+    assert!(
+        matches!(
+            log.borrow()[..],
+            [Action::SetAssistantConsent { granted: true }]
+        ),
+        "{:?}",
+        log.borrow()
+    );
+    handle.destroy();
+    root.remove();
+
+    let (log, on_action) = recorder();
+    let (root, handle) = mount_agreed(true, Some(pack_of(12)), true, on_action).await;
+    pick_a_sticker(&root, ".thread-panel .composer").await;
+    assert!(!asking(&root));
+    assert!(
+        matches!(
+            log.borrow()[..],
+            [Action::SendSticker {
+                chat_id: 42,
+                item_id: 2,
+                reply_to_message_id: Some(1)
+            }]
+        ),
+        "{:?}",
+        log.borrow()
+    );
+    handle.destroy();
+    root.remove();
+}
+
+/// A sticker whose bytes are still on their way says so with the spinner
+/// — also in the OUTBOX, where a reload took the bytes and the upload is
+/// fetching them again: that bubble was once an empty box with nothing to
+/// say it was coming. A send that FAILED is waiting for nothing, and spins
+/// nothing.
+#[wasm_bindgen_test]
+async fn a_sticker_still_on_its_way_spins_and_a_failed_one_does_not() {
+    install_stylesheet();
+    let root = fixed_root("position:fixed;top:0;left:0;width:600px;height:400px;");
+    root.set_inner_html(
+        r#"<div class="messages">
+             <div class="row"><article class="bubble is-mine is-pending is-chat-sticker" id="queued">
+               <button class="chat-sticker is-loading" style="width:160px;height:160px"></button></article></div>
+             <div class="row"><article class="bubble is-mine is-failed is-chat-sticker" id="failed">
+               <button class="chat-sticker is-loading" style="width:160px;height:160px"></button></article></div>
+           </div>"#,
+    );
+    TimeoutFuture::new(30).await;
+    let window = web_sys::window().expect("a window");
+    let spinner = |id: &str| {
+        window
+            .get_computed_style_with_pseudo_elt(&query(&root, id), "::after")
+            .expect("computes")
+            .expect("a style")
+            .get_property_value("content")
+            .expect("a value")
+    };
+    assert_eq!(spinner("#queued .chat-sticker"), "\"\"", "on its way");
+    assert_eq!(spinner("#failed .chat-sticker"), "none", "not coming");
     root.remove();
 }

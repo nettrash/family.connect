@@ -332,6 +332,11 @@ class SessionRepository @Inject constructor(
                     // Removed while we weren't looking — the chats aren't
                     // ours to show any more.
                     wiper.wipeAll()
+                    // The pack's cursor goes with the pack: its seqs are
+                    // server-wide, so the next family's must not be caught
+                    // up from this one's mark (docs/protocol.md, "Sticker
+                    // pack").
+                    settings.setPackCursor(0L)
                     _sessionEvents.tryEmit(SessionEvent.RemovedFromFamily)
                 }
                 ApiResult.Ok(snapshot())
@@ -345,6 +350,8 @@ class SessionRepository @Inject constructor(
     fun onRemovedFromFamily() {
         scope.launch {
             wiper.wipeAll()
+            // See refreshMe: the pack's cursor goes with the pack.
+            settings.setPackCursor(0L)
             settings.setFamilyStatus(FamilyStatus.NONE)
             settings.setFamilyName(null)
             _sessionEvents.emit(SessionEvent.RemovedFromFamily)

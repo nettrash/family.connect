@@ -58,6 +58,10 @@ pub struct AppState {
     pub opening: Option<Opening>,
     /// The photos and videos open full size, and which one is up.
     pub viewing: Option<Viewing>,
+    /// A sticker from a chat, shown larger — with the way to keep it in
+    /// the family's pack when the pack does not hold it (docs/protocol.md,
+    /// "Tapping one shows it larger").
+    pub sticker_open: Option<crate::model::Attachment>,
 }
 
 /// The panels the bar opens.

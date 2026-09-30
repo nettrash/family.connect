@@ -42,6 +42,10 @@
 //!   too").
 //! - [`notify`] — what a browser's own notification says, and the unread
 //!   count in the page's title.
+//! - [`pack`] — the family's sticker pack: which bytes are a sticker as they
+//!   stand, the 512 × 512 box one is made to fit, who may remove one, and
+//!   the order a panel shows them in. (Everywhere else here "sticker" is a
+//!   board note; in that module it is the picture sent in a chat.)
 
 pub mod account;
 pub mod assistant;
@@ -64,6 +68,7 @@ pub mod mentions;
 pub mod mp4;
 pub mod mp4_read;
 pub mod notify;
+pub mod pack;
 pub mod reactions;
 pub mod transcode;
 pub mod wav;

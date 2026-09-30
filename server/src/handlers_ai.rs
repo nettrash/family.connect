@@ -3261,6 +3261,7 @@ mod tests {
             latitude: None,
             longitude: None,
             accuracy_m: None,
+            sticker: false,
         }
     }
 

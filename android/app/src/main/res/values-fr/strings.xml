@@ -572,4 +572,31 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">Tant que vous n’avez pas accepté, rien de ce que vous écrivez n’est envoyé à %1$s et l’assistant ne vous répond pas.</string>
     <string name="s_consent_stopping_takes_effect_at_once">Ce que vous écrivez à l’assistant est envoyé à %1$s. L’arrêt prend effet immédiatement ; ce qui est déjà parti ne peut pas être repris.</string>
     <string name="s_couldnt_save_your_answer">Impossible d’enregistrer votre réponse. Réessayez.</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">Autocollant</string>
+    <string name="s_stickers">Autocollants</string>
+    <string name="s_family_stickers">Autocollants de la famille</string>
+    <string name="s_family_stickers_count">%1$d sur %2$d</string>
+    <string name="s_family_stickers_explanation">Tout le monde dans la famille peut ajouter un autocollant. La personne qui l\'a ajouté, ou le propriétaire de la famille, peut le retirer.</string>
+    <string name="s_recently_used">Utilisés récemment</string>
+    <string name="s_no_stickers_yet">Pas encore d\'autocollants</string>
+    <string name="s_no_stickers_hint">Ajoutes-en depuis l\'écran Famille.</string>
+    <string name="s_add_sticker">Ajouter un autocollant</string>
+    <string name="s_add_to_family_stickers">Ajouter aux autocollants de la famille</string>
+    <string name="s_sticker_label">Description (facultatif)</string>
+    <string name="s_sticker_label_hint">Quelques mots pour le lecteur d\'écran. Ils ne sont jamais dessinés sur l\'image.</string>
+    <string name="s_remove_sticker">Retirer l\'autocollant</string>
+    <string name="s_remove_sticker_q">Retirer cet autocollant ?</string>
+    <string name="s_remove_sticker_explanation">Il quitte les autocollants de la famille. Les messages déjà envoyés le gardent.</string>
+    <string name="s_sticker_added">Ajouté aux autocollants de la famille</string>
+    <string name="s_sticker_already_in_pack">Déjà dans les autocollants de la famille</string>
+    <string name="s_sticker_pack_full">La famille a déjà %1$d autocollants. Retires-en un pour en ajouter un autre.</string>
+    <string name="s_sticker_too_large">Celui-ci est trop gros. Un autocollant peut faire au plus %1$s.</string>
+    <string name="s_sticker_add_failed">Impossible d\'ajouter l\'autocollant. Réessaie.</string>
+    <string name="s_sticker_unreadable">Cette image n\'a pas pu être lue.</string>
+    <string name="s_sticker_animated_must_be_webp">Les autocollants animés doivent être au format WebP. Celui-ci ne peut pas être ajouté.</string>
+    <string name="s_sticker_label_too_long">Une description peut contenir au maximum %1$d caractères.</string>
+    <string name="s_sticker_remove_not_allowed">Seule la personne qui a ajouté un autocollant, ou le propriétaire de la famille, peut le retirer.</string>
+    <string name="s_sticker_remove_failed">Impossible de retirer l\'autocollant. Réessaie.</string>
+    <string name="s_sticker_not_available_offline">Cet autocollant n\'est pas encore sur ce téléphone. Réessaie quand tu seras en ligne.</string>
 </resources>

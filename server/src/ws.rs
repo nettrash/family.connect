@@ -31,7 +31,7 @@ use crate::events;
 use crate::handlers_call;
 use crate::handlers_chat;
 use crate::handlers_chat::NewPoll;
-use crate::models::{IceCandidate, Member, Message, Note, Poll, Reaction, UserBrief};
+use crate::models::{IceCandidate, Member, Message, Note, PackItem, Poll, Reaction, UserBrief};
 use crate::registry::{CLOSE_GOING_AWAY, CLOSE_SESSION_GONE};
 use crate::state::AppState;
 
@@ -67,6 +67,10 @@ pub enum ClientFrame {
         /// (protocol.md, "Mentioning a member").
         #[serde(default)]
         mentions: Option<Vec<crate::models::Mention>>,
+        /// Optional: `true` sends the one attachment as a chat sticker
+        /// (protocol.md, "Sticker pack"). Absent and `false` are the same.
+        #[serde(default)]
+        sticker: Option<bool>,
     },
     Read {
         chat_id: i64,
@@ -208,6 +212,12 @@ pub enum ServerFrame {
     },
     BoardNote {
         note: Note,
+    },
+    /// One item of the family's sticker pack in whatever state it now has —
+    /// added, or a tombstone — to every member of the family. It never
+    /// notifies and never counts as unread (protocol.md, "Sticker pack").
+    PackItem {
+        item: PackItem,
     },
     /// One fragment of the assistant's reply, as it is generated
     /// (docs/protocol.md, "The assistant").
@@ -585,6 +595,7 @@ async fn handle_client_text(
                 attachment_ids,
                 poll,
                 mentions,
+                sticker,
             } = frame
             else {
                 unreachable!("type tag was \"send\"");
@@ -607,6 +618,7 @@ async fn handle_client_text(
                 &attachment_ids,
                 poll.as_ref(),
                 mentions.as_deref().unwrap_or(&[]),
+                sticker.unwrap_or(false),
                 language,
             )
             .await
@@ -887,6 +899,7 @@ mod tests {
                 attachment_ids: None,
                 poll: None,
                 mentions: None,
+                sticker: None,
             }
         );
     }
@@ -910,6 +923,7 @@ mod tests {
                 attachment_ids: None,
                 poll: None,
                 mentions: None,
+                sticker: None,
             }
         );
     }
@@ -935,6 +949,7 @@ mod tests {
                     options: vec!["Pizza".to_string(), "Pasta".to_string()],
                 }),
                 mentions: None,
+                sticker: None,
             }
         );
     }
@@ -959,6 +974,7 @@ mod tests {
                 attachment_ids: Some(vec![34, 35, 36]),
                 poll: None,
                 mentions: None,
+                sticker: None,
             }
         );
     }
@@ -984,6 +1000,7 @@ mod tests {
                 latitude: None,
                 longitude: None,
                 accuracy_m: None,
+                sticker: false,
             }
         }
         let mut message = sample_message();
@@ -1063,6 +1080,7 @@ mod tests {
                     user_id: 9,
                     name: "Anna".to_string(),
                 }]),
+                sticker: None,
             }
         );
     }
@@ -1781,5 +1799,97 @@ mod tests {
             let back: ServerFrame = serde_json::from_str(&json).expect("parses back");
             assert_eq!(back, frame);
         }
+    }
+
+    /// protocol.md's sticker `send` example: the flag rides the ordinary
+    /// frame beside the one attachment it applies to, and a frame without
+    /// it — every frame a shipped client sends — still parses (the tests
+    /// above), reading as "not a sticker".
+    #[test]
+    fn client_send_frame_carries_the_sticker_flag() {
+        let json = r#"{"type": "send", "chat_id": 42, "client_msg_id": "c81d4e2a-0000-4000-8000-000000000001", "body": "", "attachment_ids": [90], "sticker": true}"#;
+        let frame: ClientFrame = serde_json::from_str(json).expect("parses");
+        assert_eq!(
+            frame,
+            ClientFrame::Send {
+                chat_id: 42,
+                client_msg_id: Uuid::parse_str("c81d4e2a-0000-4000-8000-000000000001")
+                    .expect("valid uuid"),
+                body: String::new(),
+                reply_to_message_id: None,
+                attachment_id: None,
+                attachment_ids: Some(vec![90]),
+                poll: None,
+                mentions: None,
+                sticker: Some(true),
+            }
+        );
+    }
+
+    /// `pack_item` as protocol.md draws it: a live item whole, and a
+    /// tombstone as three keys and nothing else (docs/protocol.md, "Sticker
+    /// pack"). The picture inside a pack item never carries the `sticker`
+    /// flag — that one is a message's.
+    #[test]
+    fn a_pack_item_frame_is_the_item_or_its_tombstone() {
+        let live = ServerFrame::PackItem {
+            item: PackItem {
+                id: 5,
+                added_by: Some(7),
+                label: None,
+                attachment: Some(crate::models::Attachment {
+                    id: 71,
+                    kind: "photo".to_string(),
+                    mime: "image/webp".to_string(),
+                    size: 20480,
+                    width: Some(512),
+                    height: Some(512),
+                    duration_ms: None,
+                    has_preview: false,
+                    name: None,
+                    latitude: None,
+                    longitude: None,
+                    accuracy_m: None,
+                    sticker: false,
+                }),
+                created_at: Some(time::macros::datetime!(2026-09-30 10:00 UTC)),
+                pack_seq: 12,
+                deleted: false,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&live).expect("serializes"),
+            serde_json::json!({
+                "type": "pack_item",
+                "item": {
+                    "id": 5,
+                    "added_by": 7,
+                    "attachment": {"id": 71, "kind": "photo", "mime": "image/webp",
+                                   "size": 20480, "width": 512, "height": 512,
+                                   "has_preview": false},
+                    "created_at": "2026-09-30T10:00:00Z",
+                    "pack_seq": 12,
+                },
+            })
+        );
+
+        let tombstone = ServerFrame::PackItem {
+            item: PackItem {
+                id: 5,
+                added_by: None,
+                label: None,
+                attachment: None,
+                created_at: None,
+                pack_seq: 14,
+                deleted: true,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&tombstone).expect("serializes"),
+            serde_json::json!({
+                "type": "pack_item",
+                "item": {"id": 5, "deleted": true, "pack_seq": 14},
+            })
+        );
     }
 }

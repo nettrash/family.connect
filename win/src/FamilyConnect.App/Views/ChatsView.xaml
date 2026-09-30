@@ -161,6 +161,12 @@
                         <Button x:Name="AttachButton" Background="Transparent" BorderThickness="0" Padding="8">
                             <SymbolIcon Symbol="Add" />
                         </Button>
+                        <!-- The family's stickers: a panel over the composer, where one click sends. Drawn only on a server -->
+                        <!-- that has packs, in every chat a message can be sent in, and never while a message is being -->
+                        <!-- edited (ShowStickerButton). -->
+                        <Button x:Name="StickerButton" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed">
+                            <FontIcon Glyph="&#xE899;" FontSize="16" />
+                        </Button>
                         <!-- The assistant's two doors, drawn only where they lead somewhere (AssistantButtons). -->
                         <Button x:Name="AskAssistantButton" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed" />
                         <Button x:Name="AskPictureButton" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed" />
@@ -217,11 +223,17 @@
                     BorderThickness="1">
                     <Grid ColumnSpacing="6">
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBox x:Name="ThreadComposer" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="120" VerticalAlignment="Center" />
-                        <Button x:Name="ThreadSend" Grid.Column="1" VerticalAlignment="Bottom" Style="{StaticResource AccentButtonStyle}" />
+                        <!-- The family's stickers, from the thread: one click answers the root with one. Drawn where the -->
+                        <!-- conversation's own button is, under the same rule (ShowStickerButton). -->
+                        <Button x:Name="ThreadStickerButton" VerticalAlignment="Bottom" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed">
+                            <FontIcon Glyph="&#xE899;" FontSize="16" />
+                        </Button>
+                        <TextBox x:Name="ThreadComposer" Grid.Column="1" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="120" VerticalAlignment="Center" />
+                        <Button x:Name="ThreadSend" Grid.Column="2" VerticalAlignment="Bottom" Style="{StaticResource AccentButtonStyle}" />
                     </Grid>
                 </Border>
             </Grid>
@@ -250,7 +262,11 @@
                     <TextBlock x:Name="ViewerPosition" Foreground="#B3FFFFFF" Style="{StaticResource CaptionTextBlockStyle}" />
                 </StackPanel>
                 <TextBlock x:Name="ViewerProblem" Grid.Column="1" VerticalAlignment="Center" MaxWidth="320" TextWrapping="Wrap" Foreground="#FFFFA8A8" Visibility="Collapsed" />
+                <!-- What an "Add to family stickers" came to, when it was not a problem. -->
+                <TextBlock x:Name="ViewerNotice" Grid.Column="1" VerticalAlignment="Center" MaxWidth="320" TextWrapping="Wrap" Foreground="#E6FFFFFF" Visibility="Collapsed" />
                 <StackPanel Grid.Column="2" VerticalAlignment="Center" Orientation="Horizontal" Spacing="8">
+                    <!-- On a sticker the family's pack does not hold. -->
+                    <Button x:Name="ViewerAddSticker" Visibility="Collapsed" />
                     <Button x:Name="ViewerShare" />
                     <Button x:Name="ViewerSave" />
                 </StackPanel>

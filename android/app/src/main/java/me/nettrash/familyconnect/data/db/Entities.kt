@@ -625,3 +625,50 @@ fun PendingAttachmentEntity.uploadedDto(): me.nettrash.familyconnect.data.net.dt
         accuracyM = accuracyM,
     )
 }
+
+/**
+ * One item of the family's STICKER PACK (docs/protocol.md, "Sticker pack")
+ * — a picture the family keeps, which anybody in it may send in a chat.
+ *
+ * Named `pack` and not `sticker` for the reason the wire is: in this file
+ * "sticker" already means [NoteEntity], the note on the wall. The two never
+ * meet.
+ *
+ * Tombstones are NOT stored, exactly as for notes: a removed item loses its
+ * row and its id is remembered in [GonePackItemEntity].
+ *
+ * [packSeq] is the apply guard, the same shape as [NoteEntity.boardSeq]: an
+ * item is written only when the incoming seq is greater than the one held.
+ */
+@Entity(tableName = "packItems")
+data class PackItemEntity(
+    /** The server's id. Ascending id IS the order added, which is panel order. */
+    @PrimaryKey val id: Long,
+    /** Who added it — and, with the family owner, who may remove it. */
+    val addedBy: Long,
+    /**
+     * The picture, as the wire's Attachment stored verbatim in a one-element
+     * array (AttachmentsCodec) — the same spelling a note's picture uses.
+     * It never carries the `sticker` flag; that is a message's.
+     */
+    val attachmentJson: String,
+    /** A few words for a screen reader; null when nobody gave any. */
+    val label: String? = null,
+    val createdAt: Long,
+    val packSeq: Long,
+) {
+    /** The wire shape back out of the column, or null for a row that will not parse. */
+    val attachment: AttachmentDto?
+        get() = AttachmentsCodec.decode(attachmentJson)?.firstOrNull()
+}
+
+/**
+ * A pack item a TOMBSTONE has taken, and it never comes back — the pack's
+ * gone set, exactly as [GoneNoteEntity] is the board's. Item ids are never
+ * reused, so remembering the id is the whole of it: an older copy of the
+ * item still travelling (a catch-up page, a late answer) is refused.
+ */
+@Entity(tableName = "gonePackItems")
+data class GonePackItemEntity(
+    @PrimaryKey val itemId: Long,
+)

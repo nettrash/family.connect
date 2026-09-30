@@ -9,11 +9,16 @@ namespace FamilyConnect.Core.Protocol;
 /// exception thrown for a 429 would lose that distinction on the way up (docs/protocol.md,
 /// "Error shape").
 /// </remarks>
-public readonly record struct ApiResult<T>(T? Value, ApiError? Error)
+/// <param name="Status">
+/// The HTTP status of a SUCCESS, where the transport knew one (0 otherwise). Nearly every caller
+/// ignores it; the few endpoints whose protocol row gives two successes two meanings — the pack's
+/// <c>201</c> "added" against its <c>200</c> "already there" — read it rather than guess.
+/// </param>
+public readonly record struct ApiResult<T>(T? Value, ApiError? Error, int Status = 0)
 {
     public bool Ok => Error is null;
 
-    public static ApiResult<T> Success(T value) => new(value, null);
+    public static ApiResult<T> Success(T value, int status = 0) => new(value, null, status);
 
     public static ApiResult<T> Failure(ApiError error) => new(default, error);
 

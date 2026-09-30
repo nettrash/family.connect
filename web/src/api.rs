@@ -23,7 +23,7 @@ use web_sys::{AbortController, Blob, RequestCache};
 
 use crate::model::{
     Attachment, Birthday, Chat, ChatListItem, Family, JoinRequest, Me, Member, Mention, Message,
-    Note, Poll, Reaction, Report, Roster, Stats, User,
+    Note, PackItem, Poll, Reaction, Report, Roster, Stats, User,
 };
 use crate::staged::OutgoingItem;
 use crate::store::Outgoing;
@@ -262,6 +262,15 @@ struct SendRequest<'a> {
     /// sent).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     attachment_ids: Vec<i64>,
+    /// What makes the message a sticker (docs/protocol.md, "Sending one").
+    /// Left out when it is not one — absent is an ordinary message, and a
+    /// server from before stickers never sees a field it would ignore.
+    #[serde(skip_serializing_if = "is_false")]
+    sticker: bool,
+}
+
+fn is_false(flag: &bool) -> bool {
+    !*flag
 }
 
 #[derive(Debug, Serialize)]
@@ -305,6 +314,46 @@ struct NotesResponse {
 #[derive(Debug, Deserialize)]
 struct NoteResponse {
     note: Note,
+}
+
+/// `GET /families/mine/pack`: the whole sticker pack, tombstones excluded,
+/// in the order it was added to — and the high-water mark read before it
+/// (docs/protocol.md, "Sticker pack"). 0 for a pack never written to.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PackRead {
+    pub items: Vec<PackItem>,
+    #[serde(default)]
+    pub max_pack_seq: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackItemsResponse {
+    items: Vec<PackItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackItemResponse {
+    item: PackItem,
+}
+
+/// A claim of an upload for the pack. The label is LEFT OUT when there is
+/// none — an empty one is no label, and absent says so without a word.
+#[derive(Debug, Serialize)]
+struct PackClaim<'a> {
+    attachment_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<&'a str>,
+}
+
+/// What a claim did. `added` is false when the pack ALREADY held it — the
+/// same upload claimed again, or other bytes identical to a live item's —
+/// which is `200` and not an error: the item that comes back is the one
+/// that was there, under the attachment id the pack already had, and may
+/// not be the id the claim named.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackClaimed {
+    pub item: PackItem,
+    pub added: bool,
 }
 
 /// A note to pin (docs/protocol.md, "Board"). Size and face always go — a
@@ -928,6 +977,7 @@ fn send_request(row: &Outgoing) -> SendRequest<'_> {
             .iter()
             .filter_map(|item| item.attachment_id)
             .collect(),
+        sticker: row.sticker,
     }
 }
 
@@ -1293,6 +1343,53 @@ pub async fn delete_note(token: &str, note_id: i64) -> Result<(), ApiError> {
     empty::<()>(Request::delete(&url), token, None).await
 }
 
+/// `GET /families/mine/pack` — the whole sticker pack as it now stands.
+pub async fn pack(token: &str) -> Result<PackRead, ApiError> {
+    get(token, "/families/mine/pack").await
+}
+
+/// `GET /families/mine/pack/changes?after_seq=` — the pack catch-up,
+/// tombstones included, looped by the caller until a short page.
+pub async fn pack_changes(
+    token: &str,
+    after_seq: i64,
+    limit: u32,
+) -> Result<Vec<PackItem>, ApiError> {
+    let url = format!("/families/mine/pack/changes?after_seq={after_seq}&limit={limit}");
+    let response: PackItemsResponse = get(token, &url).await?;
+    Ok(response.items)
+}
+
+/// `POST /families/mine/pack` — claim an upload of the caller's own as a
+/// sticker. Any member may. `201` is a new item; `200` is the item the pack
+/// already held, which takes no seq and sends no frame.
+pub async fn add_pack_item(
+    token: &str,
+    attachment_id: i64,
+    label: Option<&str>,
+) -> Result<PackClaimed, ApiError> {
+    let request = bearer(Request::post(&path("/families/mine/pack")), token)
+        .json(&PackClaim {
+            attachment_id,
+            label,
+        })
+        .map_err(network)?;
+    let response = request.send().await.map_err(network)?;
+    let added = response.status() == 201;
+    let answer: PackItemResponse = read(response).await?;
+    Ok(PackClaimed {
+        item: answer.item,
+        added,
+    })
+}
+
+/// `DELETE /families/mine/pack/{id}` — whoever added it, or the family
+/// owner; idempotent.
+pub async fn remove_pack_item(token: &str, item_id: i64) -> Result<(), ApiError> {
+    let url = path(&format!("/families/mine/pack/{item_id}"));
+    empty::<()>(Request::delete(&url), token, None).await
+}
+
 /// `POST /families/reports` — one person, or one message of theirs.
 pub async fn report(
     token: &str,
@@ -1446,6 +1543,7 @@ mod tests {
             mentions: Vec::new(),
             poll: None,
             items: Vec::new(),
+            sticker: false,
             attempts: 0,
             failed: None,
         }
@@ -1470,6 +1568,7 @@ mod tests {
             accuracy_m: None,
             has_preview: false,
             attachment_id: None,
+            source_attachment_id: None,
         }
     }
 
@@ -1487,6 +1586,60 @@ mod tests {
         assert_eq!(
             encode(&photos),
             serde_json::json!({"client_msg_id": "8f14e45f", "body": "", "attachment_ids": [34, 35]})
+        );
+    }
+
+    /// A sticker is one attachment and one flag, with an empty body — and
+    /// the flag is left out of every other send, never sent as `false`.
+    #[wasm_bindgen_test]
+    fn a_sticker_send_carries_the_flag_and_nothing_else_does() {
+        let mut sticker = row();
+        sticker.body = String::new();
+        sticker.sticker = true;
+        sticker.reply_to_message_id = Some(1337);
+        let mut picture = item("photo", -1);
+        picture.attachment_id = Some(90);
+        sticker.items = vec![picture];
+        assert_eq!(
+            encode(&sticker),
+            serde_json::json!({"client_msg_id": "8f14e45f", "body": "", "attachment_ids": [90],
+                               "sticker": true, "reply_to_message_id": 1337})
+        );
+        assert!(encode(&row()).get("sticker").is_none());
+    }
+
+    /// The pack's three answers, in the protocol's shapes: the whole pack
+    /// with its mark, a page of changes with a tombstone in it, and a claim
+    /// — with a label only when there is one.
+    #[wasm_bindgen_test]
+    fn the_pack_reads_and_claims_in_the_protocols_shapes() {
+        let read: PackRead = serde_json::from_str(
+            r#"{"items": [{"id": 5, "added_by": 7, "pack_seq": 12, "created_at": "2026-09-30T10:00:00Z",
+                           "attachment": {"id": 71, "kind": "photo", "mime": "image/webp"}}],
+                "max_pack_seq": 14}"#,
+        )
+        .expect("reads");
+        assert_eq!(read.max_pack_seq, 14);
+        assert!(read.items[0].is_usable());
+        let changes: PackItemsResponse =
+            serde_json::from_str(r#"{"items": [{"id": 5, "deleted": true, "pack_seq": 15}]}"#)
+                .expect("reads");
+        assert!(changes.items[0].deleted);
+        assert_eq!(
+            serde_json::to_value(PackClaim {
+                attachment_id: 71,
+                label: Some("party cat"),
+            })
+            .expect("encodes"),
+            serde_json::json!({"attachment_id": 71, "label": "party cat"})
+        );
+        assert_eq!(
+            serde_json::to_value(PackClaim {
+                attachment_id: 71,
+                label: None,
+            })
+            .expect("encodes"),
+            serde_json::json!({"attachment_id": 71})
         );
     }
 

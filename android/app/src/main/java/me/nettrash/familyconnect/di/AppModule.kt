@@ -57,6 +57,7 @@ import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.db.MessageDao
 import me.nettrash.familyconnect.data.db.PendingAttachmentDao
 import me.nettrash.familyconnect.data.db.NoteDao
+import me.nettrash.familyconnect.data.db.PackDao
 import me.nettrash.familyconnect.data.net.AndroidConnectivityObserver
 import me.nettrash.familyconnect.data.net.ApiClient
 import me.nettrash.familyconnect.data.net.AuthApi
@@ -69,6 +70,8 @@ import me.nettrash.familyconnect.data.net.DefaultAuthApi
 import me.nettrash.familyconnect.data.net.DefaultAttachmentApi
 import me.nettrash.familyconnect.data.net.DefaultAvatarApi
 import me.nettrash.familyconnect.data.net.DefaultBoardApi
+import me.nettrash.familyconnect.data.net.DefaultPackApi
+import me.nettrash.familyconnect.data.net.PackApi
 import me.nettrash.familyconnect.data.net.DefaultChatApi
 import me.nettrash.familyconnect.data.net.DefaultFamilyApi
 import me.nettrash.familyconnect.data.net.FamilyApi
@@ -79,6 +82,7 @@ import me.nettrash.familyconnect.data.repo.AvatarSource
 import me.nettrash.familyconnect.data.repo.ContentResolverAvatarSource
 import me.nettrash.familyconnect.data.repo.DefaultShareImporter
 import me.nettrash.familyconnect.data.repo.MediaStaging
+import me.nettrash.familyconnect.data.repo.PackRepository
 import me.nettrash.familyconnect.data.repo.MediaUploadScheduler
 import me.nettrash.familyconnect.data.repo.MediaUploadWorker
 import me.nettrash.familyconnect.data.repo.PosterCache
@@ -128,6 +132,9 @@ abstract class AppModule {
 
     @Binds
     abstract fun bindBoardApi(impl: DefaultBoardApi): BoardApi
+
+    @Binds
+    abstract fun bindPackApi(impl: DefaultPackApi): PackApi
 
     @Binds
     abstract fun bindAvatarSource(impl: ContentResolverAvatarSource): AvatarSource
@@ -238,6 +245,9 @@ abstract class AppModule {
         fun provideNoteDao(db: AppDatabase): NoteDao = db.noteDao()
 
         @Provides
+        fun providePackDao(db: AppDatabase): PackDao = db.packDao()
+
+        @Provides
         fun provideChatDao(db: AppDatabase): ChatDao = db.chatDao()
 
         @Provides
@@ -263,6 +273,11 @@ abstract class AppModule {
             val staged = db.pendingAttachmentDao().stagedPaths()
             val staging = MediaStaging(context)
             db.wipeAll()
+            // The sticker pack's pictures go with its rows. They are the
+            // one thing here kept under filesDir rather than the cache, so
+            // nothing else would ever reclaim them — and they belong to a
+            // family this account may just have left.
+            PackRepository.bytesDirectory(context).deleteRecursively()
             staged.forEach { staging.remove(it) }
             MediaUploadWorker.cancelAll(context)
         }

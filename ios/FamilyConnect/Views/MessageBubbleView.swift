@@ -1025,7 +1025,9 @@ struct MessageBubbleView: View {
     /// there. No new image pipeline — the pile draws the same previews.
     @ViewBuilder
     private func attachmentBlock(_ attachments: [AttachmentDTO]) -> some View {
-        if attachments.count == 1, let attachment = attachments.first {
+        if isSticker, let attachment = attachments.first {
+            stickerTile(attachment)
+        } else if attachments.count == 1, let attachment = attachments.first {
             AttachmentView(
                 attachment: attachment,
                 onOpen: { onOpenAttachment(attachment) },
@@ -1067,6 +1069,31 @@ struct MessageBubbleView: View {
                 }
             }
         }
+    }
+
+    /// A sticker: the picture alone, in the one fixed box every sticker on
+    /// this client is drawn in, fitted whole (docs/protocol.md, "How it is
+    /// drawn"). No tile, no clip, no hairline and no placeholder wash —
+    /// each of those is a rectangle, and a rectangle behind a transparent
+    /// picture is the bubble this message does not have.
+    ///
+    /// The gestures are the photo tile's own, in the photo tile's order
+    /// (count 2 before count 1, which is what makes them exclusive): a tap
+    /// shows it larger, a double tap hearts, a long press opens the menu.
+    /// It is a message like any other.
+    private func stickerTile(_ attachment: AttachmentDTO) -> some View {
+        StickerImage(attachmentID: attachment.id)
+            .frame(width: StickerPack.messageBox, height: StickerPack.messageBox)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { toggleQuickHeart() }
+            .onTapGesture(count: 1) { onOpenAttachment(attachment) }
+            .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Sticker")
+            .accessibilityAddTraits(.isButton)
+            // A bare gesture publishes no accessibility action — measured,
+            // see ZZAXProbeTests.
+            .accessibilityAction { onOpenAttachment(attachment) }
     }
 
     /// One tap on a link run. First fire: schedule the open after the
@@ -1127,8 +1154,12 @@ struct MessageBubbleView: View {
     /// other bare treatment. The rule, and why files, audio and places
     /// are not in it, lives in MessagePresentation.isMediaOnly.
     private var isMediaOnly: Bool {
-        MessagePresentation.isMediaOnly(message, isStreaming: isStreaming)
+        // A sticker is bare on its own terms, quote or no quote.
+        isSticker || MessagePresentation.isMediaOnly(message, isStreaming: isStreaming)
     }
+
+    /// True when the message is a sticker — one flagged picture, no words.
+    private var isSticker: Bool { MessagePresentation.isSticker(message) }
 
     /// True when the balloon draws with no fill — an emoji-only body or a
     /// media-only message. Everything that adapts to "nothing behind me"

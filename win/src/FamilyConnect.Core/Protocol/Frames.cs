@@ -48,6 +48,12 @@ public abstract record ServerFrame
 
     public sealed record BoardNote(NoteDto Note) : ServerFrame;
 
+    /// <summary>
+    /// One item of the family's sticker pack in whatever state it now has — added, or a tombstone.
+    /// It notifies nobody, counts as unread nowhere, and is not filtered by blocks.
+    /// </summary>
+    public sealed record PackItem(PackItemDto Item) : ServerFrame;
+
     public sealed record MemberJoined(long? FamilyId, UserDto User) : ServerFrame;
 
     public sealed record MemberLeft(long? FamilyId, long UserId) : ServerFrame;
@@ -124,6 +130,7 @@ public abstract record ServerFrame
             "poll" => Decode<PollDto>(frame["poll"]) is { } poll
                 ? new Poll(Number(frame["chat_id"]), Number(frame["message_id"]), poll) : null,
             "board_note" => Decode<NoteDto>(frame["note"]) is { } note ? new BoardNote(note) : null,
+            "pack_item" => Decode<PackItemDto>(frame["item"]) is { } item ? new PackItem(item) : null,
             "member_joined" => Decode<UserDto>(frame["user"]) is { } user
                 ? new MemberJoined(Optional(frame["family_id"]), user) : null,
             "member_left" => new MemberLeft(Optional(frame["family_id"]), Number(frame["user_id"])),
@@ -202,7 +209,8 @@ public static class ClientFrames
         long? replyToMessageId = null,
         IReadOnlyList<long>? attachmentIds = null,
         IReadOnlyList<string>? pollOptions = null,
-        IReadOnlyList<MentionDto>? mentions = null)
+        IReadOnlyList<MentionDto>? mentions = null,
+        bool sticker = false)
     {
         var frame = new JsonObject
         {
@@ -211,6 +219,11 @@ public static class ClientFrames
             ["client_msg_id"] = clientMsgId,
             ["body"] = body,
         };
+        if (sticker)
+        {
+            // Absent on an ordinary message, like every optional field on this wire — never false.
+            frame["sticker"] = true;
+        }
         if (replyToMessageId is { } reply)
         {
             frame["reply_to_message_id"] = reply;

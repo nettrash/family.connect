@@ -472,4 +472,144 @@ public class ApiClientTests
         Assert.False(alone.RootElement.TryGetProperty("ends_at", out _));
         Assert.Equal(HttpMethod.Patch, handler.Sent[1].Method);
     }
+
+    // ---- the sticker pack (docs/protocol.md, "Sticker pack") ---------------------------------
+
+    private const string PackItemJson =
+        """
+        {"id": 5, "added_by": 7,
+         "attachment": {"id": 71, "kind": "photo", "mime": "image/webp", "size": 40960, "width": 512, "height": 512},
+         "created_at": "2026-09-13T10:00:00Z", "pack_seq": 12}
+        """;
+
+    [Fact]
+    public async Task ThePackIsReadWholeAndCaughtUpOnByItsOwnSequence()
+    {
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.OK, $$"""{"items": [{{PackItemJson}}], "max_pack_seq": 12}""")
+            .Then(HttpStatusCode.OK, """{"items": [{"id": 5, "deleted": true, "pack_seq": 14}]}"""));
+
+        var whole = await client.Pack();
+        Assert.Equal(12, whole.Value!.MaxPackSeq);
+        Assert.Equal(71, Assert.Single(whole.Value.Items!).Attachment!.Id);
+
+        var changes = await client.PackChanges(12, 50);
+        Assert.True(Assert.Single(changes.Value!.Items!).Deleted);
+
+        Assert.Equal("https://chat.example.com/api/v1/families/mine/pack", handler.Sent[0].RequestUri!.ToString());
+        Assert.Equal(
+            "https://chat.example.com/api/v1/families/mine/pack/changes?after_seq=12&limit=50",
+            handler.Sent[1].RequestUri!.ToString());
+    }
+
+    /// <summary>
+    /// A claim: the attachment's id and, only when one was given, a label. Both <c>201</c> and
+    /// <c>200</c> answer an item and both are success — a <c>200</c> is the pack already holding it.
+    /// </summary>
+    [Fact]
+    public async Task AddingToThePackClaimsAnUploadAndTakesEitherSuccess()
+    {
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.Created, $$"""{"item": {{PackItemJson}}}""")
+            .Then(HttpStatusCode.OK, $$"""{"item": {{PackItemJson}}}""")
+            .Then(HttpStatusCode.OK, $$"""{"item": {{PackItemJson}}}"""));
+
+        var added = await client.AddToPack(71, "  party cat ");
+        var again = await client.AddToPack(99);
+        var blank = await client.AddToPack(99, "   ");
+
+        Assert.True(added.Ok);
+        Assert.True(again.Ok);
+        // WHICH success it was is the status, and the only thing that says it: 201 is a new item, 200 is one the pack
+        // already held. The cache cannot answer that — this device's own frame may land before the claim does.
+        Assert.Equal(201, added.Status);
+        Assert.Equal(200, again.Status);
+        // The item that came back carries the id the PACK holds, which is not the one a duplicate named.
+        Assert.Equal(71, again.Value!.Item.Attachment!.Id);
+        Assert.Equal(HttpMethod.Post, handler.Sent[0].Method);
+        Assert.Equal("https://chat.example.com/api/v1/families/mine/pack", handler.Sent[0].RequestUri!.ToString());
+        Assert.Equal("""{"attachment_id":71,"label":"party cat"}""", handler.Bodies[0]);
+        // No label is no key — and an empty one is no label.
+        Assert.Equal("""{"attachment_id":99}""", handler.Bodies[1]);
+        Assert.Equal("""{"attachment_id":99}""", handler.Bodies[2]);
+        Assert.True(blank.Ok);
+    }
+
+    [Fact]
+    public async Task ThePacksRefusalsAreReadAsTheProtocolWritesThem()
+    {
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.RequestEntityTooLarge, """{"error": {"code": "pack_item_too_large", "message": "…"}}""")
+            .Then(HttpStatusCode.Conflict, """{"error": {"code": "pack_full", "message": "…"}}""")
+            .Then(HttpStatusCode.Forbidden, """{"error": {"code": "not_pack_item_author", "message": "…"}}""")
+            .Then(HttpStatusCode.NotFound, """{"error": {"code": "pack_item_not_found", "message": "…"}}""")
+            .Then(HttpStatusCode.NoContent));
+
+        Assert.Equal(ErrorCodes.PackItemTooLarge, (await client.AddToPack(71)).Error!.Code);
+        var full = await client.AddToPack(71);
+        Assert.Equal(ErrorCodes.PackFull, full.Error!.Code);
+        // Refusals, every one: the ceiling is the family's, and trying again would refuse again.
+        Assert.False(full.Error.Transient);
+        Assert.Equal(ErrorCodes.NotPackItemAuthor, (await client.RemoveFromPack(5)).Error!.Code);
+        Assert.Equal(ErrorCodes.PackItemNotFound, (await client.RemoveFromPack(5)).Error!.Code);
+        // Removing is idempotent, and a 204 is a success with nothing in it.
+        Assert.True((await client.RemoveFromPack(5)).Ok);
+        Assert.Equal(HttpMethod.Delete, handler.Sent[4].Method);
+        Assert.Equal("https://chat.example.com/api/v1/families/mine/pack/5", handler.Sent[4].RequestUri!.ToString());
+        // A write is never retried by the transport.
+        Assert.Equal(5, handler.Sent.Count);
+    }
+
+    [Fact]
+    public async Task ARestSendSaysStickerOnlyWhenItIsOne()
+    {
+        const string Answer =
+            """
+            {"message": {"id": 1340, "chat_id": 42, "sender_id": 7, "client_msg_id": "k", "body": "",
+             "created_at": "2026-09-13T10:00:00Z",
+             "attachments": [{"id": 90, "kind": "photo", "mime": "image/webp", "sticker": true}]}}
+            """;
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.Created, Answer)
+            .Then(HttpStatusCode.Created, Answer));
+
+        var sent = await client.SendMessage(42, "k", "", attachmentIds: [90], sticker: true);
+        await client.SendMessage(42, "k2", "Dinner at 7?", attachmentIds: [90]);
+
+        Assert.True(sent.Value!.Message.Media[0].Sticker);
+        Assert.Equal("""{"client_msg_id":"k","body":"","attachment_ids":[90],"sticker":true}""", handler.Bodies[0]);
+        // Absent otherwise — never false.
+        Assert.DoesNotContain("sticker", handler.Bodies[1], StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The family's own document: the pack's mark, omitted while the pack is untouched, and its
+    /// two ceilings — whose ABSENCE is how a client knows the server predates packs.
+    /// </summary>
+    [Fact]
+    public async Task TheFamilysDocumentCarriesThePacksMarkAndCeilingsOrNeither()
+    {
+        var (client, _) = Client(new Fake()
+            .Then(HttpStatusCode.OK,
+                """
+                {"family": {"id": 3, "name": "The Smiths"}, "members": [],
+                 "max_pack_seq": 14, "max_pack_items": 200, "max_pack_item_bytes": 524288}
+                """)
+            .Then(HttpStatusCode.OK,
+                """{"family": {"id": 3, "name": "The Smiths"}, "members": [], "max_pack_items": 200, "max_pack_item_bytes": 524288}""")
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths"}, "members": []}"""));
+
+        var touched = (await client.Family()).Value!;
+        Assert.Equal(14, touched.MaxPackSeq);
+        Assert.Equal(200, touched.MaxPackItems);
+        Assert.Equal(524_288, touched.MaxPackItemBytes);
+
+        var untouched = (await client.Family()).Value!;
+        Assert.Null(untouched.MaxPackSeq);
+        Assert.Equal(200, untouched.MaxPackItems);
+
+        var older = (await client.Family()).Value!;
+        Assert.Null(older.MaxPackItems);
+        Assert.Null(older.MaxPackItemBytes);
+    }
 }

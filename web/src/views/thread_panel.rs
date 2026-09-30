@@ -4,7 +4,11 @@
 //!
 //! Rows draw exactly as in the chat — the same bubble, the same quotes,
 //! the same hidden-row rule — minus what the apps leave out here: editing,
-//! reporting, attachments and polls.
+//! reporting, attachments and polls. A STICKER is not left out (ios
+//! ThreadView): it is its own message with nothing to stage, and it goes
+//! where every send from here goes — to the root. Nor is the consent
+//! question: what is sent from here reaches the model exactly when it
+//! would from the chat, and is asked about first exactly as there.
 
 use std::collections::{HashMap, HashSet};
 
@@ -12,12 +16,15 @@ use fc_text::i18n::{t, tn};
 use yew::prelude::*;
 
 use crate::actions::Action;
-use crate::model::{Assistant, Family, Member, Message};
+use crate::model::{Assistant, Family, Member, Message, PackItem};
+use crate::pack::Gate;
 use crate::store::Draft;
 use crate::timeline;
 use crate::views::bubble::Bubble;
 use crate::views::composer::{Composer, Pictures};
+use crate::views::consent::AssistantConsentDialog;
 use crate::views::conversation::row_key;
+use crate::views::stickers::StickerMenu;
 use fc_text::assistant_pictures::Candidate;
 
 #[derive(Properties, PartialEq)]
@@ -41,6 +48,16 @@ pub struct ThreadPanelProps {
     /// assistant.
     #[prop_or_default]
     pub family: Option<Family>,
+    /// The family's sticker pack, in the order the panel shows it — and
+    /// None where there is no sticker button: a server that predates packs,
+    /// or an account in no family (as `ConversationProps::stickers`).
+    #[prop_or_default]
+    pub stickers: Option<Vec<PackItem>>,
+    /// Whether this member has agreed that what they send the assistant
+    /// may go to the model (docs/protocol.md, "Consenting to the
+    /// assistant") — as `ConversationProps::agreed_to_assistant`.
+    #[prop_or_default]
+    pub agreed_to_assistant: bool,
     pub on_action: Callback<Action>,
 }
 
@@ -69,6 +86,72 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
             on_action.emit(Action::Send { chat_id, draft });
         })
     };
+    // The consent screen, raised from this surface as the chat raises it
+    // (views/conversation.rs): by a send — words, or a sticker — that
+    // would reach the model before this member has agreed.
+    let consent_open = use_state(|| false);
+    // The sticker button, wherever the chat has one — every chat on a
+    // server that has packs, the assistant's included. One click sends,
+    // and what it sends answers the root like everything else here. In a
+    // thread of the assistant's chat it goes through the consent question
+    // and never round it, by the chat's own test (`pack::send_gate`);
+    // where the server names nobody nothing is sent, and the strip above
+    // the box already says so.
+    let sticker_gate = crate::pack::send_gate(
+        props.is_ai_chat,
+        props.assistant.as_ref(),
+        props.agreed_to_assistant,
+    );
+    let sticker_menu = props.stickers.clone().map(|items| {
+        let on_pick = {
+            let on_action = props.on_action.clone();
+            let consent_open = consent_open.clone();
+            Callback::from(move |item_id: i64| match sticker_gate {
+                Gate::Send => on_action.emit(Action::SendSticker {
+                    chat_id,
+                    item_id,
+                    reply_to_message_id: Some(root_id),
+                }),
+                Gate::Ask => consent_open.set(true),
+                Gate::Withheld => {}
+            })
+        };
+        html! {
+            <StickerMenu {items} busy={None::<String>} {on_pick} on_busy={Callback::noop()} />
+        }
+    });
+    let consent_dialog = consent_open
+        .then(|| {
+            props
+                .assistant
+                .as_ref()
+                .and_then(|assistant| assistant.processor.clone())
+        })
+        .flatten()
+        .map(|processor| {
+            let on_agree = {
+                let on_action = props.on_action.clone();
+                let consent_open = consent_open.clone();
+                Callback::from(move |_: ()| {
+                    consent_open.set(false);
+                    on_action.emit(Action::SetAssistantConsent { granted: true });
+                })
+            };
+            let on_cancel = {
+                let consent_open = consent_open.clone();
+                Callback::from(move |_: ()| consent_open.set(false))
+            };
+            let family = props.family.as_ref();
+            html! {
+                <AssistantConsentDialog
+                    {processor}
+                    family_history={family.is_some_and(|family| family.ai_history)}
+                    family_vision={family.is_some_and(|family| family.ai_vision)}
+                    {on_agree}
+                    {on_cancel}
+                />
+            }
+        });
     let noop_jump = Callback::from(|_: i64| {});
     // Every send here replies to the root, so an `@ai` here is pointed at
     // the ROOT'S photos — and says so, as the chat's own composer does
@@ -179,6 +262,11 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
                 members={props.members.clone()}
                 blocked={props.blocked.clone()}
                 assistant={props.assistant.clone()}
+                agreed_to_assistant={props.agreed_to_assistant}
+                on_review_consent={{
+                    let consent_open = consent_open.clone();
+                    Callback::from(move |_: ()| consent_open.set(true))
+                }}
                 replying={None}
                 editing={None}
                 initial={String::new()}
@@ -188,9 +276,11 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
                 on_typing={props.on_action.reform(move |_: ()| Action::Typing { chat_id })}
                 on_draft={Callback::from(|_: String| {})}
                 in_thread={true}
+                attach={sticker_menu.unwrap_or_default()}
                 focus={*focus}
                 {pictures}
             />
+            { consent_dialog.unwrap_or_default() }
         </aside>
     }
 }

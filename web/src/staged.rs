@@ -37,6 +37,10 @@ pub struct Prepared {
     pub file: Option<Blob>,
     /// The small JPEG a bubble draws: a photo's preview, a video's poster.
     pub preview: Option<Blob>,
+    /// For a STICKER being sent: the pack picture these bytes are a copy of
+    /// (docs/protocol.md, "Sending one"). Not sent anywhere — it is where a
+    /// reload, which keeps no bytes, can fetch them from again.
+    pub source_attachment_id: Option<i64>,
 }
 
 impl Prepared {
@@ -76,6 +80,13 @@ pub struct OutgoingItem {
     /// The server's id, once the upload landed. An id is good for the
     /// server's unclaimed grace, so a retry never uploads it again.
     pub attachment_id: Option<i64>,
+    /// A sticker's own source: the pack picture it is a copy of. The one
+    /// kind of attachment whose bytes a reload does not lose for good —
+    /// they are the family's, and the server still has them — so a queued
+    /// sticker survives a reload where a queued photo cannot. None on
+    /// everything else, and on a row kept by a build from before stickers.
+    #[serde(default)]
+    pub source_attachment_id: Option<i64>,
 }
 
 impl OutgoingItem {
@@ -94,7 +105,15 @@ impl OutgoingItem {
             accuracy_m: prepared.accuracy_m,
             has_preview: prepared.preview.is_some(),
             attachment_id: None,
+            source_attachment_id: prepared.source_attachment_id,
         }
+    }
+
+    /// Whether the bytes this item still owes can be had again after the
+    /// tab has lost them: a location needs none, and a sticker's are the
+    /// pack's.
+    pub fn survives_reload(&self) -> bool {
+        self.is_location() || self.source_attachment_id.is_some()
     }
 
     pub fn is_location(&self) -> bool {
@@ -116,6 +135,8 @@ impl OutgoingItem {
             latitude: self.latitude,
             longitude: self.longitude,
             accuracy_m: self.accuracy_m,
+            // The row's to say, not the item's: see `Store::enqueue`.
+            sticker: false,
         }
     }
 }
