@@ -3059,6 +3059,23 @@ this section cannot enumerate what leaves by pointing at something a member type
 cut), it is one string, and this server does not log it, for the reason no member's words reach a
 log; but it is written by the model, and a reader should know that.
 
+**The tool tells the model what the images deployment refuses** (*amended 2026-10-01*). A `/draw`
+carries the member's own words; a `draw_picture` prompt is written by a model that has just read a
+thread or a transcript full of names — "draw me something for Anna's birthday card" became a prompt
+with Anna in it — and the provider's filter refused those far more often than it refused `/draw`.
+So the tool's description says, besides what the tool is for, that the prompt must name nobody: no
+family member, no real person, no public figure, no brand, logo, or trademarked or copyrighted
+character — each person described by how they look and what they are doing instead. It is guidance
+to the model, not a check: the server still sends the prompt as the model wrote it, and a refusal
+still gets the one rewrite of "A refused description is reworded once".
+
+*Amended again 2026-10-01:* it also says to keep the member's OWN words. A member who describes the
+picture ("draw a cat in a hat") gets a prompt that is that description as written — the same words
+a `/draw` would have sent — with only what the conversation makes necessary for it to stand alone
+added (what "it" or "the same, but in winter" refers to), and nothing embellished: no extra detail,
+no style, mood, age or realism the member did not ask for. The same request was drawn when sent as
+`/draw` and refused when asked in words, and the difference was the model's own additions.
+
 Three rules about the edges, each decided rather than left to happen:
 
 - **an empty or unreadable prompt is an error**, not a silent nothing. A tool call whose `prompt` is
@@ -3165,7 +3182,9 @@ attempt before it says so:
 1. it asks the TEXT deployment (`[ai]`) once to rewrite the description so that it keeps what is to
    be drawn but names no real person, public figure, brand, trademarked or copyrighted character —
    describing each of them in general words instead — and answers with the rewritten description
-   and nothing else;
+   and nothing else. *Amended 2026-10-01:* "no real person" means no person's NAME at all, a first
+   name or a nickname included — "Anna" is as much a real person to the filter as a celebrity is,
+   and a rewriter told only "real person" left ordinary first names in;
 2. it asks the images deployment once more, with the rewrite.
 
 It applies wherever a description meets the images deployment: a `/draw`, the text model's own
