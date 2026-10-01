@@ -208,10 +208,26 @@ pub const DRAW_TOOL_NAME: &str = "draw_picture";
 /// NOTHING but the `prompt` — not this conversation, not any photograph —
 /// so the prompt has to be complete in itself. Left unsaid, a model writes
 /// "the cat from above, but in a hat" and the picture is of nothing.
+///
+/// And the one fact the model keeps getting wrong without being told: the
+/// images deployment's filter refuses a description that NAMES anybody. A
+/// prompt written after reading a thread full of family names carried those
+/// names, and was refused far more often than a `/draw` (protocol.md,
+/// "Drawing without being told to", amended 2026-10-01). So is the other:
+/// the member's own description, embellished, was refused where the same
+/// words sent as `/draw` were drawn — so the prompt keeps their words.
 const DRAW_TOOL_DESCRIPTION: &str = "Make a picture for the member. Call this when they ask for a picture, a drawing, an \
      image or an illustration, or when a picture is plainly the answer they want; answer in words \
      otherwise. The image model sees ONLY the prompt you pass — not this conversation and not any \
-     photograph — so write a complete, self-contained description of the picture to make.";
+     photograph — so write a complete, self-contained description of the picture to make. When the \
+     member has described the picture, the prompt is their description in their own words, as close to \
+     what they wrote as you can keep it: add only what the conversation makes necessary for it to stand \
+     alone, such as what \"it\" refers to, and nothing else — no extra detail, style, mood, age or realism \
+     they did not ask for. The image \
+     model refuses any prompt that names a person, so never put a name in it — not a family member's, \
+     not a first name or a nickname, not a real person's or a public figure's — and never a brand, a \
+     logo, or a trademarked or copyrighted character: describe each person by how they look and what \
+     they are doing instead, and each thing by what it is.";
 
 /// The one tool, as the chat-completions API wants it declared.
 ///
@@ -978,7 +994,8 @@ fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
 /// "Asking for a picture").
 pub const REPHRASE_INSTRUCTION: &str = "You reword descriptions of pictures for an image generator \
      that refuses any description naming a real person, a public figure, a brand, a logo, or a trademarked \
-     or copyrighted character. Rewrite the description you are given so that it keeps everything that is \
+     or copyrighted character. Every person's name counts, a first name or a nickname included. Rewrite \
+     the description you are given so that it keeps everything that is \
      to be drawn — the subjects, the scene, the style and the mood — but names none of those: describe each \
      of them in general words instead, by how they look and what they are doing, never by name. Keep the \
      language the description is written in. Answer with ONLY the rewritten description — no quotes, no \
@@ -1343,7 +1360,19 @@ mod tests {
                                         picture is plainly the answer they want; answer in words \
                                         otherwise. The image model sees ONLY the prompt you pass — not \
                                         this conversation and not any photograph — so write a complete, \
-                                        self-contained description of the picture to make.",
+                                        self-contained description of the picture to make. When the \
+                                        member has described the picture, the prompt is their \
+                                        description in their own words, as close to what they wrote as \
+                                        you can keep it: add only what the conversation makes necessary \
+                                        for it to stand alone, such as what \"it\" refers to, and \
+                                        nothing else — no extra detail, style, mood, age or realism they \
+                                        did not ask for. The image \
+                                        model refuses any prompt that names a person, so never put a \
+                                        name in it — not a family member's, not a first name or a \
+                                        nickname, not a real person's or a public figure's — and never \
+                                        a brand, a logo, or a trademarked or copyrighted character: \
+                                        describe each person by how they look and what they are doing \
+                                        instead, and each thing by what it is.",
                         "parameters": {
                             "type": "object",
                             "properties": {
@@ -1648,6 +1677,34 @@ mod tests {
         );
     }
 
+    /// The tool tells the model, before it writes a prompt, what the images
+    /// filter refuses: a name of anybody — a family member's above all, since
+    /// the model has just read a thread full of them — and the brands and
+    /// characters the rewrite would otherwise have to take out afterwards
+    /// (protocol.md, "Drawing without being told to", amended 2026-10-01).
+    #[test]
+    fn the_tool_says_a_prompt_names_nobody() {
+        let tool = draw_picture_tool();
+        let description = tool["function"]["description"].as_str().unwrap();
+        for named in [
+            "self-contained",
+            "in their own words",
+            "nothing else — no extra detail",
+            "never put a name in it",
+            "family member",
+            "first name or a nickname",
+            "public figure",
+            "brand",
+            "trademarked or copyrighted character",
+            "how they look and what they are doing",
+        ] {
+            assert!(
+                description.contains(named),
+                "the tool must say {named:?}: {description}"
+            );
+        }
+    }
+
     /// The instruction names every kind of thing the images filter refuses,
     /// asks for the rewrite alone — whatever comes back is drawn verbatim —
     /// and keeps the description's language, because a rewrite is not a
@@ -1660,6 +1717,7 @@ mod tests {
             "brand",
             "trademarked",
             "copyrighted character",
+            "first name or a nickname",
             "general words",
             "keeps everything that is to be drawn",
             "Keep the language",
