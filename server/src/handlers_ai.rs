@@ -1624,6 +1624,14 @@ enum Ask {
         /// declares the tool, so the two cannot disagree (protocol.md,
         /// "Drawing without being told to").
         draw: Option<ModelRoute>,
+        /// The asker's OWN words — the body of the one message that asked,
+        /// with every `@ai` taken out (`mentions::without_mentions`) —
+        /// for the one moment they may go to the images deployment: after
+        /// it REFUSED the prompt the model wrote (protocol.md, "The
+        /// member's own words, after a refused prompt"). `None` when there
+        /// are none (a captionless photo, a lone `@ai`), and on a server
+        /// that cannot draw, where nothing could use them.
+        own_words: Option<String>,
     },
     /// A picture, from the images deployment. `prompt` is the whole of what
     /// leaves the server (protocol.md, "Pictures").
@@ -1737,6 +1745,20 @@ async fn mention_reply(
     };
     let language = family_language.as_deref().or(language);
     answer(state, chat_id, user_id, assistant_id, prompt, language).await
+}
+
+/// What the asker said in the one message that asked, with every `@ai`
+/// taken out by the mention grammar and trimmed — or `None` when nothing is
+/// left, or when this server declares no tool and so could never fall back
+/// to them (protocol.md, "The member's own words, after a refused prompt").
+///
+/// Only ever handed the asking message's own BODY: not a turn rendered from
+/// it (which may carry placeholders or a poll's options), not the quote,
+/// not the transcript.
+fn own_words(draw: &Option<ModelRoute>, body: &str) -> Option<String> {
+    draw.as_ref()?;
+    let words = crate::mentions::without_mentions(body);
+    (!words.is_empty()).then_some(words)
 }
 
 /// The private thread: the last N turns of THIS member's own assistant chat.
@@ -1857,12 +1879,14 @@ async fn thread_prompt(
         }
     }
 
+    let draw = state.cfg.ai.contextual_images_route();
     Ok(Some(Prompt {
         ask: Ask::Words {
             turns,
             notes,
             route,
-            draw: state.cfg.ai.contextual_images_route(),
+            own_words: own_words(&draw, &question_body),
+            draw,
         },
         reply_to: None,
         // A private thread is private in both directions: nobody else sees
@@ -2367,6 +2391,12 @@ async fn mention_prompt(
         }));
     }
 
+    // The asker's own words, kept aside BEFORE the body is folded into the
+    // turn below: the mentioning message alone, never the quote or the
+    // transcript, for the fallback after a refused `draw_picture` prompt.
+    let draw = state.cfg.ai.contextual_images_route();
+    let own_words = own_words(&draw, &body);
+
     let quoted_id: Option<i64> = row.get("quoted_id");
     let quoted: Option<String> = row.get("quoted_body");
     let quoted_author: Option<String> = row.get("quoted_author");
@@ -2651,7 +2681,8 @@ async fn mention_prompt(
             turns: vec![turn],
             notes,
             route,
-            draw: state.cfg.ai.contextual_images_route(),
+            draw,
+            own_words,
         },
         // The answer quotes the question. In a chat where several
         // conversations run at once, an unattached answer belongs to
@@ -2771,14 +2802,53 @@ async fn stream_words(
     outcome
 }
 
+/// The member's own words as the `draw_picture` fallback may send them:
+/// trimmed, and `None` when nothing is left or when they are longer than a
+/// draw prompt may be (`max_chars`, the message-body ceiling). Over it they
+/// are no words at all rather than words cut short — cutting them would
+/// send something nobody wrote (protocol.md, "The member's own words, after
+/// a refused prompt").
+fn fallback_words(own_words: Option<&str>, max_chars: usize) -> Option<&str> {
+    own_words
+        .map(str::trim)
+        .filter(|words| !words.is_empty() && words.chars().count() <= max_chars)
+}
+
 /// The text model asked for a picture: make it.
 ///
-/// This is where the tool call becomes the ONE thing that leaves for the
-/// images deployment — the `prompt`, checked and bounded by
-/// `ToolCall::draw_prompt`, through the same `generate_image` a `/draw`
-/// goes through. Not the question, not the thread, not the transcript, not
-/// the system prompt, and not any photograph (protocol.md, "Drawing without
-/// being told to").
+/// This is where the tool call becomes the thing that leaves for the images
+/// deployment — the `prompt`, checked and bounded by `ToolCall::draw_prompt`,
+/// through the same `generate_image` a `/draw` goes through. Not the
+/// thread, not the transcript, not the system prompt, and not any
+/// photograph (protocol.md, "Drawing without being told to").
+///
+/// And, since 2026-10-01, one thing more, only after the images deployment
+/// REFUSED that prompt: the asker's own words (`own_words`, the asking
+/// message's body with the `@ai` taken out), through `draw_or_reword`
+/// exactly as `/draw` followed by them would have gone — so a refusal of
+/// THEM gets the one rewrite. Once the model's prompt is refused, the
+/// member's words get the attempts that `/draw` would have — but a failure
+/// still ends as the first refusal, even a 5xx a `/draw` would have ended
+/// without a reason (protocol.md, "The member's own words, after a refused
+/// prompt"). In order, at most:
+///
+/// 1. the model's prompt;
+/// 2. the member's words — only on a refusal of 1, never on a 5xx, a
+///    timeout or any other 4xx;
+/// 3. the one rewrite of the member's words, inside `draw_or_reword`.
+///
+/// Three requests to the images deployment and one rewrite. The model's
+/// prompt is NOT reworded on the way: the one rewrite is spent on the words
+/// a `/draw` proved the filter accepts, not on the words it just refused.
+/// Two cases have no step 2, and each ends as the path did before it was
+/// added — the one rewrite of the text that was refused: no words of the
+/// member's (a captionless photo, a lone `@ai`, or words over the bound),
+/// and words that ARE the model's prompt, which are not sent a second time
+/// unchanged.
+///
+/// Anything that stops the fallback from becoming a picture hands back the
+/// FIRST refusal, as `draw_or_reword` does with its rewrite: the member's
+/// picture was refused, and that is what they hear.
 ///
 /// `draw` is `None` only if a model called a tool no request declared —
 /// which is an error, like every other way a call can be wrong: the member
@@ -2788,6 +2858,7 @@ async fn draw_as_asked(
     draw: Option<ModelRoute>,
     call: &ai::ToolCall,
     usage: ai::Usage,
+    own_words: Option<&str>,
 ) -> Result<Finished> {
     let Some(route) = draw else {
         anyhow::bail!(
@@ -2798,10 +2869,76 @@ async fn draw_as_asked(
     // The message-body ceiling, because a prompt is the same kind of thing
     // as the words after `/draw`, and those could never be longer than a
     // message.
-    let prompt = call.draw_prompt(state.cfg.limits.max_message_chars)?;
-    let drawn = draw_or_reword(state, &route, "draw_picture", &prompt).await?;
-    // Two bills against one picture when the description had to be
-    // reworded: the tokens spent deciding, and the tokens spent rewording.
+    let max_chars = state.cfg.limits.max_message_chars;
+    let prompt = call.draw_prompt(max_chars)?;
+    let images = &state.cfg.ai.images;
+    let refused = match ai::generate_image(&state.http, &route, images, &prompt).await {
+        Ok(image) => {
+            return Ok(Finished::Picture { image, usage });
+        }
+        Err(error) if !ai::is_refusal(&error) => return Err(error),
+        Err(error) => error,
+    };
+
+    // The member's own words, bounded like a draw prompt. They are a stored
+    // message's body, so the ceiling cannot really be crossed — checked
+    // rather than trusted, and over it they are no words to fall back to:
+    // cutting them would send something nobody wrote.
+    let drawn = match fallback_words(own_words, max_chars) {
+        Some(words) if words != prompt.trim() => {
+            match draw_or_reword(state, &route, "draw_picture_own_words", words).await {
+                Ok(drawn) => {
+                    info!(
+                        origin = "draw_picture",
+                        outcome = "own_words_drawn",
+                        "a refused picture prompt fell back to the member's own words, which were drawn"
+                    );
+                    drawn
+                }
+                Err(error) => {
+                    let outcome = if ai::is_refusal(&error) {
+                        "own_words_refused"
+                    } else {
+                        "own_words_failed"
+                    };
+                    // The error itself, because nothing else says it: the
+                    // member is handed the FIRST refusal below, so the
+                    // final failure line carries that one's chain, and
+                    // `draw_or_reword` logs nothing of a first attempt
+                    // that was not a refusal. A provider error carries a
+                    // status, a URL and a bounded detail, never the words
+                    // (`ai::loggable_detail`) — as the rewrite's lines log
+                    // theirs.
+                    warn!(
+                        origin = "draw_picture",
+                        outcome,
+                        error = %format!("{error:#}"),
+                        "a refused picture prompt fell back to the member's own words, which were not drawn either"
+                    );
+                    return Err(refused.context(
+                        "the images deployment refused the description, and the member's own words did not produce a picture",
+                    ));
+                }
+            }
+        }
+        // The prompt the filter just refused, then: reworded once, which
+        // is the rewrite of the member's words when they are the same text.
+        other => {
+            let outcome = if other.is_some() {
+                "own_words_same_as_prompt"
+            } else {
+                "no_own_words"
+            };
+            info!(
+                origin = "draw_picture",
+                outcome,
+                "a refused picture prompt has no other words of the member's to fall back to"
+            );
+            reword_refused(state, &route, "draw_picture", &prompt, refused).await?
+        }
+    };
+    // Two bills against one picture when a description had to be reworded:
+    // the tokens spent deciding, and the tokens spent rewording.
     Ok(Finished::Picture {
         image: drawn.image,
         usage: usage.plus(drawn.usage),
@@ -2823,6 +2960,10 @@ pub(crate) struct Drawn {
 /// description to the images deployment: a `/draw`, the text model's own
 /// `draw_picture` call, and the board's event backdrop (`origin` says which,
 /// for the log). protocol.md, "A refused description is reworded once".
+/// On the `draw_picture` path it is the member's own words that come here,
+/// after the model's prompt was refused, or that prompt's refusal that goes
+/// straight to [`reword_refused`] — `draw_as_asked` decides which, so the
+/// one rewrite per picture holds there too.
 ///
 /// - ONLY a refusal starts it. A 5xx, a timeout, any other 4xx comes back
 ///   exactly as it always did, and the text deployment is asked nothing.
@@ -2859,6 +3000,25 @@ pub(crate) async fn draw_or_reword(
         Err(error) if !ai::is_refusal(&error) => return Err(error),
         Err(error) => error,
     };
+    reword_refused(state, route, origin, description, refused).await
+}
+
+/// The second half of [`draw_or_reword`]: `description` has just been
+/// REFUSED (`refused` is that refusal) — reword it once and draw the
+/// rewrite, or hand the refusal back.
+///
+/// Split out for the one caller that must decide between its two halves:
+/// `draw_as_asked`, which sends the model's prompt itself and, when there is
+/// no other text of the member's to fall back to, comes here with the
+/// refusal it already has rather than sending the same text a second time.
+async fn reword_refused(
+    state: &AppState,
+    route: &ModelRoute,
+    origin: &'static str,
+    description: &str,
+    refused: anyhow::Error,
+) -> Result<Drawn> {
+    let images = &state.cfg.ai.images;
     // Said once the attempt has run, alongside the first refusal's own
     // line from the caller, so the two read together.
     let not_drawn = |refused: anyhow::Error| {
@@ -3124,6 +3284,7 @@ async fn answer(
             notes,
             route,
             draw,
+            own_words,
         } => {
             let system_prompt =
                 compose_system_prompt(&state.cfg.ai.system_prompt, &notes, language);
@@ -3174,7 +3335,7 @@ async fn answer(
                     tool_call: Some(call),
                     usage,
                     ..
-                }) => draw_as_asked(state, draw, &call, usage).await,
+                }) => draw_as_asked(state, draw, &call, usage, own_words.as_deref()).await,
             }
         }
         // No deltas and no pump: an image model produces no token stream,
@@ -3355,9 +3516,9 @@ mod tests {
         HISTORY_MAX_CHARS, HISTORY_MAX_MESSAGES, HISTORY_WINDOW_DAYS, HistoryMessage,
         HistoryPictures, HistoryPoll, HistoryPollOption, MENTION_INSTRUCTION,
         MENTION_WITH_HISTORY_INSTRUCTION, MIRROR_LANGUAGE_INSTRUCTION, Numbered, POLL_NOTE,
-        compose_system_prompt, history_note_header, language_instruction, mention_poll_note,
-        mention_vision_note, numbered_turn_content, poll_line, render_history, turn_content,
-        vision_note, window,
+        compose_system_prompt, fallback_words, history_note_header, language_instruction,
+        mention_poll_note, mention_vision_note, numbered_turn_content, poll_line, render_history,
+        turn_content, vision_note, window,
     };
     use crate::models::Attachment;
     use time::macros::datetime;
@@ -5361,5 +5522,28 @@ mod tests {
             "and the newest line carries its number: {}",
             transcript_of(&note)
         );
+    }
+
+    /// The fallback's bound: the member's words go only whole, trimmed and
+    /// within the message-body ceiling — counted in characters, as a
+    /// message body is, so an accented ceiling-length message is not "over
+    /// it" by its bytes. Over it, empty, or absent are all no words, and
+    /// the refused prompt gets the one rewrite instead.
+    #[test]
+    fn the_members_own_words_fall_back_only_whole_and_within_the_bound() {
+        assert_eq!(fallback_words(None, 10), None);
+        assert_eq!(fallback_words(Some(""), 10), None);
+        assert_eq!(fallback_words(Some(" \n\t "), 10), None);
+        assert_eq!(fallback_words(Some("  a cat \n"), 10), Some("a cat"));
+        // At the ceiling, by characters and not bytes; trimmed before it
+        // is measured.
+        assert_eq!(fallback_words(Some("éééééééééé"), 10), Some("éééééééééé"));
+        assert_eq!(
+            fallback_words(Some("  0123456789  "), 10),
+            Some("0123456789")
+        );
+        // One over: no words — never cut to fit.
+        assert_eq!(fallback_words(Some("0123456789a"), 10), None);
+        assert_eq!(fallback_words(Some("ééééééééééé"), 10), None);
     }
 }

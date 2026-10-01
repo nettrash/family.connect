@@ -6060,14 +6060,18 @@ async fn a_refused_picture_the_model_asked_for_says_it_was_refused() {
         next_ai_error_reason(&mut ws).await.as_deref(),
         Some("refused")
     );
-    // Once, not twice: the scripted tool call is ALSO what the text
-    // deployment answers the rewrite request with, and a tool call is no
-    // rewrite — so the one retry never gets as far as the images
-    // deployment. The rewrite that does is walked under "a refused
-    // description is reworded once", below.
+    // The prompt, refused; then the member's own words, refused too — and
+    // no third: the scripted tool call is ALSO what the text deployment
+    // answers the rewrite request with, and a tool call is no rewrite. The
+    // rewrite that does reach the images deployment is walked under "a
+    // refused description is reworded once", below, and the fallback to
+    // the member's own words under "the member's own words".
     assert_eq!(
-        mock.to_deployment(IMAGES_DEPLOYMENT).len(),
-        1,
+        prompts_sent_to_images(&mock),
+        vec![
+            "a refused picture".to_string(),
+            "draw me something".to_string()
+        ],
         "the description did reach the images deployment, which refused it"
     );
 
@@ -6542,6 +6546,15 @@ async fn a_failure_that_is_not_a_refusal_is_never_reworded() {
     say(&ts, &owner, chat, "and another").await;
     assert_eq!(next_ai_error_reason(&mut ws).await, None);
     assert_eq!(mock.to_deployment(IMAGES_DEPLOYMENT).len(), 4);
+    // Nor did the 500 send the member's own words in its place: only a
+    // REFUSAL of the model's prompt falls back to them.
+    assert!(
+        !prompts_sent_to_images(&mock)
+            .iter()
+            .any(|prompt| prompt.contains("draw me a cat")),
+        "{:?}",
+        prompts_sent_to_images(&mock)
+    );
     let text = mock.to_deployment(TEXT_DEPLOYMENT);
     assert_eq!(text.len(), 2, "the two questions and nothing else");
     assert!(
@@ -6570,13 +6583,15 @@ async fn a_failure_that_is_not_a_refusal_is_never_reworded() {
     assert_eq!(mock.to_deployment(TEXT_DEPLOYMENT).len(), 2);
 }
 
-/// The model asked for the picture itself and the images deployment
-/// refused the prompt it wrote: reworded once, drawn, and counted as one
-/// picture carrying BOTH bills — the tokens spent deciding and the tokens
-/// spent rewording. And refused again, it is the refusal it always was.
+/// The model asked for the picture itself, KEPT the member's own words as
+/// its prompt (as the tool tells it to), and the images deployment refused
+/// them: the same text is not sent a second time as "the member's own
+/// words" — it goes straight to the one rewrite, which is drawn and counted
+/// as one picture carrying BOTH bills, the tokens spent deciding and the
+/// tokens spent rewording. Refused again, it is the refusal it always was.
 #[tokio::test]
 #[ignore = "requires PostgreSQL"]
-async fn a_refused_picture_the_model_asked_for_is_reworded_once() {
+async fn a_refused_prompt_that_is_the_members_own_words_is_reworded_not_resent() {
     let (log, _guard) = capture_log();
     let (mock, addr) = spawn_mock_provider().await;
     let ts = server_with_pictures(addr).await;
@@ -6595,12 +6610,15 @@ async fn a_refused_picture_the_model_asked_for_is_reworded_once() {
         ChatAnswer::Tool(call.clone()),
         ChatAnswer::Words(REWRITE.to_string()),
     ]);
-    let asked = say(&ts, &owner, chat, "paint me something for the hall").await;
+    // The member's words are the prompt, give or take the whitespace the
+    // comparison trims.
+    let asked = say(&ts, &owner, chat, &format!("  {REFUSED_DESCRIPTION} ")).await;
     wait_for_picture(&ts, &owner, chat, asked["id"].as_i64().expect("id")).await;
 
     assert_eq!(
         prompts_sent_to_images(&mock),
-        vec![REFUSED_DESCRIPTION.to_string(), REWRITE.to_string()]
+        vec![REFUSED_DESCRIPTION.to_string(), REWRITE.to_string()],
+        "the refused text, then its rewrite — never the same text twice"
     );
     let text = mock.to_deployment(TEXT_DEPLOYMENT);
     assert_eq!(text.len(), 2, "the question, then the rewrite");
@@ -6609,11 +6627,6 @@ async fn a_refused_picture_the_model_asked_for_is_reworded_once() {
         "the question declared the tool"
     );
     assert_is_the_rewrite_request(&text[1], REFUSED_DESCRIPTION);
-    assert!(
-        !text[1].raw.contains("paint me something"),
-        "the question never rides on the rewrite: {}",
-        text[1].raw
-    );
 
     let stats = wait_for_ai_stats(&ts, &owner, 1).await;
     let ai = &stats["totals"]["ai"];
@@ -6628,7 +6641,7 @@ async fn a_refused_picture_the_model_asked_for_is_reworded_once() {
         ChatAnswer::Tool(call),
         ChatAnswer::Words(REWRITE.to_string()),
     ]);
-    say(&ts, &owner, chat, "and one for the kitchen").await;
+    say(&ts, &owner, chat, REFUSED_DESCRIPTION).await;
     assert_eq!(
         next_ai_error_reason(&mut ws).await.as_deref(),
         Some("refused")
@@ -6636,6 +6649,7 @@ async fn a_refused_picture_the_model_asked_for_is_reworded_once() {
     assert_eq!(mock.to_deployment(IMAGES_DEPLOYMENT).len(), 4);
     assert_eq!(mock.to_deployment(TEXT_DEPLOYMENT).len(), 4);
 
+    log.assert_says_only("own_words_same_as_prompt");
     log.assert_says_only("reworded and drawn");
     log.assert_says_only("refused_again");
 }
@@ -6847,4 +6861,336 @@ async fn a_backdrop_the_client_stopped_waiting_for_is_not_drawn_later() {
         0,
         "nothing counted: {stats}"
     );
+}
+
+// -- the member's own words, after a refused prompt ----------------------------
+//
+// When the images deployment REFUSES the prompt the text model wrote for
+// `draw_picture`, the server draws the asker's own words instead — the body
+// of the one message that asked, with the `@ai` taken out — through the same
+// `draw_or_reword` a `/draw` of them goes through, so a refusal of THEM gets
+// the one rewrite (docs/protocol.md, "The member's own words, after a refused
+// prompt"). At most three requests to the images deployment and one rewrite.
+
+/// What the member typed, as distinct from the prompt the model wrote
+/// (`REFUSED_DESCRIPTION`) — "hedgehog" is in both, so `assert_says_only`
+/// keeps either out of the log.
+const OWN_WORDS: &str = "draw a lilac hedgehog in a top hat";
+
+/// The tool call the model answers with: draw `REFUSED_DESCRIPTION`.
+fn draw_the_refused_description() -> ChatAnswer {
+    ChatAnswer::Tool(ScriptedCall {
+        words_first: None,
+        name: "draw_picture".to_string(),
+        arguments: json!({"prompt": REFUSED_DESCRIPTION}).to_string(),
+    })
+}
+
+/// The images request for `prompt`, whole: the words and nothing else.
+fn assert_is_the_picture_request(call: &ProviderCall, prompt: &str) {
+    assert_eq!(
+        call.body,
+        json!({
+            "prompt": prompt,
+            "n": 1,
+            "model": IMAGES_DEPLOYMENT,
+            "size": "1024x1024",
+        }),
+        "{}",
+        call.raw
+    );
+}
+
+/// Neither the member's own words nor the model's prompt reached the log —
+/// on top of `assert_says_only`, which names each outcome.
+fn assert_no_words_logged(log: &CapturedLog, own_words: &str) {
+    let text = log.text();
+    for words in [own_words, REFUSED_DESCRIPTION, "top hat", "lilac"] {
+        assert!(!text.contains(words), "{words:?} reached the log:\n{text}");
+    }
+}
+
+/// The three ways the fallback can end, walked in one thread or chat:
+/// the member's words drawn; refused and their rewrite drawn; refused, and
+/// the rewrite refused too. `ask` sends the asking message and hands back
+/// its id; `words` is what the member's message comes to without its `@ai`.
+async fn walk_the_fallback(
+    ts: &TestServer,
+    mock: &MockProvider,
+    ws: &mut WsClient,
+    token: &str,
+    chat: i64,
+    words: &str,
+    ask: impl AsyncFn() -> i64,
+) {
+    // 1. The model's prompt refused, the member's words drawn.
+    mock.fail_images_once(images_refusal());
+    mock.queue_chat([draw_the_refused_description()]);
+    let asked = ask().await;
+    let picture = wait_for_picture(ts, token, chat, asked).await;
+    assert_eq!(picture["body"], "", "{picture}");
+    assert_eq!(picture["attachments"].as_array().map(Vec::len), Some(1));
+    let images = mock.to_deployment(IMAGES_DEPLOYMENT);
+    assert_eq!(images.len(), 2, "the prompt, then the member's words");
+    assert_is_the_picture_request(&images[0], REFUSED_DESCRIPTION);
+    assert_is_the_picture_request(&images[1], words);
+    assert!(
+        !images[1].raw.to_ascii_lowercase().contains("@ai"),
+        "the mention is not drawn: {}",
+        images[1].raw
+    );
+    assert_eq!(
+        mock.to_deployment(TEXT_DEPLOYMENT).len(),
+        1,
+        "the question and nothing else: the model's prompt is not reworded"
+    );
+    // ONE image, and only the tokens spent deciding.
+    let stats = wait_for_ai_stats(ts, token, 1).await;
+    let ai = &stats["totals"]["ai"];
+    assert_eq!(ai["images"].as_i64(), Some(1), "{stats}");
+    assert_eq!(ai["prompt_tokens"].as_i64(), Some(40), "{stats}");
+    assert_eq!(ai["completion_tokens"].as_i64(), Some(9), "{stats}");
+    assert_eq!(stored_blobs(ts), 1);
+
+    // 2. The member's words refused too: THEIR rewrite is drawn.
+    mock.fail_images_once(images_refusal());
+    mock.fail_images_once(images_refusal());
+    mock.queue_chat([
+        draw_the_refused_description(),
+        ChatAnswer::Words(REWRITE.to_string()),
+    ]);
+    let asked = ask().await;
+    wait_for_picture(ts, token, chat, asked).await;
+    let images = mock.to_deployment(IMAGES_DEPLOYMENT);
+    assert_eq!(images.len(), 5, "the prompt, the words, their rewrite");
+    assert_is_the_picture_request(&images[2], REFUSED_DESCRIPTION);
+    assert_is_the_picture_request(&images[3], words);
+    assert_is_the_picture_request(&images[4], REWRITE);
+    let text = mock.to_deployment(TEXT_DEPLOYMENT);
+    assert_eq!(text.len(), 3, "the question, then ONE rewrite");
+    assert_is_the_rewrite_request(&text[2], words);
+    // Still one image for this reply: 40 + 9 deciding, 7 + 5 rewording.
+    let stats = wait_for_ai_stats(ts, token, 2).await;
+    let ai = &stats["totals"]["ai"];
+    assert_eq!(ai["images"].as_i64(), Some(2), "{stats}");
+    assert_eq!(ai["prompt_tokens"].as_i64(), Some(40 + 47), "{stats}");
+    assert_eq!(ai["completion_tokens"].as_i64(), Some(9 + 14), "{stats}");
+    assert_eq!(stored_blobs(ts), 2);
+
+    // 3. Everything refused: the refusal it always was, nothing stored or
+    //    counted, and no fourth picture request.
+    mock.fail_images(Some(images_refusal()));
+    mock.queue_chat([
+        draw_the_refused_description(),
+        ChatAnswer::Words(REWRITE.to_string()),
+    ]);
+    ask().await;
+    assert_eq!(next_ai_error_reason(ws).await.as_deref(), Some("refused"));
+    let images = mock.to_deployment(IMAGES_DEPLOYMENT);
+    assert_eq!(images.len(), 8, "three requests, never a fourth");
+    assert_is_the_picture_request(&images[5], REFUSED_DESCRIPTION);
+    assert_is_the_picture_request(&images[6], words);
+    assert_is_the_picture_request(&images[7], REWRITE);
+    assert_eq!(mock.to_deployment(TEXT_DEPLOYMENT).len(), 5);
+    mock.fail_images(None);
+    assert_eq!(stored_blobs(ts), 2, "nothing stored");
+    let stats: Value = ts
+        .get(token, "/families/mine/stats")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let ai = &stats["totals"]["ai"];
+    assert_eq!(ai["images"].as_i64(), Some(2), "nothing counted: {stats}");
+    assert_eq!(ai["prompt_tokens"].as_i64(), Some(40 + 47), "{stats}");
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_refused_prompt_falls_back_to_the_members_own_words_in_the_private_chat() {
+    let (log, _guard) = capture_log();
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ai_chat_id(&ts, &owner).await;
+    let mut ws = connect_ws(&ts, &owner).await;
+
+    walk_the_fallback(&ts, &mock, &mut ws, &owner, chat, OWN_WORDS, async || {
+        say(&ts, &owner, chat, &format!("  {OWN_WORDS}\n")).await["id"]
+            .as_i64()
+            .expect("id")
+    })
+    .await;
+
+    log.assert_says_only("own_words_drawn");
+    log.assert_says_only("own_words_refused");
+    assert_no_words_logged(&log, OWN_WORDS);
+}
+
+/// The family chat: the words of the ONE message that mentioned the
+/// assistant, every `@ai` taken out by the mention grammar — and nothing of
+/// the message it quotes or the transcript it carried.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_refused_prompt_falls_back_to_the_members_own_words_in_a_mention() {
+    let (log, _guard) = capture_log();
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+    let family_chat = ts.family_chat_id(&owner).await;
+    let mut ws = connect_ws(&ts, &member).await;
+
+    let quoted = say(&ts, &owner, family_chat, "we are going to the beach").await;
+    let quoted_id = quoted["id"].as_i64().expect("id");
+    let body = "please @ai draw a lilac hedgehog in a top hat @AI";
+    let words = "please draw a lilac hedgehog in a top hat";
+    walk_the_fallback(
+        &ts,
+        &mock,
+        &mut ws,
+        &member,
+        family_chat,
+        words,
+        async || {
+            let asked = reply_with(&ts, &member, family_chat, body, quoted_id, vec![]).await;
+            asked["id"].as_i64().expect("id")
+        },
+    )
+    .await;
+    for call in mock.to_deployment(IMAGES_DEPLOYMENT) {
+        assert!(!call.raw.contains("beach"), "{}", call.raw);
+    }
+
+    log.assert_says_only("own_words_drawn");
+    log.assert_says_only("own_words_refused");
+    assert_no_words_logged(&log, words);
+}
+
+/// No words of the member's to fall back to — a photograph with no
+/// caption, or a message that is only `@ai` — and the request is the one it
+/// was before the fallback: the model's prompt reworded once, and no
+/// images request carrying anything else.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn with_no_words_of_the_members_own_there_is_no_fallback() {
+    let (log, _guard) = capture_log();
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+    let chat = ai_chat_id(&ts, &owner).await;
+    let family_chat = ts.family_chat_id(&owner).await;
+    let mut ws = connect_ws(&ts, &owner).await;
+
+    // A photo with no caption, in the private chat.
+    let photo = upload_photo(&ts, &owner, true).await;
+    let blobs = stored_blobs(&ts);
+    mock.fail_images(Some(images_refusal()));
+    mock.queue_chat([
+        draw_the_refused_description(),
+        ChatAnswer::Words(REWRITE.to_string()),
+    ]);
+    say_with(&ts, &owner, chat, "", vec![photo]).await;
+    assert_eq!(
+        next_ai_error_reason(&mut ws).await.as_deref(),
+        Some("refused")
+    );
+    assert_eq!(
+        prompts_sent_to_images(&mock),
+        vec![REFUSED_DESCRIPTION.to_string(), REWRITE.to_string()],
+        "the prompt and its one rewrite: nothing of the member's to send"
+    );
+    let text = mock.to_deployment(TEXT_DEPLOYMENT);
+    assert_eq!(text.len(), 2);
+    assert_is_the_rewrite_request(&text[1], REFUSED_DESCRIPTION);
+
+    // A mention that is only the token, in the family chat.
+    mock.queue_chat([
+        draw_the_refused_description(),
+        ChatAnswer::Words(REWRITE.to_string()),
+    ]);
+    say(&ts, &member, family_chat, "  @AI  ").await;
+    assert_eq!(
+        next_ai_error_reason(&mut ws).await.as_deref(),
+        Some("refused")
+    );
+    assert_eq!(
+        prompts_sent_to_images(&mock),
+        vec![
+            REFUSED_DESCRIPTION.to_string(),
+            REWRITE.to_string(),
+            REFUSED_DESCRIPTION.to_string(),
+            REWRITE.to_string(),
+        ],
+        "never an empty prompt, never the token"
+    );
+    assert_eq!(stored_blobs(&ts), blobs, "nothing drawn, nothing stored");
+
+    log.assert_says_only("no_own_words");
+}
+
+/// The model's prompt REFUSED, and the member's own words then failing in
+/// some way that is not a refusal — a 500 here. The member hears the
+/// refusal their picture began with (`"reason": "refused"`, never the 500's
+/// reason-less "couldn't answer"), the 500 is not reworded, and the
+/// operator's log carries the 500 itself — its status and the URL that
+/// gave it — beside the outcome, because no other line says what went
+/// wrong with the second request. Still never the words or the prompt.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_failure_on_the_members_own_words_is_logged_and_ends_as_the_refusal() {
+    let (log, _guard) = capture_log();
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ai_chat_id(&ts, &owner).await;
+    let mut ws = connect_ws(&ts, &owner).await;
+
+    mock.fail_images_once(images_refusal());
+    mock.fail_images_once(Failure::Http(
+        500,
+        json!({"error": {"code": "InternalServerError", "message": "The server had an error."}}),
+    ));
+    mock.queue_chat([
+        draw_the_refused_description(),
+        ChatAnswer::Words(REWRITE.to_string()),
+    ]);
+    say(&ts, &owner, chat, OWN_WORDS).await;
+    assert_eq!(
+        next_ai_error_reason(&mut ws).await.as_deref(),
+        Some("refused"),
+        "the member hears the refusal, not the 500"
+    );
+    assert_eq!(
+        prompts_sent_to_images(&mock),
+        vec![REFUSED_DESCRIPTION.to_string(), OWN_WORDS.to_string()],
+        "the prompt, then the member's words — and a 500 is not reworded"
+    );
+    assert_eq!(
+        mock.to_deployment(TEXT_DEPLOYMENT).len(),
+        1,
+        "the question and nothing else"
+    );
+    assert_eq!(stored_blobs(&ts), 0, "nothing drawn, nothing stored");
+
+    log.assert_says_only("own_words_failed");
+    let text = log.text();
+    let line = text
+        .lines()
+        .find(|line| line.contains("own_words_failed"))
+        .expect("the outcome line");
+    assert!(
+        line.contains("returned 500"),
+        "the 500 is on the outcome's own line: {line}"
+    );
+    assert_no_words_logged(&log, OWN_WORDS);
 }

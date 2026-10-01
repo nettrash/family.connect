@@ -1983,6 +1983,15 @@ this widens no consent; it is written here because a disclosure that is true onl
 not the disclosure this section asks for. A client may say it in a line of its own; it must not
 say anything that contradicts it.
 
+*Amended 2026-10-01:* and one more, also to `processor`. When the assistant decides to draw and the
+images model refuses the description the assistant wrote, the server sends the images model the
+member's OWN message instead — the one message that asked, with the `@ai` taken out — exactly as
+`/draw` followed by those words would have (see "Drawing without being told to") — so if the
+images model refuses them too, it is those words, not the assistant's description, that go once to
+the same provider's TEXT model to be reworded, as the amendment above says of a `/draw`. These are
+the member's words, going to the provider they agreed to, in the shape they could have sent them
+themselves; this widens no consent either.
+
 **Recorded on the server, not on the device.** `GET /me` carries `assistant_consent_at`, a
 timestamp or null, and `POST /me/assistant-consent` sets it. Server-side for three reasons: the
 SERVER is what calls the model, so it is the only place a refusal cannot be bypassed by a client
@@ -3049,6 +3058,14 @@ to whom" then becomes "whatever the model decided". Neither is true of this desi
   decides WHETHER; the server still decides WHAT leaves and TO WHOM, and this document can still say
   what that is.
 
+*Amended 2026-10-01:* "not the question" is no longer the whole truth, and is corrected here rather
+than left to be found. When the images deployment REFUSES the tool's prompt, the next thing that
+goes to it is the asker's own message — the words of the one message that asked, with the `@ai`
+taken out — exactly as `/draw` followed by those words would have sent them (see "The member's own
+words, after a refused prompt" below). Still not the thread, not the transcript, not a quoted
+message, not another member's words and not any picture: one message, which its author typed and
+addressed to the assistant.
+
 **What it cannot say, and says so.** The words in that `prompt` are the model's. They will usually
 paraphrase the question; they may draw on the thread or the transcript the model was shown; and on
 a family that has turned `ai_vision` on, they may describe a photograph it was shown — "draw our
@@ -3076,6 +3093,65 @@ added (what "it" or "the same, but in winter" refers to), and nothing embellishe
 no style, mood, age or realism the member did not ask for. The same request was drawn when sent as
 `/draw` and refused when asked in words, and the difference was the model's own additions.
 
+**The member's own words, after a refused prompt** (*added 2026-10-01*). Guidance is not a check,
+and the operator's own family proved it: "draw a cat in a hat", asked in words, was refused even
+after both amendments above — the model's prompt refused, and the one rewrite of that prompt
+refused too — while `/draw a cat in a hat` was drawn. So the tool path now falls back to the words
+that `/draw` had already proved:
+
+1. the tool's `prompt` goes to the images deployment, as above;
+2. **only if the images deployment REFUSES it** — a refusal exactly as "The assistant" decides one;
+   never on a `5xx`, a timeout, any other `4xx`, or a malformed or empty tool call — the server
+   takes the body of the ONE message that asked (the question in the member's own `ai` chat, or the
+   message carrying the `@ai` in the family chat), removes every `@ai` in it by the mention grammar
+   of "Mentioning the assistant in the family chat" — each token, at the same boundaries, together
+   with the whitespace after it, as `/draw` removes its one leading `@ai` — and trims it. Those are
+   the member's own words, and they go through exactly what a `/draw` of them goes through: drawn,
+   and, if the images deployment refuses them too, given the one rewrite of "A refused description
+   is reworded once". **Once the model's prompt is refused, the member's words get exactly the
+   attempts `/draw` followed by them would have got — with one difference in how a failure
+   ends:** the picture the member asked for was refused, so a fallback that does not become a
+   picture ends as that refusal (`"reason": "refused"`) even where a `/draw` of the same words
+   would not have — a `5xx` or a timeout on the member's words, which a `/draw` would end with
+   an `ai_error` carrying no reason.
+
+The model's own prompt is **not** reworded before the fallback. Rewording it first was considered
+and rejected: the one rewrite is better spent on the member's words, because those are what a
+`/draw` showed the filter accepts, while the model's prompt is the thing the filter just refused —
+and spending a rewrite on each would make a picture cost four requests to the images deployment
+and two to the text one instead of three and one. So, per picture the model asks for: **at most
+three requests to the images deployment** (the model's prompt, the member's words, the rewrite of
+the member's words) **and one to the text deployment** for a rewrite, besides the question itself.
+Never a loop.
+
+Two cases skip the fallback, each decided:
+
+- **the member's words are empty** once the `@ai` is out and they are trimmed — a photograph sent
+  with no caption, or a message that is only `@ai` — or longer than a draw prompt may be (the
+  message-body ceiling, which a stored message cannot exceed; checked anyway rather than trusted).
+  There is nothing of theirs to fall back to, and the request is the one it was before this
+  amendment: the model's prompt gets the one rewrite, and a refusal of that ends as it always did;
+- **the member's words are the model's prompt** (compared trimmed) — the model kept the member's
+  words, as the tool tells it to. Sending the same text a second time unchanged would be asked of a
+  filter that has just refused it, so the server goes straight to the one rewrite of that text,
+  which is the rewrite of the member's words.
+
+Nothing is consented to that was not consented to: the member's words go to the images deployment
+of the same `processor` the member agreed to (see "Consenting to the assistant"), and they are the
+words that member addressed to the assistant in that message — the same words a `/draw` of them
+would send. What was rejected, and why: falling back to the THREAD, the transcript or a quoted
+message ("it", "the one above") would make the picture better in some cases and would send other
+people's words, or the member's older ones, to a second deployment that a `/draw` never reaches;
+the fallback is the asker's one message or nothing.
+
+Success is one picture, exactly as before: one `question`, one `image`, the tokens the text model
+spent deciding plus any it spent on the rewrite (see "Family statistics"). Failure is exactly the
+refusal it was: `ai_error` with `"reason": "refused"`, nothing stored, nothing counted. The log says
+which way it went — the member's words drawn, refused, failed, or absent — and, when they were not
+drawn, the provider's error on the same line (status, URL and the identifying fields "The
+assistant" allows, as the rewrite's lines carry theirs), because the member is handed the first
+refusal and no other line would say what the second request met; never the words or the prompt.
+
 Three rules about the edges, each decided rather than left to happen:
 
 - **an empty or unreadable prompt is an error**, not a silent nothing. A tool call whose `prompt` is
@@ -3099,7 +3175,9 @@ Three rules about the edges, each decided rather than left to happen:
   none of them is reworded, because nothing was refused. A `prompt` the images deployment's filter
   then refuses IS one: it gets the one rewrite a refused `/draw` gets (see "A refused description
   is reworded once"), and when that does not produce a picture its `ai_error` carries
-  `"reason": "refused"` exactly as a refused `/draw` does.
+  `"reason": "refused"` exactly as a refused `/draw` does. *Amended 2026-10-01:* when the asking
+  message has words of its own, it is those words, not the refused `prompt`, that get the
+  fallback and the one rewrite — see "The member's own words, after a refused prompt" above.
 
 `/draw` stays, unchanged, and is still the explicit path: a member who writes it gets a picture
 whether or not the model would have thought of one, and what leaves on it is still the words after
@@ -3220,11 +3298,24 @@ consent to the assistant among them, on every one of the three paths, the backdr
   stored and a malformed `draw_picture` call are the failures they always were, and the text
   deployment is asked nothing.
 - **Once.** Never a second rewrite and never a third picture request: per picture asked for, at most
-  one request to the text deployment and two to the images deployment.
+  one request to the text deployment and two to the images deployment. *Amended 2026-10-01:* the
+  text model's own `draw_picture` is the one path with a third, and still exactly one rewrite.
+  There the order of attempts is: (1) the model's `prompt`; (2) only if that is REFUSED, the
+  asker's own message with the `@ai` taken out (see "The member's own words, after a refused
+  prompt" under "Drawing without being told to"); (3) only if that is refused too, the one rewrite
+  of the member's words — so at most three requests to the images deployment and one rewrite
+  request to the text deployment. The model's prompt is not reworded when the member's words are
+  there to fall back to; it is reworded, as before, only when they are not (empty once the `@ai`
+  is out, or longer than the message-body ceiling) — two requests and one rewrite — and when the member's words ARE the model's prompt the
+  same text is not sent twice: its refusal goes straight to the rewrite. A failure at any step
+  hands back the first refusal, and the member is told their picture was refused.
 - **Not in the log.** The server's log says that a rewrite was tried and how it ended — drawn, no
   usable rewrite, refused again, failed again — with the provider's identifying fields and the
   rewrite's token counts, and never the description or the rewrite, for the reason no member's
-  words ever reach it.
+  words ever reach it. On the `draw_picture` path one more line says how the fallback to the
+  member's own words went — drawn, refused, failed, the words the same as the prompt, or no words
+  to fall back to — with the provider's error when they were not drawn, and never the words or the
+  prompt (2026-10-01).
 
 Nothing new reaches a client, and a client needs no change to stay correct.
 
@@ -3275,8 +3366,8 @@ per request and the family never sees the seam:
 | `/draw …` | `[ai.images]` | the words after `/draw`, and nothing else |
 | an `@ai` mention carrying a photo, or replying to one (#56) | `[ai.vision]` | what a mention sends, plus up to four photos off those two messages together |
 | an `@ai` mention in a family whose owner has turned `ai_history_photos` on, when photos travel (2026-09-03) | `[ai.vision]` | what a mention sends, plus up to four photos under ONE budget — the mention's, then the quote's, then the transcript's newest — each `[photo N]`-numbered where it is written |
-| a question the text model answers by calling `draw_picture` (#56) | `[ai]`, then `[ai.images]` | the usual text request — with one tool declared — and then the tool's `prompt`, and nothing else |
-| a description the images deployment REFUSED — from any of the rows above that reach it, or a board backdrop (2026-09-30) | `[ai]`, then `[ai.images]` once more | the refused description under a fixed instruction to reword it, and then the rewrite, and nothing else |
+| a question the text model answers by calling `draw_picture` (#56) | `[ai]`, then `[ai.images]` | the usual text request — with one tool declared — and then the tool's `prompt`, and nothing else; only if that `prompt` is REFUSED, the asking message's own words with the `@ai` taken out, as a `/draw` of them would send (2026-10-01) |
+| a description the images deployment REFUSED — from any of the rows above that reach it, or a board backdrop (2026-09-30) | `[ai]`, then `[ai.images]` once more | the refused description under a fixed instruction to reword it, and then the rewrite, and nothing else — on the `draw_picture` row, the member's own words when there are any, never the refused `prompt` as well (2026-10-01) |
 
 `[ai]` is the section that already existed and it keeps its meaning exactly: it is the TEXT
 deployment, and a server that configures nothing else behaves precisely as it did before — which is
@@ -3319,6 +3410,13 @@ this paragraph was right to be written: the decision never leaves the server. Th
 whether; it does not choose the provider, the question never reaches the images deployment, and
 what does reach it is one bounded string the server read out of the reply. `/draw` is still there,
 still five characters a reader can point at.*
+
+*Amended 2026-10-01:* "the question never reaches the images deployment" now has one exception, and
+it is the member's words rather than the model's: when the images deployment refuses the model's
+string, the asker's own message — that one message, with the `@ai` taken out — goes to it as a
+`/draw` of those words would have gone. The decision still never leaves the server; the server, not
+the model, chooses that fallback and what it carries (see "The member's own words, after a refused
+prompt").
 
 #### The daily greeting
 
@@ -3738,6 +3836,12 @@ picture. The tokens the text deployment reported for the rewrite are added to th
 `prompt_tokens` and `completion_tokens`, beside any it spent deciding to draw; so a reworded
 `/draw`, and a reworded backdrop, are the ones that carry tokens. A rewrite that did not end in a
 picture records nothing, as every failed reply records nothing.
+
+*Amended 2026-10-01:* a picture the text model asked for, drawn from the member's own words after
+its `prompt` was refused (see "Drawing without being told to"), is still one `question` and one
+`image` — up to three requests to the images deployment, one picture — with the tokens spent
+deciding to draw, plus the rewrite's when the member's words had to be reworded too. A request
+the images deployment refused is not an image: the bill counts pictures, never requests.
 
 ### Retention
 
@@ -5069,6 +5173,7 @@ unregistered deletes the row, as an ordinary push would.
 | Photos shown to the assistant with one question | 4 — from that one message in a private thread; in the family chat, from the `@ai` message and the message it replies to together, and — only with `ai_history_photos` on — the transcript's newest photos filling whatever those two left of the same four (fixed) |
 | Profile pictures shown to the assistant with one mention | 4 — only with `ai_faces` on, only the members whose lines are in the transcript, most recently active first, under a budget SEPARATE from the four photographs above and never displacing one (fixed) |
 | A picture prompt the assistant writes for itself (`draw_picture`) | the message-body ceiling, 4000 chars by default; over it is `ai_error`, never cut |
+| Requests per picture asked for | `/draw` and a board backdrop: 2 to the images deployment and 1 rewrite to the text deployment; `draw_picture`: 3 to the images deployment (its prompt, the member's own words, their rewrite) and 1 rewrite (fixed) |
 | Largest photo shown to the assistant | 5 MiB after preferring the preview; a larger one is left out and the assistant is told so (fixed) |
 | Attachment size | 100 MB (`limits.max_attachment_bytes`; keep nginx in step) |
 | Attachments per message | 10 (`limits.max_attachments_per_message`; the fewest is 1, fixed) |
