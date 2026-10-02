@@ -30,7 +30,6 @@ import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.BoardApi
-import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.NoteDto
@@ -357,15 +356,22 @@ class BoardRepository @Inject constructor(
      * note as it was when it opened: without the new one it would keep
      * drawing the old picture, or none, which is what made asking again look
      * like nothing happening.
+     *
+     * A title the provider's own filter refused is told apart from every
+     * other failure (`picture_refused`), because it reads differently: the
+     * same title gets the same refusal, so the author is told to put it
+     * another way rather than that it merely did not draw.
      */
-    suspend fun drawBackdrop(noteId: Long): AttachmentDto? = when (
+    suspend fun drawBackdrop(noteId: Long): BackdropOutcome = when (
         val result = boardApi.drawBackdrop(noteId)
     ) {
         is ApiResult.Ok -> {
             applyNote(result.value.note)
             result.value.note.attachment
+                ?.let { BackdropOutcome.Drawn(it) }
+                ?: BackdropOutcome.Failed
         }
-        else -> null
+        else -> BackdropOutcome.ofFailure(result)
     }
 
     suspend fun deleteNote(id: Long): Boolean = when (boardApi.deleteNote(id)) {

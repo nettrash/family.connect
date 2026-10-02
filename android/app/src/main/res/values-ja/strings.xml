@@ -412,6 +412,7 @@
     <string name="s_assistant_mention_sees_quoted_pictures_and_recent">この返信はアシスタントに話しかけているため、返信先の写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
     <string name="s_assistant_mention_sees_both_and_recent">この返信はアシスタントに話しかけているため、ここの写真と返信先の写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
     <string name="s_assistant_answer_failed">アシスタントはこの返事を完了できませんでした。もう一度聞いてください。</string>
+    <string name="s_assistant_provider_refused">アシスタントの提供元に断られました。別の言い方で試してみてください。</string>
     <string name="s_assistant_vision">アシスタントが写真を見られるようにする</string>
     <string name="s_assistant_vision_explanation">アシスタントとの自分だけのチャットで質問に写真を添えたとき、ファミリーチャットでアシスタントに話しかけるメッセージに写真を添えたとき、またはアシスタントに話しかけながら写真に返信したとき、その写真も質問と一緒にモデルへ送られます（1つの質問につき最大4枚）。アシスタントに示していない写真は、「アシスタントが最近の写真を見る」がオンでないかぎり、前のメッセージのものも含めて送られません。動画・ファイル・音声・位置情報も送られません。オンにするまではオフで、オフのあいだは写真は一切送られません。</string>
     <string name="e_change_assistant_vision_failed">設定を変更できませんでした</string>
@@ -532,6 +533,7 @@
     <string name="s_draw_another_backdrop">別の背景を描く</string>
     <string name="s_drawing">描いています…</string>
     <string name="s_draw_failed">描けませんでした。</string>
+    <string name="s_describe_in_general_words">人や物は一般的な言葉で説明してください。実在の人物名やブランド名は断られることがよくあります。</string>
     <string name="s_tick_failed">チェックできませんでした。</string>
     <string name="s_no_calendar_app">追加できるカレンダーアプリがありません。</string>
     <string name="s_the_assistant">アシスタント</string>
@@ -553,4 +555,31 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">同意するまで、あなたが書いた内容が %1$s に送られることはなく、アシスタントも答えません。</string>
     <string name="s_consent_stopping_takes_effect_at_once">アシスタントに書いた内容は %1$s に送られます。停止はすぐ反映されますが、すでに送られたものは取り消せません。</string>
     <string name="s_couldnt_save_your_answer">回答を保存できませんでした。もう一度お試しください。</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">スタンプ</string>
+    <string name="s_stickers">スタンプ</string>
+    <string name="s_family_stickers">家族のスタンプ</string>
+    <string name="s_family_stickers_count">%1$d / %2$d</string>
+    <string name="s_family_stickers_explanation">家族のだれでもスタンプを追加できます。削除できるのは追加した人か、家族のオーナーです。</string>
+    <string name="s_recently_used">最近使ったスタンプ</string>
+    <string name="s_no_stickers_yet">スタンプはまだありません</string>
+    <string name="s_no_stickers_hint">家族の画面から追加してください。</string>
+    <string name="s_add_sticker">スタンプを追加</string>
+    <string name="s_add_to_family_stickers">家族のスタンプに追加</string>
+    <string name="s_sticker_label">説明（任意）</string>
+    <string name="s_sticker_label_hint">スクリーンリーダー用の短い説明です。画像の上には表示されません。</string>
+    <string name="s_remove_sticker">スタンプを削除</string>
+    <string name="s_remove_sticker_q">このスタンプを削除しますか？</string>
+    <string name="s_remove_sticker_explanation">家族のスタンプから削除されます。送信済みのメッセージには残ります。</string>
+    <string name="s_sticker_added">家族のスタンプに追加しました</string>
+    <string name="s_sticker_already_in_pack">すでに家族のスタンプにあります</string>
+    <string name="s_sticker_pack_full">家族のスタンプはすでに %1$d 個あります。追加するには 1 つ削除してください。</string>
+    <string name="s_sticker_too_large">大きすぎます。スタンプは %1$s までです。</string>
+    <string name="s_sticker_add_failed">スタンプを追加できませんでした。もう一度お試しください。</string>
+    <string name="s_sticker_unreadable">この画像を読み込めませんでした。</string>
+    <string name="s_sticker_animated_must_be_webp">アニメーションスタンプはWebP形式である必要があります。これは追加できません。</string>
+    <string name="s_sticker_label_too_long">説明は%1$d文字以内にしてください。</string>
+    <string name="s_sticker_remove_not_allowed">スタンプを削除できるのは、追加した人か家族のオーナーだけです。</string>
+    <string name="s_sticker_remove_failed">スタンプを削除できませんでした。もう一度お試しください。</string>
+    <string name="s_sticker_not_available_offline">このスタンプはまだこの端末にありません。オンラインのときにもう一度お試しください。</string>
 </resources>

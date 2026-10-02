@@ -13,7 +13,7 @@
   VERSION: MAJOR AND MINOR ARE WRITTEN HERE BY HAND; THE BUILD NUMBER IS NOT. The third part is
   stamped by CI (the `win-app` job, from `Directory.Build.props` plus the run number) into a
   working copy and never committed, so what is checked in stays `<major>.<minor>.0.0` and a local
-  build is visibly unstamped — Settings then says "1.1", not "1.1 (0)" (AppVersionText).
+  build is visibly unstamped — Settings then says "1.2", not "1.2 (0)" (AppVersionText).
 
   The fourth part stays 0 and is not ours to set: Partner Center RESERVES the revision and refuses
   a package that fills it in. Every part is a 16-bit number (0-65535), which is why the build
@@ -30,7 +30,7 @@
   <Identity
     Name="nttrsh.FamilyConnect"
     Publisher="CN=28EC49E1-8A19-45EF-A576-FF596547E069"
-    Version="1.1.0.0" />
+    Version="1.2.0.0" />
   <Properties>
     <!-- The name reserved in Partner Center, exactly as reserved: certification matches this string against it. -->
     <DisplayName>FamilyConnect</DisplayName>

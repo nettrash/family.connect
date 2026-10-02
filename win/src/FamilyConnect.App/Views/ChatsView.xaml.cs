@@ -8,6 +8,7 @@ using Microsoft.UI.Input;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
@@ -65,6 +66,36 @@ public sealed partial class ChatsView : UserControl
     private readonly AvatarFaces faces;
 
     private readonly Dictionary<string, BitmapImage> pictures = [];
+
+    /// <summary>
+    /// The family's CHAT stickers (docs/protocol.md, "Sticker pack") — not the board's cards, which this code also calls
+    /// stickers: the pack, the one timer that moves the animated ones, and what has been decoded so a redraw does not
+    /// decode (and flash) again — by attachment id at the conversation's size, by item id at the panel's, and by staging
+    /// handle for one still on its way.
+    /// </summary>
+    /// <remarks>
+    /// The conversation's are the only ones that MOVE, so they are the only ones with frames to account for: they sit
+    /// on a <see cref="StickerShelf{TPicture}"/>, which holds them to one budget between them, remembers a sticker
+    /// nothing here decodes, and keeps each one's clock across a redraw. The other two are still pictures at a cell's
+    /// size; a null in either is the same remembered "nothing here decodes it".
+    /// </remarks>
+    private readonly PackModel pack;
+    private readonly StickerAnimator stickers;
+    private readonly StickerShelf<StickerPicture> stickerPictures;
+    private readonly Dictionary<long, StickerPicture?> stickerThumbs = [];
+    private readonly Dictionary<string, StickerPicture?> stagedStickers = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// One sticker is decoded at a time. Frames are decoded BEFORE the shelf can make room for them, so ten decodes
+    /// running side by side would hold ten stickers' frames over the budget at once — and two elements of the same
+    /// sticker (a conversation redrawn while the first was still decoding) would each decode it.
+    /// </summary>
+    private readonly SemaphoreSlim stickerDecoding = new(1, 1);
+
+    /// <summary>The sticker the viewer is showing, which nothing else keeps: given back when the viewer moves on.</summary>
+    private StickerPicture? viewerSticker;
+    private readonly Action<PackItemDto> onPack;
+    private bool sendingSticker;
 
     /// <summary>What each chat has staged for its next message, kept while the reader looks elsewhere.</summary>
     private readonly Dictionary<long, ComposerStaging> strips = [];
@@ -153,6 +184,11 @@ public sealed partial class ChatsView : UserControl
         this.connection = connection;
         InitializeComponent();
         faces = new AvatarFaces(connection);
+        pack = connection.Stickers;
+        stickers = new StickerAnimator(DispatcherQueue);
+        stickerPictures = new StickerShelf<StickerPicture>(
+            StickerAnimation.MaxHeldBytes, StickerAnimation.MaxKept,
+            stickers.IsShowing, stickers.MakeStill, stickers.Release);
         var say = services.Say;
         list = new ChatListModel(connection.Chats, () => connection.Session.State.Me?.Id ?? 0, say);
         typing = new TypingRoster(connection.Chats, words: say);
@@ -167,8 +203,22 @@ public sealed partial class ChatsView : UserControl
 
         ChatList.SelectionChanged += OnChatPicked;
         SendButton.Click += (_, _) => Send();
-        ConsentReview.Click += (_, _) => _ = ReviewAssistantConsentAsync();
+        ConsentReview.Click += (_, _) => _ = ReviewAssistantConsentAsync(Send);
         AttachButton.Click += (_, _) => ShowAttachMenu();
+        ToolTipService.SetToolTip(StickerButton, say.Get("Stickers"));
+        AutomationProperties.SetName(StickerButton, say.Get("Stickers"));
+        StickerButton.Click += (_, _) => ShowStickerPanel(StickerButton, inThread: null);
+        ToolTipService.SetToolTip(ThreadStickerButton, say.Get("Stickers"));
+        AutomationProperties.SetName(ThreadStickerButton, say.Get("Stickers"));
+        ThreadStickerButton.Click += (_, _) =>
+        {
+            if (thread is { } chain)
+            {
+                ShowStickerPanel(ThreadStickerButton, chain);
+            }
+        };
+        ViewerAddSticker.Content = say.Get("Add to family stickers");
+        ViewerAddSticker.Click += (_, _) => _ = AddViewedStickerAsync();
         AskAssistantButton.Content = "✨";
         AskPictureButton.Content = "🎨";
         ToolTipService.SetToolTip(AskAssistantButton, say.Get("Ask the assistant"));
@@ -177,6 +227,7 @@ public sealed partial class ChatsView : UserControl
         AutomationProperties.SetName(AskPictureButton, say.Get("Ask for a picture"));
         AskAssistantButton.Click += (_, _) => PutInComposer(AssistantText.WithAssistantMention(ComposerBox.Text));
         AskPictureButton.Click += (_, _) => PutInComposer(AssistantText.WithDrawToken(ComposerBox.Text));
+        PictureHintText.Text = PictureHint.Sentence(say);
 
         ViewerSave.Content = say.Get("Save…");
         ToolTipService.SetToolTip(ViewerSave, say.Get("Save a copy"));
@@ -318,6 +369,21 @@ public sealed partial class ChatsView : UserControl
         onMarks = _ => QueueRedraw();
         connection.PeerReads.Changed += onMarks;
         connection.Answers.Changed += onMarks;
+        // A pack frame changes no conversation — a sent sticker is its own copy — but it can be what makes the button
+        // appear, and an item it removed must not be drawn from a stale thumbnail if its id ever came back.
+        onPack = item => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (gone)
+            {
+                return;
+            }
+            if (item.Deleted)
+            {
+                stickerThumbs.Remove(item.Id);
+            }
+            ShowStickerButton();
+        });
+        connection.Router.PackChanged += onPack;
         onPreviews = QueueRedraw;
         connection.Previews.Landed += onPreviews;
         LinkPreviewSetting.Changed += onPreviews;
@@ -348,6 +414,13 @@ public sealed partial class ChatsView : UserControl
     {
         typingTimer.Stop();
         pictures.Clear();
+        stickers.Stop();
+        // After the stop, so nothing is "showing" and every frame is given back rather than left to a finalizer.
+        ForgetViewerSticker();
+        stickerPictures.Clear();
+        stickerThumbs.Clear();
+        stagedStickers.Clear();
+        connection.Router.PackChanged -= onPack;
         connection.Router.Arrived -= onArrived;
         connection.Router.Edited -= onEdited;
         connection.Router.ChatChanged -= onChat;
@@ -464,6 +537,56 @@ public sealed partial class ChatsView : UserControl
         var (ask, picture) = AssistantButtons.Offered(kind, connection.Session.State.Assistant, editing is not null);
         AskAssistantButton.Visibility = ask ? Visibility.Visible : Visibility.Collapsed;
         AskPictureButton.Visibility = picture ? Visibility.Visible : Visibility.Collapsed;
+        ShowStickerButton();
+        DrawPictureHint();
+    }
+
+    /// <summary>
+    /// The line under a picture request that says what the images model refuses (<see cref="PictureHint"/>): drawn with the
+    /// draft, and told to a screen reader as it appears — the member is typing, not looking for it — and as the composer's
+    /// help text for as long as it stands.
+    /// </summary>
+    private void DrawPictureHint()
+    {
+        var kind = open is { } chat ? connection.Chats.Chat(chat.ChatId)?.Chat.Kind : null;
+        var shown = PictureHint.ForComposer(kind, ComposerBox.Text, connection.Session.State.Assistant, editing is not null);
+        var appearing = shown && PictureHintText.Visibility != Visibility.Visible;
+        PictureHintText.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+        AutomationProperties.SetHelpText(ComposerBox, shown ? PictureHintText.Text : string.Empty);
+        if (!appearing)
+        {
+            return;
+        }
+        try
+        {
+            FrameworkElementAutomationPeer.FromElement(PictureHintText)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+        }
+        catch (Exception e)
+        {
+            // An announcement is a courtesy: the line is on the screen and in the composer's help text either way.
+            Diagnostics.Write($"announcing the picture hint: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// The sticker buttons: on a server that has packs (one that predates them names no ceilings, and is offered nothing
+    /// rather than a 404), in EVERY chat a message can be sent in — the family chat, a one-to-one chat, the assistant's
+    /// chat — and by the thread's composer wherever that composer can send (<see cref="PackSending"/>). Not while a
+    /// message is being edited: a sticker is its own message and an edit is somebody else's.
+    /// </summary>
+    /// <remarks>
+    /// IN THE ASSISTANT'S OWN CHAT TOO. To the assistant a sticker is a photo, so the one click that sends it is asked
+    /// about exactly as the Send button is there (<see cref="SendStickerAsync"/>) — through the consent question, never
+    /// around it.
+    /// </remarks>
+    private void ShowStickerButton()
+    {
+        var kind = open is { } chat ? connection.Chats.Chat(chat.ChatId)?.Chat.Kind : null;
+        var offered = PackSending.Offered(kind, editing is not null, pack.Offered);
+        StickerButton.Visibility = offered ? Visibility.Visible : Visibility.Collapsed;
+        // The thread's composer is enabled exactly when there is a root to answer (DrawThread).
+        var inThread = PackSending.OfferedInThread(thread is not null && ThreadComposer.IsEnabled, pack.Offered);
+        ThreadStickerButton.Visibility = inThread ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>
@@ -925,8 +1048,19 @@ public sealed partial class ChatsView : UserControl
         // The body as drawn: an answer still being written shows what has streamed so far.
         var body = connection.Answers.BodyOf(message);
         var awaited = BubbleRules.Awaited(message, body, Reader, assistantChat, assistantId);
-        var failed = connection.Answers.Failed(message);
+        // What a failed answer says, remembered with the failure: the provider's refusal, or "ask again".
+        var failure = connection.Answers.FailureSentence(message, say);
+        var failed = failure is not null;
         var shown = bubble with { Message = message with { Body = body } };
+        // A STICKER (docs/protocol.md, "How it is drawn"): one flagged photo and no words. A message from before stickers,
+        // or from a server that ignores the flag, is not one, and is drawn as the photo in a balloon it always was.
+        var sticker = bubble.Reads ? message.StickerPicture : null;
+        if (!bubble.Reads && message.StickerPicture is { } unseen)
+        {
+            // A HIDDEN ROW STILL FETCHES, AND DRAWS NONE OF IT (docs/protocol.md, "Blocking a member"): the bytes a
+            // visible sticker would have asked for are asked for here too, on the same schedule, and kept for the reveal.
+            _ = FetchHiddenStickerAsync(unseen);
+        }
         // One to four emoji and nothing else: drawn large and bare — the apps' ladder, scaled to this window's 14-pixel body.
         var emojiSize = !awaited && bubble.Reads && message.Call is null && message.Poll is null && message.Media.Count == 0 && message.ReplyTo is null
             ? Emoji.DisplayFontSizeForBody(body, 14)
@@ -965,16 +1099,22 @@ public sealed partial class ChatsView : UserControl
             : chat.QuoteRevealed(message.Id, level);
         if (bubble.Reads && Quotes.Of(message, connection.Chats, say, Revealed) is { } quote)
         {
-            stack.Children.Add(QuoteElement(quote, mine, say, () => QuoteClicked(chat, inThread, message.Id, quote)));
+            // Over a sticker there is no balloon for the quote to sit on, so it is tinted for the window's own ground —
+            // the reader's white-on-accent quote would be white on nothing.
+            stack.Children.Add(QuoteElement(quote, mine && sticker is null, say, () => QuoteClicked(chat, inThread, message.Id, quote)));
         }
-        if (bubble.Reads && message.Media.Count > 0)
+        if (sticker is not null)
+        {
+            stack.Children.Add(StickerElement(sticker));
+        }
+        else if (bubble.Reads && message.Media.Count > 0)
         {
             stack.Children.Add(MediaElement(message, mine));
         }
         var words = new TextBlock
         {
             // An answer not written yet is a cursor, not a blank bubble — or says it stopped.
-            Text = awaited ? (failed ? say.Get("Couldn't answer that. Ask again.") : "▍") : BubbleText.Words(shown, list, say),
+            Text = awaited ? (failure ?? "▍") : BubbleText.Words(shown, list, say),
             TextWrapping = TextWrapping.Wrap,
             IsTextSelectionEnabled = bubble.Reads && !awaited,
             FontStyle = bubble.Reads && !(awaited && failed) ? Windows.UI.Text.FontStyle.Normal : Windows.UI.Text.FontStyle.Italic,
@@ -1000,12 +1140,12 @@ public sealed partial class ChatsView : UserControl
         {
             stack.Children.Add(laidOut ?? words);
         }
-        if (bubble.Reads && !awaited && failed)
+        if (bubble.Reads && !awaited && failure is { } stoppedPartWay)
         {
             // It stopped part-way: what arrived stays, and the row says so.
             stack.Children.Add(new TextBlock
             {
-                Text = say.Get("Couldn't answer that. Ask again."),
+                Text = stoppedPartWay,
                 FontSize = 12,
                 FontStyle = Windows.UI.Text.FontStyle.Italic,
                 TextWrapping = TextWrapping.Wrap,
@@ -1034,7 +1174,8 @@ public sealed partial class ChatsView : UserControl
 
         // Nothing but photos and videos, and nothing above them: the pictures ARE the message, and draw without a balloon — as
         // do a few emoji, which are themselves.
-        var bare = emojiSize is not null || (bubble.Reads
+        // A sticker has NO BUBBLE, a reply or not: the picture alone, its transparency showing the chat behind it.
+        var bare = emojiSize is not null || sticker is not null || (bubble.Reads
             && !awaited
             && body.Length == 0
             && message.ReplyTo is null
@@ -1703,6 +1844,10 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     private FrameworkElement PendingElement(ConversationModel chat, OutboxRow row)
     {
+        if (row.Sticker)
+        {
+            return PendingStickerElement(chat, row);
+        }
         var say = services.Say;
         var resources = Application.Current.Resources;
         var stack = new StackPanel { Spacing = 4 };
@@ -1945,7 +2090,9 @@ public sealed partial class ChatsView : UserControl
         viewing = null;
         viewerShown++;
         StopViewerVideo();
-        ViewerImage.Source = null;
+        ForgetViewerSticker();
+        ViewerAddSticker.Visibility = Visibility.Collapsed;
+        ViewerNotice.Visibility = Visibility.Collapsed;
         ViewerOverlay.Visibility = Visibility.Collapsed;
     }
 
@@ -2004,8 +2151,11 @@ public sealed partial class ChatsView : UserControl
         ViewerPrevious.IsEnabled = album.HasPrevious;
         ViewerNext.IsEnabled = album.HasNext;
         ViewerProblem.Visibility = Visibility.Collapsed;
+        ViewerNotice.Visibility = Visibility.Collapsed;
+        // Offered once the page has loaded and the pack has been asked — never on a guess.
+        ViewerAddSticker.Visibility = Visibility.Collapsed;
         StopViewerVideo();
-        ViewerImage.Source = null;
+        ForgetViewerSticker();
         ViewerScroller.ChangeView(0, 0, 1, disableAnimation: true);
         ViewerScroller.Visibility = album.IsVideo ? Visibility.Collapsed : Visibility.Visible;
         ViewerVideo.Visibility = album.IsVideo ? Visibility.Visible : Visibility.Collapsed;
@@ -2019,6 +2169,11 @@ public sealed partial class ChatsView : UserControl
     {
         try
         {
+            if (item.Sticker)
+            {
+                await LoadViewerStickerAsync(item, token);
+                return;
+            }
             if (item.HasPreview && pictures.TryGetValue(AttachmentCache.KeyFor(item.Id, preview: true), out var small))
             {
                 if (video)
@@ -2083,6 +2238,136 @@ public sealed partial class ChatsView : UserControl
                 ViewerFailed();
             }
         }
+    }
+
+    /// <summary>
+    /// The viewer is about to show something else, or nothing: its image is emptied FIRST, and only then are the frames
+    /// of the sticker it was showing given back — the viewer's picture is kept nowhere else, and a moving one is the
+    /// largest thing this view decodes.
+    /// </summary>
+    private void ForgetViewerSticker()
+    {
+        stickers.Forget(ViewerImage);
+        try
+        {
+            ViewerImage.Source = null;
+        }
+        catch (Exception e)
+        {
+            // Still showing a frame, then: the frames are the collector's.
+            Diagnostics.Write($"emptying the viewer: {e.GetType().Name}");
+            viewerSticker = null;
+            return;
+        }
+        if (viewerSticker is { } shown)
+        {
+            viewerSticker = null;
+            stickers.Release(shown);
+        }
+    }
+
+    /// <summary>The size a STILL sticker is decoded for when it is looked at on its own: the pack's own 512.</summary>
+    private const double ViewerStickerBox = StickerFile.Edge;
+
+    /// <summary>
+    /// And a MOVING one: twice the conversation's box, in plain pixels. Every frame is held decoded, and at 512 a
+    /// two-second sticker would be past the budget — drawn still in the very place somebody opened it to watch.
+    /// </summary>
+    private const double ViewerMovingBox = StickerLook.Box * 2;
+
+    /// <summary>
+    /// A sticker shown larger (docs/protocol.md, "Tapping one shows it larger"): its ORIGINAL bytes, moving where this
+    /// machine can — and "Add to family stickers" when the family's pack does not hold it.
+    /// </summary>
+    private async Task LoadViewerStickerAsync(AttachmentDto item, int token)
+    {
+        var (bytes, _) = await connection.Attachments.BytesAsync(item, preview: false);
+        if (token != viewerShown)
+        {
+            return;
+        }
+        if (bytes is null)
+        {
+            ViewerFailed();
+            return;
+        }
+        var moves = StickerFile.IsAnimated(bytes) && StickerImaging.AnimationsWanted();
+        var picture = moves
+            ? await StickerImaging.DecodeAsync(bytes, ViewerMovingBox, 1, animate: true)
+            : await StickerImaging.DecodeAsync(bytes, ViewerStickerBox, RasterScale(), animate: false);
+        if (token != viewerShown)
+        {
+            // The viewer moved on while this was decoding: nothing will ever draw it.
+            picture?.Release();
+            return;
+        }
+        if (picture is null)
+        {
+            ViewerFailed();
+            return;
+        }
+        ForgetViewerSticker();
+        viewerSticker = picture;
+        stickers.Show(ViewerImage, picture);
+        ViewerLoading.IsActive = false;
+        FitViewerImage();
+        // Decided HERE, from bytes this device already has: nothing on the wire names the item a message was sent from.
+        // A wrong "no" only offers what the pack already holds, and the server answers that with the item that was there.
+        if (pack.Offered && !await pack.HoldsAsync(item) && token == viewerShown)
+        {
+            ViewerAddSticker.IsEnabled = true;
+            ViewerAddSticker.Visibility = Visibility.Visible;
+        }
+    }
+
+    /// <summary>"Add to family stickers": the pack's own flow, with the message's bytes — uploaded again, unprepared, and claimed.</summary>
+    private async Task AddViewedStickerAsync()
+    {
+        if (viewing is not { Current: { Sticker: true } item })
+        {
+            return;
+        }
+        var say = services.Say;
+        var token = viewerShown;
+        ViewerAddSticker.IsEnabled = false;
+        ViewerProblem.Visibility = Visibility.Collapsed;
+        ViewerNotice.Visibility = Visibility.Collapsed;
+        (PackAdded? Added, ApiError? Error) answer;
+        try
+        {
+            // The few words it may be given, as for a sticker added from disk: optional, and fixed once it is added.
+            var (add, label) = await Dialogs.StickerLabelAsync(XamlRoot, say);
+            if (!add || token != viewerShown)
+            {
+                if (token == viewerShown)
+                {
+                    ViewerAddSticker.IsEnabled = true;
+                }
+                return;
+            }
+            answer = await pack.AddFromMessageAsync(item, label);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"adding a sent sticker to the pack: {e.GetType().Name}");
+            answer = (null, ApiError.Transport(e.GetType().Name));
+        }
+        if (token != viewerShown)
+        {
+            return;
+        }
+        if (answer.Added is { } added)
+        {
+            // Either way the pack holds it now, so there is nothing left to offer.
+            ViewerAddSticker.Visibility = Visibility.Collapsed;
+            ViewerNotice.Text = PackText.Sentence(added, say);
+            ViewerNotice.Visibility = Visibility.Visible;
+            ShowStickerButton();
+            return;
+        }
+        ViewerAddSticker.IsEnabled = true;
+        ViewerProblem.Text = PackText.Sentence(answer.Error ?? ApiError.Transport("no answer"), say);
+        ViewerProblem.Visibility = Visibility.Visible;
     }
 
     private void ViewerFailed()
@@ -2363,6 +2648,7 @@ public sealed partial class ChatsView : UserControl
         // A reply needs a root to answer.
         ThreadComposer.IsEnabled = hasRoot;
         ThreadSend.IsEnabled = hasRoot;
+        ShowStickerButton();
         ThreadScroller.UpdateLayout();
         if (atEnd)
         {
@@ -3864,7 +4150,7 @@ public sealed partial class ChatsView : UserControl
         if (AssistantConsent.IsRequired(
             chatKind, ComposerBox.Text, session.Assistant?.Processor, session.AssistantConsentAt))
         {
-            _ = ReviewAssistantConsentAsync();
+            _ = ReviewAssistantConsentAsync(Send);
             return;
         }
         // And a server that will not say WHO answers gets nothing at all: there is no honest way
@@ -4002,6 +4288,552 @@ public sealed partial class ChatsView : UserControl
             menu.Items.Add(poll);
         }
         menu.ShowAt(AttachButton);
+    }
+
+    // ---- stickers ------------------------------------------------------------------------------
+    //
+    // The CHAT sticker: a small picture sent as its own message (docs/protocol.md, "Sticker pack"). Nothing here is
+    // about the board, whose cards this code also calls stickers (StickerFace).
+
+    /// <summary>The screen's own scale, for decoding a picture at the pixels it will be drawn with; 1 where it cannot be asked.</summary>
+    private double RasterScale()
+    {
+        try
+        {
+            return XamlRoot?.RasterizationScale ?? 1;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading the screen's scale: {e.GetType().Name}");
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// A sticker in a conversation: NO BUBBLE, in the one box every sticker on this client gets — fitted whole, never
+    /// cropped, never at its own pixel size — and the shape taken from metadata, so the row does not jump when the
+    /// picture lands. A click shows it larger.
+    /// </summary>
+    private FrameworkElement StickerElement(AttachmentDto picture)
+    {
+        var say = services.Say;
+        var (width, height) = StickerLook.Fit(picture.Width, picture.Height);
+        var frame = new Grid
+        {
+            Width = width,
+            Height = height,
+            // Transparent, not absent: the whole box answers a click, not just the pixels that happen to be opaque.
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+        };
+        // Until the bytes land — and for good where nothing on this machine decodes them — the word says what is here.
+        var word = new TextBlock
+        {
+            Text = say.Get("Sticker"),
+            Opacity = 0.6,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        frame.Children.Add(word);
+        var image = new Image { Stretch = Stretch.Uniform };
+        frame.Children.Add(image);
+        AutomationProperties.SetName(frame, say.Get("Sticker"));
+        _ = ShowStickerAsync(image, word, picture);
+        IReadOnlyList<AttachmentDto> album = [picture];
+        frame.Tapped += (_, _) => OpenViewer(album, 0);
+        return frame;
+    }
+
+    /// <summary>
+    /// A sent sticker's picture: its ORIGINAL bytes, never the preview, whatever <c>has_preview</c> says — a preview is a
+    /// JPEG, and the flag can be inherited through dedup. Animated where this machine can, frame zero where it cannot.
+    /// </summary>
+    private async Task ShowStickerAsync(Image image, TextBlock word, AttachmentDto picture)
+    {
+        try
+        {
+            if (!stickerPictures.TryGet(picture.Id, out var decoded))
+            {
+                var (bytes, error) = await connection.Attachments.BytesAsync(picture, preview: false);
+                if (gone)
+                {
+                    return;
+                }
+                if (bytes is null)
+                {
+                    // NOT remembered: the bytes may well arrive next time, and then there is a sticker to draw.
+                    if (error is not null)
+                    {
+                        Diagnostics.Write($"a sticker: {error.Code} {error.Status}");
+                    }
+                    return;
+                }
+                await stickerDecoding.WaitAsync();
+                try
+                {
+                    if (gone)
+                    {
+                        return;
+                    }
+                    // Asked again: another element of this same sticker may have decoded it while this one waited.
+                    if (!stickerPictures.TryGet(picture.Id, out decoded))
+                    {
+                        decoded = await StickerImaging.DecodeAsync(bytes, StickerLook.Box, RasterScale(), StickerImaging.AnimationsWanted());
+                        if (gone)
+                        {
+                            decoded?.Release();
+                            return;
+                        }
+                        // Frames are memory, and the shelf holds every sticker here to one budget: what was drawn longest
+                        // ago makes room for this one. A null is kept too — "nothing on this machine decodes it" is an
+                        // answer, and asking again on every redraw would read the file and fail the decode every time.
+                        stickerPictures.Put(picture.Id, decoded, decoded?.Bytes ?? 0);
+                    }
+                }
+                finally
+                {
+                    stickerDecoding.Release();
+                }
+            }
+            if (decoded is null)
+            {
+                // The word stays: it is what says a sticker is here.
+                return;
+            }
+            // The clock is the STICKER's: an image made by a redraw joins the animation where it was.
+            stickers.Show(image, decoded, stickerPictures.Started(picture.Id, stickers.Now));
+            word.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a sticker: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>What a visible sticker fetches, fetched for a hidden one and drawn nowhere.</summary>
+    private async Task FetchHiddenStickerAsync(AttachmentDto picture)
+    {
+        try
+        {
+            if (!stickerPictures.TryGet(picture.Id, out _))
+            {
+                await connection.Attachments.BytesAsync(picture, preview: false);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"fetching a hidden sticker: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// A sticker on its way: drawn as the sticker it will be, fainter, from the bytes staged for it — so one click in
+    /// the panel puts it in the conversation at once, whatever the network is doing — and, refused, with the two things
+    /// a person can do about it.
+    /// </summary>
+    private FrameworkElement PendingStickerElement(ConversationModel chat, OutboxRow row)
+    {
+        var say = services.Say;
+        var column = new StackPanel
+        {
+            Spacing = 3,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(72, 8, 0, 0),
+        };
+        var frame = new Grid
+        {
+            Width = StickerLook.Box,
+            Height = StickerLook.Box,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Opacity = row.Failed ? 0.9 : 0.6,
+        };
+        var word = new TextBlock
+        {
+            Text = say.Get("Sticker"),
+            Opacity = 0.6,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        frame.Children.Add(word);
+        var image = new Image { Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Right };
+        frame.Children.Add(image);
+        AutomationProperties.SetName(frame, say.Get("Sticker"));
+        if ((row.StagedFiles ?? row.PendingFiles) is [var handle, ..])
+        {
+            _ = ShowStagedStickerAsync(image, word, handle);
+        }
+        column.Children.Add(frame);
+        if (row.Failed)
+        {
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+            var retry = new HyperlinkButton { Content = say.Get("Try Again") };
+            retry.Click += (_, _) =>
+            {
+                chat.Retry(row.ClientMsgId);
+                conversationDrawn = string.Empty;
+                DrawConversation(keepFromBottom: null);
+                threadDrawn = string.Empty;
+                DrawThread();
+                _ = connection.Live.FlushAsync(SendRules.FlushTrigger.UserRetried);
+            };
+            var discard = new HyperlinkButton { Content = say.Get("Delete") };
+            discard.Click += (_, _) =>
+            {
+                chat.Discard(row.ClientMsgId);
+                conversationDrawn = string.Empty;
+                DrawConversation(keepFromBottom: null);
+                threadDrawn = string.Empty;
+                DrawThread();
+            };
+            actions.Children.Add(retry);
+            actions.Children.Add(discard);
+            column.Children.Add(actions);
+        }
+        else
+        {
+            column.Children.Add(new TextBlock
+            {
+                Text = say.Get("Sending…"),
+                FontSize = 11,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(4, 0, 4, 0),
+                // No balloon under it, so the window's own caption colour — not the white a balloon carries.
+                Foreground = Palette.SecondaryText(),
+            });
+        }
+        return column;
+    }
+
+    private async Task ShowStagedStickerAsync(Image image, TextBlock word, string handle)
+    {
+        try
+        {
+            if (!stagedStickers.TryGetValue(handle, out var decoded))
+            {
+                var store = connection.Staging;
+                var staged = await Task.Run(() => store.Read(handle));
+                if (staged is null || gone)
+                {
+                    return;
+                }
+                // Still: it is on screen for as long as a send takes, and the message that replaces it moves.
+                decoded = await StickerImaging.DecodeAsync(staged.Bytes.ToArray(), StickerLook.Box, RasterScale(), animate: false);
+                if (gone)
+                {
+                    return;
+                }
+                if (stagedStickers.Count >= 16)
+                {
+                    stagedStickers.Clear();
+                }
+                // A null is kept as well: bytes nothing here decodes will not decode on the next redraw either.
+                stagedStickers[handle] = decoded;
+            }
+            if (decoded is null)
+            {
+                return;
+            }
+            stickers.Show(image, decoded);
+            word.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a sticker on its way: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// The panel over the composer: what this device sent lately, then the family's whole pack in the order it was
+    /// added — and ONE CLICK SENDS. No caption and no confirmation: the sticker is the message.
+    /// </summary>
+    /// <param name="anchor">The button that opened it: the conversation's, or the thread's.</param>
+    /// <param name="inThread">The chain whose composer asked, or null for the conversation's own. A sticker sent from it answers the chain's ROOT.</param>
+    private void ShowStickerPanel(FrameworkElement anchor, ThreadModel? inThread)
+    {
+        if (open is not { } chat || !pack.Offered)
+        {
+            return;
+        }
+        if (inThread is null ? editing is not null : thread != inThread || inThread.ChatId != chat.ChatId || !ThreadComposer.IsEnabled)
+        {
+            return;
+        }
+        try
+        {
+            var say = services.Say;
+            var panel = pack.Panel();
+            var flyout = new Flyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.TopEdgeAlignedLeft };
+            var content = new StackPanel { Spacing = 8, Width = StickerLook.PanelColumns * StickerLook.PanelCell };
+            content.Children.Add(new TextBlock { Text = say.Get("Stickers"), FontWeight = FontWeights.SemiBold });
+            if (panel.IsEmpty)
+            {
+                content.Children.Add(new TextBlock { Text = say.Get("No stickers yet"), TextWrapping = TextWrapping.Wrap });
+                // Where they come from: the pack is managed on the Family screen, by anybody in the family.
+                content.Children.Add(new TextBlock
+                {
+                    Text = say.Get("Add a picture and everyone in the family can send it as a sticker."),
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = Palette.SecondaryText(),
+                });
+            }
+            else
+            {
+                if (panel.Recent.Count > 0)
+                {
+                    // What THIS DEVICE sent lately, first. Never on the wire, and gone with this device's cache.
+                    content.Children.Add(PanelHeading(say.Get("Recently used")));
+                    content.Children.Add(StickerCells(chat, panel.Recent, flyout, inThread));
+                    content.Children.Add(new Border
+                    {
+                        Height = 1,
+                        Background = Palette.Themed("DividerStrokeColorDefaultBrush", 0x30, 0x80, 0x80, 0x80),
+                    });
+                    content.Children.Add(PanelHeading(say.Get("All stickers")));
+                }
+                content.Children.Add(StickerCells(chat, panel.All, flyout, inThread));
+            }
+            flyout.Content = new ScrollViewer
+            {
+                Content = content,
+                MaxHeight = 380,
+                HorizontalScrollMode = ScrollMode.Disabled,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            };
+            flyout.ShowAt(anchor);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"opening the sticker panel: {e.GetType().Name}");
+            ShowProblem(services.Say.Get("Something went wrong. Try again."));
+        }
+    }
+
+    private static TextBlock PanelHeading(string words) => new()
+    {
+        Text = words,
+        FontSize = 12,
+        Foreground = Palette.SecondaryText(),
+    };
+
+    /// <summary>One grid of the panel: a cell per item, each a button a screen reader and the keyboard can reach.</summary>
+    private FrameworkElement StickerCells(ConversationModel chat, IReadOnlyList<PackItemDto> items, Flyout flyout, ThreadModel? inThread)
+    {
+        var say = services.Say;
+        var cells = new VariableSizedWrapGrid
+        {
+            Orientation = Orientation.Horizontal,
+            MaximumRowsOrColumns = StickerLook.PanelColumns,
+            ItemWidth = StickerLook.PanelCell,
+            ItemHeight = StickerLook.PanelCell,
+        };
+        foreach (var item in items)
+        {
+            // Still in the panel, whatever the file is: two hundred cells each cycling frames is a panel nobody can read.
+            var image = new Image { Stretch = Stretch.Uniform };
+            // ONE CLICK SENDS, so a cell may never be a blank square: until its picture lands — and for good where
+            // nothing on this machine decodes it (WebP without its extension) — it says what it would send, in the
+            // words whoever added it gave, or "Sticker". Under the picture, never over it.
+            var word = new TextBlock
+            {
+                Text = item.Label is { Length: > 0 } given ? given : say.Get("Sticker"),
+                FontSize = 11,
+                Opacity = 0.6,
+                TextAlignment = TextAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxLines = 3,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var face = new Grid();
+            face.Children.Add(word);
+            face.Children.Add(image);
+            var cell = new Button
+            {
+                Content = face,
+                Width = StickerLook.PanelCell,
+                Height = StickerLook.PanelCell,
+                Padding = new Thickness(6),
+                BorderThickness = new Thickness(0),
+                Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+            };
+            // The few words whoever added it gave — for a screen reader, whether or not the picture drew.
+            var name = PackText.Name(item, say);
+            AutomationProperties.SetName(cell, name);
+            // One click sends, with no second step to catch a slip: a screen reader is told so before the click.
+            AutomationProperties.SetHelpText(cell, say.Get("Sends this sticker"));
+            if (item.Label is { Length: > 0 } label)
+            {
+                ToolTipService.SetToolTip(cell, label);
+            }
+            var chosen = item;
+            cell.Click += (_, _) =>
+            {
+                flyout.Hide();
+                _ = SendStickerAsync(chat, chosen, inThread);
+            };
+            _ = ShowStickerThumbAsync(image, word, item);
+            cells.Children.Add(cell);
+        }
+        return cells;
+    }
+
+    /// <summary>
+    /// A pack item in a panel cell: the item's ORIGINAL bytes, fetched once and kept under its attachment id. The cell's
+    /// word goes only when there is a picture to put in its place.
+    /// </summary>
+    private async Task ShowStickerThumbAsync(Image image, TextBlock word, PackItemDto item)
+    {
+        try
+        {
+            if (!stickerThumbs.TryGetValue(item.Id, out var decoded))
+            {
+                var (bytes, error) = await pack.BytesAsync(item);
+                if (gone)
+                {
+                    return;
+                }
+                if (bytes is null)
+                {
+                    if (error is not null)
+                    {
+                        Diagnostics.Write($"a pack item: {error.Code} {error.Status}");
+                    }
+                    return;
+                }
+                decoded = await StickerImaging.DecodeAsync(bytes, StickerLook.PanelCell, RasterScale(), animate: false);
+                if (gone)
+                {
+                    return;
+                }
+                // A null is kept: the panel is opened again and again, and a codec that is not there is still not there.
+                stickerThumbs[item.Id] = decoded;
+            }
+            if (decoded is null)
+            {
+                return;
+            }
+            stickers.Show(image, decoded);
+            word.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a pack item: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// One click in the panel: the item's bytes AS CACHED, staged as one photo with no preview, and a row queued with
+    /// the sticker flag — a message from there on, so it is written down before anything moves and lands whenever the
+    /// network lets it (docs/protocol.md, "Sending one"). The words in the box are left alone: a sticker carries none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// NEVER THROUGH <see cref="MediaPreparing"/>. Everything that does to a photograph — the downscale, the JPEG, the
+    /// preview — would cost a sticker its transparency and its animation.
+    /// </para>
+    /// <para>
+    /// NOTHING REACHES THE MODEL UNASKED, and one click is no exception. In the assistant's chat the sticker goes through
+    /// the same question the Send button does (docs/protocol.md, "Consenting to the assistant"): asked first, sent only
+    /// on a yes the server has recorded, and not sent at all to an assistant whose owner this server will not name.
+    /// </para>
+    /// </remarks>
+    /// <param name="inThread">The chain whose composer it was sent from: the sticker answers that chain's ROOT, as every reply from there does.</param>
+    private async Task SendStickerAsync(ConversationModel chat, PackItemDto item, ThreadModel? inThread = null)
+    {
+        if (sendingSticker)
+        {
+            return;
+        }
+        var say = services.Say;
+        var session = connection.Session.State;
+        switch (PackSending.For(Kind(chat), session.Assistant is not null, session.Assistant?.Processor, session.AssistantConsentAt))
+        {
+            case PackSending.Gate.Ask:
+                _ = ReviewAssistantConsentAsync(() =>
+                {
+                    // A yes is for the chat it was asked in: somebody who walked away while reading has not sent.
+                    if (!gone && open == chat)
+                    {
+                        _ = SendStickerAsync(chat, item, inThread);
+                    }
+                });
+                return;
+            case PackSending.Gate.Withheld:
+                ShowProblem(say.Get("This server hasn't said which service answers, so nothing can be sent to the assistant here."));
+                return;
+        }
+        sendingSticker = true;
+        ComposerError.Visibility = Visibility.Collapsed;
+        // A sticker may be a reply — which is how one answers something with a sticker. Taken now: the banner is the
+        // reader's to cancel while the bytes are fetched. From a thread it answers the ROOT, whatever was being looked at.
+        var replyTo = inThread is not null ? inThread.RootId : replyingTo?.Id;
+        var store = connection.Staging;
+        string? handle = null;
+        try
+        {
+            var (media, error) = await pack.ToSendAsync(item);
+            if (media is null)
+            {
+                if (!gone)
+                {
+                    var refused = error ?? ApiError.Transport("no answer");
+                    // A sticker is a COPY of the item's bytes, and this device has not fetched them yet.
+                    ShowProblem(refused.Transient
+                        ? say.Get("Couldn't send that sticker. Check your connection and try again.")
+                        : PackText.Sentence(refused, say));
+                }
+                return;
+            }
+            handle = await Task.Run(() => store.Stage(media));
+            chat.SendSticker(handle, replyTo);
+            pack.Sent(item.Id);
+            if (gone)
+            {
+                return;
+            }
+            if (open == chat)
+            {
+                if (inThread is not null)
+                {
+                    // Drawn under the chain it answers, as a reply typed there is (SendInThread).
+                    if (thread == inThread)
+                    {
+                        threadDrawn = string.Empty;
+                        DrawThread(scrollToEnd: true);
+                    }
+                }
+                else if (replyTo is not null && replyingTo?.Id == replyTo)
+                {
+                    // The reply has been sent; what is typed in the box stays, for the message it belongs to.
+                    EndComposerMode(clear: false);
+                }
+                Queued();
+            }
+            else
+            {
+                _ = connection.Live.FlushAsync(SendRules.FlushTrigger.Queued);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"sending a sticker: {e.GetType().Name}");
+            if (!gone)
+            {
+                ShowProblem(say.Get("Something went wrong. Try again."));
+            }
+        }
+        finally
+        {
+            if (handle is not null)
+            {
+                // The row that names it is in the outbox now (or never will be): the sweep may judge it.
+                store.Release([handle]);
+            }
+            sendingSticker = false;
+        }
     }
 
     private ComposerStaging Staging(long chatId)
@@ -4158,6 +4990,7 @@ public sealed partial class ChatsView : UserControl
         }
         PictureNoticeText.Text = said ?? string.Empty;
         PictureNoticeText.Visibility = said is null ? Visibility.Collapsed : Visibility.Visible;
+        DrawPictureHint();
         DrawConsentBar();
     }
 
@@ -4204,7 +5037,11 @@ public sealed partial class ChatsView : UserControl
     /// Ask the assistant question, and finish the send it interrupted. The draft never left the
     /// box, so agreeing completes what the person already asked for; "Not Now" leaves it there.
     /// </summary>
-    private async Task ReviewAssistantConsentAsync()
+    /// <param name="then">
+    /// The send that was interrupted, run only on a yes the server has recorded: the composer's own, or the sticker
+    /// somebody clicked in the panel.
+    /// </param>
+    private async Task ReviewAssistantConsentAsync(Action then)
     {
         var state = connection.Session.State;
         if (state.Assistant?.Processor is not { } processor || string.IsNullOrWhiteSpace(processor))
@@ -4225,7 +5062,7 @@ public sealed partial class ChatsView : UserControl
             // than patched here, and the strip and the send follow from what the server says.
             await connection.Session.RefreshAsync();
             DrawConsentBar();
-            Send();
+            then();
         }
         else
         {

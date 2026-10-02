@@ -33,6 +33,14 @@
 //! nothing else (protocol.md, "Drawing without being told to"). The model
 //! decides WHETHER; the server still decides WHAT leaves and TO WHOM.
 //!
+//! Since 2026-09-30 a description the images deployment REFUSES goes once
+//! more to the text deployment, alone under a fixed instruction, to be
+//! reworded without real names or brands ([`rephrase_description`]) — the
+//! same string to the same provider, and nothing with it (protocol.md, "A
+//! refused description is reworded once"). Whether and when that happens is
+//! the caller's (`handlers_ai::draw_or_reword`); what is SENT is decided
+//! here, like every other request.
+//!
 //! WHICH DEPLOYMENT a request goes to is not decided here either. It arrives
 //! as a [`ModelRoute`] built by `config.rs`, so "text, vision or images?" is
 //! answered once, by the caller that knows what was asked, rather than three
@@ -171,6 +179,22 @@ pub struct Usage {
     pub completion_tokens: i32,
 }
 
+impl Usage {
+    /// Two requests' worth, for the one reply that made both — the text
+    /// model deciding to draw and the text model rewording a refused
+    /// description are two bills against one picture (protocol.md, "Family
+    /// statistics"). Saturating, because a provider reporting nonsense must
+    /// not panic the reply it already paid for.
+    pub fn plus(self, other: Usage) -> Usage {
+        Usage {
+            prompt_tokens: self.prompt_tokens.saturating_add(other.prompt_tokens),
+            completion_tokens: self
+                .completion_tokens
+                .saturating_add(other.completion_tokens),
+        }
+    }
+}
+
 /// The name of the one tool a draw-capable server declares.
 ///
 /// One tool, one name, known to the server: a call naming anything else is
@@ -184,10 +208,26 @@ pub const DRAW_TOOL_NAME: &str = "draw_picture";
 /// NOTHING but the `prompt` — not this conversation, not any photograph —
 /// so the prompt has to be complete in itself. Left unsaid, a model writes
 /// "the cat from above, but in a hat" and the picture is of nothing.
+///
+/// And the one fact the model keeps getting wrong without being told: the
+/// images deployment's filter refuses a description that NAMES anybody. A
+/// prompt written after reading a thread full of family names carried those
+/// names, and was refused far more often than a `/draw` (protocol.md,
+/// "Drawing without being told to", amended 2026-10-01). So is the other:
+/// the member's own description, embellished, was refused where the same
+/// words sent as `/draw` were drawn — so the prompt keeps their words.
 const DRAW_TOOL_DESCRIPTION: &str = "Make a picture for the member. Call this when they ask for a picture, a drawing, an \
      image or an illustration, or when a picture is plainly the answer they want; answer in words \
      otherwise. The image model sees ONLY the prompt you pass — not this conversation and not any \
-     photograph — so write a complete, self-contained description of the picture to make.";
+     photograph — so write a complete, self-contained description of the picture to make. When the \
+     member has described the picture, the prompt is their description in their own words, as close to \
+     what they wrote as you can keep it: add only what the conversation makes necessary for it to stand \
+     alone, such as what \"it\" refers to, and nothing else — no extra detail, style, mood, age or realism \
+     they did not ask for. The image \
+     model refuses any prompt that names a person, so never put a name in it — not a family member's, \
+     not a first name or a nickname, not a real person's or a public figure's — and never a brand, a \
+     logo, or a trademarked or copyrighted character: describe each person by how they look and what \
+     they are doing instead, and each thing by what it is.";
 
 /// The one tool, as the chat-completions API wants it declared.
 ///
@@ -281,6 +321,14 @@ pub struct Streamed {
     pub text: String,
     pub tool_call: Option<ToolCall>,
     pub usage: Usage,
+    /// Why the model stopped, in the provider's own word — `stop`, `length`,
+    /// `content_filter`, `tool_calls` — or empty when the stream never said.
+    /// It changes nothing the server DOES. It is kept because an answer with
+    /// no words in it is otherwise indistinguishable from any other: a reply
+    /// cut off by the filter, one that ran out of tokens while reasoning and
+    /// one the provider simply returned empty all reach the member as the
+    /// same "Couldn't answer that", and used to reach the log as nothing.
+    pub finish_reason: String,
 }
 
 /// The most tool calls one stream may accumulate. The server declares ONE
@@ -356,9 +404,15 @@ fn absorb_event<F>(
     }
     // Azure sends a first chunk with an empty `choices` array when it is
     // only reporting usage, so this is a `get`, not an index.
-    let Some(delta) = event["choices"].get(0).map(|choice| &choice["delta"]) else {
+    let Some(choice) = event["choices"].get(0) else {
         return;
     };
+    // The last chunk that names one wins; it arrives once, on the final
+    // chunk of a choice, and every chunk before it carries null.
+    if let Some(reason) = choice["finish_reason"].as_str() {
+        reply.finish_reason = reason.to_string();
+    }
+    let delta = &choice["delta"];
     if let Some(text) = delta["content"].as_str()
         && !text.is_empty()
     {
@@ -412,6 +466,258 @@ fn finish(mut reply: Streamed, drafts: Vec<ToolCall>) -> Streamed {
     reply
 }
 
+/// The provider's OWN safety filter refused the request — the question, the
+/// answer, or a picture's description (docs/protocol.md, "The assistant").
+///
+/// Carried as the SOURCE of the error a provider call returns, under the
+/// usual context line, so every caller keeps the `anyhow` it always had and
+/// the one that needs to know asks [`is_refusal`]. It is a type rather than
+/// a sentence to search for because the decision is made ONCE, here, from
+/// the provider's structured fields — and a caller matching on the words of
+/// a log line would be making it a second time, worse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Refused;
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the provider's content filter refused it")
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Whether this error is the provider refusing, anywhere in its chain.
+pub fn is_refusal(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<Refused>())
+}
+
+/// `error.code` / `error.type` values that ARE a content refusal. Azure's
+/// chat completions say `content_filter`; its images endpoint says
+/// `content_policy_violation` or, on the newer surfaces,
+/// `content_safety_violation`; OpenAI's image models say `moderation_blocked`.
+const REFUSAL_CODES: &[&str] = &[
+    "content_filter",
+    "content_policy_violation",
+    "content_safety_violation",
+    "moderation_blocked",
+];
+
+/// `error.innererror.code` values that are one — Azure's name for "the RAI
+/// policy blocked this", under whatever outer code the surface chose.
+const REFUSAL_INNER_CODES: &[&str] = &["ResponsibleAIPolicyViolation"];
+
+/// Outer codes that say only "the request was bad". They leave the question
+/// open, so the message is allowed to answer it — and ONLY they do: a code
+/// that names some other problem is that problem, whatever its prose says.
+const GENERIC_CODES: &[&str] = &["badrequest", "bad_request", "invalid_request_error"];
+
+/// Phrases a message may name the policy by, consulted only under a generic
+/// or absent code. Each is Azure naming its own filter outright; none is a
+/// word a member's question could put into an unrelated error.
+const REFUSAL_PHRASES: &[&str] = &[
+    "responsibleaipolicyviolation",
+    "rai policy",
+    "content management policy",
+];
+
+/// The error object of a provider's error body. Every Azure and OpenAI
+/// surface wraps it in `error`; a bare object is read as the error itself
+/// rather than as nothing.
+fn error_object(parsed: &Value) -> &Value {
+    if parsed["error"].is_object() {
+        &parsed["error"]
+    } else {
+        parsed
+    }
+}
+
+/// Did the provider's filter refuse this request? Decided from an HTTP error
+/// answer: its status and its body, as the provider sent them.
+///
+/// **Structured fields decide.** A 4xx whose JSON `error.code`, `error.type`
+/// or `error.innererror.code` names a refusal is one; a 4xx that names
+/// anything else — `max_tokens` too large, an unknown deployment — is not,
+/// whatever it says. Only when those fields are absent or merely generic
+/// does the message count, and then only a phrase that names Azure's policy
+/// outright. A 5xx is never a refusal: the provider did not read the request
+/// and decline it, it failed to answer, and asking again may well work.
+pub fn refused_by_provider(status: reqwest::StatusCode, body: &str) -> bool {
+    if !status.is_client_error() {
+        return false;
+    }
+    let Ok(parsed) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let error = error_object(&parsed);
+    let is_one_of = |value: &Value, set: &[&str]| {
+        value
+            .as_str()
+            .is_some_and(|found| set.iter().any(|known| found.eq_ignore_ascii_case(known)))
+    };
+    let outer = [&error["code"], &error["type"]];
+    if outer.iter().any(|value| is_one_of(value, REFUSAL_CODES)) {
+        return true;
+    }
+    let inner = [&error["innererror"]["code"], &error["inner_error"]["code"]];
+    if inner
+        .iter()
+        .any(|value| is_one_of(value, REFUSAL_INNER_CODES) || is_one_of(value, REFUSAL_CODES))
+    {
+        return true;
+    }
+    // A code that is a string and neither a refusal nor generic has said
+    // what went wrong, and it was something else.
+    let named_something_else = outer.iter().any(|value| {
+        value
+            .as_str()
+            .is_some_and(|found| !found.trim().is_empty() && !is_one_of(value, GENERIC_CODES))
+    });
+    if named_something_else {
+        return false;
+    }
+    let message = error["message"].as_str().unwrap_or_default().to_lowercase();
+    REFUSAL_PHRASES
+        .iter()
+        .any(|phrase| message.contains(phrase))
+}
+
+/// Did a streamed answer stop because the provider's filter stopped it?
+/// Azure's word for it, on the last chunk of the choice.
+pub fn finish_is_refusal(finish_reason: &str) -> bool {
+    finish_reason.eq_ignore_ascii_case("content_filter")
+}
+
+/// Text for the log as ONE line, bounded — what [`loggable_detail`] kept of
+/// a provider's error body.
+///
+/// Azure pretty-prints its errors, and journald cuts a record at every
+/// newline — so the part of the detail that says WHICH filter tripped was
+/// arriving as a second, orphaned line, or not at all. Every run of
+/// whitespace becomes one space, then the 400-character bound applies,
+/// counted in characters so a body in any alphabet is never cut mid-letter.
+fn one_line(detail: &str) -> String {
+    detail
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(400)
+        .collect()
+}
+
+/// A provider's error body as the log may keep it: the fields that NAME the
+/// failure, and nothing that can carry the member's words.
+///
+/// **The body itself is never logged.** An error answer can repeat what it
+/// was sent: a DALL·E 3 refusal may carry the model's `revised_prompt` of
+/// the member's description, a pydantic-style 422 echoes the request under
+/// `detail[].input`, and a validation `message` can quote the value it
+/// rejected. So this is an allow-list, not a filter — `error.code`,
+/// `error.type`, `error.param`, the inner error's `code`, the content-filter
+/// categories that tripped (with their severity), and a 422's `loc`/`type`
+/// pairs — each kept only while it looks like the identifier it is, and
+/// everything else, `message` included, counted and withheld. What is left
+/// is folded by [`one_line`], so it keeps the 400-character bound.
+fn loggable_detail(body: &str) -> String {
+    let bytes = body.len();
+    let Ok(parsed) = serde_json::from_str::<Value>(body) else {
+        return format!("{bytes}-byte body, not JSON, withheld");
+    };
+    let error = error_object(&parsed);
+    let inner = if error["innererror"].is_object() {
+        &error["innererror"]
+    } else {
+        &error["inner_error"]
+    };
+    let mut parts = Vec::new();
+    for (label, value) in [
+        ("code", &error["code"]),
+        ("type", &error["type"]),
+        ("param", &error["param"]),
+        ("inner", &inner["code"]),
+    ] {
+        if let Some(token) = log_token(value) {
+            parts.push(format!("{label}={token}"));
+        }
+    }
+    // Which of the filter's categories said no — Azure spells the key both
+    // ways, and puts it under the inner error or beside the code.
+    let mut filtered = Vec::new();
+    for holder in [inner, error] {
+        for key in ["content_filter_result", "content_filter_results"] {
+            let Some(categories) = holder[key].as_object() else {
+                continue;
+            };
+            for (category, result) in categories {
+                if result["filtered"] != Value::Bool(true) {
+                    continue;
+                }
+                let Some(category) = log_token(&Value::from(category.as_str())) else {
+                    continue;
+                };
+                filtered.push(match log_token(&result["severity"]) {
+                    Some(severity) => format!("{category}:{severity}"),
+                    None => category,
+                });
+            }
+        }
+    }
+    if !filtered.is_empty() {
+        parts.push(format!("filtered={}", filtered.join(",")));
+    }
+    // A pydantic-style 422 names the field and the rule, and echoes the
+    // input beside them; the first two are kept.
+    if let Some(items) = parsed["detail"].as_array() {
+        let invalid: Vec<String> = items
+            .iter()
+            .take(4)
+            .filter_map(|item| {
+                let loc = item["loc"]
+                    .as_array()?
+                    .iter()
+                    .map(log_token)
+                    .collect::<Option<Vec<_>>>()?
+                    .join(".");
+                let rule = log_token(&item["type"]).unwrap_or_else(|| "?".to_string());
+                Some(format!("{loc}:{rule}"))
+            })
+            .collect();
+        if !invalid.is_empty() {
+            parts.push(format!("invalid={}", invalid.join(",")));
+        }
+    }
+    parts.push(format!("{bytes}-byte body, other fields withheld"));
+    one_line(&parts.join(" "))
+}
+
+/// One field of a provider's error, if it is shaped like an identifier —
+/// a short run of ASCII letters, digits and `_-.[]:` — or a number. A
+/// value of any other shape is prose, and prose is where a provider
+/// repeats what it was sent, so it is not kept.
+fn log_token(value: &Value) -> Option<String> {
+    let text = match value {
+        Value::String(text) => text.trim().to_string(),
+        Value::Number(number) => number.to_string(),
+        _ => return None,
+    };
+    let identifier = !text.is_empty()
+        && text.len() <= 64
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-.[]:".contains(c));
+    identifier.then_some(text)
+}
+
+/// The error a failed provider call becomes: the context line the log
+/// reads, over [`Refused`] when the provider's filter is what failed it.
+fn provider_error(status: reqwest::StatusCode, summary: String, detail: &str) -> anyhow::Error {
+    if refused_by_provider(status, detail) {
+        anyhow::Error::new(Refused).context(summary)
+    } else {
+        anyhow::anyhow!(summary)
+    }
+}
+
 /// Stream a reply, handing each fragment to `on_delta` as it arrives.
 ///
 /// `on_delta` is called on the caller's task, so it should do nothing slow —
@@ -453,12 +759,19 @@ where
         // diagnosable: "Resource not found" alone cannot tell you whether
         // the endpoint, the deployment or the api-version is wrong. None of
         // it is secret — the key is only ever a header.
+        // The body is read for WHY as well as for the log: a refusal by
+        // the provider's filter is the one failure the member is told about
+        // differently (protocol.md, "The assistant"). Only its identifying
+        // fields reach the log: an error can echo the question it refused.
         let detail = response.text().await.unwrap_or_default();
-        bail!(
-            "assistant returned {status} for {}: {}",
-            url,
-            detail.chars().take(400).collect::<String>()
-        );
+        return Err(provider_error(
+            status,
+            format!(
+                "assistant returned {status} for {url}: {}",
+                loggable_detail(&detail)
+            ),
+            &detail,
+        ));
     }
 
     let mut reply = Streamed::default();
@@ -568,13 +881,18 @@ pub async fn generate_image(
         // `stream_reply`: a bare 404 or 400 from an images endpoint cannot
         // say whether the endpoint, the deployment, the api-version or a
         // body field this deployment does not implement was the wrong one.
-        // None of it is secret — the key is only ever a header.
+        // None of it is secret — the key is only ever a header. The body
+        // is not logged whole: a refusal can repeat the description.
         let detail = response.text().await.unwrap_or_default();
-        bail!(
-            "image generation returned {status} for {}: {}",
-            route.url,
-            detail.chars().take(400).collect::<String>()
-        );
+        return Err(provider_error(
+            status,
+            format!(
+                "image generation returned {status} for {}: {}",
+                route.url,
+                loggable_detail(&detail)
+            ),
+            &detail,
+        ));
     }
 
     let payload: Value = response
@@ -661,6 +979,120 @@ fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
         return Some("image/jpeg");
     }
     None
+}
+
+/// What the text deployment is told when it is asked to reword a refused
+/// description — the whole of the system prompt on that request.
+///
+/// The server's own words and never the operator's configured prompt: that
+/// one is about answering a family, and this request answers nobody. It
+/// names what the images filter refuses, says what to keep, and asks for
+/// the rewrite ALONE, because whatever comes back is sent to the images
+/// deployment verbatim — "Sure! Here is the description:" would be drawn.
+/// It asks for the description's own language to be kept, because a
+/// `/draw` goes as written and a rewrite is not a translation (protocol.md,
+/// "Asking for a picture").
+pub const REPHRASE_INSTRUCTION: &str = "You reword descriptions of pictures for an image generator \
+     that refuses any description naming a real person, a public figure, a brand, a logo, or a trademarked \
+     or copyrighted character. Every person's name counts, a first name or a nickname included. Rewrite \
+     the description you are given so that it keeps everything that is \
+     to be drawn — the subjects, the scene, the style and the mood — but names none of those: describe each \
+     of them in general words instead, by how they look and what they are doing, never by name. Keep the \
+     language the description is written in. Answer with ONLY the rewritten description — no quotes, no \
+     explanation, nothing before or after it.";
+
+/// The request that rewords a refused description: the fixed instruction,
+/// and the description as the one user turn.
+///
+/// That is the whole of it, and the reason it is its own function is so a
+/// test can pin it: no thread, no transcript, no member's name, no language
+/// line, no picture and no tool — the string the images deployment was just
+/// sent, going to the same provider's text deployment, and nothing with it
+/// (protocol.md, "A refused description is reworded once").
+fn rephrase_request(description: &str) -> (&'static str, [ChatTurn; 1]) {
+    (REPHRASE_INSTRUCTION, [ChatTurn::user(description)])
+}
+
+/// Check a rewrite before it may leave for the images deployment.
+///
+/// Held to a draw prompt's bounds — trimmed, not blank, at most `max_chars`
+/// characters (the message-body ceiling, as for `ToolCall::draw_prompt`) —
+/// and refused rather than repaired, like every other prompt. One more:
+/// a rewrite that is the description again would be the same refusal
+/// bought twice, so it is not sent.
+fn checked_rewrite(rewrite: &str, description: &str, max_chars: usize) -> Result<String> {
+    let rewrite = rewrite.trim();
+    if rewrite.is_empty() {
+        bail!("the rewrite came back empty");
+    }
+    // Characters, never bytes, for the reason `draw_prompt` gives.
+    let chars = rewrite.chars().count();
+    if chars > max_chars {
+        bail!("the rewrite is {chars} characters, over the {max_chars} allowed");
+    }
+    if rewrite == description.trim() {
+        bail!("the rewrite is the description unchanged");
+    }
+    Ok(rewrite.to_string())
+}
+
+/// The rewrite a finished stream carries, or why there is none.
+///
+/// A rewrite is drawn only when the model SAID it had finished it
+/// (`finish_reason: "stop"`). Any other ending leaves a fragment, and a
+/// fragment is not a description: the filter stopping it (`content_filter`)
+/// is a refusal whatever words had streamed by then — "a blonde pop singer"
+/// cut off mid-sentence would be drawn as though it were the whole of what
+/// was meant — and the token ceiling (`length`, which a reasoning model can
+/// reach before it has written much), a stream that never said, or any
+/// other word is a rewrite that did not arrive. The chat path holds the
+/// same line for a tool call the filter ended ("a call the provider cut off
+/// is a fragment"). Checked BEFORE [`checked_rewrite`], because a fragment
+/// passes every one of its checks. The error names the finish reason — the
+/// provider's own word for what went wrong — and never the words.
+fn finished_rewrite(streamed: &Streamed, description: &str, max_chars: usize) -> Result<String> {
+    if finish_is_refusal(&streamed.finish_reason) {
+        return Err(anyhow::Error::new(Refused).context("the rewrite was filtered"));
+    }
+    if streamed.finish_reason != "stop" {
+        let reason = if streamed.finish_reason.is_empty() {
+            "(none given)"
+        } else {
+            streamed.finish_reason.as_str()
+        };
+        bail!("the rewrite did not finish (finish_reason {reason})");
+    }
+    checked_rewrite(&streamed.text, description, max_chars)
+}
+
+/// Ask the TEXT deployment, once, to reword a description the images
+/// deployment refused, and hand back the rewrite and what it cost.
+///
+/// `route` is the text route (`[ai]`): the same provider the member already
+/// agreed to, and the request is [`rephrase_request`] and nothing else. It
+/// streams like every other text request — one request shape, one parser —
+/// but nobody is streamed to: the words are the server's to check, not a
+/// reply. A tool call cannot come back, because none is declared.
+///
+/// Every way this can fail is an error, and the caller turns every one of
+/// them into the refusal the member would have had without it: the request
+/// failing or being refused, an answer the model did not finish — the filter
+/// or the token ceiling ending it, whatever it had said by then
+/// ([`finished_rewrite`]) — and a rewrite [`checked_rewrite`] turns away.
+/// Neither the description nor the rewrite is in any error this returns — a
+/// provider's error is logged by its identifying fields alone
+/// ([`loggable_detail`]), and the checks above name a finish reason or a
+/// count, never words.
+pub async fn rephrase_description(
+    client: &reqwest::Client,
+    route: &ModelRoute,
+    description: &str,
+    max_chars: usize,
+) -> Result<(String, Usage)> {
+    let (instruction, turns) = rephrase_request(description);
+    let streamed = stream_reply(client, route, instruction, &turns, &[], |_| {}).await?;
+    let rewrite = finished_rewrite(&streamed, description, max_chars)?;
+    Ok((rewrite, streamed.usage))
 }
 
 #[cfg(test)]
@@ -928,7 +1360,19 @@ mod tests {
                                         picture is plainly the answer they want; answer in words \
                                         otherwise. The image model sees ONLY the prompt you pass — not \
                                         this conversation and not any photograph — so write a complete, \
-                                        self-contained description of the picture to make.",
+                                        self-contained description of the picture to make. When the \
+                                        member has described the picture, the prompt is their \
+                                        description in their own words, as close to what they wrote as \
+                                        you can keep it: add only what the conversation makes necessary \
+                                        for it to stand alone, such as what \"it\" refers to, and \
+                                        nothing else — no extra detail, style, mood, age or realism they \
+                                        did not ask for. The image \
+                                        model refuses any prompt that names a person, so never put a \
+                                        name in it — not a family member's, not a first name or a \
+                                        nickname, not a real person's or a public figure's — and never \
+                                        a brand, a logo, or a trademarked or copyrighted character: \
+                                        describe each person by how they look and what they are doing \
+                                        instead, and each thing by what it is.",
                         "parameters": {
                             "type": "object",
                             "properties": {
@@ -949,6 +1393,40 @@ mod tests {
             body.get("tool_choice").is_none(),
             "the API's default, auto, IS the rule — the model decides whether: {body}"
         );
+    }
+
+    /// WHY the model stopped is kept, because it is the only thing that tells
+    /// an empty answer apart from any other: the filter, a reasoning model
+    /// out of tokens and a provider that returned nothing all stream no words.
+    /// It rides on the last chunk of a choice, null on every chunk before,
+    /// and the usage-only chunk after it must not wipe it.
+    #[test]
+    fn the_reason_a_reply_stopped_is_kept() {
+        for (reason, completion) in [("content_filter", 0), ("length", 16384), ("stop", 12)] {
+            let mut reply = Streamed::default();
+            let mut drafts = Vec::new();
+            let events = [
+                json!({"choices": [{"delta": {"role": "assistant"}, "finish_reason": null}]}),
+                json!({"choices": [{"delta": {}, "finish_reason": reason}]}),
+                json!({"choices": [], "usage": {"prompt_tokens": 40, "completion_tokens": completion}}),
+            ];
+            for event in &events {
+                absorb_event(event, &mut reply, &mut drafts, &mut |_| {});
+            }
+            let reply = finish(reply, drafts);
+            assert_eq!(reply.text, "", "no words arrived");
+            assert_eq!(reply.finish_reason, reason);
+            assert_eq!(reply.usage.completion_tokens, completion);
+        }
+        // A stream that never names one leaves it empty rather than guessing.
+        let mut reply = Streamed::default();
+        absorb_event(
+            &json!({"choices": [{"delta": {"content": "hi"}}]}),
+            &mut reply,
+            &mut Vec::new(),
+            &mut |_| {},
+        );
+        assert_eq!(reply.finish_reason, "");
     }
 
     /// A tool call arrives in pieces: the name on the first chunk, the
@@ -1167,6 +1645,216 @@ mod tests {
         assert!(drafts.is_empty(), "{drafts:?}");
     }
 
+    // -- rewording a refused description ---------------------------------------
+
+    /// WHAT LEAVES on a rewrite, pinned field for field: the server's fixed
+    /// instruction as the system turn, the description as the one user turn,
+    /// and the body every text request has — no tool, no history, no
+    /// language line, no picture (protocol.md, "A refused description is
+    /// reworded once").
+    #[test]
+    fn a_rewrite_request_is_the_description_and_nothing_else() {
+        let description = "Taylor Swift singing to our cat";
+        let (instruction, turns) = rephrase_request(description);
+        let body = request_body(&route(), instruction, &turns, &[]);
+        assert_eq!(
+            body,
+            json!({
+                "messages": [
+                    {"role": "system", "content": REPHRASE_INSTRUCTION},
+                    {"role": "user", "content": "Taylor Swift singing to our cat"},
+                ],
+                "max_tokens": 1024,
+                "stream": true,
+                "stream_options": {"include_usage": true},
+                "model": "test-gpt-oss",
+            })
+        );
+        assert!(body.get("tools").is_none(), "no tool is declared: {body}");
+        assert!(
+            !body.to_string().contains("data:image"),
+            "no picture travels: {body}"
+        );
+    }
+
+    /// The tool tells the model, before it writes a prompt, what the images
+    /// filter refuses: a name of anybody — a family member's above all, since
+    /// the model has just read a thread full of them — and the brands and
+    /// characters the rewrite would otherwise have to take out afterwards
+    /// (protocol.md, "Drawing without being told to", amended 2026-10-01).
+    #[test]
+    fn the_tool_says_a_prompt_names_nobody() {
+        let tool = draw_picture_tool();
+        let description = tool["function"]["description"].as_str().unwrap();
+        for named in [
+            "self-contained",
+            "in their own words",
+            "nothing else — no extra detail",
+            "never put a name in it",
+            "family member",
+            "first name or a nickname",
+            "public figure",
+            "brand",
+            "trademarked or copyrighted character",
+            "how they look and what they are doing",
+        ] {
+            assert!(
+                description.contains(named),
+                "the tool must say {named:?}: {description}"
+            );
+        }
+    }
+
+    /// The instruction names every kind of thing the images filter refuses,
+    /// asks for the rewrite alone — whatever comes back is drawn verbatim —
+    /// and keeps the description's language, because a rewrite is not a
+    /// translation.
+    #[test]
+    fn the_rewrite_instruction_says_what_to_drop_what_to_keep_and_what_to_answer() {
+        for named in [
+            "real person",
+            "public figure",
+            "brand",
+            "trademarked",
+            "copyrighted character",
+            "first name or a nickname",
+            "general words",
+            "keeps everything that is to be drawn",
+            "Keep the language",
+            "ONLY the rewritten description",
+        ] {
+            assert!(
+                REPHRASE_INSTRUCTION.contains(named),
+                "the instruction must say {named:?}: {REPHRASE_INSTRUCTION}"
+            );
+        }
+        // It is the server's own words, never the operator's prompt, and it
+        // is not an instruction about answering anybody.
+        assert!(!REPHRASE_INSTRUCTION.contains("family"));
+    }
+
+    /// A rewrite is held to a draw prompt's bounds — trimmed, not blank,
+    /// counted in characters — and refused rather than cut. The description
+    /// handed back unchanged is refused too: it would be the same refusal
+    /// bought twice.
+    #[test]
+    fn a_rewrite_is_held_to_a_draw_prompts_bounds() {
+        let description = "Pikachu at Anna's birthday";
+        assert_eq!(
+            checked_rewrite(
+                "  a small yellow cartoon creature at a birthday party \n",
+                description,
+                4000
+            )
+            .expect("an ordinary rewrite"),
+            "a small yellow cartoon creature at a birthday party"
+        );
+        assert!(checked_rewrite("", description, 4000).is_err(), "empty");
+        assert!(
+            checked_rewrite(" \n\t", description, 4000).is_err(),
+            "blank"
+        );
+        assert!(
+            checked_rewrite(" Pikachu at Anna's birthday ", description, 4000).is_err(),
+            "unchanged"
+        );
+        assert!(
+            checked_rewrite("a cat", description, 5).is_ok(),
+            "at the bound"
+        );
+        assert!(
+            checked_rewrite("a cat", description, 4).is_err(),
+            "over it — refused, never cut"
+        );
+        // Five Cyrillic letters are five, whatever their encoding.
+        assert_eq!(
+            checked_rewrite("кошка", description, 5).expect("five"),
+            "кошка"
+        );
+        assert!(checked_rewrite("кошка", description, 4).is_err());
+        // What an error says is a count, never the words.
+        let error = format!(
+            "{:#}",
+            checked_rewrite("a lilac hedgehog", description, 3).expect_err("over")
+        );
+        assert!(!error.contains("hedgehog"), "{error}");
+        let error = format!(
+            "{:#}",
+            checked_rewrite(description, description, 4000).expect_err("unchanged")
+        );
+        assert!(!error.contains("Pikachu"), "{error}");
+    }
+
+    /// Only a rewrite the model FINISHED is drawn. Words the filter cut
+    /// short are a refusal however many of them streamed first, and words
+    /// cut off by the token ceiling — or by a stream that never said why it
+    /// stopped — are no rewrite at all. Before this the filter counted only
+    /// when nothing had been written, and "a blonde pop singer", ended by
+    /// the filter mid-sentence, passed every check and was drawn.
+    #[test]
+    fn a_rewrite_the_model_did_not_finish_is_never_drawn() {
+        let description = "Taylor Swift singing to our cat";
+        let ended = |text: &str, finish_reason: &str| Streamed {
+            text: text.to_string(),
+            finish_reason: finish_reason.to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            finished_rewrite(
+                &ended("a blonde pop singer singing to a cat", "stop"),
+                description,
+                4000
+            )
+            .expect("finished"),
+            "a blonde pop singer singing to a cat"
+        );
+        // Case, as Azure's word is compared everywhere else.
+        for filtered in ["content_filter", "CONTENT_FILTER"] {
+            let error =
+                finished_rewrite(&ended("a blonde pop singer", filtered), description, 4000)
+                    .expect_err("filtered with words already out");
+            assert!(is_refusal(&error), "{filtered}: {error:#}");
+            assert!(!format!("{error:#}").contains("singer"), "{error:#}");
+        }
+        for unfinished in ["length", "", "tool_calls"] {
+            let error =
+                finished_rewrite(&ended("a blonde pop singer", unfinished), description, 4000)
+                    .expect_err("not finished");
+            assert!(!is_refusal(&error), "{unfinished:?}: {error:#}");
+            let said = format!("{error:#}");
+            assert!(!said.contains("singer"), "{said}");
+            assert!(said.contains("finish_reason"), "{said}");
+        }
+        // A finished rewrite is still held to the bounds after that.
+        assert!(finished_rewrite(&ended("   ", "stop"), description, 4000).is_err());
+    }
+
+    /// Two requests' tokens, added — and a provider reporting nonsense
+    /// saturates rather than panicking a reply it already paid for.
+    #[test]
+    fn usage_adds_and_saturates() {
+        let a = Usage {
+            prompt_tokens: 40,
+            completion_tokens: 9,
+        };
+        let b = Usage {
+            prompt_tokens: 12,
+            completion_tokens: 3,
+        };
+        let sum = a.plus(b);
+        assert_eq!((sum.prompt_tokens, sum.completion_tokens), (52, 12));
+        let huge = Usage {
+            prompt_tokens: i32::MAX,
+            completion_tokens: i32::MAX,
+        };
+        let sum = huge.plus(a);
+        assert_eq!(
+            (sum.prompt_tokens, sum.completion_tokens),
+            (i32::MAX, i32::MAX)
+        );
+    }
+
     #[test]
     fn a_half_configured_section_counts_as_off() {
         let mut cfg = AiConfig {
@@ -1206,6 +1894,282 @@ mod tests {
         assert!(
             !cfg.configured_but_nameless(),
             "a section switched off is not a warning either"
+        );
+    }
+
+    // -- refusals ------------------------------------------------------------
+    //
+    // The bodies below are the shapes the providers actually send, pretty-
+    // printed where they arrive pretty-printed — which is also what the
+    // one-line fold exists for.
+
+    use reqwest::StatusCode;
+
+    /// Azure's images endpoint, refusing a description. This is the one seen
+    /// in production.
+    #[test]
+    fn an_images_content_safety_violation_is_a_refusal() {
+        let body = r#"{
+  "error": {
+    "code": "content_safety_violation",
+    "message": "This request has been blocked by our content filters.",
+    "type": null,
+    "param": null
+  }
+}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, body));
+    }
+
+    /// The classic DALL·E surface: `content_policy_violation`, with the RAI
+    /// inner error underneath.
+    #[test]
+    fn an_images_content_policy_violation_is_a_refusal() {
+        let body = r#"{"error": {"code": "content_policy_violation",
+            "message": "Your request was rejected as a result of our safety system.",
+            "innererror": {"code": "ResponsibleAIPolicyViolation",
+                           "content_filter_results": {"violence": {"filtered": true, "severity": "medium"}}}}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, body));
+        // OpenAI's image models name it differently, in the same place.
+        let openai = r#"{"error": {"message": "Your request was rejected by the safety system.",
+            "type": "image_generation_user_error", "param": null, "code": "moderation_blocked"}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, openai));
+    }
+
+    /// Azure's chat completions, refusing the QUESTION: `content_filter` and
+    /// the RAI inner code, the way it answers a filtered prompt.
+    #[test]
+    fn a_chat_completions_content_filter_is_a_refusal() {
+        let body = r#"{"error": {"message": "The response was filtered due to the prompt triggering Azure OpenAI's content management policy. Please modify your prompt and retry.",
+            "type": null, "param": "prompt", "code": "content_filter", "status": 400,
+            "innererror": {"code": "ResponsibleAIPolicyViolation",
+                           "content_filter_result": {"hate": {"filtered": true, "severity": "high"}}}}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, body));
+        // The inner code alone decides it, under whatever outer code.
+        let inner_only = r#"{"error": {"code": "BadRequest", "message": "blocked",
+            "innererror": {"code": "ResponsibleAIPolicyViolation"}}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, inner_only));
+    }
+
+    /// The message counts only under a generic or absent code — and then
+    /// only a phrase naming the policy outright.
+    #[test]
+    fn the_message_counts_only_when_the_code_says_nothing() {
+        let generic = r#"{"error": {"code": "BadRequest", "message": "The request was blocked by the RAI policy of this deployment."}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, generic));
+        let absent = r#"{"error": {"message": "Blocked: ResponsibleAIPolicyViolation"}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, absent));
+        // A code that names some other problem IS that problem, even if the
+        // prose happens to mention the policy.
+        let named = r#"{"error": {"code": "DeploymentNotFound", "message": "No RAI policy is attached to this deployment."}}"#;
+        assert!(!refused_by_provider(StatusCode::NOT_FOUND, named));
+        // And a generic code with ordinary prose is ordinary.
+        let plain = r#"{"error": {"code": "BadRequest", "message": "Invalid value for 'size'."}}"#;
+        assert!(!refused_by_provider(StatusCode::BAD_REQUEST, plain));
+    }
+
+    /// The 400s that are NOT a refusal, which are the ones an operator has
+    /// to fix and a member must not be told to rephrase around.
+    #[test]
+    fn an_ordinary_bad_request_is_not_a_refusal() {
+        let max_tokens = r#"{"error": {"message": "max_tokens is too large: 100000. This model supports at most 16384 completion tokens, whereas you provided 100000.",
+            "type": "invalid_request_error", "param": "max_tokens", "code": null}}"#;
+        assert!(!refused_by_provider(StatusCode::BAD_REQUEST, max_tokens));
+        let unsupported = r#"{"error": {"message": "Unrecognized request argument supplied: tools",
+            "type": "invalid_request_error", "param": null, "code": "unsupported_parameter"}}"#;
+        assert!(!refused_by_provider(StatusCode::BAD_REQUEST, unsupported));
+        let not_found = r#"{"error": {"code": "DeploymentNotFound", "message": "The API deployment for this resource does not exist."}}"#;
+        assert!(!refused_by_provider(StatusCode::NOT_FOUND, not_found));
+        // Not JSON at all: nothing structured to decide from.
+        assert!(!refused_by_provider(StatusCode::BAD_REQUEST, "Bad Request"));
+        assert!(!refused_by_provider(StatusCode::BAD_REQUEST, ""));
+    }
+
+    /// A 5xx is never a refusal, whatever its body claims: the provider did
+    /// not decline the request, it failed to answer it.
+    #[test]
+    fn a_server_error_is_never_a_refusal() {
+        let body = r#"{"error": {"code": "content_filter", "message": "The content filter is unavailable."}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, body));
+        assert!(!refused_by_provider(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            body
+        ));
+        assert!(!refused_by_provider(StatusCode::SERVICE_UNAVAILABLE, body));
+    }
+
+    /// A streamed answer the filter stopped, by Azure's own word for it.
+    #[test]
+    fn a_content_filter_finish_is_a_refusal_and_no_other_finish_is() {
+        assert!(finish_is_refusal("content_filter"));
+        for other in ["stop", "length", "tool_calls", ""] {
+            assert!(!finish_is_refusal(other), "{other:?}");
+        }
+    }
+
+    /// The decision survives the context the log line is written in, and
+    /// any context a caller adds on top — while an ordinary failure, with
+    /// the same kind of line, is not mistaken for one.
+    #[test]
+    fn a_refusal_is_found_through_the_error_chain() {
+        let refused = provider_error(
+            StatusCode::BAD_REQUEST,
+            "image generation returned 400".to_string(),
+            r#"{"error": {"code": "content_safety_violation"}}"#,
+        );
+        assert!(is_refusal(&refused));
+        assert!(is_refusal(&refused.context("drawing the picture")));
+        let ordinary = provider_error(
+            StatusCode::BAD_REQUEST,
+            "image generation returned 400".to_string(),
+            r#"{"error": {"code": "invalid_size"}}"#,
+        );
+        assert!(!is_refusal(&ordinary));
+        // The log line still says what happened, and then why.
+        let line = format!(
+            "{:#}",
+            provider_error(
+                StatusCode::BAD_REQUEST,
+                "assistant returned 400".to_string(),
+                r#"{"error": {"code": "content_filter"}}"#,
+            )
+        );
+        assert_eq!(
+            line,
+            "assistant returned 400: the provider's content filter refused it"
+        );
+    }
+
+    /// The provider's detail reaches the log on ONE line, bounded, and never
+    /// cut mid-letter.
+    #[test]
+    fn the_provider_detail_is_folded_onto_one_line() {
+        let pretty = "{\n  \"error\": {\n    \"code\": \"content_filter\",\r\n\t\"message\": \"x\"\n  }\n}\n";
+        assert_eq!(
+            one_line(pretty),
+            r#"{ "error": { "code": "content_filter", "message": "x" } }"#
+        );
+        let long = format!("{{\n{}\n}}", "я".repeat(1000));
+        let folded = one_line(&long);
+        assert_eq!(folded.chars().count(), 400);
+        assert!(!folded.contains('\n'));
+    }
+
+    /// A refused picture: the log names the refusal and the category that
+    /// tripped, and never the description — not the `revised_prompt` a
+    /// DALL·E 3 refusal can carry, not a message that quotes it.
+    #[test]
+    fn a_refused_description_never_reaches_the_log() {
+        let body = r#"{
+          "error": {
+            "code": "contentFilter",
+            "message": "Your task failed as a result of our safety system: 'a purple giraffe'",
+            "inner_error": {
+              "code": "ResponsibleAIPolicyViolation",
+              "content_filter_results": {
+                "hate": {"filtered": false, "severity": "safe"},
+                "violence": {"filtered": true, "severity": "medium"},
+                "jailbreak": {"filtered": true, "detected": true}
+              },
+              "revised_prompt": "A purple giraffe wearing a hat, in watercolour"
+            }
+          }
+        }"#;
+        let line = format!(
+            "{:#}",
+            provider_error(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "image generation returned 400 for https://example.test/images: {}",
+                    loggable_detail(body)
+                ),
+                body,
+            )
+        );
+        assert!(!line.to_lowercase().contains("giraffe"), "{line}");
+        assert!(!line.contains("safety system"), "{line}");
+        assert!(line.contains("code=contentFilter"), "{line}");
+        assert!(
+            line.contains("inner=ResponsibleAIPolicyViolation"),
+            "{line}"
+        );
+        assert!(
+            line.contains("filtered=jailbreak,violence:medium"),
+            "{line}"
+        );
+        assert!(!line.contains("hate"), "{line}");
+        assert!(!line.contains('\n'));
+        assert!(
+            line.ends_with("the provider's content filter refused it"),
+            "{line}"
+        );
+    }
+
+    /// A 422 that echoes the request under `detail[].input` keeps the field
+    /// and the rule, and drops the echo.
+    #[test]
+    fn a_validation_echo_never_reaches_the_log() {
+        let body = r#"{"detail": [
+            {"type": "string_too_long", "loc": ["body", "prompt"],
+             "msg": "String should have at most 4000 characters",
+             "input": "Grandma's secret birthday cake with seven candles"},
+            {"type": "extra_forbidden", "loc": ["body", "size"], "input": "1024x1024"}
+        ]}"#;
+        let line = loggable_detail(body);
+        assert!(!line.contains("Grandma"), "{line}");
+        assert!(!line.contains("1024x1024"), "{line}");
+        assert!(
+            line.starts_with("invalid=body.prompt:string_too_long,body.size:extra_forbidden "),
+            "{line}"
+        );
+    }
+
+    /// The chat completions' shape: the identifiers are kept, the message is
+    /// not — an ordinary 400's message can quote the value it rejected.
+    #[test]
+    fn only_identifiers_are_kept_from_an_ordinary_error() {
+        let body = r#"{"error": {"message": "Invalid value: 'tell me about Aunt Vera'",
+            "type": "invalid_request_error", "param": "messages[1].content", "code": null}}"#;
+        let line = loggable_detail(body);
+        assert!(!line.contains("Vera"), "{line}");
+        assert_eq!(
+            line,
+            format!(
+                "type=invalid_request_error param=messages[1].content {}-byte body, other fields withheld",
+                body.len()
+            )
+        );
+        // A "code" that is prose is prose, whichever field it sits in.
+        let prose = r#"{"error": {"code": "draw a cat for Vera", "message": "x"}}"#;
+        assert!(!loggable_detail(prose).contains("Vera"));
+        // Azure's 404 keeps its numeric code.
+        assert!(
+            loggable_detail(r#"{"error": {"code": "404", "message": "Resource not found"}}"#)
+                .starts_with("code=404 ")
+        );
+        // Not JSON: nothing structured to keep, so nothing but its size.
+        assert_eq!(
+            loggable_detail("<html>bad gateway for 'a cat'</html>"),
+            "36-byte body, not JSON, withheld"
+        );
+        assert_eq!(loggable_detail(""), "0-byte body, not JSON, withheld");
+    }
+
+    /// However many categories a body lists, the line stays one line within
+    /// the 400-character bound.
+    #[test]
+    fn the_loggable_detail_keeps_the_bound() {
+        let categories: Vec<String> = (0..200)
+            .map(|n| format!(r#""category_{n}": {{"filtered": true, "severity": "high"}}"#))
+            .collect();
+        let body = format!(
+            r#"{{"error": {{"code": "content_filter", "innererror": {{"content_filter_result": {{{}}}}}}}}}"#,
+            categories.join(",")
+        );
+        let line = loggable_detail(&body);
+        assert!(line.chars().count() <= 400);
+        assert!(
+            line.starts_with("code=content_filter filtered=category_"),
+            "{line}"
         );
     }
 }

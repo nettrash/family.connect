@@ -20,5 +20,6 @@ pub mod poll;
 pub mod reactions;
 pub mod report;
 pub mod settings;
+pub mod stickers;
 pub mod thread_panel;
 pub mod viewer;

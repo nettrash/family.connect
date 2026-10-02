@@ -46,6 +46,19 @@ nonisolated enum AppSettings {
         /// and a device that upgrades has a meaningful value for the old
         /// one and none for the new (BoardBadge.contentMarkSeed).
         static let boardSeenContentSeq = "v1.board.seenContentSeq"
+        /// The sticker pack's catch-up cursor: the highest pack_seq this
+        /// device has applied. Account-scoped and wiped with the session,
+        /// for the board cursor's reason (docs/protocol.md, "Sticker pack").
+        static let packCursor = "v1.pack.cursor"
+        /// The pack's two limits as `GET /families/mine` last reported
+        /// them. A MISSING key is the answer "this server has no packs",
+        /// which is why neither has a default.
+        static let packMaxItems = "v1.pack.maxItems"
+        static let packMaxItemBytes = "v1.pack.maxItemBytes"
+        /// The pack items this DEVICE sent most recently, newest first.
+        /// Never on the wire: it says something about a person's habits and
+        /// nothing about the family's pack.
+        static let packRecents = "v1.pack.recents"
         /// The assistant, as `GET /families/mine` last reported it. Two
         /// jobs at once: naming its messages in the family chat, where its
         /// reserved account is deliberately absent from the roster, and
@@ -260,6 +273,55 @@ nonisolated enum AppSettings {
         set { defaults.set(Int(newValue), forKey: Key.boardSeenContentSeq) }
     }
 
+    /// Highest pack_seq applied on this device; 0 = nothing yet, which is
+    /// what makes the first catch-up a full read of the pack rather than a
+    /// replay of every sticker the family ever added and removed.
+    static var packCursor: Int64 {
+        get { Int64(defaults.integer(forKey: Key.packCursor)) }
+        set { defaults.set(Int(newValue), forKey: Key.packCursor) }
+    }
+
+    /// How many stickers the family's pack may hold, or nil when this
+    /// server has no packs at all.
+    ///
+    /// NIL IS THE CAPABILITY CHECK (docs/protocol.md, "What old clients
+    /// and old servers do"): a server that predates the pack omits the
+    /// field, and the composer then offers no sticker button and the
+    /// Family screen no pack — rather than a door that answers 404.
+    static var packMaxItems: Int? {
+        get { defaults.object(forKey: Key.packMaxItems) as? Int }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.packMaxItems)
+            } else {
+                defaults.removeObject(forKey: Key.packMaxItems)
+            }
+        }
+    }
+
+    /// The ceiling on one sticker's bytes — a pack item's, and a sticker
+    /// message's picture, which is the same number.
+    static var packMaxItemBytes: Int? {
+        get { defaults.object(forKey: Key.packMaxItemBytes) as? Int }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.packMaxItemBytes)
+            } else {
+                defaults.removeObject(forKey: Key.packMaxItemBytes)
+            }
+        }
+    }
+
+    /// Whether this server has sticker packs at all.
+    static var offersStickers: Bool { packMaxItems != nil }
+
+    /// Pack item ids this device sent most recently, newest first
+    /// (`StickerRecents` holds the rule and the cap).
+    static var packRecents: [Int64] {
+        get { (defaults.array(forKey: Key.packRecents) as? [Int] ?? []).map(Int64.init) }
+        set { defaults.set(newValue.map { Int($0) }, forKey: Key.packRecents) }
+    }
+
     /// The pair, read and written together — a badge that used one mark
     /// from before an update and one from after would be neither rule.
     static var boardMarks: BoardBadge.Marks {
@@ -408,6 +470,13 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.boardCursor)
         defaults.removeObject(forKey: Key.boardSeenNoteID)
         defaults.removeObject(forKey: Key.boardSeenContentSeq)
+        // The pack is this family's on this server: its cursor, its limits
+        // and which of its stickers this person reaches for all go with
+        // the session, like the board's marks above.
+        defaults.removeObject(forKey: Key.packCursor)
+        defaults.removeObject(forKey: Key.packMaxItems)
+        defaults.removeObject(forKey: Key.packMaxItemBytes)
+        defaults.removeObject(forKey: Key.packRecents)
         // Member ↔ contact links name user ids of THIS server's family.
         defaults.removeObject(forKey: ContactLinks.key)
     }

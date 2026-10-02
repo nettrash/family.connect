@@ -85,4 +85,74 @@ class AssistantConsentTest {
             AssistantConsent.isWithheldFromAnUnnamedAssistant("family", "@ai hi", false, null),
         ).isFalse()
     }
+
+    // -- A sticker (docs/protocol.md, "Sticker pack": "It can be sent in any chat") --
+
+    /**
+     * In the assistant's own chat a sticker is a photo to the model, so it
+     * goes through the same question any message there does — for the
+     * chat's composer and the thread's alike, which both ask this function.
+     */
+    @Test
+    fun `a sticker in the assistant's chat asks first, like any message there`() {
+        assertThat(AssistantConsent.stickerGate("ai", true, processor, null))
+            .isEqualTo(AssistantConsent.StickerGate.ASK)
+        assertThat(AssistantConsent.stickerGate("ai", true, processor, ""))
+            .isEqualTo(AssistantConsent.StickerGate.ASK)
+        assertThat(AssistantConsent.stickerGate("ai", true, processor, "2026-09-13T10:00:00Z"))
+            .isEqualTo(AssistantConsent.StickerGate.SEND)
+    }
+
+    @Test
+    fun `a sticker never reaches an assistant the server will not name`() {
+        assertThat(AssistantConsent.stickerGate("ai", true, null, null))
+            .isEqualTo(AssistantConsent.StickerGate.WITHHELD)
+        // Even with an old agreement on record: there is nobody named to
+        // have agreed to.
+        assertThat(AssistantConsent.stickerGate("ai", true, " ", "2026-09-13T10:00:00Z"))
+            .isEqualTo(AssistantConsent.StickerGate.WITHHELD)
+    }
+
+    @Test
+    fun `a sticker in the family chat or a one-to-one chat just goes`() {
+        // No body, so it can never say `@ai`.
+        for (kind in listOf("family", "direct", null)) {
+            assertThat(AssistantConsent.stickerGate(kind, true, processor, null))
+                .isEqualTo(AssistantConsent.StickerGate.SEND)
+            assertThat(AssistantConsent.stickerGate(kind, true, null, null))
+                .isEqualTo(AssistantConsent.StickerGate.SEND)
+        }
+    }
+
+    /**
+     * An event's backdrop is drawn from its title — the author's words, to
+     * `processor` — so it asks exactly as a `/draw` does (docs/protocol.md,
+     * "Consenting to the assistant", amended 2026-09-30).
+     */
+    @Test
+    fun `a backdrop asks first, and only once`() {
+        assertThat(AssistantConsent.backdropGate(processor, null))
+            .isEqualTo(AssistantConsent.BackdropGate.ASK)
+        assertThat(AssistantConsent.backdropGate(processor, ""))
+            .isEqualTo(AssistantConsent.BackdropGate.ASK)
+        assertThat(AssistantConsent.backdropGate(processor, "2026-09-30T08:00:00Z"))
+            .isEqualTo(AssistantConsent.BackdropGate.DRAW)
+    }
+
+    @Test
+    fun `a backdrop is never drawn by an assistant the server will not name`() {
+        assertThat(AssistantConsent.backdropGate(null, null))
+            .isEqualTo(AssistantConsent.BackdropGate.WITHHELD)
+        assertThat(AssistantConsent.backdropGate("  ", "2026-09-30T08:00:00Z"))
+            .isEqualTo(AssistantConsent.BackdropGate.WITHHELD)
+        // And so it is not offered: there would be no consent to ask.
+        assertThat(AssistantConsent.offersBackdrop(serverCanDraw = true, processor = null)).isFalse()
+        assertThat(AssistantConsent.offersBackdrop(serverCanDraw = true, processor = "")).isFalse()
+    }
+
+    @Test
+    fun `a backdrop is offered where the server can draw and names who draws`() {
+        assertThat(AssistantConsent.offersBackdrop(serverCanDraw = true, processor = processor)).isTrue()
+        assertThat(AssistantConsent.offersBackdrop(serverCanDraw = false, processor = processor)).isFalse()
+    }
 }

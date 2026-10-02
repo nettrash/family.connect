@@ -83,6 +83,14 @@ public sealed class MediaOutbox(OutboxStore outbox, ApiClient api, IMediaStore m
     public event Action<OutboxRow, ApiError>? Refused;
 
     /// <summary>
+    /// One file landed: the row it was for, what the server made of it, and the bytes that went. It
+    /// is how a sent STICKER is drawn from the bytes this device already holds — the message it
+    /// becomes names a new attachment id for the very same bytes, and fetching them back would be a
+    /// download, and a blank box while it ran, for a picture that never left this machine.
+    /// </summary>
+    public event Action<OutboxRow, AttachmentDto, StagedMedia>? Landed;
+
+    /// <summary>
     /// Push what is owed. Answers how many files landed; a transient failure leaves the rest
     /// owed, and the next flush comes back to them.
     /// </summary>
@@ -126,6 +134,7 @@ public sealed class MediaOutbox(OutboxStore outbox, ApiClient api, IMediaStore m
                     // costs the remainder rather than the lot.
                     outbox.Uploaded(row.ClientMsgId, answer.Value.Attachment.Id, handle);
                     landed++;
+                    Landed?.Invoke(row, answer.Value.Attachment, staged);
                     if (staged.Preview is { IsEmpty: false } preview)
                     {
                         await SendPreviewAsync(answer.Value.Attachment.Id, preview, PreviewAttempts, ct)

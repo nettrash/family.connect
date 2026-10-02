@@ -58,7 +58,7 @@ use sqlx::Row;
 use time::{Duration as TimeDuration, OffsetDateTime, UtcOffset};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::ai::{self, ChatTurn, GeneratedImage, InlineImage};
@@ -67,7 +67,7 @@ use crate::events;
 use crate::handlers_chat;
 use crate::models::{Attachment, Message};
 use crate::state::AppState;
-use crate::ws::ServerFrame;
+use crate::ws::{AiErrorReason, ServerFrame};
 
 /// The reserved account the assistant sends under (migration 0015). Looked
 /// up rather than hard-coded: the id is whatever the sequence gave it.
@@ -209,7 +209,7 @@ pub async fn ensure_ai_chat(state: &AppState, user_id: i64) -> Result<Option<i64
 pub fn spawn_reply(state: AppState, chat_id: i64, user_id: i64, language: Option<String>) {
     tokio::spawn(async move {
         if let Err(error) = reply(&state, chat_id, user_id, language.as_deref()).await {
-            warn!(%chat_id, %error, "assistant reply failed");
+            warn!(%chat_id, error = %format!("{error:#}"), "assistant reply failed");
         }
     });
 }
@@ -228,7 +228,7 @@ pub fn spawn_mention_reply(
         if let Err(error) =
             mention_reply(&state, chat_id, user_id, message_id, language.as_deref()).await
         {
-            warn!(%chat_id, %message_id, %error, "assistant mention reply failed");
+            warn!(%chat_id, %message_id, error = %format!("{error:#}"), "assistant mention reply failed");
         }
     });
 }
@@ -1624,6 +1624,14 @@ enum Ask {
         /// declares the tool, so the two cannot disagree (protocol.md,
         /// "Drawing without being told to").
         draw: Option<ModelRoute>,
+        /// The asker's OWN words — the body of the one message that asked,
+        /// with every `@ai` taken out (`mentions::without_mentions`) —
+        /// for the one moment they may go to the images deployment: after
+        /// it REFUSED the prompt the model wrote (protocol.md, "The
+        /// member's own words, after a refused prompt"). `None` when there
+        /// are none (a captionless photo, a lone `@ai`), and on a server
+        /// that cannot draw, where nothing could use them.
+        own_words: Option<String>,
     },
     /// A picture, from the images deployment. `prompt` is the whole of what
     /// leaves the server (protocol.md, "Pictures").
@@ -1737,6 +1745,20 @@ async fn mention_reply(
     };
     let language = family_language.as_deref().or(language);
     answer(state, chat_id, user_id, assistant_id, prompt, language).await
+}
+
+/// What the asker said in the one message that asked, with every `@ai`
+/// taken out by the mention grammar and trimmed — or `None` when nothing is
+/// left, or when this server declares no tool and so could never fall back
+/// to them (protocol.md, "The member's own words, after a refused prompt").
+///
+/// Only ever handed the asking message's own BODY: not a turn rendered from
+/// it (which may carry placeholders or a poll's options), not the quote,
+/// not the transcript.
+fn own_words(draw: &Option<ModelRoute>, body: &str) -> Option<String> {
+    draw.as_ref()?;
+    let words = crate::mentions::without_mentions(body);
+    (!words.is_empty()).then_some(words)
 }
 
 /// The private thread: the last N turns of THIS member's own assistant chat.
@@ -1857,12 +1879,14 @@ async fn thread_prompt(
         }
     }
 
+    let draw = state.cfg.ai.contextual_images_route();
     Ok(Some(Prompt {
         ask: Ask::Words {
             turns,
             notes,
             route,
-            draw: state.cfg.ai.contextual_images_route(),
+            own_words: own_words(&draw, &question_body),
+            draw,
         },
         reply_to: None,
         // A private thread is private in both directions: nobody else sees
@@ -2367,6 +2391,12 @@ async fn mention_prompt(
         }));
     }
 
+    // The asker's own words, kept aside BEFORE the body is folded into the
+    // turn below: the mentioning message alone, never the quote or the
+    // transcript, for the fallback after a refused `draw_picture` prompt.
+    let draw = state.cfg.ai.contextual_images_route();
+    let own_words = own_words(&draw, &body);
+
     let quoted_id: Option<i64> = row.get("quoted_id");
     let quoted: Option<String> = row.get("quoted_body");
     let quoted_author: Option<String> = row.get("quoted_author");
@@ -2651,7 +2681,8 @@ async fn mention_prompt(
             turns: vec![turn],
             notes,
             route,
-            draw: state.cfg.ai.contextual_images_route(),
+            draw,
+            own_words,
         },
         // The answer quotes the question. In a chat where several
         // conversations run at once, an unattached answer belongs to
@@ -2680,6 +2711,8 @@ enum Finished {
     Text {
         text: String,
         usage: ai::Usage,
+        /// Why the model stopped — only ever read to explain an empty answer.
+        finish_reason: String,
     },
     /// A picture — from `/draw`, with no tokens to report, or from the text
     /// model asking for one, with the tokens it spent deciding. Both are one
@@ -2769,14 +2802,53 @@ async fn stream_words(
     outcome
 }
 
+/// The member's own words as the `draw_picture` fallback may send them:
+/// trimmed, and `None` when nothing is left or when they are longer than a
+/// draw prompt may be (`max_chars`, the message-body ceiling). Over it they
+/// are no words at all rather than words cut short — cutting them would
+/// send something nobody wrote (protocol.md, "The member's own words, after
+/// a refused prompt").
+fn fallback_words(own_words: Option<&str>, max_chars: usize) -> Option<&str> {
+    own_words
+        .map(str::trim)
+        .filter(|words| !words.is_empty() && words.chars().count() <= max_chars)
+}
+
 /// The text model asked for a picture: make it.
 ///
-/// This is where the tool call becomes the ONE thing that leaves for the
-/// images deployment — the `prompt`, checked and bounded by
-/// `ToolCall::draw_prompt`, through the same `generate_image` a `/draw`
-/// goes through. Not the question, not the thread, not the transcript, not
-/// the system prompt, and not any photograph (protocol.md, "Drawing without
-/// being told to").
+/// This is where the tool call becomes the thing that leaves for the images
+/// deployment — the `prompt`, checked and bounded by `ToolCall::draw_prompt`,
+/// through the same `generate_image` a `/draw` goes through. Not the
+/// thread, not the transcript, not the system prompt, and not any
+/// photograph (protocol.md, "Drawing without being told to").
+///
+/// And, since 2026-10-01, one thing more, only after the images deployment
+/// REFUSED that prompt: the asker's own words (`own_words`, the asking
+/// message's body with the `@ai` taken out), through `draw_or_reword`
+/// exactly as `/draw` followed by them would have gone — so a refusal of
+/// THEM gets the one rewrite. Once the model's prompt is refused, the
+/// member's words get the attempts that `/draw` would have — but a failure
+/// still ends as the first refusal, even a 5xx a `/draw` would have ended
+/// without a reason (protocol.md, "The member's own words, after a refused
+/// prompt"). In order, at most:
+///
+/// 1. the model's prompt;
+/// 2. the member's words — only on a refusal of 1, never on a 5xx, a
+///    timeout or any other 4xx;
+/// 3. the one rewrite of the member's words, inside `draw_or_reword`.
+///
+/// Three requests to the images deployment and one rewrite. The model's
+/// prompt is NOT reworded on the way: the one rewrite is spent on the words
+/// a `/draw` proved the filter accepts, not on the words it just refused.
+/// Two cases have no step 2, and each ends as the path did before it was
+/// added — the one rewrite of the text that was refused: no words of the
+/// member's (a captionless photo, a lone `@ai`, or words over the bound),
+/// and words that ARE the model's prompt, which are not sent a second time
+/// unchanged.
+///
+/// Anything that stops the fallback from becoming a picture hands back the
+/// FIRST refusal, as `draw_or_reword` does with its rewrite: the member's
+/// picture was refused, and that is what they hear.
 ///
 /// `draw` is `None` only if a model called a tool no request declared —
 /// which is an error, like every other way a call can be wrong: the member
@@ -2786,6 +2858,7 @@ async fn draw_as_asked(
     draw: Option<ModelRoute>,
     call: &ai::ToolCall,
     usage: ai::Usage,
+    own_words: Option<&str>,
 ) -> Result<Finished> {
     let Some(route) = draw else {
         anyhow::bail!(
@@ -2796,9 +2869,208 @@ async fn draw_as_asked(
     // The message-body ceiling, because a prompt is the same kind of thing
     // as the words after `/draw`, and those could never be longer than a
     // message.
-    let prompt = call.draw_prompt(state.cfg.limits.max_message_chars)?;
-    let image = ai::generate_image(&state.http, &route, &state.cfg.ai.images, &prompt).await?;
-    Ok(Finished::Picture { image, usage })
+    let max_chars = state.cfg.limits.max_message_chars;
+    let prompt = call.draw_prompt(max_chars)?;
+    let images = &state.cfg.ai.images;
+    let refused = match ai::generate_image(&state.http, &route, images, &prompt).await {
+        Ok(image) => {
+            return Ok(Finished::Picture { image, usage });
+        }
+        Err(error) if !ai::is_refusal(&error) => return Err(error),
+        Err(error) => error,
+    };
+
+    // The member's own words, bounded like a draw prompt. They are a stored
+    // message's body, so the ceiling cannot really be crossed — checked
+    // rather than trusted, and over it they are no words to fall back to:
+    // cutting them would send something nobody wrote.
+    let drawn = match fallback_words(own_words, max_chars) {
+        Some(words) if words != prompt.trim() => {
+            match draw_or_reword(state, &route, "draw_picture_own_words", words).await {
+                Ok(drawn) => {
+                    info!(
+                        origin = "draw_picture",
+                        outcome = "own_words_drawn",
+                        "a refused picture prompt fell back to the member's own words, which were drawn"
+                    );
+                    drawn
+                }
+                Err(error) => {
+                    let outcome = if ai::is_refusal(&error) {
+                        "own_words_refused"
+                    } else {
+                        "own_words_failed"
+                    };
+                    // The error itself, because nothing else says it: the
+                    // member is handed the FIRST refusal below, so the
+                    // final failure line carries that one's chain, and
+                    // `draw_or_reword` logs nothing of a first attempt
+                    // that was not a refusal. A provider error carries a
+                    // status, a URL and a bounded detail, never the words
+                    // (`ai::loggable_detail`) — as the rewrite's lines log
+                    // theirs.
+                    warn!(
+                        origin = "draw_picture",
+                        outcome,
+                        error = %format!("{error:#}"),
+                        "a refused picture prompt fell back to the member's own words, which were not drawn either"
+                    );
+                    return Err(refused.context(
+                        "the images deployment refused the description, and the member's own words did not produce a picture",
+                    ));
+                }
+            }
+        }
+        // The prompt the filter just refused, then: reworded once, which
+        // is the rewrite of the member's words when they are the same text.
+        other => {
+            let outcome = if other.is_some() {
+                "own_words_same_as_prompt"
+            } else {
+                "no_own_words"
+            };
+            info!(
+                origin = "draw_picture",
+                outcome,
+                "a refused picture prompt has no other words of the member's to fall back to"
+            );
+            reword_refused(state, &route, "draw_picture", &prompt, refused).await?
+        }
+    };
+    // Two bills against one picture when a description had to be reworded:
+    // the tokens spent deciding, and the tokens spent rewording.
+    Ok(Finished::Picture {
+        image: drawn.image,
+        usage: usage.plus(drawn.usage),
+    })
+}
+
+/// A picture, and what the TEXT deployment was paid on the way to it.
+pub(crate) struct Drawn {
+    pub image: GeneratedImage,
+    /// The rewrite's tokens when the description had to be reworded; zero
+    /// when the images deployment drew it first time.
+    pub usage: ai::Usage,
+}
+
+/// Draw a description — and, if the images deployment's filter REFUSES it,
+/// have the text deployment reword it once and draw the rewrite.
+///
+/// The one place this rule lives, for all three paths that send a
+/// description to the images deployment: a `/draw`, the text model's own
+/// `draw_picture` call, and the board's event backdrop (`origin` says which,
+/// for the log). protocol.md, "A refused description is reworded once".
+/// On the `draw_picture` path it is the member's own words that come here,
+/// after the model's prompt was refused, or that prompt's refusal that goes
+/// straight to [`reword_refused`] — `draw_as_asked` decides which, so the
+/// one rewrite per picture holds there too.
+///
+/// - ONLY a refusal starts it. A 5xx, a timeout, any other 4xx comes back
+///   exactly as it always did, and the text deployment is asked nothing.
+/// - ONCE: one rewrite and one more picture request, never a loop.
+/// - Anything that stops the rewrite from becoming a picture — the rewrite
+///   request failing or refused, a rewrite `ai::rephrase_description` turns
+///   away, the second picture request refused or failing — hands back the
+///   FIRST refusal, so the member hears exactly what they would have heard
+///   without this: their description was refused.
+/// - What is logged is that a rewrite was tried and how it ended, and the
+///   provider's identifying fields. Never the description and never the
+///   rewrite: no member's words reach a log.
+///
+/// Consent is not looked at here, and needs no second look: this follows
+/// only a first attempt that was already allowed to run, to the same
+/// provider the member agreed to. Every caller asks it before it gets here —
+/// a `/draw` and the model's own call at the send (`handlers_chat`), the
+/// backdrop in `handlers_board::draw_backdrop` — so the rewrite inherits
+/// that answer rather than repeating it.
+pub(crate) async fn draw_or_reword(
+    state: &AppState,
+    route: &ModelRoute,
+    origin: &'static str,
+    description: &str,
+) -> Result<Drawn> {
+    let images = &state.cfg.ai.images;
+    let refused = match ai::generate_image(&state.http, route, images, description).await {
+        Ok(image) => {
+            return Ok(Drawn {
+                image,
+                usage: ai::Usage::default(),
+            });
+        }
+        Err(error) if !ai::is_refusal(&error) => return Err(error),
+        Err(error) => error,
+    };
+    reword_refused(state, route, origin, description, refused).await
+}
+
+/// The second half of [`draw_or_reword`]: `description` has just been
+/// REFUSED (`refused` is that refusal) — reword it once and draw the
+/// rewrite, or hand the refusal back.
+///
+/// Split out for the one caller that must decide between its two halves:
+/// `draw_as_asked`, which sends the model's prompt itself and, when there is
+/// no other text of the member's to fall back to, comes here with the
+/// refusal it already has rather than sending the same text a second time.
+async fn reword_refused(
+    state: &AppState,
+    route: &ModelRoute,
+    origin: &'static str,
+    description: &str,
+    refused: anyhow::Error,
+) -> Result<Drawn> {
+    let images = &state.cfg.ai.images;
+    // Said once the attempt has run, alongside the first refusal's own
+    // line from the caller, so the two read together.
+    let not_drawn = |refused: anyhow::Error| {
+        refused.context("the images deployment refused the description, and rewording it once did not produce a picture")
+    };
+
+    let rewrite = ai::rephrase_description(
+        &state.http,
+        &state.cfg.ai.text_route(),
+        description,
+        state.cfg.limits.max_message_chars,
+    )
+    .await;
+    let (rewrite, usage) = match rewrite {
+        Ok(found) => found,
+        Err(error) => {
+            warn!(
+                origin,
+                outcome = "no_usable_rewrite",
+                error = %format!("{error:#}"),
+                "a refused picture description could not be reworded"
+            );
+            return Err(not_drawn(refused));
+        }
+    };
+
+    match ai::generate_image(&state.http, route, images, &rewrite).await {
+        Ok(image) => {
+            info!(
+                origin,
+                outcome = "drawn",
+                prompt_tokens = usage.prompt_tokens,
+                completion_tokens = usage.completion_tokens,
+                "a refused picture description was reworded and drawn"
+            );
+            Ok(Drawn { image, usage })
+        }
+        Err(error) => {
+            let outcome = if ai::is_refusal(&error) {
+                "refused_again"
+            } else {
+                "failed_again"
+            };
+            warn!(
+                origin,
+                outcome,
+                error = %format!("{error:#}"),
+                "a reworded picture description was not drawn either"
+            );
+            Err(not_drawn(refused))
+        }
+    }
 }
 
 /// Write a generated picture to disk and bind it to the message that is
@@ -2928,6 +3200,29 @@ async fn store_picture(
     Ok(())
 }
 
+/// Tell the audience the reply stopped early, and — when the server knows
+/// one worth a different sentence — why (protocol.md, "The assistant").
+async fn fan_out_ai_error(
+    state: &AppState,
+    audience: &[i64],
+    chat_id: i64,
+    message_id: i64,
+    reason: Option<AiErrorReason>,
+) {
+    state
+        .registry
+        .fan_out(
+            audience,
+            &ServerFrame::AiError {
+                chat_id,
+                message_id,
+                reason,
+            },
+            None,
+        )
+        .await;
+}
+
 /// The half that is the same for both kinds of question: create the row,
 /// stream into it, and finish it through the edit path.
 async fn answer(
@@ -2989,6 +3284,7 @@ async fn answer(
             notes,
             route,
             draw,
+            own_words,
         } => {
             let system_prompt =
                 compose_system_prompt(&state.cfg.ai.system_prompt, &notes, language);
@@ -3013,30 +3309,48 @@ async fn answer(
                     text,
                     tool_call: None,
                     usage,
-                }) => Ok(Finished::Text { text, usage }),
+                    finish_reason,
+                }) => Ok(Finished::Text {
+                    text,
+                    usage,
+                    finish_reason,
+                }),
                 // The model asked for a picture. If it ALSO wrote words, the
                 // picture wins and the words are dropped: one reply, one
                 // attachment, the shape `/draw` already has — and the words
                 // were most likely "here it is". Any that streamed as deltas
                 // are gone when the finished row lands, because the row is
                 // the truth (protocol.md, "Drawing without being told to").
+                //
+                // Unless the filter is what ended it: a call the provider
+                // cut off is a fragment, and drawing from it would be
+                // drawing whatever the fragment happened to say.
+                Ok(ai::Streamed {
+                    tool_call: Some(_),
+                    finish_reason,
+                    ..
+                }) if ai::finish_is_refusal(&finish_reason) => Err(anyhow::Error::new(ai::Refused)
+                    .context("the stream ended with finish_reason content_filter mid tool call")),
                 Ok(ai::Streamed {
                     tool_call: Some(call),
                     usage,
                     ..
-                }) => draw_as_asked(state, draw, &call, usage).await,
+                }) => draw_as_asked(state, draw, &call, usage, own_words.as_deref()).await,
             }
         }
         // No deltas and no pump: an image model produces no token stream,
         // and the empty row IS the "still working" state (protocol.md,
         // "Pictures"). No language instruction either — a picture has none
         // to come back in.
+        // A refused description is reworded once before it is called
+        // refused (`draw_or_reword`), and a rewrite's tokens ride on the
+        // picture it produced.
         Ask::Picture { prompt, route } => {
-            ai::generate_image(&state.http, &route, &state.cfg.ai.images, &prompt)
+            draw_or_reword(state, &route, "draw", &prompt)
                 .await
-                .map(|image| Finished::Picture {
-                    image,
-                    usage: ai::Usage::default(),
+                .map(|drawn| Finished::Picture {
+                    image: drawn.image,
+                    usage: drawn.usage,
                 })
         }
     };
@@ -3044,18 +3358,19 @@ async fn answer(
     let finished = match outcome {
         Ok(finished) => finished,
         Err(error) => {
-            warn!(%chat_id, %error, "assistant reply failed");
-            state
-                .registry
-                .fan_out(
-                    &prompt.audience,
-                    &ServerFrame::AiError {
-                        chat_id,
-                        message_id,
-                    },
-                    None,
-                )
-                .await;
+            // The whole chain on one line — the provider's detail is folded
+            // flat by `ai` — and the refusal named as a field of its own, so
+            // a log search for it needs no knowledge of Azure's wording.
+            let refused = ai::is_refusal(&error);
+            warn!(%chat_id, refused, error = %format!("{error:#}"), "assistant reply failed");
+            fan_out_ai_error(
+                state,
+                &prompt.audience,
+                chat_id,
+                message_id,
+                refused.then_some(AiErrorReason::Refused),
+            )
+            .await;
             return Ok(());
         }
     };
@@ -3063,23 +3378,37 @@ async fn answer(
     // What the row will say, and what it will carry. A picture answers with
     // no words at all: the picture IS the answer, and the member's own
     // request handed back to them is not a caption.
-    let (text, usage, image) = match finished {
-        Finished::Text { text, usage } => (text, usage, None),
-        Finished::Picture { image, usage } => (String::new(), usage, Some(image)),
+    let (text, usage, image, finish_reason) = match finished {
+        Finished::Text {
+            text,
+            usage,
+            finish_reason,
+        } => (text, usage, None, finish_reason),
+        Finished::Picture { image, usage } => (String::new(), usage, Some(image), String::new()),
     };
 
     if image.is_none() && text.trim().is_empty() {
-        state
-            .registry
-            .fan_out(
-                &prompt.audience,
-                &ServerFrame::AiError {
-                    chat_id,
-                    message_id,
-                },
-                None,
-            )
-            .await;
+        // SAID, because it used to be silent: the provider answered 200 and
+        // the stream ended cleanly, so nothing above counts it as a failure,
+        // and the member was told "Couldn't answer that" with not a line in
+        // the log to say why. The reason and the counts are the whole
+        // diagnosis — `content_filter` is the provider refusing the answer,
+        // `length` with many completion tokens and no words is a reasoning
+        // model that spent its allowance thinking — and neither is the
+        // member's text, which never goes in a log.
+        warn!(
+            %chat_id,
+            %message_id,
+            finish_reason = %if finish_reason.is_empty() { "(none given)" } else { finish_reason.as_str() },
+            prompt_tokens = usage.prompt_tokens,
+            completion_tokens = usage.completion_tokens,
+            "assistant returned an empty answer"
+        );
+        // Of those, only the filter is the provider REFUSING, and only it
+        // earns the member a different sentence: asking again unchanged is
+        // good advice after `length` and useless after `content_filter`.
+        let reason = ai::finish_is_refusal(&finish_reason).then_some(AiErrorReason::Refused);
+        fan_out_ai_error(state, &prompt.audience, chat_id, message_id, reason).await;
         return Ok(());
     }
 
@@ -3091,18 +3420,9 @@ async fn answer(
     if let Some(image) = &image
         && let Err(error) = store_picture(state, chat_id, message_id, assistant_id, image).await
     {
-        warn!(%chat_id, %error, "storing the generated picture failed");
-        state
-            .registry
-            .fan_out(
-                &prompt.audience,
-                &ServerFrame::AiError {
-                    chat_id,
-                    message_id,
-                },
-                None,
-            )
-            .await;
+        warn!(%chat_id, error = %format!("{error:#}"), "storing the generated picture failed");
+        // Ours, not the provider's: no reason, and asking again may work.
+        fan_out_ai_error(state, &prompt.audience, chat_id, message_id, None).await;
         return Ok(());
     }
 
@@ -3166,8 +3486,9 @@ async fn answer(
         // one image — and a family reading only the token counts would see
         // the expensive half of the assistant as free. A picture the text
         // model asked for is one question, the tokens it spent deciding, and
-        // one image: the only reply that carries both (protocol.md, "Family
-        // statistics").
+        // one image (protocol.md, "Family statistics"). A picture drawn from
+        // a reworded description is still ONE image — two requests to the
+        // images deployment, one picture — with the rewrite's tokens added.
         .bind(i32::from(image.is_some()))
         .execute(&state.pool)
         .await
@@ -3195,9 +3516,9 @@ mod tests {
         HISTORY_MAX_CHARS, HISTORY_MAX_MESSAGES, HISTORY_WINDOW_DAYS, HistoryMessage,
         HistoryPictures, HistoryPoll, HistoryPollOption, MENTION_INSTRUCTION,
         MENTION_WITH_HISTORY_INSTRUCTION, MIRROR_LANGUAGE_INSTRUCTION, Numbered, POLL_NOTE,
-        compose_system_prompt, history_note_header, language_instruction, mention_poll_note,
-        mention_vision_note, numbered_turn_content, poll_line, render_history, turn_content,
-        vision_note, window,
+        compose_system_prompt, fallback_words, history_note_header, language_instruction,
+        mention_poll_note, mention_vision_note, numbered_turn_content, poll_line, render_history,
+        turn_content, vision_note, window,
     };
     use crate::models::Attachment;
     use time::macros::datetime;
@@ -3261,6 +3582,7 @@ mod tests {
             latitude: None,
             longitude: None,
             accuracy_m: None,
+            sticker: false,
         }
     }
 
@@ -5200,5 +5522,28 @@ mod tests {
             "and the newest line carries its number: {}",
             transcript_of(&note)
         );
+    }
+
+    /// The fallback's bound: the member's words go only whole, trimmed and
+    /// within the message-body ceiling — counted in characters, as a
+    /// message body is, so an accented ceiling-length message is not "over
+    /// it" by its bytes. Over it, empty, or absent are all no words, and
+    /// the refused prompt gets the one rewrite instead.
+    #[test]
+    fn the_members_own_words_fall_back_only_whole_and_within_the_bound() {
+        assert_eq!(fallback_words(None, 10), None);
+        assert_eq!(fallback_words(Some(""), 10), None);
+        assert_eq!(fallback_words(Some(" \n\t "), 10), None);
+        assert_eq!(fallback_words(Some("  a cat \n"), 10), Some("a cat"));
+        // At the ceiling, by characters and not bytes; trimmed before it
+        // is measured.
+        assert_eq!(fallback_words(Some("éééééééééé"), 10), Some("éééééééééé"));
+        assert_eq!(
+            fallback_words(Some("  0123456789  "), 10),
+            Some("0123456789")
+        );
+        // One over: no words — never cut to fit.
+        assert_eq!(fallback_words(Some("0123456789a"), 10), None);
+        assert_eq!(fallback_words(Some("ééééééééééé"), 10), None);
     }
 }

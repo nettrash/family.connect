@@ -1158,15 +1158,55 @@ class MessageRepositoryTest {
 
         socket.emit(ServerFrame.Message(messageDto(id = 100, chatId = CHAT, body = "")))
         advanceUntilIdle()
-        assertThat(repository.failedAssistantMessageIds.value).isEmpty()
+        assertThat(repository.failedAssistantAnswers.value).isEmpty()
 
         socket.emit(ServerFrame.AiError(chatId = CHAT, messageId = 100))
         advanceUntilIdle()
 
-        assertThat(repository.failedAssistantMessageIds.value).containsExactly(100L)
+        assertThat(repository.failedAssistantAnswers.value)
+            .containsExactly(100L, AssistantFailure.STOPPED)
         // The row keeps whatever it has, which here is nothing at all.
         assertThat(messageDao.findByServerId(100)!!.body).isEmpty()
         assertThat(repository.streamingMessageIds.value).doesNotContain(100L)
+    }
+
+    /**
+     * A refusal by the provider's own filter is remembered AS a refusal,
+     * beside the mark itself, so every redraw of the row says the same
+     * sentence (docs/protocol.md, "The assistant": `ai_error`'s `reason`).
+     */
+    @Test
+    fun aRefusedAiErrorIsRememberedAsARefusal() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        socket.emit(ServerFrame.Message(messageDto(id = 100, chatId = CHAT, body = "")))
+        socket.emit(ServerFrame.AiError(chatId = CHAT, messageId = 100, reason = "refused"))
+        advanceUntilIdle()
+
+        assertThat(repository.failedAssistantAnswers.value)
+            .containsExactly(100L, AssistantFailure.REFUSED)
+        assertThat(repository.streamingMessageIds.value).doesNotContain(100L)
+    }
+
+    /**
+     * A `reason` this client does not know reads as ABSENT — an ordinary
+     * failure, never a guess at what the server meant (docs/protocol.md,
+     * "The assistant": the compatibility rules applied to a value).
+     */
+    @Test
+    fun anAiErrorWithAnUnknownReasonIsAnOrdinaryFailure() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        socket.emit(ServerFrame.Message(messageDto(id = 100, chatId = CHAT, body = "")))
+        socket.emit(ServerFrame.AiError(chatId = CHAT, messageId = 100, reason = "quota_spent"))
+        advanceUntilIdle()
+
+        assertThat(repository.failedAssistantAnswers.value)
+            .containsExactly(100L, AssistantFailure.STOPPED)
     }
 
     /**
@@ -1196,7 +1236,7 @@ class MessageRepositoryTest {
 
         // Nothing marked it live: this is the state a relaunch starts in.
         assertThat(repository.streamingMessageIds.value).isEmpty()
-        assertThat(repository.failedAssistantMessageIds.value).isEmpty()
+        assertThat(repository.failedAssistantAnswers.value).isEmpty()
 
         val row = messageDao.findByServerId(100)!!
         assertThat(
@@ -1206,7 +1246,7 @@ class MessageRepositoryTest {
                 assistantUserId = null,
                 myUserId = ME,
                 streamingIds = repository.streamingMessageIds.value,
-                failedIds = repository.failedAssistantMessageIds.value,
+                failedIds = repository.failedAssistantAnswers.value.keys,
             ),
         ).isTrue()
     }
@@ -1238,7 +1278,7 @@ class MessageRepositoryTest {
                 assistantUserId = null,
                 myUserId = ME,
                 streamingIds = repository.streamingMessageIds.value,
-                failedIds = repository.failedAssistantMessageIds.value,
+                failedIds = repository.failedAssistantAnswers.value.keys,
             ),
         ).isFalse()
     }
@@ -1269,7 +1309,7 @@ class MessageRepositoryTest {
                 assistantUserId = null,
                 myUserId = ME,
                 streamingIds = repository.streamingMessageIds.value,
-                failedIds = repository.failedAssistantMessageIds.value,
+                failedIds = repository.failedAssistantAnswers.value.keys,
             ),
         ).isFalse()
     }
@@ -1284,7 +1324,8 @@ class MessageRepositoryTest {
         socket.emit(ServerFrame.Message(messageDto(id = 100, chatId = CHAT, body = "")))
         socket.emit(ServerFrame.AiError(chatId = CHAT, messageId = 100))
         advanceUntilIdle()
-        assertThat(repository.failedAssistantMessageIds.value).containsExactly(100L)
+        assertThat(repository.failedAssistantAnswers.value)
+            .containsExactly(100L, AssistantFailure.STOPPED)
 
         socket.emit(
             ServerFrame.MessageEdited(
@@ -1296,7 +1337,7 @@ class MessageRepositoryTest {
         )
         advanceUntilIdle()
 
-        assertThat(repository.failedAssistantMessageIds.value).isEmpty()
+        assertThat(repository.failedAssistantAnswers.value).isEmpty()
     }
 
     @Test

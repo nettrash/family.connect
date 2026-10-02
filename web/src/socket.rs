@@ -116,10 +116,19 @@ pub enum ServerFrame {
         message_id: i64,
         text: String,
     },
-    /// It stopped early; the row keeps what arrived.
+    /// It stopped early; the row keeps what arrived. `reason` is optional
+    /// on the wire and read here into what the row will say: `"refused"`
+    /// is the provider's own filter, and absent or anything else is the
+    /// failure it always was (docs/protocol.md, "The assistant").
     AiError {
         chat_id: i64,
         message_id: i64,
+        #[serde(
+            default,
+            rename = "reason",
+            deserialize_with = "crate::model::ai_failure"
+        )]
+        failure: crate::model::AiFailure,
     },
     MemberJoined {
         user: crate::model::User,
@@ -143,6 +152,12 @@ pub enum ServerFrame {
     /// moved, answered, or a tombstone. Never unread, never notifies.
     BoardNote {
         note: crate::model::Note,
+    },
+    /// One sticker of the family's pack in whatever state it now has —
+    /// added, or a tombstone (docs/protocol.md, "Sticker pack"). Reaches
+    /// every member, a blocker included. Never unread, never notifies.
+    PackItem {
+        item: crate::model::PackItem,
     },
     /// Somebody is calling: delivered to every connection the callee has.
     CallOffer {
@@ -360,7 +375,8 @@ mod tests {
             decode(r#"{"type": "ai_error", "chat_id": 42, "message_id": 1339}"#),
             Some(ServerFrame::AiError {
                 chat_id: 42,
-                message_id: 1339
+                message_id: 1339,
+                failure: crate::model::AiFailure::Failed,
             })
         );
         assert!(matches!(
@@ -398,6 +414,61 @@ mod tests {
             decode(r#"{"type": "board_note", "note": {"id": 12, "deleted": true, "board_seq": 91}}"#),
             Some(ServerFrame::BoardNote { ref note }) if note.deleted
         ));
+        assert!(matches!(
+            decode(r#"{"type": "pack_item", "item": {"id": 5, "added_by": 7, "pack_seq": 12,
+                       "created_at": "2026-09-30T10:00:00Z",
+                       "attachment": {"id": 71, "kind": "photo", "mime": "image/webp"}}}"#),
+            Some(ServerFrame::PackItem { ref item }) if item.id == 5 && item.is_usable()
+        ));
+        assert!(matches!(
+            decode(r#"{"type": "pack_item", "item": {"id": 5, "deleted": true, "pack_seq": 14}}"#),
+            Some(ServerFrame::PackItem { ref item }) if item.deleted
+        ));
+    }
+
+    /// `ai_error`'s optional `reason`: `"refused"` is read, and a reason
+    /// this client does not know is ABSENT — the compatibility rules applied
+    /// to a value (docs/protocol.md, "The assistant"). Nor does a reason
+    /// that is not a word cost the frame: a dropped `ai_error` would leave
+    /// the row waiting for an answer that is not coming.
+    #[wasm_bindgen_test]
+    fn an_ai_errors_reason_is_read_and_an_unknown_one_is_absent() {
+        use crate::model::AiFailure;
+        let failure = |json: &str| match decode(json) {
+            Some(ServerFrame::AiError {
+                chat_id: 42,
+                message_id: 1339,
+                failure,
+            }) => failure,
+            other => panic!("expected an ai_error frame, got {other:?}"),
+        };
+        assert_eq!(
+            failure(
+                r#"{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused"}"#
+            ),
+            AiFailure::Refused
+        );
+        assert_eq!(
+            failure(r#"{"type": "ai_error", "chat_id": 42, "message_id": 1339}"#),
+            AiFailure::Failed
+        );
+        for unknown in [
+            r#""rate_limited""#,
+            r#""REFUSED""#,
+            r#""""#,
+            "null",
+            "7",
+            r#"{"code": "refused"}"#,
+            r#"["refused"]"#,
+        ] {
+            assert_eq!(
+                failure(&format!(
+                    r#"{{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": {unknown}}}"#
+                )),
+                AiFailure::Failed,
+                "reason {unknown} is not one this client knows"
+            );
+        }
     }
 
     /// Not JSON at all is a different thing from a frame this client does

@@ -45,13 +45,25 @@ pub fn mentions_assistant(body: &str) -> bool {
 /// highlight; the server only asks the question, but the clients mirroring
 /// this file need the position and must not answer it a second way.
 pub fn first_mention(body: &str) -> Option<(usize, usize)> {
+    mention_from(body, 0)
+}
+
+/// The byte range of the first `@ai` in `body` that starts at or after
+/// byte `from` — [`first_mention`]'s scan, resumable, so that walking every
+/// mention in a body judges each one against the WHOLE body's bytes. A scan
+/// restarted on a slice would see a slice's start as the body's start and
+/// call `x@ai` a mention once the `x` had been cut off.
+///
+/// `from` must be a char boundary; every caller passes 0 or the end of a
+/// mention this returned, and both are.
+fn mention_from(body: &str, from: usize) -> Option<(usize, usize)> {
     // The scan is over BYTES, and that is exact rather than a shortcut: a
     // UTF-8 continuation or lead byte is never an ASCII letter, digit or
     // `_`, so "the adjacent byte is not one of those" and "the adjacent
     // CHARACTER is not one of those" are the same statement. `@` and the
     // token are ASCII, so every index handled here is a char boundary.
     let bytes = body.as_bytes();
-    let mut index = 0usize;
+    let mut index = from;
     while let Some(offset) = body[index..].find('@') {
         let start = index + offset;
         let end = start + MENTION.len();
@@ -72,6 +84,39 @@ pub fn first_mention(body: &str) -> Option<(usize, usize)> {
         index = start + 1;
     }
     None
+}
+
+/// The body with every `@ai` taken out, trimmed — what the member SAID,
+/// once what they said it TO is removed.
+///
+/// For one caller: the text model's `draw_picture` prompt was refused, and
+/// the server falls back to the asker's own words, sent as `/draw` followed
+/// by them would have sent them (docs/protocol.md, "The member's own words,
+/// after a refused prompt"). No new grammar: each token is found by
+/// [`first_mention`]'s scan, under the same ASCII boundary rules, and taken
+/// out together with the whitespace after it — exactly what
+/// [`draw_prompt`] does to its one leading `@ai`, done to every one,
+/// because a member writes "hey @ai, draw a cat" as often as "@ai draw a
+/// cat" and the token is not a thing to draw either way.
+///
+/// What is NOT taken out is anything else: `@Anna` stays (it is a member's
+/// name, and the member wrote it), and so does punctuation that sat next to
+/// the token — "hey , draw a cat" is the member's words with one word gone,
+/// not a sentence the server rewrote.
+pub fn without_mentions(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut kept_from = 0usize;
+    let mut scan_from = 0usize;
+    while let Some((start, end)) = mention_from(body, scan_from) {
+        out.push_str(&body[kept_from..start]);
+        // The whitespace after the token goes with it; `end` is a boundary
+        // (the token is ASCII) and so is every index `trim_start` stops at.
+        let rest = &body[end..];
+        kept_from = end + (rest.len() - rest.trim_start().len());
+        scan_from = end;
+    }
+    out.push_str(&body[kept_from..]);
+    out.trim().to_string()
 }
 
 /// Does this body name a MEMBER — contain `@` followed by exactly `name`,
@@ -755,5 +800,37 @@ mod tests {
         let body = "Привет @ai";
         let (start, end) = first_mention(body).expect("mentioned");
         assert_eq!(&body[start..end], "@ai");
+    }
+
+    /// The member's own words after a refused `draw_picture` prompt: every
+    /// `@ai` the mention grammar finds, gone with the whitespace after it,
+    /// and nothing else touched.
+    #[test]
+    fn without_mentions_takes_out_every_token_and_only_the_tokens() {
+        for (body, words) in [
+            ("@ai draw a cat in a hat", "draw a cat in a hat"),
+            ("  @AI   draw a cat in a hat  ", "draw a cat in a hat"),
+            ("hey @ai draw a cat", "hey draw a cat"),
+            ("hey @ai, draw a cat", "hey , draw a cat"),
+            ("draw a cat @ai", "draw a cat"),
+            ("@ai draw a cat, @Ai", "draw a cat,"),
+            ("@ai\ndraw a cat", "draw a cat"),
+            ("нарисуй кота @aiв шляпе", "нарисуй кота в шляпе"),
+            ("@aiこんにちは", "こんにちは"),
+            // What the grammar says is NOT a mention stays exactly as typed.
+            ("@aiden draws a cat", "@aiden draws a cat"),
+            ("write to anna@ai.example", "write to anna@ai.example"),
+            ("@Anna wants a cat", "@Anna wants a cat"),
+            // `x@ai@ai`: neither token is at a boundary on the left in the
+            // WHOLE body, which a scan restarted on a slice would miss.
+            ("x@ai@ai cat", "x@ai@ai cat"),
+            ("@ai@ai cat", "@ai cat"),
+            // Nothing of the member's left.
+            ("@ai", ""),
+            ("  @ai  @AI ", ""),
+            ("", ""),
+        ] {
+            assert_eq!(without_mentions(body), words, "{body:?}");
+        }
     }
 }

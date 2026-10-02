@@ -60,6 +60,18 @@ internal static class Palette
             ? brush.Color
             : Accent();
 
+    /// <summary>
+    /// One of the theme's own brushes, or a plain colour when the key is not there. The indexer THROWS on a missing key,
+    /// and inside a click that is a view which silently stops drawing — so a brush read from code comes through here.
+    /// </summary>
+    public static Brush Themed(string key, byte alpha, byte red, byte green, byte blue) =>
+        Application.Current.Resources.TryGetValue(key, out var value) && value is Brush brush
+            ? brush
+            : new SolidColorBrush(Windows.UI.Color.FromArgb(alpha, red, green, blue));
+
+    /// <summary>The window's secondary text, for a caption beside something the app draws itself.</summary>
+    public static Brush SecondaryText() => Themed("TextFillColorSecondaryBrush", 0x9E, 0x80, 0x80, 0x80);
+
     /// <summary>One of the accent shades the app sets for itself, or the value it sets it to.</summary>
     private static Windows.UI.Color Shade(string key, byte red, byte green, byte blue) =>
         Application.Current.Resources.TryGetValue(key, out var value) && value is Windows.UI.Color colour

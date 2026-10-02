@@ -66,6 +66,13 @@ public static class AssistantText
     /// <summary>Does this body ask for a picture? Exactly when <see cref="DrawPrompt"/> answers one.</summary>
     public static bool AsksForPicture(string body) => Scan(body) is not null;
 
+    /// <summary>
+    /// Is this draft on its way to being a picture request? The token in place — first, past leading white space and ONE
+    /// leading <c>@ai</c> — and followed by white space, with the prompt perhaps not typed yet: <c>/draw </c> alone says
+    /// yes, where <see cref="AsksForPicture"/> says no until there is something to draw.
+    /// </summary>
+    public static bool BeginsPictureRequest(string draft) => DrawTokenIndex(draft) is not null;
+
     /// <summary>The <c>/draw</c> token as a UTF-8 byte range, exactly when <see cref="DrawPrompt"/> answers — both off one scan.</summary>
     public static (int Start, int End)? DrawTokenRange(string body)
     {
@@ -132,6 +139,17 @@ public static class AssistantText
 
     private static (int Index, string Prompt)? Scan(string body)
     {
+        if (DrawTokenIndex(body) is not { } index)
+        {
+            return null;
+        }
+        var prompt = body[(index + DrawToken.Length)..].Trim();
+        return prompt.Length > 0 ? (index, prompt) : null;
+    }
+
+    /// <summary>Where the <c>/draw</c> token starts, when it is the body's first thing and white space follows it.</summary>
+    private static int? DrawTokenIndex(string body)
+    {
         var index = SkippingWhiteSpace(body, 0);
         // ONE leading mention, and only a leading one: `look @ai /draw a cat` is an ordinary message.
         if (MentionAt(body, index))
@@ -149,8 +167,7 @@ public static class AssistantText
         {
             return null;
         }
-        var prompt = body[end..].Trim();
-        return prompt.Length > 0 ? (index, prompt) : null;
+        return index;
     }
 
     private static bool IsDrawToken(string body, int index)

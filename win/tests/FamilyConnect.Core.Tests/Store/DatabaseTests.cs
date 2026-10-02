@@ -38,9 +38,10 @@ public class DatabaseTests : IDisposable
     {
         using var database = Database.Open(Path_("fresh.db"));
         Assert.Equal(Database.SchemaVersion, database.UserVersion);
-        Assert.Equal(3, Database.SchemaVersion);
+        Assert.Equal(4, Database.SchemaVersion);
         Assert.Equal(
-            ["blocked", "chats", "gone", "members", "messages", "meta", "notes", "outbox"],
+            ["blocked", "chats", "gone", "members", "messages", "meta", "notes", "outbox",
+             "pack_gone", "pack_items", "pack_recents"],
             database.Tables());
     }
 
@@ -120,6 +121,45 @@ public class DatabaseTests : IDisposable
         Assert.NotNull(chats.Chat(42));
         Assert.Equal("Dinner at 7?", Assert.Single(new OutboxStore(migrated).All()).Body);
         Assert.Contains(migrated.Columns("messages"), column => column.StartsWith("sequenced", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// STEP 4 ADDS THE STICKER PACK AND READS NOTHING AGAIN. A version-3 cache keeps its messages, its
+    /// board and its outbox — and every send already queued in it is what it always was: not a sticker.
+    /// </summary>
+    [Fact]
+    public void AVersionThreeCacheGainsThePackAndLosesNothing()
+    {
+        var path = Path_("three.db");
+        using (var three = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}"))
+        {
+            three.Open();
+            foreach (var statement in Migrations.All[0].Concat(Migrations.All[1]).Concat(Migrations.All[2])
+                         .Append("INSERT INTO chats (chat_id, kind, title) VALUES (42, 'family', 'The Smiths')")
+                         .Append("INSERT INTO messages (message_id, chat_id, sender_id, body, created_at, sequenced) VALUES (20, 42, 9, 'hi', 0, 1)")
+                         .Append("INSERT INTO notes (note_id, author_id, text, board_seq) VALUES (1, 7, 'Milk', 5)")
+                         .Append("INSERT INTO outbox (client_msg_id, chat_id, body, queued_at) VALUES ('k', 42, 'Dinner at 7?', 0)")
+                         .Append("PRAGMA user_version = 3"))
+            {
+                using var command = three.CreateCommand();
+                command.CommandText = statement;
+                command.ExecuteNonQuery();
+            }
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+        using var migrated = Database.Open(path);
+        Assert.Equal(Database.SchemaVersion, migrated.UserVersion);
+        Assert.Equal("hi", Assert.Single(new ChatStore(migrated).Messages(42)).Body);
+        Assert.Equal("Milk", Assert.Single(new BoardStore(migrated).Notes()).Text);
+        var queued = Assert.Single(new OutboxStore(migrated).All());
+        Assert.Equal("Dinner at 7?", queued.Body);
+        Assert.False(queued.Sticker);
+        var pack = new PackStore(migrated);
+        Assert.Empty(pack.Items());
+        Assert.Equal(0, pack.Cursor);
+        // No ceilings are known yet, so no sticker button is offered until the server names them.
+        Assert.Null(pack.Limits);
     }
 
     /// <summary>

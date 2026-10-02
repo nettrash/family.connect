@@ -31,7 +31,8 @@ public sealed class Resync(
     ApiClient api,
     ChatStore chats,
     BoardStore board,
-    SendPipeline? sending = null)
+    SendPipeline? sending = null,
+    PackStore? pack = null)
 {
     /// <summary>How many rows a catch-up page asks for. The server's own default.</summary>
     public const int PageSize = 50;
@@ -49,6 +50,10 @@ public sealed class Resync(
     /// </summary>
     public void Snapshot()
     {
+        // The pack's cursor is held still the other way round: rather than being copied out, it
+        // simply may not be moved by a frame until a pass that BEGAN after this has caught up — a
+        // pass already in flight read its answers before this connection was listening.
+        pack?.Reconnected();
         var now = chats.CatchUpCursors();
         lock (snapshotGate)
         {
@@ -91,6 +96,8 @@ public sealed class Resync(
         int Edits = 0,
         int Polls = 0,
         int Notes = 0,
+        /// <summary>Items of the sticker pack read or caught up on, tombstones included.</summary>
+        int PackItems = 0,
         /// <summary>
         /// The assistant this family advertises, or null where it has none. Carried OUT of the
         /// pass because `/families/mine` is the only read that names it and this is the only
@@ -144,6 +151,12 @@ public sealed class Resync(
     {
         var report = new Report();
 
+        // Which connection this pass is beginning on, before its first request: the pack may only
+        // be called caught up with THAT one. A socket that reopens while the pass is waiting makes
+        // everything the pass has already read older than the new connection, and its word on the
+        // pack is then dropped (PackStore.CaughtUp) — the pass that connection started says it.
+        var began = pack?.Connection ?? 0;
+
         // FIRST, and unconditionally: it costs one request per queued message, it is idempotent,
         // and an early flush is never wrong.
         if (sending is not null)
@@ -169,6 +182,8 @@ public sealed class Resync(
         // join policy, the cap and the family's language raise no frame at all, or one a sleeping
         // client did not get.
         long? boardMark = null;
+        long? packMark = null;
+        var hasPacks = false;
         if (me.Value.Family is not null)
         {
             var family = await api.Family(ct).ConfigureAwait(false);
@@ -187,6 +202,14 @@ public sealed class Resync(
                 chats.ReplaceBlocked(blocked);
             }
             boardMark = family.Value.MaxBoardSeq;
+            packMark = family.Value.MaxPackSeq;
+            // The two ceilings are ALWAYS there on a server that has packs, so their absence is
+            // an older server — and is written down as that, because a ceiling remembered from
+            // before a downgrade would offer a sticker button that leads to a 404.
+            hasPacks = family.Value is { MaxPackItems: not null, MaxPackItemBytes: not null };
+            pack?.SetLimits(family.Value is { MaxPackItems: { } items, MaxPackItemBytes: { } bytes }
+                ? new PackLimits(items, bytes)
+                : null);
             report = report with { Assistant = family.Value.Assistant };
         }
 
@@ -223,6 +246,17 @@ public sealed class Resync(
         {
             var notes = await BoardAsync(boardMark, ct).ConfigureAwait(false);
             report = report with { Notes = notes.Notes, Stopped = notes.Stopped };
+            if (notes.Stopped is not null)
+            {
+                return report;
+            }
+        }
+
+        // The sticker pack, where this server has one: the board's catch-up, one table over.
+        if (me.Value.Family is not null && pack is not null && hasPacks)
+        {
+            var items = await PackAsync(pack, packMark, began, ct).ConfigureAwait(false);
+            report = report with { PackItems = items.PackItems, Stopped = items.Stopped };
         }
         return report;
     }
@@ -444,6 +478,76 @@ public sealed class Resync(
                 break;
             }
         }
+        return report;
+    }
+
+    /// <summary>
+    /// The family's sticker pack: the WHOLE of it when this device holds none, the change feed
+    /// from where it left off otherwise (docs/protocol.md, "Sticker pack") — the board's rules,
+    /// which is the point of the design: no client learns a new sync idea.
+    /// </summary>
+    /// <remarks>
+    /// The cursor is the STORE's and is read from it on every turn of the loop, which is safe here
+    /// for a reason the message loop does not have: a <c>pack_item</c> frame may not move it until
+    /// this method says the connection has caught up, so nothing can step it past what was missed.
+    /// And it says so only for the connection the pass BEGAN on (<paramref name="began"/>): the
+    /// mark and the pages below were all read after that connection opened, and none of them is
+    /// known to be newer than a connection that opened since.
+    /// </remarks>
+    private async Task<Report> PackAsync(PackStore pack, long? mark, long began, CancellationToken ct)
+    {
+        var report = new Report();
+        // `max_pack_seq` is ABSENT while the pack is empty and untouched: there is nothing to
+        // read, so nothing is asked for. Checked against what is HELD as well — a pack this device
+        // holds items for cannot be one nobody has ever touched, and if the two disagree, reading
+        // wins.
+        if (mark is null && pack.Count() == 0)
+        {
+            pack.CaughtUp(began);
+            return report;
+        }
+        if (mark is not null && pack.Cursor != 0 && mark <= pack.Cursor)
+        {
+            // Level with the server: every change there has been is applied here.
+            pack.CaughtUp(began);
+            return report;
+        }
+        if (pack.Cursor == 0)
+        {
+            var whole = await api.Pack(ct).ConfigureAwait(false);
+            if (!whole.Ok || whole.Value is null)
+            {
+                return report with { Stopped = whole.Error };
+            }
+            var items = whole.Value.Items ?? [];
+            pack.Replace(items, whole.Value.MaxPackSeq);
+            pack.CaughtUp(began);
+            return report with { PackItems = items.Length };
+        }
+        while (true)
+        {
+            var was = pack.Cursor;
+            var page = await api.PackChanges(was, PageSize, ct).ConfigureAwait(false);
+            if (!page.Ok || page.Value is null)
+            {
+                return report with { Stopped = page.Error };
+            }
+            var items = page.Value.Items ?? [];
+            if (items.Length == 0)
+            {
+                break;
+            }
+            // The store advances the cursor as it applies: the feed INCLUDES tombstones, and a
+            // removal moves the seq like anything else.
+            pack.Apply(items);
+            report = report with { PackItems = report.PackItems + items.Length };
+            // A cursor that cannot move ends the loop, as it does for every other feed here.
+            if (pack.Cursor <= was || items.Length < PageSize)
+            {
+                break;
+            }
+        }
+        pack.CaughtUp(began);
         return report;
     }
 }

@@ -342,6 +342,18 @@ pub struct AiConfig {
     #[serde(default = "default_ai_max_tokens")]
     pub max_tokens: u32,
 
+    /// How long ONE call to the provider may take, start to last byte, in
+    /// seconds — a text answer streaming, a picture being drawn, a picture
+    /// being fetched. 180 by default, which is what it was when it was a
+    /// constant: a large model streaming a long answer is slow by nature,
+    /// and cutting it off mid-sentence is worse than waiting. An operator
+    /// whose image deployment is slower than that raises it here; one who
+    /// would rather a stuck call gave up sooner lowers it. At least 10 —
+    /// below that every answer fails and the setting is a way to switch the
+    /// assistant off that does not say so.
+    #[serde(default = "default_ai_timeout_secs")]
+    pub timeout_secs: u64,
+
     /// How many earlier messages of that member's OWN assistant chat go
     /// with a question. Nothing else is ever included — not the family
     /// chat, not another member's thread (protocol.md).
@@ -535,6 +547,7 @@ impl Default for AiConfig {
             api_version: default_ai_api_version(),
             system_prompt: default_ai_system_prompt(),
             max_tokens: default_ai_max_tokens(),
+            timeout_secs: default_ai_timeout_secs(),
             history_messages: default_ai_history_messages(),
             title: default_ai_title(),
             vision: AiDeployment::default(),
@@ -592,6 +605,10 @@ fn default_ai_system_prompt() -> String {
 
 fn default_ai_max_tokens() -> u32 {
     1024
+}
+
+fn default_ai_timeout_secs() -> u64 {
+    180
 }
 
 fn default_ai_history_messages() -> i64 {
@@ -1025,6 +1042,26 @@ pub struct LimitsConfig {
     #[serde(default = "default_max_task_items")]
     pub max_task_items: i64,
 
+    /// Most stickers one family's pack may hold at once (tombstones
+    /// excluded). "Bigger than usual" was the ask, so the default is
+    /// generous; it is still a ceiling, because a panel nobody can scroll
+    /// to the end of is not a pack (protocol.md, "Sticker pack" — the chat
+    /// kind, not a board note).
+    ///
+    /// Lowering it removes nothing from a family already over it: their
+    /// pack is frozen until they remove some.
+    #[serde(default = "default_max_pack_items")]
+    pub max_pack_items: i64,
+
+    /// Largest single sticker, in bytes — a pack item's picture, and the
+    /// one attachment of a sticker message. 512 KiB by default: room for a
+    /// few seconds of animated WebP, and twice the profile-picture
+    /// ceiling. Checked when the picture is CLAIMED, because the upload
+    /// itself does not know what it will become. The 512 x 512 pixel rule
+    /// is the clients' — this server never decodes an image.
+    #[serde(default = "default_max_pack_item_bytes")]
+    pub max_pack_item_bytes: usize,
+
     /// The CEILING on what a family owner may set as their own
     /// `max_members`, and the cap that binds at the join door for a family
     /// that has set none. It is an operator's runaway guard, in the sense
@@ -1300,6 +1337,8 @@ impl Default for LimitsConfig {
             max_poll_option_chars: default_max_poll_option_chars(),
             max_board_notes: default_max_board_notes(),
             max_task_items: default_max_task_items(),
+            max_pack_items: default_max_pack_items(),
+            max_pack_item_bytes: default_max_pack_item_bytes(),
             max_family_members: default_max_family_members(),
             max_attachment_bytes: default_max_attachment_bytes(),
             max_attachments_per_message: default_max_attachments_per_message(),
@@ -1348,6 +1387,7 @@ const AI_KEYS: &[&str] = &[
     "api_version",
     "system_prompt",
     "max_tokens",
+    "timeout_secs",
     "history_messages",
     "title",
     "vision",
@@ -1546,6 +1586,27 @@ impl Config {
         if self.limits.max_family_members < 1 {
             anyhow::bail!("limits.max_family_members must be at least 1");
         }
+        // Zero is not "stickers off": it is a pack that answers `pack_full`
+        // to the first sticker anybody adds, under a button every client
+        // still shows. There is no off switch, and a ceiling of 0 must not
+        // pretend to be one.
+        if self.limits.max_pack_items < 1 {
+            anyhow::bail!("limits.max_pack_items must be at least 1");
+        }
+        // A sticker goes up through `POST /attachments` like any photo, so
+        // a per-item ceiling above the attachment ceiling could never be
+        // reached — and an operator who wrote one believes something about
+        // their server that is not true.
+        if self.limits.max_pack_item_bytes < 1
+            || self.limits.max_pack_item_bytes > self.limits.max_attachment_bytes
+        {
+            anyhow::bail!(
+                "limits.max_pack_item_bytes ({}) must be between 1 and \
+                 limits.max_attachment_bytes ({}) — a sticker is uploaded as an attachment",
+                self.limits.max_pack_item_bytes,
+                self.limits.max_attachment_bytes
+            );
+        }
         if self.limits.default_page_size < 1 {
             anyhow::bail!("limits.default_page_size must be at least 1");
         }
@@ -1607,6 +1668,12 @@ impl Config {
         }
         // Calls. Validated whether or not they are enabled: a section that
         // is wrong is wrong before somebody flips the switch.
+        if self.ai.timeout_secs < 10 {
+            anyhow::bail!(
+                "ai.timeout_secs must be at least 10 — below that every answer fails, \
+                 and `[ai] enabled = false` is the honest way to switch the assistant off"
+            );
+        }
         if self.calls.ring_timeout_secs < 5 {
             anyhow::bail!(
                 "calls.ring_timeout_secs must be at least 5 — a phone cannot be picked up faster"
@@ -1711,6 +1778,16 @@ fn default_max_board_notes() -> i64 {
 
 fn default_max_task_items() -> i64 {
     20
+}
+
+/// protocol.md's Limits table: 200 stickers in one family's pack.
+fn default_max_pack_items() -> i64 {
+    200
+}
+
+/// protocol.md's Limits table: 512 KiB for one sticker.
+fn default_max_pack_item_bytes() -> usize {
+    512 * 1024
 }
 
 fn default_max_family_members() -> i64 {
@@ -2017,6 +2094,8 @@ deployment = "draws"
                 "enabled" => "true".to_string(),
                 "auth" => "\"bearer\"".to_string(),
                 "max_tokens" | "history_messages" => "7".to_string(),
+                // Its own floor is 10 (`validate`), so the sweep's 7 would be refused.
+                "timeout_secs" => "60".to_string(),
                 _ => format!("\"{key}\""),
             };
             raw.push_str(&format!("{key} = {value}\n"));
@@ -2548,6 +2627,18 @@ height = 1024
         assert!(format!("{err:#}").contains("server.bind"));
     }
 
+    /// The provider timeout is the operator's: 180 by default — what it was
+    /// as a constant — settable, and refused below 10, where every answer
+    /// would fail and the setting would be a quiet off switch.
+    #[test]
+    fn the_provider_timeout_is_configurable_and_bounded() {
+        assert_eq!(Config::default().ai.timeout_secs, 180);
+        let cfg = Config::from_toml_str("[ai]\ntimeout_secs = 300\n").unwrap();
+        assert_eq!(cfg.ai.timeout_secs, 300);
+        let err = Config::from_toml_str("[ai]\ntimeout_secs = 5\n").unwrap_err();
+        assert!(format!("{err:#}").contains("ai.timeout_secs"));
+    }
+
     #[test]
     fn validate_rejects_an_idle_timeout_not_exceeding_the_ping_interval() {
         let err = Config::from_toml_str(
@@ -2724,5 +2815,40 @@ height = 1024
                 "expected rejection for {body:?}"
             );
         }
+    }
+
+    /// The sticker pack's two ceilings (protocol.md's Limits table): the
+    /// defaults are the numbers the protocol states, zero is not an off
+    /// switch, and one sticker may not be larger than one attachment —
+    /// which is what it is uploaded as.
+    #[test]
+    fn the_sticker_pack_limits_default_and_are_held_to_the_attachment_ceiling() {
+        let cfg = Config::from_toml_str("").expect("defaults validate");
+        assert_eq!(cfg.limits.max_pack_items, 200);
+        assert_eq!(cfg.limits.max_pack_item_bytes, 512 * 1024);
+
+        let cfg = Config::from_toml_str(
+            "[limits]\nmax_pack_items = 1000\nmax_pack_item_bytes = 1048576\n",
+        )
+        .expect("an operator may raise both");
+        assert_eq!(cfg.limits.max_pack_items, 1000);
+        assert_eq!(cfg.limits.max_pack_item_bytes, 1024 * 1024);
+
+        for body in [
+            "[limits]\nmax_pack_items = 0\n",
+            "[limits]\nmax_pack_item_bytes = 0\n",
+            // Above the attachment ceiling a sticker could never be uploaded.
+            "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 65537\n",
+        ] {
+            assert!(
+                Config::from_toml_str(body).is_err(),
+                "expected rejection for {body:?}"
+            );
+        }
+        // Exactly at it is fine.
+        Config::from_toml_str(
+            "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 65536\n",
+        )
+        .expect("the two ceilings may be equal");
     }
 }

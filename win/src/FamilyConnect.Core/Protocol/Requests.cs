@@ -17,7 +17,13 @@ public sealed record SendRequest(
     [property: JsonPropertyName("reply_to_message_id")] long? ReplyToMessageId = null,
     [property: JsonPropertyName("attachment_ids")] long[]? AttachmentIds = null,
     PollRequest? Poll = null,
-    MentionDto[]? Mentions = null);
+    MentionDto[]? Mentions = null,
+    /// <summary>
+    /// <c>true</c> sends the message's one attachment as a STICKER (docs/protocol.md, "Sending
+    /// one"). Absent otherwise — never <c>false</c>, which is why it is nullable: an ordinary
+    /// message must go to a server that predates stickers exactly as it always went.
+    /// </summary>
+    bool? Sticker = null);
 
 public sealed record PollRequest(string[] Options);
 
@@ -93,6 +99,20 @@ public sealed record BoardResponse(
     [property: JsonPropertyName("max_board_seq")] long MaxBoardSeq);
 
 public sealed record BoardChangesResponse(NoteDto[]? Notes);
+
+/// <summary>
+/// <c>GET /families/mine/pack</c>: the WHOLE pack as it now stands, tombstones excluded, in the
+/// order the items were added. <c>max_pack_seq</c> is read before the items, so it is a promise:
+/// every change at or below it is in the items that came with it.
+/// </summary>
+public sealed record PackResponse(
+    PackItemDto[]? Items,
+    [property: JsonPropertyName("max_pack_seq")] long MaxPackSeq);
+
+/// <summary>A page of the pack's catch-up, oldest sequence first, tombstones INCLUDED.</summary>
+public sealed record PackChangesResponse(PackItemDto[]? Items);
+
+public sealed record PackItemResponse(PackItemDto Item);
 
 public sealed record MessagesResponse(MessageDto[]? Messages);
 
@@ -225,6 +245,19 @@ public sealed record FamilyResponse(
     /// catch-up is worth a request at all.
     /// </summary>
     [property: JsonPropertyName("max_board_seq")] long? MaxBoardSeq = null,
+    /// <summary>
+    /// The sticker pack's high-water mark, the board's mark one table over: ABSENT while the pack
+    /// is empty and untouched, and never lower than it was.
+    /// </summary>
+    [property: JsonPropertyName("max_pack_seq")] long? MaxPackSeq = null,
+    /// <summary>
+    /// The pack's two ceilings. ALWAYS present on a server that has packs — so their ABSENCE is
+    /// how a client knows this server predates them, and offers no sticker button and no pack
+    /// management rather than discovering a 404 when somebody taps one (docs/protocol.md, "What
+    /// old clients and old servers do").
+    /// </summary>
+    [property: JsonPropertyName("max_pack_items")] int? MaxPackItems = null,
+    [property: JsonPropertyName("max_pack_item_bytes")] long? MaxPackItemBytes = null,
     /// <summary>
     /// Who would inherit the family if the owner left RIGHT NOW — the owner's answer only, and a
     /// PREDICTION with no frame of its own. Any join or leave changes it, so it is re-read

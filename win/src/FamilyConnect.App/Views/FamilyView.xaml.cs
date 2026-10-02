@@ -3,6 +3,7 @@ using FamilyConnect.App.Logic;
 using FamilyConnect.App.Services;
 using FamilyConnect.Core;
 using FamilyConnect.Core.Protocol;
+using FamilyConnect.Core.Store;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
@@ -10,6 +11,9 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage;
+using Windows.Storage.Pickers;
+using Windows.Storage.Streams;
 using static FamilyConnect.App.Views.Dialogs;
 
 namespace FamilyConnect.App.Views;
@@ -45,6 +49,15 @@ public sealed partial class FamilyView : UserControl
     private readonly Action<SessionState> onSession;
     private readonly Action<Resync.Report> onResync;
     private readonly Dictionary<string, BitmapImage> faces = [];
+
+    /// <summary>
+    /// The family's CHAT stickers (docs/protocol.md, "Sticker pack") — not the board's cards: the pack, what has been
+    /// decoded of it, and whether an add or a removal is under way.
+    /// </summary>
+    private readonly PackModel pack;
+    private readonly Action<PackItemDto> onPack;
+    private readonly Dictionary<long, StickerPicture?> stickerThumbs = [];
+    private bool changingPack;
     private IReadOnlyList<JoinRequestDto> requests = [];
     private IReadOnlyList<ReportDto> reports = [];
     private bool busy;
@@ -64,8 +77,14 @@ public sealed partial class FamilyView : UserControl
         this.connection = connection;
         this.openChat = openChat;
         family = new FamilyModel(connection.Api, connection.Chats);
+        pack = connection.Stickers;
         InitializeComponent();
         var say = services.Say;
+
+        StickersHeading.Text = say.Get("Family Stickers");
+        AddStickerButton.Content = say.Get("Add a sticker");
+        StickersFootnote.Text = say.Get("Pictures everyone in the family can send as stickers in a chat.");
+        AddStickerButton.Click += (_, _) => _ = AddStickersAsync();
 
         Heading.Text = say.Get("Family");
         DoneButton.Content = say.Get("Done");
@@ -167,13 +186,33 @@ public sealed partial class FamilyView : UserControl
         onRoster = QueueRedraw;
         onBlock = (_, _) => QueueRedraw();
         onSession = _ => QueueRedraw();
-        onResync = report => DispatcherQueue.TryEnqueue(() => _ = LoadOwnerListsAsync());
+        onResync = report => DispatcherQueue.TryEnqueue(() =>
+        {
+            _ = LoadOwnerListsAsync();
+            // The pass is what reads the pack and its ceilings, and a member's screen has no owner lists to redraw it.
+            if (!connection.Session.State.IsOwner)
+            {
+                Draw();
+            }
+        });
+        // A pack frame reaches everybody in the family, the one who caused it included — and it is never filtered by a
+        // block: an item is a picture the family keeps, not something a person said.
+        onPack = item =>
+        {
+            if (item.Deleted)
+            {
+                DispatcherQueue.TryEnqueue(() => stickerThumbs.Remove(item.Id));
+            }
+            QueueRedraw();
+        };
+        connection.Router.PackChanged += onPack;
         connection.Router.RosterChanged += onRoster;
         connection.Router.BlockChanged += onBlock;
         connection.Session.Changed += onSession;
         connection.Live.Resynced += onResync;
         Unloaded += (_, _) =>
         {
+            connection.Router.PackChanged -= onPack;
             connection.Router.RosterChanged -= onRoster;
             connection.Router.BlockChanged -= onBlock;
             connection.Session.Changed -= onSession;
@@ -232,6 +271,7 @@ public sealed partial class FamilyView : UserControl
             }
             MembersList.Children.Add(MemberRow(member, me.Id, owner));
         }
+        DrawStickers(owner);
         Arrange(ActualWidth);
     }
 
@@ -247,6 +287,12 @@ public sealed partial class FamilyView : UserControl
     {
         // 520 is what a member's row needs for a name, a username and its three controls without folding the username in two.
         var side = connection.Session.State.IsOwner && width >= 1280;
+        // How many stickers fit across their card. Set and never rebuilt: nothing is redrawn inside a size change.
+        var across = width >= 760 ? 6 : 4;
+        if (StickersGrid.MaximumRowsOrColumns != across)
+        {
+            StickersGrid.MaximumRowsOrColumns = across;
+        }
         if (sideBySide == side)
         {
             return;
@@ -265,6 +311,318 @@ public sealed partial class FamilyView : UserControl
         Margin = new Thickness(20, 0, 20, 0),
         Background = (Brush)Application.Current.Resources["DividerStrokeColorDefaultBrush"],
     };
+
+    // ---- the family's stickers -----------------------------------------------------------------
+    //
+    // The CHAT sticker's pack (docs/protocol.md, "Sticker pack"). Pack management lives here, on the family's screen,
+    // because the pack is the family's — like the board, and unlike a message.
+
+    /// <summary>
+    /// The pack as a grid, in the order it was added: how full it is, a way to add, and on each item this reader may
+    /// remove, a way to remove it. On a server that predates packs the card is not drawn at all.
+    /// </summary>
+    private void DrawStickers(bool owner)
+    {
+        var say = services.Say;
+        if (pack.Limits is not { } limits)
+        {
+            StickersSection.Visibility = Visibility.Collapsed;
+            return;
+        }
+        StickersSection.Visibility = Visibility.Visible;
+        var items = pack.Items();
+        StickersCount.Text = PackText.Fullness(items.Count, limits, say);
+        AddStickerButton.IsEnabled = !changingPack;
+        StickersGrid.Children.Clear();
+        StickersGrid.ItemWidth = StickerLook.ManageCell;
+        StickersGrid.ItemHeight = StickerLook.ManageCell;
+        StickersGrid.Visibility = items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var item in items)
+        {
+            // A blocked member's items are drawn like anybody's: a block hides what a person SAID, and a pack item is
+            // a picture the family keeps.
+            StickersGrid.Children.Add(StickerCell(item, pack.MayRemove(item, owner)));
+        }
+    }
+
+    private Grid StickerCell(PackItemDto item, bool mayRemove)
+    {
+        var say = services.Say;
+        var cell = new Grid { Width = StickerLook.ManageCell, Height = StickerLook.ManageCell };
+        var image = new Image { Stretch = Stretch.Uniform, Margin = new Thickness(8) };
+        // The few words whoever added it gave, for a screen reader — never drawn over the picture.
+        AutomationProperties.SetName(image, PackText.Name(item, say));
+        if (item.Label is { Length: > 0 } label)
+        {
+            ToolTipService.SetToolTip(image, label);
+        }
+        // Until the picture lands — and for good where nothing on this machine decodes it (WebP without its extension)
+        // — the cell says what it holds, as a sticker in a conversation does: a square with nothing in it but a remove
+        // button is a thing nobody can decide about.
+        var word = new TextBlock
+        {
+            Text = item.Label is { Length: > 0 } given ? given : say.Get("Sticker"),
+            FontSize = 11,
+            Opacity = 0.6,
+            Margin = new Thickness(8),
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 3,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        cell.Children.Add(word);
+        cell.Children.Add(image);
+        _ = ShowStickerAsync(image, word, item);
+        if (mayRemove)
+        {
+            // Whoever added it, or the family's owner. Anybody else is not shown a control the server would refuse.
+            var remove = new Button
+            {
+                Content = "✕",
+                FontSize = 10,
+                Padding = new Thickness(5, 1, 5, 2),
+                MinWidth = 0,
+                MinHeight = 0,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Top,
+                IsEnabled = !changingPack,
+            };
+            ToolTipService.SetToolTip(remove, say.Get("Remove sticker"));
+            AutomationProperties.SetName(remove, say.Get("Remove sticker"));
+            var id = item.Id;
+            remove.Click += (_, _) => _ = RemoveStickerAsync(id);
+            cell.Children.Add(remove);
+        }
+        return cell;
+    }
+
+    /// <summary>A pack item's picture: its ORIGINAL bytes, whatever <c>has_preview</c> says, drawn still.</summary>
+    private async Task ShowStickerAsync(Image image, TextBlock word, PackItemDto item)
+    {
+        try
+        {
+            if (!stickerThumbs.TryGetValue(item.Id, out var decoded))
+            {
+                var (bytes, error) = await pack.BytesAsync(item);
+                if (bytes is null)
+                {
+                    if (error is not null)
+                    {
+                        Diagnostics.Write($"a pack item: {error.Code} {error.Status}");
+                    }
+                    return;
+                }
+                var scale = XamlRoot?.RasterizationScale ?? 1;
+                decoded = await StickerImaging.DecodeAsync(bytes, StickerLook.ManageCell, scale, animate: false);
+                // A null is kept: this grid is redrawn on every frame about the family, and a codec that is not there
+                // is still not there.
+                stickerThumbs[item.Id] = decoded;
+            }
+            if (decoded is null)
+            {
+                // The word stays: it is what says a sticker is here.
+                return;
+            }
+            image.Source = decoded.First;
+            word.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a pack item: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// Add stickers: any still picture this machine decodes, chosen from disk. A WebP or PNG within the byte ceiling goes
+    /// up AS IT IS; anything else is fitted whole into 512 × 512 and written as PNG, transparency kept — never through the
+    /// photo path, which would redraw it on white as JPEG. An animated picture that is not a WebP is refused in words,
+    /// never flattened; and each one is offered a label before it goes (<see cref="PackPicking"/>).
+    /// </summary>
+    private async Task AddStickersAsync()
+    {
+        if (changingPack || pack.Limits is not { } limits)
+        {
+            return;
+        }
+        var say = services.Say;
+        StickersError.Visibility = Visibility.Collapsed;
+        StickersNotice.Visibility = Visibility.Collapsed;
+        if (pack.IsFull)
+        {
+            // Said before a picture is even chosen: the ceiling is the family's.
+            ShowProblem(StickersError, PackText.Sentence(new ApiError(ErrorCodes.PackFull, "the pack is at its ceiling"), say));
+            return;
+        }
+        IReadOnlyList<StorageFile> files;
+        try
+        {
+            var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.PicturesLibrary, ViewMode = PickerViewMode.Thumbnail };
+            // What Windows Imaging reads. Whether it reads THIS file is the decoder's to say (HEIC and WebP are Store
+            // extensions): one it cannot is answered "Couldn't read that file.", not left out of the picker.
+            foreach (var extension in StickerFileTypes)
+            {
+                picker.FileTypeFilter.Add(extension);
+            }
+            // A desktop app must name the window that owns the picker, or it throws.
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, services.WindowHandle);
+            files = await picker.PickMultipleFilesAsync();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"picking stickers: {e.GetType().Name}");
+            ShowProblem(StickersError, say.Get("Something went wrong. Try again."));
+            return;
+        }
+        if (files.Count == 0)
+        {
+            return;
+        }
+        changingPack = true;
+        Draw();
+        string? problem = null;
+        PackAdded? last = null;
+        try
+        {
+            foreach (var file in files)
+            {
+                var (added, error) = await AddStickerAsync(file, limits);
+                if (error is not null)
+                {
+                    problem = error;
+                    // A full pack refuses every one after it too.
+                    if (pack.IsFull)
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                last = added ?? last;
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"adding stickers: {e.GetType().Name}");
+            problem = say.Get("Something went wrong. Try again.");
+        }
+        finally
+        {
+            changingPack = false;
+        }
+        Draw();
+        if (problem is not null)
+        {
+            ShowProblem(StickersError, problem);
+        }
+        else if (last is { } outcome)
+        {
+            StickersNotice.Text = PackText.Sentence(outcome, say);
+            StickersNotice.Visibility = Visibility.Visible;
+        }
+    }
+
+    /// <summary>The still pictures somebody may make a sticker of: the two a sticker IS, and what Windows Imaging decodes besides.</summary>
+    private static readonly string[] StickerFileTypes =
+        [".webp", ".png", ".jpg", ".jpeg", ".heic", ".heif", ".gif", ".bmp", ".tif", ".tiff"];
+
+    /// <summary>One chosen file: what it came to, or the sentence that says why not. Null for both when its label was cancelled.</summary>
+    private async Task<(PackAdded? Added, string? Problem)> AddStickerAsync(StorageFile file, PackLimits limits)
+    {
+        var say = services.Say;
+        byte[] bytes;
+        try
+        {
+            var properties = await file.GetBasicPropertiesAsync();
+            // Nothing this large is a sticker, shrunk or not: refused before it is read into memory.
+            if (properties.Size > (ulong)MediaPrep.SizeLimit)
+            {
+                return (null, PackText.Sentence(new ApiError(ErrorCodes.PackItemTooLarge, "far over the ceiling"), say));
+            }
+            var buffer = await FileIO.ReadBufferAsync(file);
+            bytes = new byte[buffer.Length];
+            using var reader = DataReader.FromBuffer(buffer);
+            reader.ReadBytes(bytes);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a sticker file: {e.GetType().Name}");
+            return (null, say.Get("Couldn't read that file."));
+        }
+        var plan = PackPicking.For(bytes, limits, pack.Items().Count);
+        if (plan.What == PackPicking.Step.Refuse)
+        {
+            return (null, PackText.Sentence(plan.Refused ?? ApiError.Transport("refused"), say));
+        }
+        if (plan.What == PackPicking.Step.Make)
+        {
+            // THIS client's 512 × 512 rule, for a picture it is MAKING a sticker of. A finished sticker within the
+            // ceiling never comes here, and an animated one never can.
+            var made = await StickerImaging.MakeAsync(bytes);
+            if (made.Animated)
+            {
+                return (null, PackText.Sentence(PackPicking.Animated, say));
+            }
+            if (made.Bytes is not { } fitted)
+            {
+                return (null, say.Get("Couldn't read that file."));
+            }
+            bytes = fitted;
+            // Asked again, as the bytes it now is: a picture can come out of the box still over the ceiling.
+            if (PackPicking.Refusal(bytes, limits, pack.Items().Count) is { } refused)
+            {
+                return (null, PackText.Sentence(refused, say));
+            }
+        }
+        // The few words it may be given — asked once the picture is known to be one the pack will take, and before
+        // anything is uploaded. Cancel leaves this picture out and goes on to the next.
+        var (add, label) = await StickerLabelAsync(XamlRoot, say, file.Name);
+        if (!add)
+        {
+            return (null, null);
+        }
+        var (added, error) = await pack.AddAsync(bytes, label);
+        return error is null ? (added, null) : (null, PackText.Sentence(error, say));
+    }
+
+    /// <summary>Take one out — asked about first, because its picture goes with it and cannot be brought back from here.</summary>
+    private async Task RemoveStickerAsync(long itemId)
+    {
+        if (changingPack)
+        {
+            return;
+        }
+        var say = services.Say;
+        StickersError.Visibility = Visibility.Collapsed;
+        StickersNotice.Visibility = Visibility.Collapsed;
+        ApiError? error = null;
+        try
+        {
+            if (!await ConfirmAsync(
+                    XamlRoot, say, say.Get("Remove this sticker?"),
+                    say.Get("It leaves everyone's sticker panel. Stickers already sent stay in the chat."), say.Get("Remove")))
+            {
+                return;
+            }
+            changingPack = true;
+            error = await pack.RemoveAsync(itemId);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"removing a sticker: {e.GetType().Name}");
+            error = ApiError.Transport(e.GetType().Name);
+        }
+        finally
+        {
+            changingPack = false;
+        }
+        stickerThumbs.Remove(itemId);
+        Draw();
+        if (error is not null)
+        {
+            ShowProblem(StickersError, PackText.Sentence(error, say));
+        }
+    }
 
     // ---- members -------------------------------------------------------------------------------
 

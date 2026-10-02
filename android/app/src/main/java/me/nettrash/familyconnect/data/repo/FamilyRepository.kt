@@ -291,6 +291,12 @@ class FamilyRepository @Inject constructor(
                 memberDao.markLeftExcept(roster.map { it.userId })
             }
             settings.setFamilyName(result.value.family.name)
+            // The sticker pack's two ceilings — and, by their ABSENCE, the
+            // news that this server predates packs. Unconditional, null
+            // included: it is the whole capability check, so a server that
+            // stops saying it must take the sticker button away again
+            // (docs/protocol.md, "Sticker pack").
+            settings.setPackLimits(result.value.maxPackItems, result.value.maxPackItemBytes)
             // The assistant is NOT upserted as a member — it belongs to no
             // family, so it appears in no roster. Kept aside purely so the
             // family chat can put a name on its messages and the composer

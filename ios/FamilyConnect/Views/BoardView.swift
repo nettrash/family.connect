@@ -716,10 +716,21 @@ private struct NoteEditor: View {
     /// Ask the assistant for a backdrop — the AUTHOR's. Answers with the
     /// picture's id, so the sheet can stop saying "Drawing…" AND draw what
     /// arrived: a redraw replaces the picture with a new attachment, and
-    /// this sheet holds the note as it was when it opened.
-    var onDrawBackdrop: (Int64) async -> Int64? = { _ in nil }
+    /// this sheet holds the note as it was when it opened. A refusal by
+    /// the provider's own filter comes back as its own outcome, so the
+    /// sheet can say so (protocol.md, "Board").
+    var onDrawBackdrop: (Int64) async -> BackdropOutcome = { _ in .failed }
 
     @Environment(\.dismiss) private var dismiss
+    /// Whether the author has agreed that their words may go to the model:
+    /// the backdrop is drawn from the title, so it is asked first, exactly
+    /// as the composer asks before a `/draw` (docs/protocol.md,
+    /// "Consenting to the assistant").
+    @Environment(AppSession.self) private var session
+    /// The consent question, and the backdrop waiting on its answer — the
+    /// composer's own pair (`ConversationView`).
+    @State private var showAssistantConsent = false
+    @State private var afterAssistantConsent: (() -> Void)?
 
     /// The names this reader cannot open a chat with: whoever the STRIP
     /// would offer for a bare `@` is whoever a name may open.
@@ -773,7 +784,7 @@ private struct NoteEditor: View {
         mentionCandidates: @escaping (String) -> [MentionDTO] = { _ in [] },
         names: @escaping (Int64) -> String = { _ in "" },
         canDraw: Bool = false,
-        onDrawBackdrop: @escaping (Int64) async -> Int64? = { _ in nil }
+        onDrawBackdrop: @escaping (Int64) async -> BackdropOutcome = { _ in .failed }
     ) {
         self.draft = draft
         self.canEdit = canEdit
@@ -808,6 +819,16 @@ private struct NoteEditor: View {
 
     private var isEvent: Bool { draft.kind == .event }
     private var isList: Bool { draft.kind == .tasks }
+    /// What the backdrop control is — and so whether the hint beside it
+    /// shows: `BackdropDoor`'s rule, one answer for both, and the Mac's.
+    private var backdropDoor: BackdropDoor {
+        BackdropDoor.of(
+            isEvent: isEvent, isSaved: draft.noteID != nil,
+            isAuthor: canEdit, serverCanDraw: canDraw,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt)
+    }
+    private var offersBackdrop: Bool { backdropDoor.isOffered }
 
     private var navigationTitle: LocalizedStringKey {
         switch (draft.kind, draft.noteID == nil) {
@@ -830,18 +851,37 @@ private struct NoteEditor: View {
 
     /// Ask for a backdrop, and say so while it is being drawn: an image
     /// model takes seconds, and a button pressed twice is two bills.
+    ///
+    /// Nothing reaches the model unasked: an author who has not agreed is
+    /// asked first, and the backdrop is drawn on a yes. The server refuses
+    /// it with `assistant_consent_required` anyway — a consent withdrawn
+    /// on another device — and that answer raises the same question
+    /// instead of a failure (protocol.md, "Consenting to the assistant").
     private func drawBackdrop(_ noteID: Int64) {
         guard !drawing else { return }
+        if backdropDoor == .asksFirst {
+            askConsent(thenDraw: noteID)
+            return
+        }
         drawing = true
         failure = nil
         Task {
-            if let drawn = await onDrawBackdrop(noteID) {
-                drewBackdrop = drawn
-            } else {
-                failure = String(localized: "Couldn't draw that.")
+            let outcome = await onDrawBackdrop(noteID)
+            if case .drawn(let attachmentID) = outcome {
+                drewBackdrop = attachmentID
             }
             drawing = false
+            if outcome.asksForConsent(processor: AppSettings.assistantProcessor) {
+                askConsent(thenDraw: noteID)
+            } else {
+                failure = outcome.failureMessage
+            }
         }
+    }
+
+    private func askConsent(thenDraw noteID: Int64) {
+        afterAssistantConsent = { drawBackdrop(noteID) }
+        showAssistantConsent = true
     }
 
     /// Tick or untick, and show it at once. One request per line at a
@@ -1117,7 +1157,7 @@ private struct NoteEditor: View {
                                 Label("Add to Calendar", systemImage: "calendar.badge.plus")
                             }
                         }
-                        if canEdit, canDraw, let noteID = draft.noteID {
+                        if offersBackdrop, let noteID = draft.noteID {
                             Button {
                                 drawBackdrop(noteID)
                             } label: {
@@ -1130,6 +1170,15 @@ private struct NoteEditor: View {
                                 }
                             }
                             .disabled(drawing)
+                        }
+                    } footer: {
+                        // The backdrop is drawn from the TITLE, which is a
+                        // picture description by another name — and the
+                        // provider's filter refuses most real names and
+                        // brands in it (`PictureRequestHint`). Beside the
+                        // control, exactly where it is offered.
+                        if offersBackdrop {
+                            Text(PictureRequestHint.text)
                         }
                     }
                 }
@@ -1232,6 +1281,26 @@ private struct NoteEditor: View {
                     set: { if !$0 { failure = nil } })
             ) {
                 Button("OK", role: .cancel) { failure = nil }
+            }
+            // The composer's consent sheet, as the composer shows it: the
+            // backdrop waits in `afterAssistantConsent` and is drawn on a
+            // yes; "Not Now" leaves the note as it was.
+            .sheet(isPresented: $showAssistantConsent) {
+                AssistantConsentSheet(
+                    processor: AppSettings.assistantProcessor ?? "",
+                    familyHistory: session.family?.aiHistory == true,
+                    familyVision: session.family?.aiVision == true,
+                    onAgree: {
+                        try await session.setAssistantConsent(true)
+                        showAssistantConsent = false
+                        let resume = afterAssistantConsent
+                        afterAssistantConsent = nil
+                        resume?()
+                    },
+                    onDecline: {
+                        showAssistantConsent = false
+                        afterAssistantConsent = nil
+                    })
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

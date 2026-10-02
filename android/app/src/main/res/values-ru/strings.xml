@@ -427,6 +427,7 @@
     <string name="s_assistant_mention_sees_quoted_pictures_and_recent">Этот ответ упоминает ассистента, поэтому ему покажут фото, на которые ты отвечаешь, и до %1$d самых недавних фото из этого чата могут уйти вместе с ними. Они уйдут с этого сервера в модель, с которой он работает.</string>
     <string name="s_assistant_mention_sees_both_and_recent">Этот ответ упоминает ассистента, поэтому ему покажут фото отсюда и те, на которые ты отвечаешь, и до %1$d самых недавних фото из этого чата могут уйти вместе с ними. Они уйдут с этого сервера в модель, с которой он работает.</string>
     <string name="s_assistant_answer_failed">Ассистент не смог закончить этот ответ. Спросите ещё раз.</string>
+    <string name="s_assistant_provider_refused">Сервис ассистента отказался это выполнить. Попробуй сформулировать иначе.</string>
     <string name="s_assistant_vision">Ассистент может смотреть фото</string>
     <string name="s_assistant_vision_explanation">Когда кто-то прикрепляет фото к вопросу в своём личном чате с ассистентом, прикрепляет его к сообщению с упоминанием ассистента в семейном чате или отвечает на фото, упоминая ассистента, это фото уходит в модель вместе с вопросом — не больше 4 на вопрос. Фото, на которое ассистенту не указали, не отправляется никогда, даже из более раннего сообщения (если не включено «Ассистент видит недавние фото»); видео, файлы, аудио и геопозиции — тоже. По умолчанию выключено; когда выключено, фото не отправляются никогда.</string>
     <string name="e_change_assistant_vision_failed">Не удалось изменить настройку</string>
@@ -571,6 +572,7 @@
     <string name="s_draw_another_backdrop">Нарисовать другой фон</string>
     <string name="s_drawing">Рисует…</string>
     <string name="s_draw_failed">Не удалось нарисовать.</string>
+    <string name="s_describe_in_general_words">Описывай людей и предметы общими словами — настоящие имена и бренды часто отклоняются.</string>
     <string name="s_tick_failed">Не удалось отметить.</string>
     <string name="s_no_calendar_app">Нет приложения календаря, куда добавить.</string>
     <string name="s_the_assistant">Ассистент</string>
@@ -592,4 +594,31 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">Пока вы не согласитесь, ничего написанного вами не уходит в %1$s, и ассистент вам не отвечает.</string>
     <string name="s_consent_stopping_takes_effect_at_once">То, что вы пишете ассистенту, уходит в %1$s. Остановка действует сразу; уже отправленное вернуть нельзя.</string>
     <string name="s_couldnt_save_your_answer">Не удалось сохранить ваш ответ. Попробуйте ещё раз.</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">Стикер</string>
+    <string name="s_stickers">Стикеры</string>
+    <string name="s_family_stickers">Стикеры семьи</string>
+    <string name="s_family_stickers_count">%1$d из %2$d</string>
+    <string name="s_family_stickers_explanation">Добавить стикер может любой в семье. Убрать его может тот, кто добавил, или владелец семьи.</string>
+    <string name="s_recently_used">Недавние</string>
+    <string name="s_no_stickers_yet">Стикеров пока нет</string>
+    <string name="s_no_stickers_hint">Добавь их на экране «Семья».</string>
+    <string name="s_add_sticker">Добавить стикер</string>
+    <string name="s_add_to_family_stickers">Добавить в стикеры семьи</string>
+    <string name="s_sticker_label">Описание (необязательно)</string>
+    <string name="s_sticker_label_hint">Несколько слов для экранного диктора. Поверх картинки они не рисуются.</string>
+    <string name="s_remove_sticker">Убрать стикер</string>
+    <string name="s_remove_sticker_q">Убрать этот стикер?</string>
+    <string name="s_remove_sticker_explanation">Он исчезнет из стикеров семьи. В уже отправленных сообщениях он останется.</string>
+    <string name="s_sticker_added">Добавлено в стикеры семьи</string>
+    <string name="s_sticker_already_in_pack">Уже есть в стикерах семьи</string>
+    <string name="s_sticker_pack_full">В семье уже %1$d стикеров. Убери один, чтобы добавить новый.</string>
+    <string name="s_sticker_too_large">Этот слишком большой. Стикер может быть не больше %1$s.</string>
+    <string name="s_sticker_add_failed">Не удалось добавить стикер. Попробуй ещё раз.</string>
+    <string name="s_sticker_unreadable">Не удалось прочитать эту картинку.</string>
+    <string name="s_sticker_animated_must_be_webp">Анимированные стикеры должны быть в формате WebP. Этот добавить нельзя.</string>
+    <string name="s_sticker_label_too_long">Описание может содержать не более %1$d символов.</string>
+    <string name="s_sticker_remove_not_allowed">Убрать стикер может только тот, кто его добавил, или владелец семьи.</string>
+    <string name="s_sticker_remove_failed">Не удалось убрать стикер. Попробуй ещё раз.</string>
+    <string name="s_sticker_not_available_offline">Этого стикера ещё нет на телефоне. Попробуй ещё раз, когда будет сеть.</string>
 </resources>

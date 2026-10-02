@@ -260,6 +260,119 @@ final class AttachmentStore {
         generation &+= 1
     }
 
+    // MARK: - Stickers: the original bytes
+
+    /// The ORIGINAL bytes of an attachment, if this device holds them.
+    ///
+    /// For stickers (docs/protocol.md, "Sticker pack"), which are the one
+    /// kind of picture whose bytes matter beyond their first frame: an
+    /// animated WebP is drawn from them, a send uploads them again as the
+    /// message's own copy, and "does the pack already hold this?" compares
+    /// them. The cache has always kept exactly what the server sent — only
+    /// the hot `Image` in front of it is a decoded frame — so this is a
+    /// read of the same file `image(id:preview:false)` draws from.
+    ///
+    /// NEVER the preview. A preview is a JPEG, and a sticker's `has_preview`
+    /// can be true by inheritance from a photograph with the same bytes.
+    ///
+    /// Disk-only: nil means "not here yet". A view calls `stickerImage(id:)`
+    /// to start the fetch and comes back when `generation` moves; a send
+    /// calls `originalBytes(id:)`.
+    ///
+    /// ASYNC, and read off the main actor (`StickerPack.bytes`). It was a
+    /// plain `Data(contentsOf:)` called from view code — half a megabyte
+    /// per sticker, from the actor the taps are handled on.
+    func cachedBytes(id: Int64) async -> Data? {
+        await StickerPack.bytes(fileAt: originalURL(id: id))
+    }
+
+    /// Where an attachment's original bytes are cached, whether or not
+    /// they are there yet — for the callers that read the file somewhere
+    /// other than the main actor.
+    func originalURL(id: Int64) -> URL {
+        fileURL(key(id, preview: false))
+    }
+
+    /// The same bytes, fetched when they are not here. nil when the server
+    /// has none or could not be reached — a caller with no network and no
+    /// cached copy has nothing to send, and says so.
+    ///
+    /// Its own request rather than a wait on `fetch`'s: a tap on a sticker
+    /// is a person waiting, and the view-driven fetch reports nothing to
+    /// anybody but `generation`. The two may overlap and write the same
+    /// immutable bytes to the same file, which is harmless.
+    func originalBytes(id: Int64) async -> Data? {
+        if let cached = await cachedBytes(id: id) { return cached }
+        guard let data = try? await api.attachmentData(id: id, preview: false) ?? nil,
+              !data.isEmpty
+        else { return nil }
+        seed(data, id: id, preview: false)
+        return data
+    }
+
+    /// A sticker's still frame if it is already decoded, else nil — and the
+    /// decode (or, with nothing cached, the fetch) is started. Safe to call
+    /// from a view body, like `image`.
+    ///
+    /// `image(id:preview:false)` with ONE difference, which is the reason
+    /// it exists: that one reads the file and decodes it right there, in
+    /// the body that asked. For a photograph in a chat that is one tile; a
+    /// sticker panel is a grid of up to two hundred, every cell a read and
+    /// a decode on the actor the scroll is driven from, and the hot cache
+    /// in front of it holds forty. So a sticker's file is read and decoded
+    /// OFF the main actor (`StickerPack.still`) and the view is told by
+    /// `generation`, exactly as it is told of a fetch.
+    ///
+    /// Never the preview — the key is the original's, unconditionally.
+    func stickerImage(id: Int64) -> Image? {
+        let key = key(id, preview: false)
+        if let cached = hot[key] { return cached }
+        guard !missing.contains(key), !inFlight.contains(key) else { return nil }
+        inFlight.insert(key)
+        let url = fileURL(key)
+        Task { [weak self] in
+            if let still = await StickerPack.still(fileAt: url, maxPixels: Self.displayPixels) {
+                self?.finishSticker(key, still: still, settled: true)
+                return
+            }
+            // Not cached (or cached and unreadable, which the fetch
+            // overwrites). One attempt: a sticker has no late-arriving
+            // poster to wait for.
+            guard let self else { return }
+            do {
+                // nil = a real 404.
+                guard let data = try await api.attachmentData(id: id, preview: false) else {
+                    finishSticker(key, still: nil, settled: true)
+                    return
+                }
+                let still = await StickerPack.still(
+                    storing: data, at: url, maxPixels: Self.displayPixels)
+                // Bytes that are no picture settle the key as a 404 does:
+                // asking again would be answered with the same bytes.
+                finishSticker(key, still: still, settled: true)
+            } catch {
+                // Says nothing about whether the bytes exist — see `fetch`.
+                finishSticker(key, still: nil, settled: false)
+            }
+        }
+        return nil
+    }
+
+    /// `finish`'s twin for a frame that was decoded somewhere else. The
+    /// same three outcomes and the same rule about which of them may bump
+    /// `generation`: a success and a settled miss do, an unsettled failure
+    /// must not (see `finish`).
+    private func finishSticker(_ key: String, still: StickerPack.Still?, settled: Bool) {
+        inFlight.remove(key)
+        if let still {
+            remember(key, PlatformImage.view(still.image))
+            generation &+= 1
+        } else if settled {
+            missing.insert(key)
+            generation &+= 1
+        }
+    }
+
     // MARK: - Repairing a poster the server never got
 
     /// The marker's file extension. `34-preview.unsent` sits beside

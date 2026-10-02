@@ -184,6 +184,11 @@ async fn spawn_server_inner_with(
     // What the tests check is the REFUSAL, not the number.
     cfg.limits.max_attachment_bytes = 64 * 1024;
     cfg.limits.max_preview_bytes = 16 * 1024;
+    // And the sticker ceiling with it, for the same reason and one more:
+    // the production 512 KiB is ABOVE the 64 KiB just set, and a per-item
+    // ceiling above the attachment ceiling is a config the server refuses
+    // to boot with — a sticker goes up as an attachment.
+    cfg.limits.max_pack_item_bytes = 8 * 1024;
     if let Some(push_cfg) = push_cfg {
         cfg.push = push_cfg;
     }

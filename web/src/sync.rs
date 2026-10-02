@@ -202,9 +202,13 @@ pub fn start_session(
             let token = token.clone();
             async move { api::send_message(&token, &row).await }
         },
-        move |job: outbox::Upload| {
-            let token = upload_token.clone();
-            async move { upload(&token, job).await }
+        {
+            let live = live.clone();
+            move |job: outbox::Upload| {
+                let token = upload_token.clone();
+                let live = live.clone();
+                async move { upload(&live, session, &token, job).await }
+            }
         },
         |attempts, floor| {
             let ceiling = outbox::backoff_ceiling_ms(attempts);
@@ -224,7 +228,51 @@ pub fn start_session(
 /// recipient for good (docs/protocol.md, "A preview may be uploaded again,
 /// later"). So a failed one is tried twice more, beside the send rather
 /// than in front of it, from the bytes this tab still holds.
-async fn upload(token: &str, job: outbox::Upload) -> Result<crate::model::Attachment, ApiError> {
+///
+/// A STICKER is the exception to everything above but the upload itself:
+/// its bytes go up exactly as the pack holds them — nothing here, or
+/// anywhere on the way here, scales, re-encodes or strips them — and it has
+/// no preview (docs/protocol.md, "A sticker is NOT prepared before upload").
+/// It is also the one attachment whose bytes a reload does not lose for
+/// good: they are fetched again from the pack picture they are a copy of.
+async fn upload(
+    live: &Live,
+    session: u64,
+    token: &str,
+    mut job: outbox::Upload,
+) -> Result<crate::model::Attachment, ApiError> {
+    if let (None, Some(source)) = (&job.bytes.file, job.item.source_attachment_id) {
+        // The ORIGINAL, never the preview, whatever `has_preview` says. A
+        // pack item removed since answers `attachment_not_found`, which
+        // fails the row at once: there is nothing left to be a copy of.
+        // Under this client's own code, because the server's word for it
+        // reads "attach it again" — and a sticker that has left the pack is
+        // the one attachment nobody can attach again.
+        let bytes = match api::attachment_bytes(token, source, false).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.code() == Some("attachment_not_found") => {
+                return Err(ApiError::Server {
+                    code: outbox::STICKER_GONE.to_string(),
+                    message: t("That sticker has already been removed.").to_string(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let provisional = job.item.provisional_id;
+        // Back beside the row, so its bubble draws again and the retry
+        // after a lost answer does not fetch twice.
+        live.update(session, |state| {
+            let queued = state.store.outbox.iter().any(|row| {
+                row.items
+                    .iter()
+                    .any(|item| item.provisional_id == provisional)
+            });
+            if queued {
+                state.store.bytes.entry(provisional).or_default().file = Some(bytes.clone());
+            }
+        });
+        job.bytes.file = Some(bytes);
+    }
     // A picked file is the person's own, and they may have moved, changed or
     // deleted it since. The browser then fails the upload like a dropped
     // network — and it would be retried as one, and end as "check your
@@ -263,7 +311,8 @@ async fn upload(token: &str, job: outbox::Upload) -> Result<crate::model::Attach
 /// chat list with its authoritative counts, and then — per chat this client
 /// holds messages of — what it missed: messages after the newest held, and
 /// the reactions, edits and polls that changed past each cursor. The board
-/// catches up beside the chats, on its own cursor.
+/// catches up beside the chats, on its own cursor — and so does the
+/// family's sticker pack, on its own, where the server has one.
 ///
 /// `link` is the connection this runs for, and None before any has opened:
 /// only a resync for the connection that is up NOW may let its frames move
@@ -290,12 +339,22 @@ pub async fn resync(
     let writes = live.read(|state| state.store.family_writes);
     if let Ok(roster) = api::family(token).await {
         let server_max = roster.max_board_seq;
+        // The pack's mark rides on the same read — and so does whether
+        // this server has packs at all: no limits, nothing to sync.
+        let pack_max = roster.max_pack_items.map(|_| roster.max_pack_seq);
         live.update(session, |state| {
             take_roster(&mut state.store, roster, writes)
         });
-        let live = live.clone();
-        let token = token.to_string();
-        spawn_local(async move { sync_board(&live, session, &token, server_max, link).await });
+        {
+            let live = live.clone();
+            let token = token.to_string();
+            spawn_local(async move { sync_board(&live, session, &token, server_max, link).await });
+        }
+        if let Some(pack_max) = pack_max {
+            let live = live.clone();
+            let token = token.to_string();
+            spawn_local(async move { sync_pack(&live, session, &token, pack_max, link).await });
+        }
     }
     if !refresh_chats(live, session, token, expired).await {
         return;
@@ -310,6 +369,7 @@ pub async fn resync(
 /// a refusal is only ever told by the request vanishing.
 pub fn apply_account(live: &Live, session: u64, me: &crate::model::Me) {
     let kept = crate::session::board_marks(me.user.id);
+    let recents = crate::session::pack_recents(me.user.id);
     let waited = crate::session::awaiting_join() == Some(me.user.id);
     let waiting = live.update(session, |state| {
         state.store.awaiting_join |= waited;
@@ -317,6 +377,7 @@ pub fn apply_account(live: &Live, session: u64, me: &crate::model::Me) {
             put_away_panes(state);
         }
         state.store.board.take_marks(me.user.id, kept);
+        state.store.pack.take_recents(me.user.id, recents);
         state.store.awaiting_join
     });
     if let Some(waiting) = waiting {
@@ -367,6 +428,7 @@ pub fn put_away_panes(state: &mut AppState) {
     state.at_newest = false;
     state.board_open = false;
     state.viewing = None;
+    state.sticker_open = None;
     state.panel = None;
 }
 
@@ -500,6 +562,54 @@ pub async fn sync_board(
     live.update(session, |state| {
         if on_this_link(state, link) {
             state.store.board.caught_up = true;
+        }
+    });
+}
+
+/// The sticker pack, brought up to date (docs/protocol.md, "Sticker pack")
+/// — the board's machinery unchanged: the whole pack the first time this
+/// session reads it, which REPLACES what is held, and after that only what
+/// changed past the cursor, tombstones included, and nothing at all when
+/// the family's mark says nothing has. Quiet on failure, like the board:
+/// the panel shows what it holds, and the next connection tries again.
+pub async fn sync_pack(live: &Live, session: u64, token: &str, server_max: i64, link: Option<u64>) {
+    let (loaded, cursor) = live.read(|state| (state.store.pack.loaded, state.store.pack.cursor));
+    if !loaded {
+        let Ok(read) = api::pack(token).await else {
+            return;
+        };
+        if live
+            .update(session, |state| {
+                state.store.pack.apply_full(read.items, read.max_pack_seq)
+            })
+            .is_none()
+        {
+            return;
+        }
+    } else if server_max > cursor {
+        // The cursor belongs to the LOOP: read once, then moved by what
+        // each page returned.
+        let mut after = cursor;
+        loop {
+            let Ok(page) = api::pack_changes(token, after, FEED_PAGE).await else {
+                return;
+            };
+            let short = (page.len() as u32) < FEED_PAGE;
+            after = page.iter().map(|item| item.pack_seq).fold(after, i64::max);
+            if live
+                .update(session, |state| state.store.pack.apply_page(page))
+                .is_none()
+            {
+                return;
+            }
+            if short {
+                break;
+            }
+        }
+    }
+    live.update(session, |state| {
+        if on_this_link(state, link) {
+            state.store.pack.caught_up = true;
         }
     });
 }
@@ -930,6 +1040,7 @@ async fn run_socket(
             cursors.caught_up = false;
         }
         state.store.board.caught_up = false;
+        state.store.pack.caught_up = false;
     });
     true
 }
@@ -1070,8 +1181,14 @@ fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
             });
             None
         }
-        ServerFrame::AiError { message_id, .. } => {
-            live.update(session, |state| state.store.apply_ai_error(message_id));
+        ServerFrame::AiError {
+            message_id,
+            failure,
+            ..
+        } => {
+            live.update(session, |state| {
+                state.store.apply_ai_error(message_id, failure)
+            });
             None
         }
         ServerFrame::MemberJoined { user } => {
@@ -1174,6 +1291,14 @@ fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
                     });
                 }
             }
+            None
+        }
+        // One sticker of the pack, added or removed. Applied for everybody
+        // — a blocked member's items are the family's like anybody's
+        // (docs/protocol.md, "A block") — and said to nobody: a pack change
+        // never notifies and never counts as unread.
+        ServerFrame::PackItem { item } => {
+            live.update(session, |state| state.store.pack.apply_frame(item));
             None
         }
         // A call's signalling. Every one of these is for the call this tab
@@ -1371,5 +1496,362 @@ mod tests {
         let now = store.family_writes;
         take_roster(&mut store, roster, now);
         assert_eq!(store.family.as_ref().unwrap().max_members, None);
+    }
+
+    // --- The sticker pack, over the wire ----------------------------------
+    //
+    // The halves no pure test reaches: WHICH requests a sync makes, in what
+    // order, and what it does with each answer. Run against a stand-in for
+    // `fetch` (fake_server.rs), so the path under test is the shipped one —
+    // api.rs included — with no server on this machine.
+
+    use crate::fake_server::{Answer, FakeServer};
+    use serde_json::json;
+
+    /// The requests these tests are about (`FakeServer::asked`).
+    const OURS: &[&str] = &["/families/mine/pack", "/attachments"];
+
+    fn signed_in() -> Live {
+        Live::new(
+            AppState {
+                token: Some("t".into()),
+                ..AppState::default()
+            },
+            std::rc::Rc::new(|| {}),
+        )
+    }
+
+    /// A live item as the server writes one.
+    fn wire_item(id: i64, pack_seq: i64) -> serde_json::Value {
+        json!({"id": id, "added_by": 7, "pack_seq": pack_seq,
+               "created_at": "2026-09-30T10:00:00Z",
+               "attachment": {"id": 700 + id, "kind": "photo", "mime": "image/webp",
+                              "size": 11, "has_preview": false}})
+    }
+
+    fn held(live: &Live) -> Vec<i64> {
+        live.read(|state| {
+            state
+                .store
+                .pack
+                .listed()
+                .iter()
+                .map(|item| item.id)
+                .collect()
+        })
+    }
+
+    /// THE FIRST SYNC OF A SESSION READS THE WHOLE PACK — one request, and
+    /// not the change feed — and what it reads replaces what is held, with
+    /// the cursor at the mark that came with it. Whether it counts as
+    /// caught up is the CONNECTION's to say: only a sync for the link that
+    /// is up now lets frames move the cursor.
+    #[wasm_bindgen_test]
+    async fn the_first_pack_sync_reads_the_whole_pack_once() {
+        let server = FakeServer::answering(|asked| match asked.line().as_str() {
+            "GET /families/mine/pack" => Answer::Json(
+                200,
+                json!({"items": [wire_item(1, 10), wire_item(2, 12)], "max_pack_seq": 12}),
+            ),
+            _ => Answer::refusal(404, "not_found"),
+        });
+        let live = signed_in();
+        let session = live.session();
+
+        // Before any socket has opened.
+        sync_pack(&live, session, "t", 12, None).await;
+        assert_eq!(server.lines(OURS), vec!["GET /families/mine/pack"]);
+        assert_eq!(
+            server.asked(OURS)[0].content_type,
+            "",
+            "a read sends no body to have a type"
+        );
+        assert_eq!(held(&live), vec![1, 2]);
+        live.read(|state| {
+            let pack = &state.store.pack;
+            assert!(pack.loaded);
+            assert_eq!(pack.cursor, 12);
+            assert_eq!(
+                pack.items[&2].attachment.as_ref().map(|picture| picture.id),
+                Some(702)
+            );
+            assert!(!pack.caught_up, "no connection to have caught up on");
+        });
+
+        // Loaded, and the family's mark says nothing has changed: NOTHING
+        // is asked — and on the connection that is up, that is caught up.
+        live.now(|state| {
+            state.connected = true;
+            state.link = 3;
+        });
+        sync_pack(&live, session, "t", 12, Some(2)).await;
+        assert!(
+            !live.read(|state| state.store.pack.caught_up),
+            "an earlier connection's catch-up is not this one's"
+        );
+        sync_pack(&live, session, "t", 12, Some(3)).await;
+        assert!(live.read(|state| state.store.pack.caught_up));
+        assert_eq!(server.lines(OURS).len(), 1, "{:?}", server.lines(OURS));
+    }
+
+    /// AFTER THAT, ONLY WHAT CHANGED: the feed from the cursor, looped
+    /// until a SHORT page — each page asked for from the highest seq of the
+    /// one before, not from the cursor the loop started at — tombstones
+    /// applied, and never the whole pack again.
+    #[wasm_bindgen_test]
+    async fn a_later_pack_sync_loops_the_change_feed_to_a_short_page() {
+        let full: Vec<serde_json::Value> = (0..FEED_PAGE as i64)
+            .map(|index| wire_item(100 + index, 21 + index))
+            .collect();
+        let last_of_full = 20 + FEED_PAGE as i64;
+        let second =
+            format!("GET /families/mine/pack/changes?after_seq={last_of_full}&limit={FEED_PAGE}");
+        let first = format!("GET /families/mine/pack/changes?after_seq=20&limit={FEED_PAGE}");
+        let server = {
+            let (first, second) = (first.clone(), second.clone());
+            FakeServer::answering(move |asked| {
+                let line = asked.line();
+                if line == first {
+                    Answer::Json(200, json!({"items": full}))
+                } else if line == second {
+                    Answer::Json(
+                        200,
+                        json!({"items": [{"id": 1, "deleted": true, "pack_seq": 300},
+                                         wire_item(3, 301)]}),
+                    )
+                } else {
+                    Answer::refusal(404, "not_found")
+                }
+            })
+        };
+        let live = signed_in();
+        let session = live.session();
+        live.now(|state| {
+            state.connected = true;
+            state.link = 1;
+            let pack = &mut state.store.pack;
+            pack.apply_full(
+                vec![crate::model::PackItem {
+                    id: 1,
+                    pack_seq: 10,
+                    added_by: Some(7),
+                    attachment: Some(crate::model::Attachment {
+                        id: 701,
+                        kind: "photo".into(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                20,
+            );
+        });
+
+        sync_pack(&live, session, "t", 301, Some(1)).await;
+
+        assert_eq!(server.lines(OURS), vec![first, second]);
+        let ids = held(&live);
+        assert_eq!(ids.len(), FEED_PAGE as usize + 1);
+        assert!(!ids.contains(&1), "the tombstone took it out");
+        assert!(ids.contains(&3) && ids.contains(&100));
+        live.read(|state| {
+            let pack = &state.store.pack;
+            assert!(pack.gone.contains(&1));
+            assert_eq!(pack.cursor, 301, "the highest seq of the last page");
+            assert!(pack.caught_up);
+        });
+    }
+
+    /// QUIET ON FAILURE, and honest about it: a read the server did not
+    /// answer leaves the pack as it was, moves no cursor, and does NOT
+    /// count as caught up — so the next connection tries again, and no
+    /// frame moves the cursor past changes this tab never saw.
+    #[wasm_bindgen_test]
+    async fn a_pack_sync_that_fails_is_not_caught_up() {
+        let server = FakeServer::answering(|asked| {
+            if asked.path.starts_with("/families/mine/pack/changes") {
+                Answer::Nothing
+            } else {
+                Answer::Json(502, json!({}))
+            }
+        });
+        let live = signed_in();
+        let session = live.session();
+        live.now(|state| {
+            state.connected = true;
+            state.link = 1;
+        });
+
+        sync_pack(&live, session, "t", 12, Some(1)).await;
+        live.read(|state| {
+            assert!(!state.store.pack.loaded, "a 502 is not an empty pack");
+            assert!(!state.store.pack.caught_up);
+        });
+
+        live.now(|state| state.store.pack.apply_full(Vec::new(), 5));
+        sync_pack(&live, session, "t", 12, Some(1)).await;
+        live.read(|state| {
+            assert_eq!(state.store.pack.cursor, 5);
+            assert!(!state.store.pack.caught_up);
+        });
+        assert_eq!(server.lines(OURS).len(), 2);
+
+        // A read that lands after the session ended writes nothing.
+        let server = FakeServer::answering(|_| {
+            Answer::Json(
+                200,
+                json!({"items": [wire_item(1, 10)], "max_pack_seq": 10}),
+            )
+        });
+        let live = signed_in();
+        let stale = live.session();
+        live.end_session();
+        sync_pack(&live, stale, "t", 10, None).await;
+        assert_eq!(server.lines(OURS).len(), 1);
+        assert!(
+            held(&live).is_empty(),
+            "the last person's pack is not this one's"
+        );
+    }
+
+    fn sticker_job(file: Option<web_sys::Blob>) -> outbox::Upload {
+        outbox::Upload {
+            client_msg_id: "sticker".into(),
+            item: crate::staged::OutgoingItem::new(
+                &crate::staged::Prepared {
+                    kind: "photo".into(),
+                    mime: "image/webp".into(),
+                    size: 11,
+                    width: Some(512),
+                    height: Some(512),
+                    source_attachment_id: Some(71),
+                    ..Default::default()
+                },
+                -1,
+            ),
+            bytes: crate::staged::StagedBytes {
+                file,
+                preview: None,
+            },
+        }
+    }
+
+    /// A queued sticker row, as a reload leaves it: the row, and no bytes.
+    fn reloaded_with_a_queued_sticker() -> Live {
+        let live = signed_in();
+        live.now(|state| {
+            state.store.queue_send(
+                42,
+                "sticker".into(),
+                crate::store::Draft {
+                    attachments: vec![crate::staged::Prepared {
+                        kind: "photo".into(),
+                        mime: "image/webp".into(),
+                        size: 11,
+                        file: Some(web_sys::Blob::new().expect("a blob")),
+                        source_attachment_id: Some(71),
+                        ..Default::default()
+                    }],
+                    sticker: true,
+                    ..Default::default()
+                },
+            );
+            state.store.bytes.clear();
+        });
+        live
+    }
+
+    /// A STICKER SURVIVES A RELOAD: its bytes went with the tab, so the
+    /// upload fetches the pack picture it is a copy of — the ORIGINAL,
+    /// never the preview — and sends exactly those bytes up again, with no
+    /// preview after them. They go back beside the row, so its bubble draws
+    /// again and a retry does not fetch twice.
+    #[wasm_bindgen_test]
+    async fn a_sticker_whose_bytes_a_reload_took_is_fetched_again_and_sent() {
+        let picture = b"RIFF\x04\x00\x00\x00WEBPVP8L the sticker".to_vec();
+        let server = {
+            let picture = picture.clone();
+            FakeServer::answering(move |asked| {
+                if asked.line() == "GET /attachments/71" {
+                    Answer::Bytes(200, picture.clone(), "image/webp")
+                } else if asked.method == "POST" && asked.path.starts_with("/attachments?") {
+                    Answer::Json(
+                        201,
+                        json!({"attachment": {"id": 90, "kind": "photo", "mime": "image/webp",
+                                              "size": asked.body.len()}}),
+                    )
+                } else {
+                    Answer::refusal(404, "not_found")
+                }
+            })
+        };
+        let live = reloaded_with_a_queued_sticker();
+        let session = live.session();
+        let provisional = live.read(|state| state.store.outbox[0].items[0].provisional_id);
+        let mut job = sticker_job(None);
+        job.item.provisional_id = provisional;
+
+        let landed = upload(&live, session, "t", job.clone())
+            .await
+            .expect("it went up");
+
+        assert_eq!(landed.id, 90);
+        let asked = server.asked(OURS);
+        assert_eq!(
+            server.lines(OURS),
+            vec![
+                "GET /attachments/71",
+                "POST /attachments?kind=photo&width=512&height=512"
+            ],
+            "the original, then the upload — and no preview"
+        );
+        assert_eq!(asked[1].body, picture, "byte for byte what the pack holds");
+        assert_eq!(asked[1].content_type, "image/webp");
+        let kept = live
+            .read(|state| {
+                state
+                    .store
+                    .bytes
+                    .get(&provisional)
+                    .and_then(|bytes| bytes.file.clone())
+            })
+            .expect("back beside the row");
+        assert_eq!(kept.size() as usize, picture.len());
+
+        // With its bytes in hand nothing is fetched: only the upload.
+        job.bytes.file = Some(kept);
+        upload(&live, session, "t", job).await.expect("again");
+        assert_eq!(server.lines(OURS).len(), 3);
+        assert!(server.lines(OURS)[2].starts_with("POST /attachments?"));
+    }
+
+    /// …AND IF THE PACK ITEM WENT MEANWHILE, there is nothing left to be a
+    /// copy of: the row fails at once, under this client's own code, so the
+    /// bubble says the sticker is gone rather than "attach it again" — and
+    /// nothing is uploaded.
+    #[wasm_bindgen_test]
+    async fn a_reloaded_sticker_whose_pack_item_is_gone_fails_as_gone() {
+        let server = FakeServer::answering(|_| Answer::refusal(404, "attachment_not_found"));
+        let live = reloaded_with_a_queued_sticker();
+        let session = live.session();
+
+        let refused = upload(&live, session, "t", sticker_job(None))
+            .await
+            .expect_err("nothing to send");
+
+        assert_eq!(refused.code(), Some(outbox::STICKER_GONE));
+        assert!(outbox::is_terminal(&refused), "not retried");
+        assert_eq!(
+            outbox::refusal(&refused),
+            "Not sent: that sticker is no longer in the family's stickers."
+        );
+        assert_eq!(server.lines(OURS), vec!["GET /attachments/71"]);
+
+        // A network that dropped is NOT that: it stays retryable.
+        drop(server);
+        let _server = FakeServer::answering(|_| Answer::Nothing);
+        let dropped = upload(&live, session, "t", sticker_job(None))
+            .await
+            .expect_err("no answer");
+        assert!(!outbox::is_terminal(&dropped), "{dropped:?}");
     }
 }

@@ -25,8 +25,16 @@ public static class AttachmentFiles
     /// The preview when there is one; a PHOTO's own bytes when there is not; and for a video without a
     /// poster, nothing — a tile never downloads a whole video to draw itself.
     /// </summary>
+    /// <remarks>
+    /// A STICKER IS ALWAYS ITS ORIGINAL, whatever <c>has_preview</c> says. A preview is a JPEG — no
+    /// transparency, one frame — and the flag can be true on a sticker nobody made a preview for: an
+    /// upload whose bytes the family already holds inherits it from the row it deduplicated against,
+    /// and somebody may once have sent that same PNG as a photograph (docs/protocol.md, "And it has no
+    /// preview").
+    /// </remarks>
     public static TileSource SourceFor(AttachmentDto attachment) =>
-        attachment.HasPreview ? TileSource.Preview
+        attachment.Sticker ? TileSource.Original
+        : attachment.HasPreview ? TileSource.Preview
         : attachment.Kind == "photo" ? TileSource.Original
         : TileSource.None;
 
@@ -82,6 +90,7 @@ public static class AttachmentFiles
         {
             "image/jpeg" => "jpg",
             "image/png" => "png",
+            "image/webp" => "webp",
             "image/heic" => "heic",
             "video/quicktime" => "mov",
             "video/mp4" => "mp4",

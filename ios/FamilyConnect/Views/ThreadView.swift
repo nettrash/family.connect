@@ -59,6 +59,17 @@ struct ThreadView: View {
     #else
     @State private var viewingAlbum: AttachmentAlbum?
     #endif
+    /// A sticker in the chain, shown larger — the chat's own small sheet,
+    /// on both platforms.
+    @State private var viewingSticker: AttachmentDTO?
+    /// The one thing a send from here can fail at before it is queued: a
+    /// sticker whose bytes are neither on this device nor reachable.
+    @State private var composerNotice: String?
+    /// The consent screen, and the sticker it interrupted — the chat's own
+    /// pair (docs/protocol.md, "Consenting to the assistant"). Only a
+    /// thread in the assistant's chat ever raises it.
+    @State private var showAssistantConsent = false
+    @State private var afterAssistantConsent: (() -> Void)?
     @FocusState private var composerFocused: Bool
 
     init(chatID: Int64, rootID: Int64) {
@@ -98,6 +109,26 @@ struct ThreadView: View {
             AttachmentViewer(album: album)
         }
         #endif
+        .sheet(item: $viewingSticker) { sticker in
+            StickerViewer(attachment: sticker)
+        }
+        .sheet(isPresented: $showAssistantConsent) {
+            AssistantConsentSheet(
+                processor: AppSettings.assistantProcessor ?? "",
+                familyHistory: session.family?.aiHistory == true,
+                familyVision: session.family?.aiVision == true,
+                onAgree: {
+                    try await session.setAssistantConsent(true)
+                    showAssistantConsent = false
+                    let resume = afterAssistantConsent
+                    afterAssistantConsent = nil
+                    resume?()
+                },
+                onDecline: {
+                    showAssistantConsent = false
+                    afterAssistantConsent = nil
+                })
+        }
     }
 
     @ViewBuilder
@@ -278,6 +309,11 @@ struct ThreadView: View {
     /// media exactly as in the chat — the phone's sheet, the Mac's own
     /// resizable window. A file has nothing to open here.
     private func open(_ attachment: AttachmentDTO, of message: MessageSnapshot) {
+        // A sticker is not a page of the photo viewer (StickerViewer).
+        if MessagePresentation.isSticker(message) {
+            viewingSticker = attachment
+            return
+        }
         guard !attachment.isFile else { return }
         let media = AttachmentAlbum.media(of: message.attachments)
         guard !media.isEmpty else { return }
@@ -348,12 +384,54 @@ struct ThreadView: View {
                     }
                 }
             }
+            if let composerNotice {
+                Text(composerNotice)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 6)
+            }
             composerRow
         }
     }
 
+    /// The chat's own rule (`StickerDoor`): wherever a message can be
+    /// written, a thread in the assistant's chat included — and with a
+    /// root to answer.
+    private var showsStickers: Bool { stickerDoor != .absent && root != nil }
+
+    private var stickerDoor: StickerDoor {
+        StickerDoor.of(
+            offersStickers: AppSettings.offersStickers,
+            chatKind: chat?.kind,
+            hasAssistant: AppSettings.assistantUserID != nil,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt)
+    }
+
+    /// The side and glyph of the sticker button — the chat composer's own
+    /// on each platform, so the button is the one people already know.
+    #if os(macOS)
+    private let stickerControl: (side: CGFloat, glyph: CGFloat) = (24, 16)
+    #else
+    private let stickerControl: (side: CGFloat, glyph: CGFloat) = (36, 20)
+    #endif
+
     private var composerRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            // A sticker answers from here as words do (docs/protocol.md,
+            // "Sending one": "It may be a reply, which is how one answers
+            // something" — and a thread is nothing but replies). Without
+            // it, answering a chain with a sticker meant leaving the chain,
+            // arming a reply in the chat and sending from there.
+            if showsStickers {
+                StickerComposerButton(
+                    side: stickerControl.side, glyph: stickerControl.glyph
+                ) { item in
+                    sendSticker(item)
+                }
+            }
             TextField("Reply in thread", text: $draft, axis: .vertical)
                 .lineLimit(1...5)
                 .textFieldStyle(.plain)
@@ -378,14 +456,50 @@ struct ThreadView: View {
     private func send() {
         guard let root, canSend else { return }
         let body = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let quote = ReplyToDTO(
+        guard coordinator.send(
+            body: body, in: chatID, replyTo: rootQuote(root),
+            mentions: resolvedMentions(in: body)) != nil
+        else { return }
+        draft = ""
+        composerNotice = nil
+    }
+
+    /// The quote every send from this surface carries: the root.
+    private func rootQuote(_ root: MessageEntity) -> ReplyToDTO {
+        ReplyToDTO(
             messageID: root.serverID ?? rootID,
             senderID: root.senderID,
             // Cut exactly as the server will, so the bubble and its ack agree.
             excerpt: ReplyToSnapshot.excerpt(of: root.body))
-        guard coordinator.send(
-            body: body, in: chatID, replyTo: quote, mentions: resolvedMentions(in: body)) != nil
-        else { return }
-        draft = ""
+    }
+
+    /// A sticker, answering the ROOT like everything else sent from here.
+    /// The draft is NOT touched: a sticker is its own message, and words
+    /// already typed are still going to be sent as words.
+    ///
+    /// In a thread of the assistant's chat it goes through the consent
+    /// question first, as it does in that chat's own composer — never
+    /// around it.
+    private func sendSticker(_ item: PackItemSnapshot) {
+        guard let root else { return }
+        switch stickerDoor {
+        case .absent:
+            return
+        case .asksFirst:
+            afterAssistantConsent = { sendSticker(item) }
+            showAssistantConsent = true
+            return
+        case .open:
+            break
+        }
+        let quote = rootQuote(root)
+        Task {
+            guard await coordinator.sendSticker(item, replyTo: quote, in: chatID) != nil else {
+                composerNotice = String(
+                    localized: "Couldn't send that sticker. Check your connection and try again.")
+                return
+            }
+            composerNotice = nil
+        }
     }
 }

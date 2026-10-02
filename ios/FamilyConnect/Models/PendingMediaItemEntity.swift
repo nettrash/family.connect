@@ -65,6 +65,12 @@ final class PendingMediaItemEntity {
     var durationMS: Int?
     /// Required for a file, a label for audio and locations.
     var name: String?
+    /// This send is a STICKER (docs/protocol.md, "Sending one"): the bytes
+    /// go up exactly as they are, with no preview, and the message that
+    /// claims them says `sticker: true`. Held here so a send resumed after
+    /// a relaunch is still a sticker and not a photograph in a bubble.
+    /// Defaulted, so a lightweight migration for an existing store.
+    var sticker: Bool = false
 
     // MARK: - Locations
 
@@ -112,6 +118,7 @@ final class PendingMediaItemEntity {
         latitude: Double? = nil,
         longitude: Double? = nil,
         accuracyM: Int? = nil,
+        sticker: Bool = false,
         createdAt: Date = Date()
     ) {
         self.itemID = itemID
@@ -129,6 +136,7 @@ final class PendingMediaItemEntity {
         self.latitude = latitude
         self.longitude = longitude
         self.accuracyM = accuracyM
+        self.sticker = sticker
         self.createdAt = createdAt
     }
 }
@@ -167,7 +175,8 @@ extension PendingMediaItemEntity {
             name: name,
             latitude: latitude,
             longitude: longitude,
-            accuracyM: accuracyM)
+            accuracyM: accuracyM,
+            sticker: sticker)
     }
 
     /// This item as the wire shape, once its bytes are on the server.
@@ -189,6 +198,7 @@ extension PendingMediaItemEntity {
             name: name,
             latitude: latitude,
             longitude: longitude,
-            accuracyM: accuracyM)
+            accuracyM: accuracyM,
+            sticker: sticker)
     }
 }

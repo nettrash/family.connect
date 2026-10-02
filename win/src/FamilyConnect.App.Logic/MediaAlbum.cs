@@ -96,7 +96,9 @@ public sealed class MediaAlbum
     public string ZoomText(System.Globalization.CultureInfo culture) => string.Create(culture, $"{Math.Round(Zoom * 100):0}%");
 
     /// <summary>What the item is called — its name, or its kind when it has none.</summary>
-    public string Title(IStringCatalog say) => AttachmentText.DisplayName(Current.Kind, Current.Name, say);
+    public string Title(IStringCatalog say) =>
+        // A sticker is a photo on the wire and a sticker to the person looking at it.
+        Current.Sticker ? say.Get("Sticker") : AttachmentText.DisplayName(Current.Kind, Current.Name, say);
 
     /// <summary>"2 of 5" while there is somewhere to page, and nothing when there is not.</summary>
     public string? Position(IStringCatalog say) => Count > 1 ? say.Format("%lld of %lld", Index + 1, Count) : null;

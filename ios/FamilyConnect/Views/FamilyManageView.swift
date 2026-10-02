@@ -89,6 +89,10 @@ struct FamilyManageView: View {
                     }
                 }
             }
+            // Outside the owner's block on purpose: ANYBODY in the family
+            // may add a sticker, and whoever added one may take it out
+            // (docs/protocol.md, "The pack").
+            stickersSection
             membersSection
         }
         .navigationTitle(session.isOwner ? "Manage Family" : "Family Members")
@@ -426,6 +430,24 @@ struct FamilyManageView: View {
     private func contactLink(for member: MemberDTO) -> ContactLink? {
         _ = linksGeneration
         return ContactLinks.shared.link(for: member.id)
+    }
+
+    /// The family's sticker pack. Absent on a server that predates it —
+    /// the limits it omits are the capability check, and a row that pushed
+    /// a screen of 404s would be worse than no row.
+    @ViewBuilder
+    private var stickersSection: some View {
+        if AppSettings.offersStickers {
+            Section {
+                NavigationLink {
+                    StickerPackView()
+                } label: {
+                    Label("Family Stickers", systemImage: "face.smiling")
+                }
+            } footer: {
+                Text("Pictures everyone in the family can send as stickers in a chat.")
+            }
+        }
     }
 
     @ViewBuilder

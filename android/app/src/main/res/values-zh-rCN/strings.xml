@@ -412,6 +412,7 @@
     <string name="s_assistant_mention_sees_quoted_pictures_and_recent">这条回复提到了助手，所以助手将看到你回复的那些照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
     <string name="s_assistant_mention_sees_both_and_recent">这条回复提到了助手，所以助手将看到这里的照片和你回复的那些照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
     <string name="s_assistant_answer_failed">助手没能完成这条回复。请再问一次。</string>
+    <string name="s_assistant_provider_refused">助手的服务提供方拒绝了这个请求。换个说法试试。</string>
     <string name="s_assistant_vision">允许助手查看照片</string>
     <string name="s_assistant_vision_explanation">当某人在自己与助手的聊天中给问题附上照片、在家庭聊天中给提到助手的消息附上照片，或在提到助手的同时回复一张照片时，这张照片会随问题一起发送给模型，每次提问最多 4 张。没有指给助手看的照片绝不会发送，除非打开了“助手可以查看最近的照片”，否则更早消息中的也不会，视频、文件、语音和位置也一样。默认关闭；关闭时，任何照片都不会被发送。</string>
     <string name="e_change_assistant_vision_failed">无法更改该设置</string>
@@ -532,6 +533,7 @@
     <string name="s_draw_another_backdrop">重新绘制背景图</string>
     <string name="s_drawing">正在绘制…</string>
     <string name="s_draw_failed">无法绘制。</string>
+    <string name="s_describe_in_general_words">请用笼统的词语描述人和事物——真实姓名和品牌常常会被拒绝。</string>
     <string name="s_tick_failed">无法勾选。</string>
     <string name="s_no_calendar_app">没有可添加的日历应用。</string>
     <string name="s_the_assistant">助手</string>
@@ -553,4 +555,31 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">在你同意之前，你写的内容不会发给 %1$s，助手也不会回答你。</string>
     <string name="s_consent_stopping_takes_effect_at_once">你写给助手的内容会发给 %1$s。停止后立即生效；已经发出去的收不回来。</string>
     <string name="s_couldnt_save_your_answer">没能保存你的选择。请再试一次。</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">贴纸</string>
+    <string name="s_stickers">贴纸</string>
+    <string name="s_family_stickers">家庭贴纸</string>
+    <string name="s_family_stickers_count">%1$d / %2$d</string>
+    <string name="s_family_stickers_explanation">家里的任何人都可以添加贴纸。添加的人或家庭所有者可以移除它。</string>
+    <string name="s_recently_used">最近使用</string>
+    <string name="s_no_stickers_yet">还没有贴纸</string>
+    <string name="s_no_stickers_hint">在“家庭”页面添加一些吧。</string>
+    <string name="s_add_sticker">添加贴纸</string>
+    <string name="s_add_to_family_stickers">添加到家庭贴纸</string>
+    <string name="s_sticker_label">描述（可选）</string>
+    <string name="s_sticker_label_hint">给屏幕阅读器的几个字，不会显示在图片上。</string>
+    <string name="s_remove_sticker">移除贴纸</string>
+    <string name="s_remove_sticker_q">移除这张贴纸？</string>
+    <string name="s_remove_sticker_explanation">它会从家庭贴纸中移除。已发送的消息仍会保留它。</string>
+    <string name="s_sticker_added">已添加到家庭贴纸</string>
+    <string name="s_sticker_already_in_pack">已在家庭贴纸中</string>
+    <string name="s_sticker_pack_full">家庭已有 %1$d 张贴纸。移除一张才能再添加。</string>
+    <string name="s_sticker_too_large">这张太大了。贴纸最大为 %1$s。</string>
+    <string name="s_sticker_add_failed">无法添加贴纸，请重试。</string>
+    <string name="s_sticker_unreadable">无法读取这张图片。</string>
+    <string name="s_sticker_animated_must_be_webp">动态贴纸必须是 WebP 格式。无法添加这一张。</string>
+    <string name="s_sticker_label_too_long">描述最多 %1$d 个字符。</string>
+    <string name="s_sticker_remove_not_allowed">只有添加贴纸的人或家庭所有者可以移除它。</string>
+    <string name="s_sticker_remove_failed">无法移除贴纸，请重试。</string>
+    <string name="s_sticker_not_available_offline">这张贴纸还不在这部手机上。联网后再试一次。</string>
 </resources>

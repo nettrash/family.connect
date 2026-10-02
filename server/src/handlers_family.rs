@@ -777,8 +777,10 @@ pub async fn my_family(
     // makes on resync, so learning whether a board catch-up is needed
     // costs no extra request. Omitted while the board has never been
     // written to, like max_reaction_seq on an unreacted chat.
-    let last_board_seq: i64 =
-        sqlx::query_scalar("SELECT last_board_seq FROM families WHERE id = $1")
+    // The sticker pack's cursor rides beside it, for the same reason and
+    // under the same rule (protocol.md, "Sticker pack").
+    let (last_board_seq, last_pack_seq): (i64, i64) =
+        sqlx::query_as("SELECT last_board_seq, last_pack_seq FROM families WHERE id = $1")
             .bind(family.id)
             .fetch_one(&state.pool)
             .await?;
@@ -791,6 +793,16 @@ pub async fn my_family(
     if last_board_seq > 0 {
         body["max_board_seq"] = json!(last_board_seq);
     }
+    if last_pack_seq > 0 {
+        body["max_pack_seq"] = json!(last_pack_seq);
+    }
+    // The pack's two ceilings, ALWAYS present: a client refuses an oversized
+    // picture beside the picker rather than after an upload, and — because
+    // a server that predates the pack sends neither — reads their absence
+    // as "no stickers here" and offers no button that would answer 404
+    // (protocol.md, "Sticker pack").
+    body["max_pack_items"] = json!(state.cfg.limits.max_pack_items);
+    body["max_pack_item_bytes"] = json!(state.cfg.limits.max_pack_item_bytes);
     // The assistant rides along too, and for two reasons at once.
     //
     // NAMING: it sends under a reserved account that is in no roster (it
@@ -1655,6 +1667,11 @@ pub(crate) fn member_from_row(row: &PgRow, owner_user_id: i64) -> Member {
 /// `sweep_unclaimed` takes both together when the grace period is up.
 /// Collecting them costs nothing and means this list is "every file this
 /// family could name", which is the question worth asking here.
+///
+/// That second half is also what finds the family's STICKER PACK (0048):
+/// a pack picture names no message, its row goes by cascade with the item,
+/// and it was uploaded into this family — `handlers_pack` refuses to claim
+/// one that was not, precisely so this list stays complete.
 pub(crate) async fn delete_family_in_tx(
     tx: &mut PgConnection,
     family_id: i64,

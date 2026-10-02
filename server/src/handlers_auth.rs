@@ -691,9 +691,12 @@ pub async fn scrub_account(
     // account that no longer exists, and nothing else would remove it for
     // hours. A CLAIMED one is not touched: its message — or the board note
     // it is pinned to, which survives the account like the message does —
-    // is part of the shared record and keeps its picture.
+    // is part of the shared record and keeps its picture. So is a sticker
+    // they added to the family's pack (0048): the pack is the family's.
     sqlx::query(
-        "DELETE FROM attachments WHERE uploader_id = $1 AND message_id IS NULL AND note_id IS NULL",
+        "DELETE FROM attachments
+          WHERE uploader_id = $1 AND message_id IS NULL AND note_id IS NULL
+            AND pack_item_id IS NULL",
     )
     .bind(user_id)
     .execute(&mut *tx)

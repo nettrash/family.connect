@@ -37,6 +37,7 @@
 package me.nettrash.familyconnect.ui.chat
 
 import me.nettrash.familyconnect.data.db.MessageEntity
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.PollCodec
 import me.nettrash.familyconnect.ui.components.AttachmentAlbum
 import me.nettrash.familyconnect.data.net.dto.PollDto
@@ -452,6 +453,42 @@ fun isMediaOnly(entity: MessageEntity, isStreaming: Boolean = false): Boolean {
     if (entity.replyToMessageId != null || entity.pollJson != null || entity.call != null) return false
     val attachments = entity.attachmentList
     return attachments.isNotEmpty() && AttachmentAlbum.rows(attachments).isEmpty()
+}
+
+/**
+ * The picture of a message sent as a STICKER, or null when the message is
+ * not one (docs/protocol.md, "Sticker pack").
+ *
+ * The chat kind of sticker — a small picture sent as its own message — and
+ * nothing to do with a board note, which this codebase also calls one.
+ *
+ * Decided from the ATTACHMENT's own `sticker` flag, which the server stamps
+ * at send time and every read carries from then on. A message cached by a
+ * build from before the field has no flag and draws exactly as it always
+ * did: a photo, in the bare media treatment above.
+ *
+ * THE TEST, the same on every client: the message has exactly ONE
+ * attachment, that attachment is `kind=photo`, and it carries
+ * `sticker: true`. Nothing else is asked — not the body, which the server
+ * refuses beside the flag on the send and on an edit alike, so that a
+ * client which looked at it could only ever disagree with one that did not.
+ */
+fun stickerOf(entity: MessageEntity): AttachmentDto? =
+    entity.attachmentList.singleOrNull()?.takeIf { it.isSticker }
+
+/**
+ * Whether "Edit" is offered on a message: the reader's own, once the server
+ * has it — and NEVER A STICKER.
+ *
+ * Said outright rather than left to follow from a sticker having no words:
+ * `PATCH` on a sticker message is `validation` (docs/protocol.md, "Sending
+ * one" — "a client offers no Edit on a sticker"), because the edit path
+ * would let its author put words on a message drawn with no bubble to hold
+ * them, and never take them off again.
+ */
+fun canEditMessage(entity: MessageEntity, myUserId: Long?): Boolean {
+    if (stickerOf(entity) != null) return false
+    return entity.serverId != null && entity.senderId == myUserId
 }
 
 /**

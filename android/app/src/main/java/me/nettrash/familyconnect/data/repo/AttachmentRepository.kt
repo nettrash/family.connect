@@ -399,6 +399,83 @@ class AttachmentRepository @Inject constructor(
         return true
     }
 
+    // -- A sticker's original bytes ----------------------------------------
+
+    /** Original-byte fetches in flight, keyed by attachment id. */
+    private val originalFetches = HashMap<Long, Deferred<File?>>()
+
+    /**
+     * The ORIGINAL bytes of a picture, as a file — downloading them if this
+     * device does not hold them yet. Null when they could not be fetched.
+     *
+     * What a STICKER draws from (docs/protocol.md, "Sticker pack"): always
+     * `GET /attachments/{id}` and never `/preview`, WHATEVER `has_preview`
+     * says — it can say true by dedup inheritance, and a preview is a JPEG
+     * with no transparency and one frame. A file rather than a decoded
+     * bitmap, unlike [load], because an animated sticker is played from its
+     * bytes and a Bitmap is frame zero.
+     *
+     * The same file [load] keeps for `preview = false`, so a picture this
+     * device already fetched as a photo is not fetched again.
+     *
+     * A NEGATIVE id is a placeholder the server has never heard of
+     * (PendingAttachmentEntity.placeholderId): its bytes are here because
+     * [seedOriginal] put them here, or they are nowhere — asking the server
+     * would be a guaranteed 404.
+     */
+    suspend fun originalFile(attachmentId: Long): File? {
+        val key = Key(attachmentId, false)
+        val existing = withContext(Dispatchers.IO) { fileFor(key).takeIf { it.isFile && it.length() > 0 } }
+        if (existing != null) return existing
+        if (attachmentId < 0) return null
+        val startedAt = generation
+        val running = guard.withLock {
+            if (key in missing) return null
+            originalFetches.getOrPut(attachmentId) {
+                scope.async {
+                    withContext(Dispatchers.IO) {
+                        val file = fileFor(key)
+                        when (attachmentApi.download(attachmentId, preview = false, destination = file)) {
+                            is ApiResult.Ok -> file.takeIf { it.isFile }
+                            // A server that ANSWERED said no — settled, as
+                            // in [startFetch]; the network returning clears
+                            // `missing` and bumps [retryToken].
+                            is ApiResult.HttpError -> {
+                                guard.withLock { if (startedAt == generation) missing += key }
+                                null
+                            }
+                            // Nobody answered. NOT final.
+                            is ApiResult.NetworkError -> null
+                        }
+                    }
+                }
+            }
+        }
+        return try {
+            running.await()
+        } finally {
+            guard.withLock { originalFetches.remove(attachmentId) }
+        }
+    }
+
+    /** See [PosterCache.seedOriginal]. */
+    override suspend fun seedOriginal(attachmentId: Long, source: File) {
+        withContext(Dispatchers.IO) {
+            val file = fileFor(Key(attachmentId, false))
+            file.parentFile?.mkdirs()
+            // Through a `.part` and a rename, like a download: a reader must
+            // never find half a sticker under the final name.
+            val part = File(file.parentFile, file.name + ".part")
+            runCatching {
+                source.copyTo(part, overwrite = true)
+                if (!part.renameTo(file)) part.delete()
+            }.onFailure { part.delete() }
+        }
+        withContext(Dispatchers.Main.immediate) {
+            guard.withLock { missing.remove(Key(attachmentId, false)) }
+        }
+    }
+
     /** Where the "this poster never reached the server" note for an
      *  attachment lives: beside its bytes, under the same id. */
     private fun posterMarker(attachmentId: Long): File =
