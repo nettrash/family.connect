@@ -99,6 +99,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import me.nettrash.familyconnect.ui.stickers.FamilyStickersSection
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.ui.components.readableColumn
@@ -781,6 +782,15 @@ fun FamilyAdminScreen(
                 )
                 SectionDivider()
             }
+
+            // -- Family stickers ----------------------------------------------------
+            // For EVERY member, above the roster and outside the owner's
+            // block: anybody in the family may add to the pack, and whoever
+            // added an item — or the owner — may remove it. Draws nothing at
+            // all on a server that predates packs (docs/protocol.md,
+            // "Sticker pack"). The chat kind of sticker; nothing to do with
+            // the board's notes.
+            FamilyStickersSection()
 
             // -- Members ------------------------------------------------------------
             Text(

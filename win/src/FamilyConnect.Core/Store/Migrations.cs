@@ -215,8 +215,54 @@ public static class Migrations
     ];
 
     /// <summary>
+    /// Step 4: THE FAMILY'S STICKER PACK, kept as the board is kept (docs/protocol.md, "Sticker
+    /// pack") — and the one bit a queued send needs to stay a sticker across a relaunch. Nothing
+    /// held is read again: every table here is new, and the outbox only gains a column whose
+    /// default is what every row already in it means.
+    /// </summary>
+    private static readonly string[] Four =
+    [
+        """
+        -- A pack ITEM: a picture the family keeps. Not a message and not a board note — "sticker"
+        -- elsewhere in this cache's code means the card a note is drawn as, which is why these
+        -- tables say `pack`, as the wire does.
+        CREATE TABLE pack_items (
+            item_id     INTEGER PRIMARY KEY,
+            added_by    INTEGER NOT NULL DEFAULT 0,
+            -- A few words for a screen reader, when whoever added it gave any; NULL is none.
+            label       TEXT,
+            created_at  INTEGER NOT NULL DEFAULT 0,
+            pack_seq    INTEGER NOT NULL DEFAULT 0,
+            -- The picture, verbatim. Its ORIGINAL bytes are what is drawn, whatever
+            -- `has_preview` in here says.
+            attachment_json TEXT NOT NULL
+        )
+        """,
+        """
+        -- THE ITEMS A REMOVAL HAS TAKEN, and they never come back: ids are never reused, so an
+        -- older copy arriving late — a frame that crossed the tombstone, a slower full read —
+        -- must not put a sticker the family took out back in the panel. The board's `gone`, one
+        -- table over.
+        CREATE TABLE pack_gone (
+            item_id INTEGER PRIMARY KEY
+        )
+        """,
+        """
+        -- Which stickers THIS DEVICE sent most recently, so the panel can put them first. Never
+        -- on the wire: it says something about a person's habits and nothing about the pack.
+        CREATE TABLE pack_recents (
+            item_id INTEGER PRIMARY KEY,
+            used_at INTEGER NOT NULL
+        )
+        """,
+        // A queued send that is a STICKER: the flag has to survive the app closing, or a sticker
+        // tapped offline would land the next morning as a photo in a bubble.
+        "ALTER TABLE outbox ADD COLUMN sticker INTEGER NOT NULL DEFAULT 0",
+    ];
+
+    /// <summary>
     /// Every step, in order. The index is the version it upgrades FROM, so
     /// <c>All.Count</c> is the schema this build expects.
     /// </summary>
-    public static readonly IReadOnlyList<string[]> All = [One, Two, Three];
+    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four];
 }

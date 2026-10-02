@@ -10,8 +10,8 @@ use fc_text::i18n::t;
 use std::collections::{HashMap, HashSet};
 
 use crate::model::{
-    Assistant, ChatListItem, Me, Member, Mention, Message, Poll, PollOption, Reaction, ReplyParent,
-    ReplyTo, Roster, User,
+    AiFailure, Assistant, ChatListItem, Me, Member, Mention, Message, Poll, PollOption, Reaction,
+    ReplyParent, ReplyTo, Roster, User,
 };
 use crate::staged::{OutgoingItem, Prepared, StagedBytes};
 
@@ -230,6 +230,12 @@ pub struct Outgoing {
     /// locations"). Uploaded one at a time before the message is sent.
     #[serde(default)]
     pub items: Vec<OutgoingItem>,
+    /// This message is a STICKER: its one attachment is sent with
+    /// `sticker: true`, and its bytes go up exactly as they are
+    /// (docs/protocol.md, "Sending one"). On the row, so a retry — and a
+    /// reload — sends the same flag.
+    #[serde(default)]
+    pub sticker: bool,
     /// Tries whose outcome was UNKNOWN. A refusal is not counted here: it
     /// ends the row outright.
     pub attempts: u32,
@@ -248,6 +254,8 @@ pub struct Draft {
     pub mentions: Vec<Mention>,
     pub poll: Option<Vec<String>>,
     pub attachments: Vec<Prepared>,
+    /// Sent as a sticker: one picture, no words, no bubble.
+    pub sticker: bool,
 }
 
 /// Why a queued message whose bytes a reload took fails at once — it has
@@ -354,8 +362,9 @@ pub struct Store {
     /// The peer's read marker in a DIRECT chat — the highest id they have
     /// reported, which is what a "seen" tick compares against.
     pub peer_read: HashMap<i64, i64>,
-    /// Assistant answers that stopped early (`ai_error`).
-    pub ai_failed: HashSet<i64>,
+    /// Assistant answers that stopped early (`ai_error`), each with what it
+    /// says about it — remembered for exactly as long as the failure is.
+    pub ai_failed: HashMap<i64, AiFailure>,
     /// What was being typed in a chat the reader left.
     pub drafts: HashMap<i64, String>,
     pub thread_view: Option<ThreadView>,
@@ -385,6 +394,8 @@ pub struct Store {
     pub listed: HashMap<i64, i64>,
     /// The family board (board.rs).
     pub board: crate::board::Board,
+    /// The family's sticker pack (pack.rs).
+    pub pack: crate::pack::Pack,
     /// The whole of the last `GET /me` — the role, a join request still
     /// waiting, the server's switches — and None until it has answered.
     pub account: Option<Me>,
@@ -531,6 +542,9 @@ impl Store {
         let board = std::mem::take(&mut self.board);
         self.board.marks = board.marks;
         self.board.marks_for = board.marks_for;
+        // The pack was the old family's, whole: nothing of it is the
+        // person's to keep, and the new family's is read from nothing.
+        self.pack = crate::pack::Pack::default();
         // The assistant's chat is the person's, not the family's: leaving
         // takes the family chat and the direct chats and nothing else
         // (docs/protocol.md, `POST /families/leave`), so it keeps its
@@ -603,6 +617,12 @@ impl Store {
         }
         self.members = roster.members.clone();
         self.assistant = roster.assistant.clone();
+        // Both limits or neither: a server that has packs always sends the
+        // two, and one that sends neither predates them.
+        self.pack.limits = roster
+            .max_pack_items
+            .zip(roster.max_pack_item_bytes)
+            .map(|(items, bytes)| crate::pack::Limits { items, bytes });
         self.blocked = roster.blocked_user_ids.iter().copied().collect();
         // The roster names every member's role, this account's too — and it
         // is fresher than the `/me` it may follow, and than a `family_owner`
@@ -794,7 +814,7 @@ impl Store {
             let lost = row
                 .items
                 .iter()
-                .any(|item| item.attachment_id.is_none() && !item.is_location());
+                .any(|item| item.attachment_id.is_none() && !item.survives_reload());
             if lost {
                 row.failed = Some(lost_in_reload().to_string());
             }
@@ -1148,9 +1168,10 @@ impl Store {
         });
     }
 
-    /// The assistant stopped early: the row keeps what arrived, and says so.
-    pub fn apply_ai_error(&mut self, message_id: i64) {
-        self.ai_failed.insert(message_id);
+    /// The assistant stopped early: the row keeps what arrived, and says so
+    /// — and says WHY when the frame did, the latest frame's word winning.
+    pub fn apply_ai_error(&mut self, message_id: i64, failure: AiFailure) {
+        self.ai_failed.insert(message_id, failure);
     }
 
     /// Move a catch-up cursor forward — from a catch-up page always, from a
@@ -1195,6 +1216,7 @@ impl Store {
             mentions: draft.mentions,
             poll: draft.poll,
             items,
+            sticker: draft.sticker,
             attempts: 0,
             failed: None,
         });
@@ -1220,8 +1242,16 @@ impl Store {
                 .and_then(|quoted| quoted.thread_root_id)
                 .unwrap_or(id)
         });
-        let attachments: Vec<crate::model::Attachment> =
-            row.items.iter().map(OutgoingItem::as_attachment).collect();
+        // A sticker's pending bubble is already the sticker: drawn bare,
+        // from this tab's own bytes, before the server has said anything.
+        let attachments: Vec<crate::model::Attachment> = row
+            .items
+            .iter()
+            .map(|item| crate::model::Attachment {
+                sticker: row.sticker,
+                ..item.as_attachment()
+            })
+            .collect();
         let pending = Message {
             id: 0,
             chat_id,
@@ -1272,7 +1302,8 @@ impl Store {
 
     /// The server swept this row's uploads before the message claimed them
     /// (`attachment_expired`): upload them again — possible only while every
-    /// item still has its bytes, or is a location, which needs none.
+    /// item still has its bytes, or is a location, which needs none, or a
+    /// sticker, whose bytes are the pack's to fetch again.
     /// Answers whether the row can go on.
     pub fn expire_uploads(&mut self, client_msg_id: &str) -> bool {
         let Some(row) = self
@@ -1284,7 +1315,7 @@ impl Store {
         };
         let recoverable = !row.items.is_empty()
             && row.items.iter().all(|item| {
-                item.is_location()
+                item.survives_reload()
                     || self
                         .bytes
                         .get(&item.provisional_id)
@@ -2138,6 +2169,38 @@ mod tests {
             Some("Sure — seven works."),
             "a delta after the finished row is late and ignored"
         );
+    }
+
+    /// A failed answer remembers WHICH failure it was, for exactly as long
+    /// as it remembers that it failed: a refusal stays a refusal through
+    /// every redraw, a later frame's word wins, and a finished row or a
+    /// sign-out forgets both at once (docs/protocol.md, "The assistant").
+    #[wasm_bindgen_test]
+    fn a_failed_answer_remembers_why_until_it_is_finished() {
+        let mut store = store();
+        store.apply_message(message(100, 2, ""), Some(42), Via::Frame);
+        store.apply_message(message(101, 2, "Half an"), Some(42), Via::Frame);
+        store.apply_ai_error(100, AiFailure::Refused);
+        store.apply_ai_error(101, AiFailure::Failed);
+        assert_eq!(store.ai_failed.get(&100), Some(&AiFailure::Refused));
+        assert_eq!(store.ai_failed.get(&101), Some(&AiFailure::Failed));
+
+        store.apply_ai_error(101, AiFailure::Refused);
+        assert_eq!(
+            store.ai_failed.get(&101),
+            Some(&AiFailure::Refused),
+            "the latest frame's word wins"
+        );
+
+        let mut done = message(100, 2, "Here it is after all.");
+        done.edit_seq = Some(1);
+        store.apply_edit(done);
+        assert_eq!(
+            store.ai_failed.get(&100),
+            None,
+            "a finished answer is a finished answer"
+        );
+        assert_eq!(store.ai_failed.get(&101), Some(&AiFailure::Refused));
     }
 
     // --- Cursors ----------------------------------------------------------
@@ -3291,5 +3354,147 @@ mod tests {
         assert_eq!(store.roster_changes, before + 1, "a changed family counts");
         store.apply_roster(&roster);
         assert_eq!(store.roster_changes, before + 1, "the same family does not");
+    }
+
+    fn sticker_draft(source: i64) -> Draft {
+        Draft {
+            attachments: vec![Prepared {
+                kind: "photo".into(),
+                mime: "image/webp".into(),
+                size: 18_234,
+                width: Some(512),
+                height: Some(512),
+                file: Some(web_sys::Blob::new().expect("a blob")),
+                source_attachment_id: Some(source),
+                ..Prepared::default()
+            }],
+            sticker: true,
+            ..Draft::default()
+        }
+    }
+
+    /// A sticker is a message like any other in the outbox — one row, one
+    /// bubble, drawn at once — and its bubble is already the sticker: the
+    /// flag is on the pending attachment, not waiting for the server.
+    #[wasm_bindgen_test]
+    fn a_queued_sticker_draws_as_one_at_once() {
+        let mut store = store();
+        store.queue_send(42, "s".into(), sticker_draft(71));
+        let row = &store.outbox[0];
+        assert!(row.sticker && row.body.is_empty() && row.items.len() == 1);
+        assert_eq!(row.items[0].source_attachment_id, Some(71));
+        assert!(!row.items[0].has_preview, "a sticker has no preview");
+        let pending = &store.threads[&42].messages[0];
+        let drawn = pending
+            .sticker()
+            .expect("the pending bubble is the sticker");
+        assert_eq!(drawn.id, row.items[0].provisional_id);
+        assert_eq!(drawn.mime.as_deref(), Some("image/webp"));
+        // An ordinary photo beside it is not one.
+        store.queue_send(
+            42,
+            "p".into(),
+            Draft {
+                attachments: vec![Prepared {
+                    kind: "photo".into(),
+                    mime: "image/jpeg".into(),
+                    file: Some(web_sys::Blob::new().expect("a blob")),
+                    ..Prepared::default()
+                }],
+                ..Draft::default()
+            },
+        );
+        assert!(!store.outbox[1].sticker);
+        assert!(store.threads[&42].messages[1].sticker().is_none());
+    }
+
+    /// A reload keeps no bytes — and a queued sticker goes all the same:
+    /// its bytes are the pack's, and the upload fetches them again. The row
+    /// comes back queued, flag and all; a photo beside it fails as before.
+    #[wasm_bindgen_test]
+    fn a_queued_sticker_survives_a_reload() {
+        let mut before = store();
+        before.queue_send(42, "s".into(), sticker_draft(71));
+        let kept = serde_json::to_string(&before.outbox).expect("the outbox is kept as JSON");
+        let rows: Vec<Outgoing> = serde_json::from_str(&kept).expect("and read back");
+
+        let mut after = store();
+        after.restore_outbox(rows);
+        assert!(after.failed_sends(42).is_empty(), "still on its way");
+        let row = after.next_to_send().expect("queued");
+        assert!(row.sticker, "the flag rides on the row");
+        assert_eq!(row.items[0].source_attachment_id, Some(71));
+        assert!(after.bytes.is_empty(), "the bytes did not come back");
+        assert!(after.threads[&42].messages[0].sticker().is_some());
+        // Swept before the message claimed it: it can go up again, from
+        // the pack, with no bytes held.
+        let provisional = row.items[0].provisional_id;
+        after.landed("s", provisional, 501);
+        assert!(after.expire_uploads("s"));
+        assert_eq!(after.outbox[0].items[0].attachment_id, None);
+
+        // A row a build from before stickers kept reads as an ordinary one.
+        let old: Outgoing = serde_json::from_str(
+            r#"{"chat_id": 42, "client_msg_id": "old", "body": "hi", "reply_to_message_id": null,
+                "mentions": [], "poll": null, "attempts": 0, "failed": null,
+                "items": [{"provisional_id": -1, "kind": "photo", "mime": "image/jpeg", "size": 3,
+                           "width": null, "height": null, "duration_ms": null, "name": null,
+                           "latitude": null, "longitude": null, "accuracy_m": null,
+                           "has_preview": false, "attachment_id": null}]}"#,
+        )
+        .expect("an older row reads");
+        assert!(!old.sticker);
+        assert_eq!(old.items[0].source_attachment_id, None);
+    }
+
+    /// The pack's limits ride on the roster, and are the capability: with
+    /// them there are stickers, without them — a server from before packs —
+    /// there are none. And the pack is the FAMILY's: leaving takes it, the
+    /// way it takes the wall.
+    #[wasm_bindgen_test]
+    fn the_roster_offers_the_pack_and_leaving_takes_it() {
+        let mut store = store();
+        store.apply_me(&account(Some(3), false));
+        store.apply_roster(&Roster::default());
+        assert!(!store.pack.is_offered(), "an older server offers none");
+        store.apply_roster(&Roster {
+            max_pack_items: Some(200),
+            max_pack_item_bytes: Some(524_288),
+            ..Roster::default()
+        });
+        assert_eq!(
+            store.pack.limits,
+            Some(crate::pack::Limits {
+                items: 200,
+                bytes: 524_288
+            })
+        );
+        store.pack.apply_full(
+            vec![crate::model::PackItem {
+                id: 5,
+                pack_seq: 12,
+                added_by: Some(ANNA),
+                attachment: Some(crate::model::Attachment {
+                    id: 71,
+                    kind: "photo".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            12,
+        );
+        // A BLOCK hides nothing of the pack: an item is a picture the
+        // family keeps, not something a person said.
+        store.set_blocked(ANNA, true);
+        assert_eq!(store.pack.listed().len(), 1);
+        assert_eq!(store.pack.panel().len(), 1);
+
+        store.apply_me(&account(Some(4), false));
+        assert!(store.pack.items.is_empty() && !store.pack.loaded);
+        assert_eq!(store.pack.cursor, 0, "the next read is a whole one");
+        assert!(
+            !store.pack.is_offered(),
+            "until the new family's roster says"
+        );
     }
 }

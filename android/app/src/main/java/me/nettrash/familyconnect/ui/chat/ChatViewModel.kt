@@ -98,6 +98,7 @@ import me.nettrash.familyconnect.data.net.ws.SocketState
 import me.nettrash.familyconnect.data.push.PushNotifications
 import me.nettrash.familyconnect.data.repo.ChatRepository
 import android.content.Context
+import me.nettrash.familyconnect.data.repo.AssistantFailure
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.repo.VoiceRecorder
@@ -612,10 +613,11 @@ class ChatViewModel @Inject constructor(
      *
      * The bubble needs it: a picture answer that failed has an empty row
      * and no deltas ever arrived, so without this it is a blank balloon
-     * that never resolves (docs/protocol.md, "Pictures").
+     * that never resolves (docs/protocol.md, "Pictures"). Each carries HOW
+     * it failed, which picks the sentence it shows (AssistantAnswer).
      */
-    val failedAssistantMessageIds: StateFlow<Set<Long>> =
-        messageRepository.failedAssistantMessageIds
+    val failedAssistantAnswers: StateFlow<Map<Long, AssistantFailure>> =
+        messageRepository.failedAssistantAnswers
 
     /** Open the poll sheet on a fresh draft — two empty options, no question. */
     fun beginPoll() {
@@ -1036,6 +1038,27 @@ class ChatViewModel @Inject constructor(
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /**
+     * Whether the composer says, under a picture request being typed,
+     * that real names and brands are often refused (docs/protocol.md,
+     * "Pictures"). Only where [canAskForPicture] offers `/draw` at all,
+     * never while the composer is borrowed for an edit; the rule is
+     * [PictureDescriptionHint.inComposer], pinned by its own tests.
+     *
+     * Eager, for [mentionPictureNotice]'s reason: the line has to be
+     * there on the frame the "ask for a picture" button leaves `/draw `.
+     */
+    val showsPictureDescriptionHint: StateFlow<Boolean> =
+        combine(chat, draftText, canAskForPicture, _editTarget) {
+                chatEntity, draft, offered, editing ->
+            PictureDescriptionHint.inComposer(
+                draft = draft,
+                picturesOffered = offered,
+                inFamilyChat = chatEntity?.kind == "family",
+                editing = editing != null,
+            )
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
      * WHO ANSWERS, verbatim as the operator named them, or null on a
      * server that named nobody — which is a server whose assistant this
      * client does not offer at all (docs/protocol.md, "Consenting to the
@@ -1245,6 +1268,53 @@ class ChatViewModel @Inject constructor(
         val quote = _replyDraft.value
         _replyDraft.value = null
         viewModelScope.launch { messageRepository.send(chatId, body, quote, resolvedMentions(body)) }
+    }
+
+    /**
+     * A sticker was tapped in the panel: decide whether it may go, and hand
+     * [go] the quote it answers.
+     *
+     * The sticker itself is sent by StickerViewModel — the pack is not this
+     * model's — but two things about a send ARE this model's, and a sticker
+     * is a send like any other (docs/protocol.md, "Sending one"):
+     *
+     *  - THE REPLY DRAFT. A sticker may be a reply, which is how one
+     *    answers something. Read and cleared together, as [send] does, so
+     *    the quote does not silently ride on the next message too.
+     *  - NOTHING REACHES THE MODEL UNASKED. In the member's own `ai` chat a
+     *    sticker is a photo to the assistant, so the consent question is
+     *    asked first, exactly as for words; the server would refuse it with
+     *    `assistant_consent_required` otherwise, and that is a red bubble
+     *    where a question belongs. A server that names no processor gets
+     *    nothing at all. (In the family chat a sticker has no body and so
+     *    can never say `@ai`.)
+     *
+     * The typed draft is left alone: one tap sends the sticker, not the
+     * sentence somebody was in the middle of.
+     */
+    fun beginStickerSend(go: (ReplyToDto?) -> Unit) {
+        // An edit has borrowed the composer; the button is disabled then,
+        // and this is the same answer for anything that got past it.
+        if (_editTarget.value != null) return
+        viewModelScope.launch {
+            val settingsState = settings.state.first()
+            when (
+                AssistantConsent.stickerGate(
+                    chatKind = chat.value?.kind,
+                    hasAssistant = settingsState.assistantUserId != null,
+                    processor = settingsState.assistantProcessor,
+                    agreedAt = settingsState.assistantConsentAt,
+                )
+            ) {
+                AssistantConsent.StickerGate.WITHHELD -> Unit
+                AssistantConsent.StickerGate.ASK -> _assistantConsentAsked.value = true
+                AssistantConsent.StickerGate.SEND -> {
+                    val quote = _replyDraft.value
+                    _replyDraft.value = null
+                    go(quote)
+                }
+            }
+        }
     }
 
     /**

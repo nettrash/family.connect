@@ -117,6 +117,10 @@ fn attachment_summary(message: &Message) -> Option<String> {
     };
     if let [attachment] = attachments {
         return Some(match attachment.kind.as_str() {
+            // A sticker is a photo on the wire and its own word on a lock
+            // screen: "Photo" for a dancing cat promises a picture of
+            // somebody (protocol.md, "Sticker pack").
+            "photo" if attachment.sticker => "Sticker".to_string(),
             "photo" => "Photo".to_string(),
             "video" => "Video".to_string(),
             // A voice note has no name worth showing, so the kind is the
@@ -897,6 +901,7 @@ mod tests {
                     latitude: None,
                     longitude: None,
                     accuracy_m: None,
+                    sticker: false,
                 }),
                 ..protocol_message()
             }
@@ -1001,6 +1006,7 @@ mod tests {
                 latitude: None,
                 longitude: None,
                 accuracy_m: None,
+                sticker: false,
             }
         }
         fn with_attachments(list: Vec<crate::models::Attachment>) -> Message {
@@ -1207,5 +1213,50 @@ mod tests {
             2,
             "exactly the badge and its filtered subset, never a second count: {query}"
         );
+    }
+
+    /// A sticker is a photo on the wire and its own word on a lock screen
+    /// (protocol.md, "Sticker pack"): the flag changes what one picture is
+    /// CALLED, and nothing about how an album is counted.
+    #[test]
+    fn a_sticker_is_called_a_sticker() {
+        fn picture(sticker: bool) -> crate::models::Attachment {
+            crate::models::Attachment {
+                id: 90,
+                kind: "photo".to_string(),
+                mime: "image/webp".to_string(),
+                size: 4096,
+                width: None,
+                height: None,
+                duration_ms: None,
+                has_preview: false,
+                name: None,
+                latitude: None,
+                longitude: None,
+                accuracy_m: None,
+                sticker,
+            }
+        }
+        fn carrying(picture: crate::models::Attachment) -> Message {
+            Message {
+                body: String::new(),
+                attachment: Some(picture.clone()),
+                attachments: Some(vec![picture]),
+                ..protocol_message()
+            }
+        }
+        assert_eq!(
+            attachment_summary(&carrying(picture(true))).as_deref(),
+            Some("Sticker")
+        );
+        // The same WebP sent as an ordinary photo is still a photo.
+        assert_eq!(
+            attachment_summary(&carrying(picture(false))).as_deref(),
+            Some("Photo")
+        );
+        // And the operator's switch still withholds it.
+        let hidden =
+            message_notification(false, "direct", "", "Anna", &carrying(picture(true)), 1, 1);
+        assert_eq!(hidden.body, "New message");
     }
 }

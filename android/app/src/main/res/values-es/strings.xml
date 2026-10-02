@@ -422,6 +422,7 @@
     <string name="s_assistant_mention_sees_quoted_pictures_and_recent">Esta respuesta menciona al asistente, así que se le mostrarán las fotos a las que respondes, y hasta %1$d de las fotos más recientes de este chat pueden ir también. Salen de este servidor hacia el modelo con el que habla.</string>
     <string name="s_assistant_mention_sees_both_and_recent">Esta respuesta menciona al asistente, así que se le mostrarán las fotos de aquí y aquellas a las que respondes, y hasta %1$d de las fotos más recientes de este chat pueden ir también. Salen de este servidor hacia el modelo con el que habla.</string>
     <string name="s_assistant_answer_failed">El asistente no pudo terminar esta respuesta. Vuelve a preguntar.</string>
+    <string name="s_assistant_provider_refused">El proveedor del asistente lo rechazó. Prueba a decirlo de otra manera.</string>
     <string name="s_assistant_vision">El asistente puede mirar fotos</string>
     <string name="s_assistant_vision_explanation">Cuando alguien adjunta una foto a una pregunta en su propio chat con el asistente, la adjunta a un mensaje que menciona al asistente en el chat familiar, o responde a una foto mencionándolo, esa foto se envía al modelo junto con la pregunta: como máximo 4 por pregunta. Una foto que nadie le haya señalado al asistente nunca se envía, ni siquiera desde un mensaje anterior salvo que «El asistente ve las fotos recientes» esté activado, y tampoco los vídeos, archivos, audios ni ubicaciones. Desactivado salvo que lo actives; desactivado, no se envía ninguna foto.</string>
     <string name="e_change_assistant_vision_failed">No se pudo cambiar ese ajuste</string>
@@ -551,6 +552,7 @@
     <string name="s_draw_another_backdrop">Dibujar otro fondo</string>
     <string name="s_drawing">Dibujando…</string>
     <string name="s_draw_failed">No se pudo dibujar.</string>
+    <string name="s_describe_in_general_words">Describe a las personas y las cosas con palabras generales: los nombres reales y las marcas se suelen rechazar.</string>
     <string name="s_tick_failed">No se pudo marcar.</string>
     <string name="s_no_calendar_app">No hay app de calendario donde añadirlo.</string>
     <string name="s_the_assistant">El asistente</string>
@@ -572,4 +574,31 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">Hasta que aceptes, nada de lo que escribas se envía a %1$s y el asistente no te responde.</string>
     <string name="s_consent_stopping_takes_effect_at_once">Lo que escribes al asistente se envía a %1$s. Detenerlo surte efecto de inmediato; lo ya enviado no se puede recuperar.</string>
     <string name="s_couldnt_save_your_answer">No se pudo guardar tu respuesta. Inténtalo de nuevo.</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">Sticker</string>
+    <string name="s_stickers">Stickers</string>
+    <string name="s_family_stickers">Stickers de la familia</string>
+    <string name="s_family_stickers_count">%1$d de %2$d</string>
+    <string name="s_family_stickers_explanation">Cualquiera de la familia puede añadir un sticker. Quien lo añadió, o el propietario de la familia, puede quitarlo.</string>
+    <string name="s_recently_used">Usados recientemente</string>
+    <string name="s_no_stickers_yet">Aún no hay stickers</string>
+    <string name="s_no_stickers_hint">Añade algunos desde la pantalla Familia.</string>
+    <string name="s_add_sticker">Añadir sticker</string>
+    <string name="s_add_to_family_stickers">Añadir a los stickers de la familia</string>
+    <string name="s_sticker_label">Descripción (opcional)</string>
+    <string name="s_sticker_label_hint">Unas palabras para el lector de pantalla. Nunca se dibujan sobre la imagen.</string>
+    <string name="s_remove_sticker">Quitar sticker</string>
+    <string name="s_remove_sticker_q">¿Quitar este sticker?</string>
+    <string name="s_remove_sticker_explanation">Deja de estar en los stickers de la familia. Los mensajes ya enviados lo conservan.</string>
+    <string name="s_sticker_added">Añadido a los stickers de la familia</string>
+    <string name="s_sticker_already_in_pack">Ya está en los stickers de la familia</string>
+    <string name="s_sticker_pack_full">La familia ya tiene %1$d stickers. Quita uno para añadir otro.</string>
+    <string name="s_sticker_too_large">Ese es demasiado grande. Un sticker puede ocupar como máximo %1$s.</string>
+    <string name="s_sticker_add_failed">No se pudo añadir el sticker. Inténtalo de nuevo.</string>
+    <string name="s_sticker_unreadable">No se pudo leer esa imagen.</string>
+    <string name="s_sticker_animated_must_be_webp">Los stickers animados deben ser WebP. Este no se puede añadir.</string>
+    <string name="s_sticker_label_too_long">Una descripción puede tener como máximo %1$d caracteres.</string>
+    <string name="s_sticker_remove_not_allowed">Solo quien añadió un sticker, o el propietario de la familia, puede quitarlo.</string>
+    <string name="s_sticker_remove_failed">No se pudo quitar el sticker. Inténtalo de nuevo.</string>
+    <string name="s_sticker_not_available_offline">Ese sticker aún no está en este teléfono. Inténtalo de nuevo cuando tengas conexión.</string>
 </resources>

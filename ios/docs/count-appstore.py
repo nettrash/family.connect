@@ -36,6 +36,7 @@ STAND_INS = {
 FIELDS = [
     ("Subtitle", 30),
     ("Promotional Text", 170),
+    ("What's New in 1.2", 4000),
     ("What's New in 1.1", 4000),
     ("Description", 4000),
     ("Keywords", 100),
@@ -43,6 +44,7 @@ FIELDS = [
     ("Beta App Description", 4000),
     ("What to Test", 4000),
     ("macOS Promotional Text", 170),
+    ("macOS What's New in 1.2", 4000),
     ("macOS What's New in 1.1", 4000),
     ("macOS — Notes for App Review", 4000),
     ("macOS Beta App Description", 4000),

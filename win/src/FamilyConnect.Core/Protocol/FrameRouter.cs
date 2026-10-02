@@ -33,7 +33,7 @@ namespace FamilyConnect.Core.Protocol;
 /// message it names is one this device does not hold — the state is dropped, the cursor is not.
 /// </para>
 /// </remarks>
-public sealed class FrameRouter(ChatStore chats, BoardStore board)
+public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pack = null)
 {
     /// <summary>A message that is NEW — the only frame that may raise a notification.</summary>
     /// <remarks>
@@ -59,6 +59,13 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board)
     /// <summary>The wall changed: a note created, edited, moved, or taken down.</summary>
     public event Action<NoteDto>? BoardChanged;
 
+    /// <summary>
+    /// The family's sticker pack changed: an item added, or one removed. Never a notification and
+    /// never an unread count — and not filtered by blocks: an item is a picture the family keeps,
+    /// not something a person said (docs/protocol.md, "What does not touch the pack").
+    /// </summary>
+    public event Action<PackItemDto>? PackChanged;
+
     /// <summary>The roster changed — a join, a leave, a deleted account, a new owner.</summary>
     public event Action? RosterChanged;
 
@@ -68,8 +75,11 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board)
     /// <summary>The assistant, mid-reply: text to append to that message as it is drawn.</summary>
     public event Action<long, long, string>? AiDelta;
 
-    /// <summary>The assistant stopped early, and the half-written answer is all there is.</summary>
-    public event Action<long, long>? AiStopped;
+    /// <summary>
+    /// The assistant stopped early, and the half-written answer is all there is — with the reason,
+    /// when the frame gave one this client knows.
+    /// </summary>
+    public event Action<long, long, AiErrorReason?>? AiStopped;
 
     /// <summary>
     /// A call frame, passed on whole. Signalling is a conversation with state of its own and no
@@ -152,6 +162,14 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board)
                 BoardChanged?.Invoke(note.Note);
                 break;
 
+            case ServerFrame.PackItem item when pack is not null:
+                // Under the `pack_seq` guard, exactly as a note is applied under its own; and the
+                // store decides whether the cursor follows, because a frame may move it only once
+                // this connection has caught up.
+                pack.Apply(item.Item, SeqRoute.LiveFrame);
+                PackChanged?.Invoke(item.Item);
+                break;
+
             case ServerFrame.MemberJoined joined:
                 chats.Joined(joined.User);
                 RosterChanged?.Invoke();
@@ -186,7 +204,7 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board)
                 break;
 
             case ServerFrame.AiError stopped:
-                AiStopped?.Invoke(stopped.ChatId, stopped.MessageId);
+                AiStopped?.Invoke(stopped.ChatId, stopped.MessageId, stopped.Reason);
                 break;
 
             case ServerFrame.CallOffer:

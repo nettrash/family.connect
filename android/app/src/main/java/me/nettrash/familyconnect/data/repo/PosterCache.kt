@@ -48,4 +48,20 @@ interface PosterCache {
      * full bytes, so it costs bandwidth rather than the picture.
      */
     suspend fun notePosterUpload(attachmentId: Long, landed: Boolean)
+
+    /**
+     * Keep the ORIGINAL bytes of a picture this device is sending, under
+     * the id the bubble will ask for.
+     *
+     * A STICKER's one call (docs/protocol.md, "Sticker pack"). A sticker
+     * has no preview — a preview is a JPEG, which is the destruction the
+     * whole design avoids — so its bubble draws from the original bytes and
+     * nothing else. Seeded under the placeholder id so the sender's bubble
+     * draws before the upload, and again under the server's id so it does
+     * not download back bytes it sent a moment ago.
+     *
+     * Defaulted to nothing: a send test that is not about stickers needs no
+     * disk for it.
+     */
+    suspend fun seedOriginal(attachmentId: Long, source: java.io.File) {}
 }

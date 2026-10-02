@@ -35,6 +35,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.outlined.EmojiEmotions
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -57,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.TextRange
@@ -75,6 +77,11 @@ import me.nettrash.familyconnect.ui.chat.MessageBubble
 import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.ui.chat.MentionSuggestionsRow
 import me.nettrash.familyconnect.ui.chat.shareWithSystem
+import me.nettrash.familyconnect.ui.components.AssistantConsentDialog
+import me.nettrash.familyconnect.ui.stickers.StickerNotices
+import me.nettrash.familyconnect.ui.stickers.StickerPanelSheet
+import me.nettrash.familyconnect.ui.stickers.StickerPreviewDialog
+import me.nettrash.familyconnect.ui.stickers.StickerViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -85,8 +92,20 @@ fun ThreadScreen(
     /** Open another chat — the one-to-one a tapped mention leads to. */
     onOpenChat: (Long) -> Unit = {},
     viewModel: ThreadViewModel = hiltViewModel(),
+    /**
+     * The family's chat stickers: the panel in this screen's composer, and
+     * the larger view a tapped sticker opens (docs/protocol.md, "Sticker
+     * pack").
+     */
+    stickerViewModel: StickerViewModel = hiltViewModel(),
 ) {
     val items by viewModel.items.collectAsStateWithLifecycle()
+    var viewingSticker by remember { mutableStateOf<AttachmentDto?>(null) }
+    // Null on a server that predates packs, and then no button is drawn.
+    val stickerLimits by stickerViewModel.limits.collectAsStateWithLifecycle()
+    var stickerPanelOpen by rememberSaveable { mutableStateOf(false) }
+    val assistantConsentAsk by viewModel.assistantConsentAsk.collectAsStateWithLifecycle()
+    StickerNotices(stickerViewModel)
     val state by viewModel.state.collectAsStateWithLifecycle()
     val chat by viewModel.chat.collectAsStateWithLifecycle()
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
@@ -174,6 +193,21 @@ fun ThreadScreen(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.Bottom,
                 ) {
+                    // A sticker can be sent in every chat a message can,
+                    // and a thread's composer is one: it answers the root,
+                    // like the words beside it.
+                    if (stickerLimits != null) {
+                        IconButton(
+                            onClick = { stickerPanelOpen = true },
+                            enabled = hasRoot,
+                            modifier = Modifier.testTag("thread-stickers"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.EmojiEmotions,
+                                contentDescription = stringResource(R.string.s_stickers),
+                            )
+                        }
+                    }
                     OutlinedTextField(
                         value = draft,
                         onValueChange = { draft = it },
@@ -231,7 +265,7 @@ fun ThreadScreen(
                                 blockedUserIds = blockedUserIds,
                                 revealedMessages = revealedMessages,
                                 isStreaming = false,
-                                answerFailed = false,
+                                answerFailure = null,
                                 myUserId = myUserId,
                                 memberNames = memberNames,
                                 memberAvatars = memberAvatars,
@@ -254,7 +288,12 @@ fun ThreadScreen(
                                     // paged through the message's media as
                                     // in the chat. A file has nothing to
                                     // open here.
-                                    if (!attachment.isFile) {
+                                    if (attachment.isSticker) {
+                                        // A sticker is shown larger, with
+                                        // "Add to family stickers" — as in
+                                        // the chat, not in the photo viewer.
+                                        viewingSticker = attachment
+                                    } else if (!attachment.isFile) {
                                         viewingAlbum = AttachmentAlbum.opening(
                                             item.entity.attachmentList,
                                             attachment,
@@ -279,6 +318,41 @@ fun ThreadScreen(
                 }
             }
         }
+    }
+
+    if (stickerPanelOpen) {
+        StickerPanelSheet(
+            viewModel = stickerViewModel,
+            onPick = { item ->
+                // One tap sends — no caption, no confirmation — and the
+                // sheet closes so the sticker is seen landing in the chain.
+                stickerPanelOpen = false
+                viewModel.beginStickerSend { chat, quote ->
+                    stickerViewModel.send(item, chat, quote)
+                }
+            },
+            onDismiss = { stickerPanelOpen = false },
+        )
+    }
+
+    // The consent screen, raised by a sticker that would reach the model
+    // (docs/protocol.md, "Consenting to the assistant") — the chat's own.
+    assistantConsentAsk?.let { ask ->
+        AssistantConsentDialog(
+            processor = ask.processor,
+            familyHistory = ask.familyHistory,
+            familyVision = ask.familyVision,
+            onAgree = viewModel::agreeToTheAssistant,
+            onDismiss = viewModel::dismissAssistantConsent,
+        )
+    }
+
+    viewingSticker?.let { attachment ->
+        StickerPreviewDialog(
+            attachment = attachment,
+            viewModel = stickerViewModel,
+            onDismiss = { viewingSticker = null },
+        )
     }
 
     viewingAlbum?.let { album ->

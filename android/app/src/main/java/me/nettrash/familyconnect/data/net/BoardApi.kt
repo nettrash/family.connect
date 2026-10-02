@@ -222,8 +222,14 @@ class DefaultBoardApi @Inject constructor(
             TaskDoneRequest(done),
         )
 
+    // SLOW, and given a timeout of its own: the shared client's 20 s
+    // ceiling would give up on a backdrop the server is still drawing
+    // (docs/protocol.md, "Board").
     override suspend fun drawBackdrop(noteId: Long): ApiResult<NoteResponse> =
-        client.postEmpty("/families/mine/board/notes/$noteId/backdrop")
+        client.postEmpty(
+            "/families/mine/board/notes/$noteId/backdrop",
+            timeout = ApiClient.BACKDROP_TIMEOUT,
+        )
 
     override suspend fun deleteNote(id: Long): ApiResult<Unit> =
         client.delete("/families/mine/board/notes/$id")

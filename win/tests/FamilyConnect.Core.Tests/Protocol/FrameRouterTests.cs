@@ -318,15 +318,17 @@ public class FrameRouterTests : IDisposable
         chats.Apply(Message(1341, body: ""));
         var text = "";
         router.AiDelta += (_, _, piece) => text += piece;
-        var stopped = 0;
-        router.AiStopped += (_, _) => stopped++;
+        var stopped = new List<AiErrorReason?>();
+        router.AiStopped += (_, _, reason) => stopped.Add(reason);
 
         router.Hear(new ServerFrame.AiDelta(42, 1341, "Once "));
         router.Hear(new ServerFrame.AiDelta(42, 1341, "upon"));
         router.Hear(new ServerFrame.AiError(42, 1341));
+        // The reason is passed on with the failure, for the row to remember which sentence it says.
+        router.Hear(new ServerFrame.AiError(42, 1341, AiErrorReason.Refused));
 
         Assert.Equal("Once upon", text);
-        Assert.Equal(1, stopped);
+        Assert.Equal([null, AiErrorReason.Refused], stopped);
         Assert.Equal("", chats.Message(1341)!.Body);
     }
 
@@ -364,5 +366,83 @@ public class FrameRouterTests : IDisposable
         router.Hear(new ServerFrame.CallEnd("6a1f0c3e", "hangup"));
 
         Assert.Equal(5, heard.Count);
+    }
+
+    // ---- the sticker pack (docs/protocol.md, "Sticker pack") ---------------------------------
+
+    private static PackItemDto PackItem(long id, long seq, long by = 9) =>
+        new(id, by, new AttachmentDto(70 + id, "photo", "image/webp", 4096, 512, 512), "2026-09-13T10:00:00Z", seq);
+
+    /// <summary>
+    /// A <c>pack_item</c> frame is applied under the seq guard and announced — and that is ALL it
+    /// does: it never counts as unread, never raises a message, and touches no chat.
+    /// </summary>
+    [Fact]
+    public void APackFrameChangesThePackAndNothingElse()
+    {
+        var pack = new PackStore(database);
+        var routed = new FrameRouter(chats, board, pack);
+        var changes = new List<PackItemDto>();
+        var arrived = 0;
+        var touched = 0;
+        routed.PackChanged += changes.Add;
+        routed.Arrived += _ => arrived++;
+        routed.ChatChanged += _ => touched++;
+
+        routed.Hear(new ServerFrame.PackItem(PackItem(5, 12)));
+        routed.Hear(new ServerFrame.PackItem(PackItem(6, 13)));
+        routed.Hear(new ServerFrame.PackItem(new PackItemDto(5, Deleted: true, PackSeq: 14)));
+
+        Assert.Equal([6L], pack.Items().Select(item => item.Id));
+        Assert.Equal(3, changes.Count);
+        Assert.True(changes[2].Deleted);
+        Assert.Equal(0, arrived);
+        Assert.Equal(0, touched);
+        Assert.Equal(0, chats.Unread());
+    }
+
+    /// <summary>
+    /// NOT FILTERED BY BLOCKS: an item is a picture the family keeps, not something a person said,
+    /// and the frame reaches a blocker exactly as it reaches everyone.
+    /// </summary>
+    [Fact]
+    public void APackFrameFromABlockedMemberIsAppliedLikeAnyOther()
+    {
+        var pack = new PackStore(database);
+        var routed = new FrameRouter(chats, board, pack);
+        chats.SetBlocked(9, true);
+
+        routed.Hear(new ServerFrame.PackItem(PackItem(5, 12, by: 9)));
+
+        Assert.Equal(9, Assert.Single(pack.Items()).AddedBy);
+    }
+
+    /// <summary>A frame moves the pack's cursor only once this connection has caught up.</summary>
+    [Fact]
+    public void APackFrameMovesTheCursorOnlyOnceCaughtUp()
+    {
+        var pack = new PackStore(database);
+        var routed = new FrameRouter(chats, board, pack);
+        pack.Replace([PackItem(5, 12)], 12);
+        pack.Reconnected();
+
+        routed.Hear(new ServerFrame.PackItem(PackItem(9, 20)));
+        Assert.Equal(12, pack.Cursor);
+
+        pack.CaughtUp(pack.Connection);
+        routed.Hear(new ServerFrame.PackItem(PackItem(10, 21)));
+        Assert.Equal(21, pack.Cursor);
+    }
+
+    /// <summary>A router built without a pack — nothing here has one to keep — drops the frame quietly.</summary>
+    [Fact]
+    public void APackFrameWithNoPackToKeepItInIsDropped()
+    {
+        var heard = 0;
+        router.PackChanged += _ => heard++;
+
+        router.Hear(new ServerFrame.PackItem(PackItem(5, 12)));
+
+        Assert.Equal(0, heard);
     }
 }

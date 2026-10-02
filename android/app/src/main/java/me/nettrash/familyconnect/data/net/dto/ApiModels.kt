@@ -578,8 +578,27 @@ data class AttachmentDto(
      * plain pin rather than as perfect precision.
      */
     @SerialName("accuracy_m") val accuracyM: Int? = null,
+    /**
+     * `true` when (and only when) the message carrying this was sent as a
+     * STICKER (docs/protocol.md, "Sticker pack"): still a `kind=photo` in
+     * every other respect, drawn without a bubble. Absent otherwise, never
+     * `false` — which is why it is nullable rather than defaulted to false:
+     * the house Json does not encode defaults, and a stored copy must
+     * round-trip exactly what the wire said. Set by the send and never
+     * changed; never on a pack item's or a board note's picture.
+     *
+     * NOT the board's "sticker": in this codebase that word has always
+     * meant a note on the wall. This one is the chat picture.
+     */
+    val sticker: Boolean? = null,
 ) {
     val isVideo: Boolean get() = kind == KIND_VIDEO
+
+    /**
+     * Sent as a chat sticker. The kind is checked too, so a flag that ever
+     * strayed onto something that is not a picture draws as what it is.
+     */
+    val isSticker: Boolean get() = sticker == true && kind == KIND_PHOTO
     val isFile: Boolean get() = kind == KIND_FILE
     val isAudio: Boolean get() = kind == KIND_AUDIO
     val isLocation: Boolean get() = kind == KIND_LOCATION
@@ -598,6 +617,9 @@ data class AttachmentDto(
                 "image/png" -> "png"
                 "image/heic" -> "heic"
                 "image/heif" -> "heif"
+                // A sticker saved or shared keeps its own type: the extension
+                // is what tells the receiving app it may be animated.
+                "image/webp" -> "webp"
                 "video/mp4" -> "mp4"
                 "video/quicktime" -> "mov"
                 else -> if (isVideo) "mp4" else "jpg"
@@ -883,6 +905,13 @@ data class SendMessageRequest(
     val poll: NewPollDto? = null,
     /** The members this message names — omitted when null, like the rest. */
     val mentions: List<MentionDto>? = null,
+    /**
+     * `true` sends the message's one attachment as a STICKER
+     * (docs/protocol.md, "Sticker pack"). Null — and therefore omitted —
+     * for every ordinary message, so their requests stay byte-identical to
+     * what they were; never sent as `false`.
+     */
+    val sticker: Boolean? = null,
 )
 
 /**
@@ -1064,6 +1093,59 @@ data class BoardChangesResponse(val notes: List<NoteDto>)
 
 @Serializable
 data class NoteResponse(val note: NoteDto)
+
+/**
+ * One sticker of the family's pack (docs/protocol.md, "Sticker pack").
+ *
+ * `pack` on the wire and in this file, because "sticker" in this codebase
+ * already means a board note — see [NoteDto]. The only thing spelled
+ * `sticker` is the flag on [AttachmentDto].
+ *
+ * A TOMBSTONE carries `deleted: true` INSTEAD of the content fields —
+ * `{"id": 5, "deleted": true, "pack_seq": 14}` — so every content field is
+ * nullable, exactly as on a note.
+ */
+@Serializable
+data class PackItemDto(
+    val id: Long,
+    @SerialName("added_by") val addedBy: Long? = null,
+    /**
+     * An ordinary `kind=photo` attachment whose bytes ARE the sticker. It
+     * never carries the `sticker` flag — that is a message's.
+     */
+    val attachment: AttachmentDto? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("pack_seq") val packSeq: Long,
+    /**
+     * A few words for a screen reader, present only when whoever added the
+     * item gave some. Never drawn over the picture.
+     */
+    val label: String? = null,
+    val deleted: Boolean? = null,
+) {
+    val isTombstone: Boolean get() = deleted == true
+}
+
+/** `GET /families/mine/pack` — the whole pack, tombstones excluded. */
+@Serializable
+data class PackResponse(
+    val items: List<PackItemDto>,
+    @SerialName("max_pack_seq") val maxPackSeq: Long,
+)
+
+/** `GET /families/mine/pack/changes` — tombstones INCLUDED. */
+@Serializable
+data class PackChangesResponse(val items: List<PackItemDto>)
+
+@Serializable
+data class PackItemResponse(val item: PackItemDto)
+
+@Serializable
+data class AddPackItemRequest(
+    @SerialName("attachment_id") val attachmentId: Long,
+    /** Omitted when nobody gave one — an empty label is no label. */
+    val label: String? = null,
+)
 
 @Serializable
 data class CreateNoteRequest(
@@ -1280,6 +1362,17 @@ data class FamilyMineResponse(
     @SerialName("former_members") val formerMembers: List<MemberDto> = emptyList(),
     // The board cursor, omitted while the board has never been written to.
     @SerialName("max_board_seq") val maxBoardSeq: Long? = null,
+    // The same mark for the family's sticker pack, omitted while the pack
+    // has never been written to (docs/protocol.md, "Sticker pack").
+    @SerialName("max_pack_seq") val maxPackSeq: Long? = null,
+    /**
+     * The pack's two ceilings — ALWAYS present on a server that has packs,
+     * so their ABSENCE is how this client knows the server predates them
+     * and offers no sticker button and no pack management there, rather
+     * than discovering a 404 when somebody taps one.
+     */
+    @SerialName("max_pack_items") val maxPackItems: Int? = null,
+    @SerialName("max_pack_item_bytes") val maxPackItemBytes: Long? = null,
     // Absent when the server has no assistant configured, which is the
     // whole of the capability check (docs/protocol.md, "Mentioning the
     // assistant in the family chat").

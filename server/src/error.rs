@@ -93,8 +93,20 @@ pub mod codes {
     /// the SERVER rather than the request, and a client checks
     /// `assistant.images` before it offers the action at all.
     pub const PICTURES_UNAVAILABLE: &str = "pictures_unavailable";
+    /// The AI provider's own filter refused to draw what was asked — the
+    /// board's backdrop, whose answer is HTTP rather than an `ai_error`
+    /// frame. A 400 because it is terminal: the same title gets the same
+    /// refusal, and a client that retried it would be retrying for nothing
+    /// (protocol.md, "Board").
+    pub const PICTURE_REFUSED: &str = "picture_refused";
     pub const INVALID_LANGUAGE: &str = "invalid_language";
     pub const BOARD_FULL: &str = "board_full";
+    /// The family's sticker pack (docs/protocol.md, "Sticker pack"). `pack`
+    /// and not `sticker`, which in this codebase already means a board note.
+    pub const PACK_FULL: &str = "pack_full";
+    pub const PACK_ITEM_TOO_LARGE: &str = "pack_item_too_large";
+    pub const PACK_ITEM_NOT_FOUND: &str = "pack_item_not_found";
+    pub const NOT_PACK_ITEM_AUTHOR: &str = "not_pack_item_author";
     pub const INVALID_EMOJI: &str = "invalid_emoji";
     pub const INVALID_PAGINATION: &str = "invalid_pagination";
     pub const DEVICE_NOT_FOUND: &str = "device_not_found";

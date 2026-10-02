@@ -96,6 +96,8 @@
             <!-- Each line carries its own top margin, so nothing shown takes no room. -->
             <StackPanel Grid.Row="3" Margin="24,0,24,0">
                 <TextBlock x:Name="PictureNoticeText" Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed" />
+                <!-- While a picture is being asked for: real names and brands are what the images model refuses (PictureHint). -->
+                <TextBlock x:Name="PictureHintText" Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" AutomationProperties.LiveSetting="Polite" Visibility="Collapsed" />
                 <!-- Nothing goes to the model until this member has said so, and the line says where it would go -->
                 <!-- (docs/protocol.md, "Consenting to the assistant"). The door is absent where there is nothing -->
                 <!-- to open: a server that named no processor cannot be agreed to. -->
@@ -161,6 +163,12 @@
                         <Button x:Name="AttachButton" Background="Transparent" BorderThickness="0" Padding="8">
                             <SymbolIcon Symbol="Add" />
                         </Button>
+                        <!-- The family's stickers: a panel over the composer, where one click sends. Drawn only on a server -->
+                        <!-- that has packs, in every chat a message can be sent in, and never while a message is being -->
+                        <!-- edited (ShowStickerButton). -->
+                        <Button x:Name="StickerButton" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed">
+                            <FontIcon Glyph="&#xE899;" FontSize="16" />
+                        </Button>
                         <!-- The assistant's two doors, drawn only where they lead somewhere (AssistantButtons). -->
                         <Button x:Name="AskAssistantButton" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed" />
                         <Button x:Name="AskPictureButton" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed" />
@@ -217,11 +225,17 @@
                     BorderThickness="1">
                     <Grid ColumnSpacing="6">
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBox x:Name="ThreadComposer" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="120" VerticalAlignment="Center" />
-                        <Button x:Name="ThreadSend" Grid.Column="1" VerticalAlignment="Bottom" Style="{StaticResource AccentButtonStyle}" />
+                        <!-- The family's stickers, from the thread: one click answers the root with one. Drawn where the -->
+                        <!-- conversation's own button is, under the same rule (ShowStickerButton). -->
+                        <Button x:Name="ThreadStickerButton" VerticalAlignment="Bottom" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed">
+                            <FontIcon Glyph="&#xE899;" FontSize="16" />
+                        </Button>
+                        <TextBox x:Name="ThreadComposer" Grid.Column="1" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="120" VerticalAlignment="Center" />
+                        <Button x:Name="ThreadSend" Grid.Column="2" VerticalAlignment="Bottom" Style="{StaticResource AccentButtonStyle}" />
                     </Grid>
                 </Border>
             </Grid>
@@ -250,7 +264,11 @@
                     <TextBlock x:Name="ViewerPosition" Foreground="#B3FFFFFF" Style="{StaticResource CaptionTextBlockStyle}" />
                 </StackPanel>
                 <TextBlock x:Name="ViewerProblem" Grid.Column="1" VerticalAlignment="Center" MaxWidth="320" TextWrapping="Wrap" Foreground="#FFFFA8A8" Visibility="Collapsed" />
+                <!-- What an "Add to family stickers" came to, when it was not a problem. -->
+                <TextBlock x:Name="ViewerNotice" Grid.Column="1" VerticalAlignment="Center" MaxWidth="320" TextWrapping="Wrap" Foreground="#E6FFFFFF" Visibility="Collapsed" />
                 <StackPanel Grid.Column="2" VerticalAlignment="Center" Orientation="Horizontal" Spacing="8">
+                    <!-- On a sticker the family's pack does not hold. -->
+                    <Button x:Name="ViewerAddSticker" Visibility="Collapsed" />
                     <Button x:Name="ViewerShare" />
                     <Button x:Name="ViewerSave" />
                 </StackPanel>

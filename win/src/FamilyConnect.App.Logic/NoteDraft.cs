@@ -271,4 +271,14 @@ public static class NoteSheetText
         ErrorCodes.NotInFamily => say.Get("You're not in a family, so there is no board."),
         _ => FamilyText.GenericFailure(error, say),
     };
+
+    /// <summary>
+    /// What to tell the author whose backdrop was not drawn. A title the provider's own filter refused
+    /// (<c>picture_refused</c>, docs/protocol.md "Board") says so, in the sentence a refused answer says — drawing
+    /// the same title again gets the same refusal. Anything else is the plain failure it always was.
+    /// </summary>
+    public static string BackdropFailure(ApiError error, IStringCatalog say) =>
+        error.Code == ErrorCodes.PictureRefused
+            ? AssistantAnswers.Sentence(AiErrorReason.Refused, say)
+            : say.Get("Couldn't draw that.");
 }

@@ -49,6 +49,9 @@ public class ApiClientTests
             return this;
         }
 
+        /// <summary>How long each request waits before it is answered, in order; a missing entry answers at once.</summary>
+        public Queue<TimeSpan> Delays { get; } = new();
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -56,6 +59,11 @@ public class ApiClientTests
             Bodies.Add(request.Content is null
                 ? null
                 : await request.Content.ReadAsStringAsync(cancellationToken));
+            if (Delays.TryDequeue(out var delay))
+            {
+                // A slow server: the deadline, when it passes, cancels this wait exactly as it would the socket.
+                await Task.Delay(delay, cancellationToken);
+            }
             if (replies.Count == 0)
             {
                 throw new InvalidOperationException($"no reply queued for {request.RequestUri}");
@@ -252,6 +260,72 @@ public class ApiClientTests
         var body = Assert.Single(handler.Bodies)!;
         Assert.Contains("{\"text\":\"Milk and eggs\",\"id\":11}", body, StringComparison.Ordinal);
         Assert.Contains("{\"text\":\"Jam\"}", body, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A backdrop the author has not agreed to (docs/protocol.md, "Consenting to the assistant", amended 2026-09-30):
+    /// a refusal with nothing sent, read as its code — the one the board answers with the consent question.
+    /// </summary>
+    [Fact]
+    public async Task ABackdropWithoutConsentIsRefusedByItsCode()
+    {
+        var (client, handler) = Client(new Fake().Then(
+            HttpStatusCode.Forbidden,
+            """{"error": {"code": "assistant_consent_required", "message": "agree first"}}"""));
+        var answer = await client.DrawBackdrop(12);
+        Assert.False(answer.Ok);
+        Assert.Equal(ErrorCodes.AssistantConsentRequired, answer.Error!.Code);
+        Assert.Equal(403, answer.Error.Status);
+        Assert.False(answer.Error.Transient);
+        // A write, and a refusal: asked once, never repeated here.
+        Assert.Single(handler.Sent);
+    }
+
+    /// <summary>
+    /// SLOW (docs/protocol.md, "Board", amended 2026-09-30): the backdrop gets "a timeout of its own, no shorter than
+    /// 90 s … never its ordinary request timeout" — and the HttpClient the app builds must not cap it, because
+    /// <see cref="HttpClient.Timeout"/> applies to every request sent through it.
+    /// </summary>
+    [Fact]
+    public void TheBackdropHasADeadlineOfItsOwnThatNothingCaps()
+    {
+        Assert.True(ApiClient.BackdropTimeout >= TimeSpan.FromSeconds(90));
+        Assert.True(ApiClient.BackdropTimeout > ApiClient.OrdinaryTimeout);
+        using var http = ApiClient.NewHttpClient();
+        Assert.Equal(Timeout.InfiniteTimeSpan, http.Timeout);
+        var client = new ApiClient(http, ServerUrl.Normalise("chat.example.com")!, new MemoryTokenStore("t0ken"));
+        Assert.Equal(ApiClient.BackdropTimeout, client.BackdropDeadline);
+        Assert.Equal(ApiClient.OrdinaryTimeout, client.RequestDeadline);
+    }
+
+    /// <summary>
+    /// The same rule, run: a server slower than the ORDINARY deadline fails an ordinary request, and still answers a
+    /// backdrop — the backdrop does not ride on the timeout every other call gets.
+    /// </summary>
+    [Fact]
+    public async Task ABackdropOutlastsTheOrdinaryDeadline()
+    {
+        // One reply only: a request whose deadline passes never takes its reply off the queue.
+        var handler = new Fake()
+            .Then(HttpStatusCode.OK,
+                """{"note": {"id": 12, "author_id": 7, "kind": "event", "text": "Lunch", "board_seq": 12}}""");
+        var slow = TimeSpan.FromMilliseconds(400);
+        handler.Delays.Enqueue(slow);
+        handler.Delays.Enqueue(slow);
+        handler.Delays.Enqueue(slow);
+        var client = new ApiClient(
+            new HttpClient(handler), ServerUrl.Normalise("chat.example.com")!, new MemoryTokenStore("t0ken"))
+        {
+            RequestDeadline = TimeSpan.FromMilliseconds(50),
+            BackdropDeadline = TimeSpan.FromSeconds(30),
+        };
+        // A read, so it is tried twice — and both run out of time.
+        var board = await client.Board();
+        Assert.False(board.Ok);
+        Assert.Equal(ErrorCodes.Transport, board.Error!.Code);
+        var drawn = await client.DrawBackdrop(12);
+        Assert.True(drawn.Ok);
+        Assert.Equal(12, drawn.Value!.Note.Id);
     }
 
     [Fact]
@@ -471,5 +545,145 @@ public class ApiClientTests
         using var alone = System.Text.Json.JsonDocument.Parse(handler.Bodies[1]!);
         Assert.False(alone.RootElement.TryGetProperty("ends_at", out _));
         Assert.Equal(HttpMethod.Patch, handler.Sent[1].Method);
+    }
+
+    // ---- the sticker pack (docs/protocol.md, "Sticker pack") ---------------------------------
+
+    private const string PackItemJson =
+        """
+        {"id": 5, "added_by": 7,
+         "attachment": {"id": 71, "kind": "photo", "mime": "image/webp", "size": 40960, "width": 512, "height": 512},
+         "created_at": "2026-09-13T10:00:00Z", "pack_seq": 12}
+        """;
+
+    [Fact]
+    public async Task ThePackIsReadWholeAndCaughtUpOnByItsOwnSequence()
+    {
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.OK, $$"""{"items": [{{PackItemJson}}], "max_pack_seq": 12}""")
+            .Then(HttpStatusCode.OK, """{"items": [{"id": 5, "deleted": true, "pack_seq": 14}]}"""));
+
+        var whole = await client.Pack();
+        Assert.Equal(12, whole.Value!.MaxPackSeq);
+        Assert.Equal(71, Assert.Single(whole.Value.Items!).Attachment!.Id);
+
+        var changes = await client.PackChanges(12, 50);
+        Assert.True(Assert.Single(changes.Value!.Items!).Deleted);
+
+        Assert.Equal("https://chat.example.com/api/v1/families/mine/pack", handler.Sent[0].RequestUri!.ToString());
+        Assert.Equal(
+            "https://chat.example.com/api/v1/families/mine/pack/changes?after_seq=12&limit=50",
+            handler.Sent[1].RequestUri!.ToString());
+    }
+
+    /// <summary>
+    /// A claim: the attachment's id and, only when one was given, a label. Both <c>201</c> and
+    /// <c>200</c> answer an item and both are success — a <c>200</c> is the pack already holding it.
+    /// </summary>
+    [Fact]
+    public async Task AddingToThePackClaimsAnUploadAndTakesEitherSuccess()
+    {
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.Created, $$"""{"item": {{PackItemJson}}}""")
+            .Then(HttpStatusCode.OK, $$"""{"item": {{PackItemJson}}}""")
+            .Then(HttpStatusCode.OK, $$"""{"item": {{PackItemJson}}}"""));
+
+        var added = await client.AddToPack(71, "  party cat ");
+        var again = await client.AddToPack(99);
+        var blank = await client.AddToPack(99, "   ");
+
+        Assert.True(added.Ok);
+        Assert.True(again.Ok);
+        // WHICH success it was is the status, and the only thing that says it: 201 is a new item, 200 is one the pack
+        // already held. The cache cannot answer that — this device's own frame may land before the claim does.
+        Assert.Equal(201, added.Status);
+        Assert.Equal(200, again.Status);
+        // The item that came back carries the id the PACK holds, which is not the one a duplicate named.
+        Assert.Equal(71, again.Value!.Item.Attachment!.Id);
+        Assert.Equal(HttpMethod.Post, handler.Sent[0].Method);
+        Assert.Equal("https://chat.example.com/api/v1/families/mine/pack", handler.Sent[0].RequestUri!.ToString());
+        Assert.Equal("""{"attachment_id":71,"label":"party cat"}""", handler.Bodies[0]);
+        // No label is no key — and an empty one is no label.
+        Assert.Equal("""{"attachment_id":99}""", handler.Bodies[1]);
+        Assert.Equal("""{"attachment_id":99}""", handler.Bodies[2]);
+        Assert.True(blank.Ok);
+    }
+
+    [Fact]
+    public async Task ThePacksRefusalsAreReadAsTheProtocolWritesThem()
+    {
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.RequestEntityTooLarge, """{"error": {"code": "pack_item_too_large", "message": "…"}}""")
+            .Then(HttpStatusCode.Conflict, """{"error": {"code": "pack_full", "message": "…"}}""")
+            .Then(HttpStatusCode.Forbidden, """{"error": {"code": "not_pack_item_author", "message": "…"}}""")
+            .Then(HttpStatusCode.NotFound, """{"error": {"code": "pack_item_not_found", "message": "…"}}""")
+            .Then(HttpStatusCode.NoContent));
+
+        Assert.Equal(ErrorCodes.PackItemTooLarge, (await client.AddToPack(71)).Error!.Code);
+        var full = await client.AddToPack(71);
+        Assert.Equal(ErrorCodes.PackFull, full.Error!.Code);
+        // Refusals, every one: the ceiling is the family's, and trying again would refuse again.
+        Assert.False(full.Error.Transient);
+        Assert.Equal(ErrorCodes.NotPackItemAuthor, (await client.RemoveFromPack(5)).Error!.Code);
+        Assert.Equal(ErrorCodes.PackItemNotFound, (await client.RemoveFromPack(5)).Error!.Code);
+        // Removing is idempotent, and a 204 is a success with nothing in it.
+        Assert.True((await client.RemoveFromPack(5)).Ok);
+        Assert.Equal(HttpMethod.Delete, handler.Sent[4].Method);
+        Assert.Equal("https://chat.example.com/api/v1/families/mine/pack/5", handler.Sent[4].RequestUri!.ToString());
+        // A write is never retried by the transport.
+        Assert.Equal(5, handler.Sent.Count);
+    }
+
+    [Fact]
+    public async Task ARestSendSaysStickerOnlyWhenItIsOne()
+    {
+        const string Answer =
+            """
+            {"message": {"id": 1340, "chat_id": 42, "sender_id": 7, "client_msg_id": "k", "body": "",
+             "created_at": "2026-09-13T10:00:00Z",
+             "attachments": [{"id": 90, "kind": "photo", "mime": "image/webp", "sticker": true}]}}
+            """;
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.Created, Answer)
+            .Then(HttpStatusCode.Created, Answer));
+
+        var sent = await client.SendMessage(42, "k", "", attachmentIds: [90], sticker: true);
+        await client.SendMessage(42, "k2", "Dinner at 7?", attachmentIds: [90]);
+
+        Assert.True(sent.Value!.Message.Media[0].Sticker);
+        Assert.Equal("""{"client_msg_id":"k","body":"","attachment_ids":[90],"sticker":true}""", handler.Bodies[0]);
+        // Absent otherwise — never false.
+        Assert.DoesNotContain("sticker", handler.Bodies[1], StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The family's own document: the pack's mark, omitted while the pack is untouched, and its
+    /// two ceilings — whose ABSENCE is how a client knows the server predates packs.
+    /// </summary>
+    [Fact]
+    public async Task TheFamilysDocumentCarriesThePacksMarkAndCeilingsOrNeither()
+    {
+        var (client, _) = Client(new Fake()
+            .Then(HttpStatusCode.OK,
+                """
+                {"family": {"id": 3, "name": "The Smiths"}, "members": [],
+                 "max_pack_seq": 14, "max_pack_items": 200, "max_pack_item_bytes": 524288}
+                """)
+            .Then(HttpStatusCode.OK,
+                """{"family": {"id": 3, "name": "The Smiths"}, "members": [], "max_pack_items": 200, "max_pack_item_bytes": 524288}""")
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths"}, "members": []}"""));
+
+        var touched = (await client.Family()).Value!;
+        Assert.Equal(14, touched.MaxPackSeq);
+        Assert.Equal(200, touched.MaxPackItems);
+        Assert.Equal(524_288, touched.MaxPackItemBytes);
+
+        var untouched = (await client.Family()).Value!;
+        Assert.Null(untouched.MaxPackSeq);
+        Assert.Equal(200, untouched.MaxPackItems);
+
+        var older = (await client.Family()).Value!;
+        Assert.Null(older.MaxPackItems);
+        Assert.Null(older.MaxPackItemBytes);
     }
 }

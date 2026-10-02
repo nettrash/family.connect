@@ -530,6 +530,15 @@ pub fn composer(props: &ComposerProps) -> Html {
             .assistant
             .as_ref()
             .is_some_and(|assistant| assistant.images);
+    // Where a `/draw` is drawn at all — this chat's 🎨 button aside, the
+    // family chat's `@ai /draw` is drawn by the same deployment.
+    let server_draws = assistant_pictures::server_draws(
+        props
+            .assistant
+            .as_ref()
+            .is_some_and(|assistant| assistant.images),
+        processor.as_deref(),
+    );
     let offers_ai = props.is_family_chat && has_assistant && editing.is_none();
     let empty =
         composer::trimmed_for_send(&text).is_none() && (props.staged == 0 || editing.is_some());
@@ -585,6 +594,11 @@ pub fn composer(props: &ComposerProps) -> Html {
             }
             if let Some(sentence) = props.pictures.notice(&text, props.is_ai_chat, props.is_family_chat).filter(|_| editing.is_none()) {
                 <p class="picture-notice" role="note"><span aria-hidden="true">{ "👁 " }</span>{ sentence }</p>
+            }
+            // While a picture is being asked for: the image model's filter
+            // refuses real names and brands (docs/protocol.md, "Pictures").
+            if assistant_pictures::shows_picture_hint(chat_kind, &text, editing.is_some(), server_draws) {
+                <p class="picture-notice picture-hint" role="status">{ assistant_pictures::picture_hint() }</p>
             }
             if editing.is_none() && assistant_consent::is_required(chat_kind, &text, processor.as_deref(), props.agreed_to_assistant) {
                 <AssistantConsentBar
@@ -1020,6 +1034,117 @@ mod tests {
             assert_eq!(sent.borrow().len(), expect, "staged {staged}");
             if let Some(draft) = sent.borrow().first() {
                 assert_eq!(draft.body, "");
+            }
+            handle.destroy();
+            root.remove();
+        }
+    }
+
+    /// The hint about what the picture filter refuses: under a draft being
+    /// written as a picture request, where the server draws — from the
+    /// moment the 🎨 button has typed the token — and nowhere else.
+    #[wasm_bindgen_test]
+    async fn the_picture_hint_follows_a_picture_request() {
+        use wasm_bindgen::JsCast;
+        use web_sys::HtmlElement;
+
+        const HINT: &str =
+            "Describe people and things in general words — real names and brands are often refused.";
+        // (ai chat, family chat, images, draft, shows)
+        for (is_ai, is_family, images, draft, shows) in [
+            (true, false, true, "/draw a cat", true),
+            (true, false, true, "hello", false),
+            (true, false, false, "/draw a cat", false),
+            (false, true, true, "@ai /draw a cat", true),
+            (false, true, true, "/draw a cat", false),
+            (false, false, true, "/draw a cat", false),
+        ] {
+            let props = ComposerProps {
+                chat_id: 42,
+                is_family_chat: is_family,
+                is_ai_chat: is_ai,
+                my_user_id: 7,
+                members: Vec::new(),
+                blocked: HashSet::new(),
+                assistant: Some(Assistant {
+                    user_id: 2,
+                    display_name: "Assistant".into(),
+                    mention: Some("@ai".into()),
+                    draw: Some("/draw".into()),
+                    vision: false,
+                    images,
+                    processor: Some("Microsoft — Azure OpenAI".into()),
+                }),
+                agreed_to_assistant: true,
+                on_review_consent: Callback::noop(),
+                replying: None,
+                editing: None,
+                initial: draft.to_string(),
+                on_send: Callback::noop(),
+                on_save_edit: Callback::noop(),
+                on_cancel: Callback::noop(),
+                on_typing: Callback::noop(),
+                on_draft: Callback::noop(),
+                in_thread: false,
+                focus: 0,
+                attach: Html::default(),
+                staged: 0,
+                busy: false,
+                append: (0, String::new()),
+                take: 0,
+                on_take: Callback::noop(),
+                on_files: Callback::noop(),
+                takes_files: true,
+                pictures: Pictures::default(),
+            };
+            let document = web_sys::window().unwrap().document().unwrap();
+            let root = document.create_element("div").unwrap();
+            document.body().unwrap().append_child(&root).unwrap();
+            let handle =
+                yew::Renderer::<Composer>::with_root_and_props(root.clone(), props).render();
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            let hint = root.query_selector(".picture-hint").unwrap();
+            assert_eq!(
+                hint.is_some(),
+                shows,
+                "{draft:?} ai={is_ai} images={images}"
+            );
+            if let Some(hint) = hint {
+                assert_eq!(hint.text_content().unwrap_or_default(), HINT);
+                // Said, not only shown: it appears as the member types.
+                assert_eq!(hint.get_attribute("role").as_deref(), Some("status"));
+            }
+
+            // In the assistant's own chat on a server that draws, an empty
+            // box gains the hint the moment 🎨 has typed `/draw `.
+            if is_ai && images && !shows {
+                let area: web_sys::HtmlTextAreaElement = root
+                    .query_selector("textarea")
+                    .unwrap()
+                    .unwrap()
+                    .dyn_into()
+                    .unwrap();
+                area.set_value("");
+                let init = web_sys::EventInit::new();
+                init.set_bubbles(true);
+                area.dispatch_event(
+                    &web_sys::Event::new_with_event_init_dict("input", &init).unwrap(),
+                )
+                .unwrap();
+                gloo_timers::future::TimeoutFuture::new(20).await;
+                assert!(root.query_selector(".picture-hint").unwrap().is_none());
+                root.query_selector("button[aria-label='Ask for a picture']")
+                    .unwrap()
+                    .expect("the 🎨 button")
+                    .dyn_into::<HtmlElement>()
+                    .unwrap()
+                    .click();
+                gloo_timers::future::TimeoutFuture::new(20).await;
+                assert_eq!(area.value(), "/draw ");
+                assert!(
+                    root.query_selector(".picture-hint").unwrap().is_some(),
+                    "the hint is up before any description is typed"
+                );
             }
             handle.destroy();
             root.remove();

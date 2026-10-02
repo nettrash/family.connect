@@ -31,13 +31,16 @@ use yew::prelude::*;
 
 use crate::actions::{Action, Done};
 use crate::api::{ApiError, FamilyPatch};
-use crate::model::{Assistant, Family, JoinRequest, Me, Member, Report, ReportedAttachment};
+use crate::model::{
+    Assistant, Family, JoinRequest, Me, Member, PackItem, Report, ReportedAttachment,
+};
 use crate::time;
 use crate::views::avatar::Avatar;
 use crate::views::birthday::BirthdayDialog;
 use crate::views::dialog::{generic_failure, Confirm};
 use crate::views::password::ResetPasswordDialog;
 use crate::views::report::{ReportDialog, ReportTarget, REASONS};
+use crate::views::stickers::PackSection;
 
 /// How long the member limit waits after the last step before it is sent:
 /// a run of clicks is one write, of the value it ended on.
@@ -53,6 +56,14 @@ pub struct FamilyProps {
     pub join_requests: Vec<JoinRequest>,
     pub reports: Vec<Report>,
     pub support_contact: Option<String>,
+    /// The family's sticker pack, in the order it was added to, with the
+    /// server's limits — None on a server that predates packs, where no
+    /// section is drawn at all (docs/protocol.md, "Sticker pack").
+    #[prop_or_default]
+    pub pack: Option<(Vec<PackItem>, crate::pack::Limits)>,
+    /// A sticker is on its way into the pack.
+    #[prop_or_default]
+    pub pack_adding: bool,
     pub on_action: Callback<Action>,
     pub on_close: Callback<()>,
 }
@@ -476,6 +487,18 @@ pub fn family_pane(props: &FamilyProps) -> Html {
                     <h3 id="family-members">{ t("Members") }</h3>
                     <ul class="members">{ for member_rows }</ul>
                 </section>
+                // The pack is the family's, like the board: everybody sees
+                // it here and may add to it, not only the owner.
+                if let Some((items, limits)) = props.pack.clone() {
+                    <PackSection
+                        {items}
+                        {limits}
+                        my_user_id={me}
+                        {owner}
+                        adding={props.pack_adding}
+                        on_action={props.on_action.clone()}
+                    />
+                }
             </div>
             { tool_dialog }
         </section>

@@ -260,6 +260,60 @@ internal static class Dialogs
     }
 
     /// <summary>
+    /// Adding a sticker: the few words it may be given, for a screen reader (docs/protocol.md, "label"). OPTIONAL —
+    /// Add with the box empty adds it with none — and fixed once the item is added, which is why it is asked here.
+    /// Answers whether to add, and the label as it will be sent.
+    /// </summary>
+    /// <remarks>
+    /// AN OVER-LONG LABEL IS REFUSED HERE, IN WORDS, with the dialog still open and nothing sent: 64 characters,
+    /// counted the way the server counts them (<see cref="PackLabel"/>). The box's own MaxLength is not used for
+    /// this — it counts UTF-16 units, and would stop thirty-three emoji that the server takes.
+    /// </remarks>
+    /// <param name="name">Which picture this is, when several were chosen at once: the file's name.</param>
+    public static async Task<(bool Add, string? Label)> StickerLabelAsync(XamlRoot root, IStringCatalog say, string? name = null)
+    {
+        var box = new TextBox { Header = say.Get("Label (optional)") };
+        var problem = Problem();
+        var content = Column();
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            content.Children.Add(Secondary(name));
+        }
+        content.Children.Add(box);
+        content.Children.Add(Footnote(say.Get("A few words for a screen reader. They are never drawn over the picture.")));
+        content.Children.Add(problem);
+        var dialog = Create(root, say.Get("Add a sticker"), content);
+        dialog.PrimaryButtonText = say.Get("Add");
+        dialog.CloseButtonText = say.Get("Cancel");
+        void Judge()
+        {
+            var tooLong = PackLabel.TooLong(box.Text);
+            dialog.IsPrimaryButtonEnabled = !tooLong;
+            if (tooLong)
+            {
+                ShowProblem(problem, PackText.LabelTooLong(say));
+            }
+            else
+            {
+                problem.Visibility = Visibility.Collapsed;
+            }
+        }
+        box.TextChanged += (_, _) => Judge();
+        dialog.PrimaryButtonClick += (_, args) =>
+        {
+            // Enter in the box presses this whether or not the button is enabled.
+            if (PackLabel.TooLong(box.Text))
+            {
+                args.Cancel = true;
+                Judge();
+            }
+        };
+        return await dialog.ShowAsync() == ContentDialogResult.Primary
+            ? (true, PackLabel.Clean(box.Text))
+            : (false, null);
+    }
+
+    /// <summary>
     /// The assistant question, asked once before anything a member writes goes to the model
     /// (docs/protocol.md, "Consenting to the assistant"). Answers whether they agreed.
     /// </summary>
@@ -272,6 +326,76 @@ internal static class Dialogs
     /// </remarks>
     public static async Task<bool> AssistantConsentAsync(
         XamlRoot root, IStringCatalog say, string processor, bool familyHistory, bool familyVision)
+    {
+        var content = AssistantConsentContent(say, processor, familyHistory, familyVision);
+        var dialog = Create(root, say.Get("The Assistant"), content);
+        dialog.PrimaryButtonText = say.Get("I Agree");
+        dialog.CloseButtonText = say.Get("Not Now");
+        dialog.DefaultButton = ContentDialogButton.Close;
+        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+    }
+
+    /// <summary>
+    /// The same question, asked from INSIDE a dialog — the board's note sheet, whose "Draw a backdrop" sends the event's
+    /// title to the model (docs/protocol.md, "Consenting to the assistant", amended 2026-09-30). A flyout over the
+    /// sheet and not a second dialog, because two cannot be open at once; everything on it is what
+    /// <see cref="AssistantConsentAsync"/> shows, built by the same method, with the same two answers. Dismissing it
+    /// is Not Now.
+    /// </summary>
+    public static Task<bool> AssistantConsentOverAsync(
+        FrameworkElement anchor, IStringCatalog say, string processor, bool familyHistory, bool familyVision)
+    {
+        var answered = new TaskCompletionSource<bool>();
+        var content = AssistantConsentContent(say, processor, familyHistory, familyVision);
+        content.Children.Insert(0, new TextBlock
+        {
+            Text = say.Get("The Assistant"),
+            FontSize = 20,
+            FontWeight = FontWeights.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        var agree = new Button { Content = say.Get("I Agree") };
+        // Looked up rather than assumed, and applied only to what it styles: a style applied by key is not type-checked.
+        if (Application.Current?.Resources is { } resources
+            && resources.TryGetValue("AccentButtonStyle", out var accent)
+            && accent is Style style
+            && style.TargetType is { } target
+            && target.IsAssignableFrom(typeof(Button)))
+        {
+            agree.Style = style;
+        }
+        var notNow = new Button { Content = say.Get("Not Now") };
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        buttons.Children.Add(agree);
+        buttons.Children.Add(notNow);
+        content.Children.Add(buttons);
+        var presenter = new Style(typeof(FlyoutPresenter));
+        presenter.Setters.Add(new Setter(FrameworkElement.MaxWidthProperty, 560.0));
+        var flyout = new Flyout
+        {
+            Content = content,
+            FlyoutPresenterStyle = presenter,
+            Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Full,
+        };
+        agree.Click += (_, _) =>
+        {
+            answered.TrySetResult(true);
+            flyout.Hide();
+        };
+        notNow.Click += (_, _) => flyout.Hide();
+        flyout.Closed += (_, _) => answered.TrySetResult(false);
+        flyout.ShowAt(anchor);
+        return answered.Task;
+    }
+
+    /// <summary>What the assistant question says, wherever it is asked: every line of it, and the policy.</summary>
+    private static StackPanel AssistantConsentContent(
+        IStringCatalog say, string processor, bool familyHistory, bool familyVision)
     {
         var content = Column(new TextBlock
         {
@@ -292,11 +416,7 @@ internal static class Dialogs
             NavigateUri = new Uri("https://nettrash.me/appstore/familyconnect/privacy.html"),
         };
         content.Children.Add(policy);
-        var dialog = Create(root, say.Get("The Assistant"), content);
-        dialog.PrimaryButtonText = say.Get("I Agree");
-        dialog.CloseButtonText = say.Get("Not Now");
-        dialog.DefaultButton = ContentDialogButton.Close;
-        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+        return content;
     }
 
     public static StackPanel Column(params UIElement[] children)

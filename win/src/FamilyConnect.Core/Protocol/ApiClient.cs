@@ -27,6 +27,34 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
 {
     private readonly Uri rest = ServerUrl.Rest(baseUrl);
 
+    /// <summary>
+    /// How long an ordinary request may take: the 100 s <see cref="HttpClient"/> has always given every call, now
+    /// applied here per request so that one request can be given a longer one.
+    /// </summary>
+    public static readonly TimeSpan OrdinaryTimeout = TimeSpan.FromSeconds(100);
+
+    /// <summary>
+    /// <c>POST …/board/notes/{id}/backdrop</c>'s OWN deadline: the server may make up to three provider calls in a
+    /// row, so a client gives it "a timeout of its own, no shorter than 90 s … never its ordinary request timeout" —
+    /// and a request whose connection closes first draws nothing (docs/protocol.md, "Board", amended 2026-09-30).
+    /// The Apple client's 120 s.
+    /// </summary>
+    public static readonly TimeSpan BackdropTimeout = TimeSpan.FromSeconds(120);
+
+    /// <summary>
+    /// The <see cref="HttpClient"/> an app builds this client over. It has NO timeout of its own, because
+    /// <see cref="HttpClient.Timeout"/> caps every request sent through it and would quietly cut the backdrop's
+    /// deadline down to the ordinary one; the deadlines are this class's (<see cref="OrdinaryTimeout"/>,
+    /// <see cref="BackdropTimeout"/>).
+    /// </summary>
+    public static HttpClient NewHttpClient() => new() { Timeout = Timeout.InfiniteTimeSpan };
+
+    /// <summary>The deadline this instance gives an ordinary request. <see cref="OrdinaryTimeout"/>; tests shorten it.</summary>
+    public TimeSpan RequestDeadline { get; init; } = OrdinaryTimeout;
+
+    /// <summary>The deadline this instance gives a backdrop. <see cref="BackdropTimeout"/>; tests shorten it.</summary>
+    public TimeSpan BackdropDeadline { get; init; } = BackdropTimeout;
+
     /// <summary>The server this client talks to, as the user gave it.</summary>
     public Uri BaseUrl => baseUrl;
 
@@ -105,12 +133,15 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         IReadOnlyList<long>? attachmentIds = null,
         IReadOnlyList<string>? pollOptions = null,
         IReadOnlyList<MentionDto>? mentions = null,
+        bool sticker = false,
         CancellationToken ct = default) =>
         Send<MessageResponse>(HttpMethod.Post, $"/chats/{chatId}/messages", new SendRequest(
             clientMsgId, body, replyToMessageId,
             attachmentIds is { Count: > 0 } ? [.. attachmentIds] : null,
             pollOptions is { Count: > 0 } ? new PollRequest([.. pollOptions]) : null,
-            mentions is { Count: > 0 } ? [.. mentions] : null), ct: ct);
+            mentions is { Count: > 0 } ? [.. mentions] : null,
+            // Present only when true: absent is an ordinary message, to every server there is.
+            sticker ? true : null), ct: ct);
 
     /// <summary>
     /// The reconnect catch-up: strictly newer, OLDEST FIRST — the opposite direction to a history
@@ -259,12 +290,59 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
     /// Ask the assistant for an event's backdrop. NO REQUEST BODY: the prompt is the note's title
     /// and nothing else (docs/protocol.md, "Board").
     /// </summary>
+    /// <remarks>
+    /// SLOW: it runs under <see cref="BackdropDeadline"/>, never the ordinary one (docs/protocol.md, "Board").
+    /// </remarks>
     public Task<ApiResult<NoteResponse>> DrawBackdrop(long noteId, CancellationToken ct = default) =>
         Send<NoteResponse>(
-            HttpMethod.Post, $"/families/mine/board/notes/{noteId}/backdrop", ct: ct);
+            HttpMethod.Post, $"/families/mine/board/notes/{noteId}/backdrop", deadline: BackdropDeadline, ct: ct);
 
     public Task<ApiResult<Nothing>> DeleteNote(long noteId, CancellationToken ct = default) =>
         Send<Nothing>(HttpMethod.Delete, $"/families/mine/board/notes/{noteId}", ct: ct);
+
+    // ---- the sticker pack -------------------------------------------------
+
+    /// <summary>
+    /// The WHOLE pack as it now stands, in the order its items were added — a full read, which
+    /// REPLACES what a client holds (docs/protocol.md, "Sticker pack"). Not paged: a pack is at
+    /// most <c>max_pack_items</c>.
+    /// </summary>
+    public Task<ApiResult<PackResponse>> Pack(CancellationToken ct = default) =>
+        Send<PackResponse>(HttpMethod.Get, "/families/mine/pack", ct: ct);
+
+    /// <summary>The pack's catch-up, tombstones included, looped until a short page.</summary>
+    public Task<ApiResult<PackChangesResponse>> PackChanges(
+        long afterSeq, int limit = 50, CancellationToken ct = default) =>
+        Send<PackChangesResponse>(
+            HttpMethod.Get, $"/families/mine/pack/changes?after_seq={afterSeq}&limit={limit}", ct: ct);
+
+    /// <summary>
+    /// Claim an upload as a pack item — the third way an attachment is claimed. ANY member may.
+    /// </summary>
+    /// <remarks>
+    /// <c>201</c> and <c>200</c> both answer an item, and both are success: a <c>200</c> is the
+    /// pack ALREADY holding it — a retry of the same id, or bytes it has under another id, in
+    /// which case the item's attachment id is NOT the one sent. Adding the same sticker twice is
+    /// not an error and not two stickers. WHICH of the two it was is <see cref="ApiResult{T}.Status"/>,
+    /// and nothing else says it: the actor's own <c>pack_item</c> frame can land before this
+    /// answer does, so "did this device already hold the item" is not the question.
+    /// </remarks>
+    public Task<ApiResult<PackItemResponse>> AddToPack(
+        long attachmentId, string? label = null, CancellationToken ct = default) =>
+        Send<PackItemResponse>(
+            HttpMethod.Post, "/families/mine/pack",
+            // An empty label is no label, and no label is no key.
+            string.IsNullOrWhiteSpace(label)
+                ? new { attachment_id = attachmentId }
+                : (object)new { attachment_id = attachmentId, label = label.Trim() },
+            ct: ct);
+
+    /// <summary>
+    /// Take an item out: whoever added it, or the family's owner. Idempotent — removing one
+    /// already removed is <c>204</c> too — and nothing ever sent with that sticker is touched.
+    /// </summary>
+    public Task<ApiResult<Nothing>> RemoveFromPack(long itemId, CancellationToken ct = default) =>
+        Send<Nothing>(HttpMethod.Delete, $"/families/mine/pack/{itemId}", ct: ct);
 
     // ---- this account ----------------------------------------------------
 
@@ -333,7 +411,7 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         using var request = Request(HttpMethod.Get, $"/users/{userId}/avatar");
         try
         {
-            using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendWithin(request, RequestDeadline, ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 return ApiResult<byte[]>.Failure(await Failure(response, ct).ConfigureAwait(false));
@@ -623,7 +701,7 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         using var request = Request(HttpMethod.Get, path);
         try
         {
-            using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendWithin(request, RequestDeadline, ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 return ApiResult<byte[]>.Failure(await Failure(response, ct).ConfigureAwait(false));
@@ -649,6 +727,20 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         return request;
     }
 
+    /// <summary>
+    /// One request under a deadline of its own. A deadline that passes is an <see cref="OperationCanceledException"/>
+    /// the CALLER did not ask for, so <see cref="Unreached"/> reads it as a transport failure — exactly what
+    /// <see cref="HttpClient.Timeout"/> produced before the deadlines moved here. The response is buffered before
+    /// this returns (<see cref="HttpCompletionOption.ResponseContentRead"/>), so the deadline covers the body too.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendWithin(
+        HttpRequestMessage request, TimeSpan deadline, CancellationToken ct)
+    {
+        using var timer = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timer.CancelAfter(deadline);
+        return await http.SendAsync(request, timer.Token).ConfigureAwait(false);
+    }
+
     /// <param name="noContent">
     /// What a <c>204</c> MEANS, for the few endpoints whose protocol row says a success may carry
     /// no body. Absent everywhere else, where a 2xx this client cannot read stays a failure.
@@ -659,6 +751,7 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         object? body = null,
         HttpContent? content = null,
         T? noContent = default,
+        TimeSpan? deadline = null,
         CancellationToken ct = default)
     {
         // A read is safe to repeat and a write is not: only the outbox knows whether a send
@@ -678,7 +771,7 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
             HttpResponseMessage response;
             try
             {
-                response = await http.SendAsync(request, ct).ConfigureAwait(false);
+                response = await SendWithin(request, deadline ?? RequestDeadline, ct).ConfigureAwait(false);
             }
             catch (Exception exception) when (Unreached(exception, ct))
             {
@@ -735,13 +828,14 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
     private static async Task<ApiResult<T>> Body<T>(
         HttpResponseMessage response, T? noContent, CancellationToken ct)
     {
+        var status = (int)response.StatusCode;
         if (typeof(T) == typeof(Nothing))
         {
-            return ApiResult<T>.Success((T)(object)Nothing.Value);
+            return ApiResult<T>.Success((T)(object)Nothing.Value, status);
         }
         if (response.StatusCode == HttpStatusCode.NoContent && noContent is not null)
         {
-            return ApiResult<T>.Success(noContent);
+            return ApiResult<T>.Success(noContent, status);
         }
         var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         var value = Wire.Decode<T>(text);
@@ -749,8 +843,8 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         // TERMINAL, not transient: repeating the call will produce the same body.
         return value is null
             ? ApiResult<T>.Failure(new ApiError(
-                ErrorCodes.Validation, "the answer could not be read", (int)response.StatusCode))
-            : ApiResult<T>.Success(value);
+                ErrorCodes.Validation, "the answer could not be read", status))
+            : ApiResult<T>.Success(value, status);
     }
 
     /// <summary>

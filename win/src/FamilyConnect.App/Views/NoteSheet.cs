@@ -821,7 +821,9 @@ internal sealed class NoteSheet
 
     private StackPanel EventActions(NoteDto note)
     {
+        var actions = new StackPanel { Spacing = 6 };
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        actions.Children.Add(row);
         if (note.StartsAt is { } starts)
         {
             var calendar = new Button { Content = say.Get("Add to Calendar") };
@@ -829,7 +831,7 @@ internal sealed class NoteSheet
             row.Children.Add(calendar);
         }
         // The assistant's picture behind it — the AUTHOR's, and only where this server can draw at all.
-        if (editable && connection.Session.State.Assistant is { Images: true })
+        if (PictureHint.OffersBackdrop(editable, connection.Session.State.Assistant))
         {
             var backdrop = new Button { Content = BackdropLabel(note) };
             backdrop.Click += async (_, _) =>
@@ -840,30 +842,103 @@ internal sealed class NoteSheet
                 }
                 drawing = true;
                 backdrop.IsEnabled = false;
-                backdrop.Content = say.Get("Drawing…");
-                (AttachmentDto? Drawn, ApiError? Error) answer;
+                // NOTHING REACHES THE MODEL UNASKED, and the title is the author's own words: asked about exactly as a
+                // /draw is — first when /me says no, and again when the server answers `assistant_consent_required`
+                // (docs/protocol.md, "Consenting to the assistant", amended 2026-09-30).
+                BackdropConsent.Outcome outcome;
                 try
                 {
-                    answer = await board.DrawBackdropAsync(note.Id);
+                    // The question is anchored on the sheet's action row, which is always there: the button is disabled.
+                    outcome = await BackdropConsent.RunAsync(
+                        () => BackdropConsent.AsksFirst(
+                            connection.Session.State.Assistant?.Processor, connection.Session.State.AssistantConsentAt),
+                        () => AgreeToTheAssistantAsync(actions),
+                        async () =>
+                        {
+                            backdrop.Content = say.Get("Drawing…");
+                            return await board.DrawBackdropAsync(note.Id);
+                        });
                 }
                 catch (Exception e)
                 {
                     Diagnostics.Write($"drawing a backdrop: {e.GetType().Name}");
-                    answer = (null, ApiError.Transport(e.GetType().Name));
+                    outcome = new BackdropConsent.Outcome(null, ApiError.Transport(e.GetType().Name), Declined: false);
                 }
                 drawing = false;
                 backdrop.IsEnabled = true;
                 backdrop.Content = BackdropLabel(Current ?? note);
                 // The preview is where the author sees what arrived.
                 DrawPreview();
-                if (answer.Error is not null)
+                if (outcome.Error is { } error)
                 {
-                    ShowProblem(problem, say.Get("Couldn't draw that."));
+                    ShowProblem(problem, NoteSheetText.BackdropFailure(error, say));
                 }
             };
             row.Children.Add(backdrop);
+            // The title IS the description, so it is refused for what the images model refuses anywhere (PictureHint) —
+            // said under the button, and to a screen reader on the button itself.
+            AutomationProperties.SetHelpText(backdrop, PictureHint.Sentence(say));
+            actions.Children.Add(HintLine(PictureHint.Sentence(say)));
         }
-        return row;
+        return actions;
+    }
+
+    /// <summary>
+    /// A line of small secondary text. Both resources looked up rather than assumed: a style missing from the theme is a
+    /// plain line, not a dead sheet — and <c>CaptionTextBlockStyle</c> is a TextBlock style, applied to a TextBlock only.
+    /// </summary>
+    private static TextBlock HintLine(string text)
+    {
+        var line = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap };
+        var resources = Application.Current?.Resources;
+        if (resources is not null
+            && resources.TryGetValue("CaptionTextBlockStyle", out var style)
+            && style is Style caption
+            && caption.TargetType is { } target
+            && target.IsAssignableFrom(typeof(TextBlock)))
+        {
+            line.Style = caption;
+        }
+        else
+        {
+            line.FontSize = 12;
+        }
+        if (resources is not null && resources.TryGetValue("TextFillColorSecondaryBrush", out var ink) && ink is Brush brush)
+        {
+            line.Foreground = brush;
+        }
+        return line;
+    }
+
+    /// <summary>
+    /// The assistant question, as the chat asks it before a <c>/draw</c> (<c>ChatsView.ReviewAssistantConsentAsync</c>):
+    /// the same disclosure, the answer written to the server, and <c>/me</c> read again so every screen follows what
+    /// the server now says. Over the sheet rather than in a dialog of its own, since the sheet is one already. True only
+    /// on a yes the server kept.
+    /// </summary>
+    private async Task<bool> AgreeToTheAssistantAsync(FrameworkElement anchor)
+    {
+        var state = connection.Session.State;
+        if (state.Assistant?.Processor is not { } processor || !AssistantConsent.IsAvailable(processor))
+        {
+            // Nobody named to agree to any more: nothing can be asked, so nothing is drawn — said, not swallowed.
+            ShowProblem(problem, say.Get("Couldn't draw that."));
+            return false;
+        }
+        var agreed = await AssistantConsentOverAsync(
+            anchor, say, processor, state.Family?.AiHistory == true, state.Family?.AiVision == true);
+        if (!agreed)
+        {
+            return false;
+        }
+        var answer = await connection.Api.SetAssistantConsent(true);
+        if (!answer.Ok)
+        {
+            ShowProblem(problem, say.Get("Couldn't save your answer. Try again."));
+            return false;
+        }
+        await connection.Session.RefreshAsync();
+        return true;
     }
 
     private string BackdropLabel(NoteDto note) =>

@@ -414,6 +414,43 @@ nonisolated enum PollPresentation {
     }
 }
 
+/// How an assistant answer failed, as far as its bubble needs to know: which
+/// of the two sentences it says (docs/protocol.md, "The assistant").
+///
+/// Remembered per row for exactly as long as the failure itself is, so a
+/// redraw says the same sentence it said the first time — the row does not
+/// fall back to "ask again" under a refusal just because SwiftUI asked for
+/// its body once more.
+nonisolated enum AssistantFailure: Equatable, Sendable {
+    /// Any failure the server gave no reason for: the provider could not be
+    /// reached, the stream broke, a picture could not be stored. Asking
+    /// again may well work.
+    case stopped
+    /// The provider's own filter refused the question, the answer or the
+    /// picture's description. Asking again in the same words will not work,
+    /// so the sentence does not tell the member to.
+    case refused
+
+    /// The frame's reason, read. Nil — absent, or a value this client does
+    /// not know — is `.stopped`, the sentence every client showed before
+    /// `reason` existed.
+    init(reason: AIErrorReason?) {
+        switch reason {
+        case .refused: self = .refused
+        case nil: self = .stopped
+        }
+    }
+
+    /// The sentence drawn where the answer would have been — the bubble,
+    /// the Mac's row, and so what VoiceOver reads for it.
+    var sentence: LocalizedStringResource {
+        switch self {
+        case .stopped: "Couldn't answer that. Ask again."
+        case .refused: "The assistant's provider refused that. Try putting it another way."
+        }
+    }
+}
+
 nonisolated enum MessagePresentation {
 
     /// The quick-set offered by the long-press picker. Client UI only —
@@ -667,6 +704,55 @@ nonisolated enum MessagePresentation {
               message.poll == nil, message.call == nil,
               !message.attachments.isEmpty else { return false }
         return AttachmentAlbum.rows(of: message.attachments).isEmpty
+    }
+
+    /// True when a message IS a sticker (docs/protocol.md, "How it is
+    /// drawn"). It then draws with NO BUBBLE — the picture alone, in one
+    /// fixed box, its transparency showing the chat behind it.
+    ///
+    /// ONE TEST, THE SAME ON EVERY CLIENT, and exactly three conditions:
+    /// the message has exactly ONE attachment, that attachment's kind is
+    /// `photo`, and it carries `sticker: true`. Nothing else is asked.
+    /// This used to ask for an empty body as well, which is a fourth
+    /// condition the other four clients do not have — and five clients
+    /// that each add a sensible-looking extra are five clients that draw
+    /// the same message differently. The server refuses a sticker with a
+    /// body, so the two tests never disagreed about a message that exists;
+    /// what they disagreed about was what the rule IS. Words that did
+    /// arrive beside the flag are still drawn, under the picture, by the
+    /// row's ordinary body branch.
+    ///
+    /// Beside `isMediaOnly` rather than inside it, and differing from it in
+    /// one way: a sticker may be a REPLY (that is how one answers
+    /// something), and it stays bare when it is. A photo that quotes keeps
+    /// its balloon because the quote needs the surface; a sticker in a
+    /// balloon is not a sticker, so there the quote sits on the chat's own
+    /// background above the picture.
+    ///
+    /// An OLD message is untouched by all of this: a photo sent before the
+    /// pack existed carries no flag, is not a sticker, and draws exactly as
+    /// it always did.
+    static func isSticker(_ message: MessageSnapshot) -> Bool {
+        guard message.attachments.count == 1, let only = message.attachments.first
+        else { return false }
+        return only.kind == AttachmentDTO.Kind.photo && only.sticker
+    }
+
+    /// Whether "Edit" is offered on a message: the reader's own, once the
+    /// server has it — and never a sticker.
+    ///
+    /// "A client offers no 'Edit' on a sticker" (docs/protocol.md, "Sending
+    /// one"): `PATCH` on a sticker message is `validation`, because the
+    /// edit path would let its author put words on a message that is drawn
+    /// with no bubble to hold them. Offering the row anyway opened the
+    /// composer on an empty draft and ended in a refusal.
+    ///
+    /// One rule for both platforms, here rather than at each menu. The
+    /// phone's menu asked only "mine, and delivered"; the Mac's happened to
+    /// be right because it also wants a body to edit, which a sticker never
+    /// has — right by accident is the kind that the next change undoes.
+    static func offersEdit(_ message: MessageSnapshot, currentUserID: Int64) -> Bool {
+        message.serverID != nil && message.senderID == currentUserID && !isSticker(message)
     }
 
     /// Whether a lone photo/video tile draws its hairline.

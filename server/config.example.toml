@@ -183,6 +183,17 @@ max_password_hashes_in_flight = 8
 # was set stays editable, or one edit here locks owners out of their own
 # settings screen.
 max_family_members = 50
+# The family's STICKER PACK — chat stickers, one pack per family, which any
+# member may add to (docs/protocol.md, "Sticker pack").
+#
+# max_pack_items is how many one family may hold. Lowering it removes
+# nothing: a family already over it simply cannot add until it removes some.
+# max_pack_item_bytes is the largest single sticker — 512 KiB leaves room
+# for a few seconds of animated WebP. It may not exceed max_attachment_bytes,
+# because a sticker is uploaded as an attachment. The 512 x 512 pixel rule is
+# the apps' own: this server never decodes an image.
+max_pack_items = 200
+max_pack_item_bytes = 524288
 # Largest preview (the downscaled photo or a video's poster frame). Small on
 # purpose: it is drawn in a chat bubble.
 max_preview_bytes = 2097152
@@ -475,6 +486,13 @@ ring_timeout_secs = 45
 # # Longest reply, in tokens. A cap the SERVER owns rather than the model, so
 # # one long answer cannot run up a bill.
 # max_tokens = 1024
+#
+# # How long, in seconds, one request to the provider may take before it is
+# # given up — a reply, a picture, a rewrite. Raise it if your images
+# # deployment is slow; lower it if you would rather a stuck call gave up
+# # sooner. At least 10: the server refuses to start below that, because
+# # every answer would fail and the assistant would be off without saying so.
+# timeout_secs = 180
 #
 # # How many earlier turns of that member's own thread go with a question.
 # # Larger means better continuity and a bigger request; nothing outside that

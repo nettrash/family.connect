@@ -233,9 +233,19 @@ public sealed class ConversationModel
         IReadOnlyList<long>? attachmentIds = null,
         IReadOnlyList<string>? pendingFiles = null,
         IReadOnlyList<string>? pollOptions = null,
-        IReadOnlyList<MentionDto>? mentions = null) =>
+        IReadOnlyList<MentionDto>? mentions = null,
+        bool sticker = false) =>
         sending.Enqueue(
-            ChatId, body, replyToMessageId, attachmentIds, pendingFiles, pollOptions, mentions);
+            ChatId, body, replyToMessageId, attachmentIds, pendingFiles, pollOptions, mentions, sticker);
+
+    /// <summary>
+    /// Send a sticker: ONE staged file, no words, and the flag — a message like any other from
+    /// here on, so the outbox, the dedup key, the upload it owes and "Sending on an unreliable
+    /// network" are all unchanged (docs/protocol.md, "Sending one"). It may be a reply, which is
+    /// how one answers something with a sticker.
+    /// </summary>
+    public OutboxRow SendSticker(string stagedFile, long? replyToMessageId = null) =>
+        Send(string.Empty, replyToMessageId, pendingFiles: [stagedFile], sticker: true);
 
     /// <summary>Show a hidden bubble after all. Per message, and it outlives the redraw.</summary>
     public void Reveal(long messageId) => revealed.Add(messageId);
@@ -365,8 +375,14 @@ public sealed class ConversationModel
     /// Whether a bubble's words may be edited: the reader's own, with words to edit. A call record's
     /// body is a placeholder nobody wrote, and a poll's question is the poll.
     /// </summary>
+    /// <remarks>
+    /// NEVER A STICKER, and said here in as many words rather than left to follow from its empty
+    /// body: the server refuses the edit (<c>validation</c>), because it would put words on a
+    /// message drawn with no bubble to hold them (docs/protocol.md, "And it cannot be edited").
+    /// </remarks>
     public static bool MayEdit(Bubble bubble) =>
         bubble.Mine
+        && bubble.Message.StickerPicture is null
         && bubble.Message.Call is null
         && bubble.Message.Poll is null
         && bubble.Message.Body.Length > 0;

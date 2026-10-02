@@ -638,6 +638,110 @@ button.mention { cursor: pointer; }
 .bubble.is-emoji-only { background: transparent; border-color: transparent; padding: 0 2px; }
 .emoji-only { line-height: 1.1; margin: 0; }
 
+/* --- stickers, the CHAT kind --------------------------------------------- *
+ * `.sticker` is already taken: it is a note on the family board, further
+ * down. These are `.chat-sticker` for the one in a message and `.pack-*` for
+ * the family's pack, so that neither rule set ever reaches the other's.
+ *
+ * A sticker is drawn with NO BUBBLE (docs/protocol.md, "How it is drawn"):
+ * the picture alone, its transparency showing the chat behind it. So the
+ * balloon goes, and the box has no background of its own — not even the
+ * grey a photo tile waits in. The box is one size for every sticker
+ * (views/stickers.rs sets it, from fc_text::pack::BOX) and `contain` fits
+ * the picture into it whole: never cropped, never at its own pixel size. */
+.bubble.is-chat-sticker { background: transparent; border-color: transparent; padding: 0; }
+.bubble.is-chat-sticker .bubble-foot { padding: 2px 4px 0; }
+/* A sticker that answers something keeps its quote readable over whatever
+ * the chat's background is, in the balloon the sticker itself gave up. */
+.bubble.is-chat-sticker .quote { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--tint); border-radius: 8px; padding: 4px 8px; margin: 0 0 4px; }
+.bubble.is-chat-sticker.is-mine .quote { background: var(--mine); border-color: transparent; border-left-color: var(--tint); }
+.bubble.is-chat-sticker.is-failed { border-color: var(--danger); padding: 4px; }
+.chat-sticker {
+    position: relative;
+    display: block;
+    flex: none;
+    max-width: 100%;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    cursor: pointer;
+}
+.chat-sticker img, .pack-cell img, .chat-sticker-stage img { display: block; width: 100%; height: 100%; object-fit: contain; }
+/* A send that failed is not waiting for anything. */
+.bubble.is-failed .chat-sticker.is-loading::after { content: none; }
+.chat-sticker.is-loading::after, .pack-cell.is-loading::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--ink) 25%, transparent);
+    border-top-color: var(--tint);
+    animation: spin 0.9s linear infinite;
+}
+
+/* The panel the composer's sticker button opens: above the box, like the
+ * attach menu, and scrolling by itself when the pack is bigger than it.
+ *
+ * It is placed against the COMPOSER (`.composer-wrap`, which is the
+ * positioned box), not against its own button: the button is the second
+ * tool, some sixty pixels in, and a panel hung from its left edge and sized
+ * from the window ran past the right edge of every phone — 27 pixels at
+ * 360 wide — where `.conversation` clips it, scrollbar and all. So the
+ * button's wrapper gives up the `position: relative` every other `.attach`
+ * has, and the panel is as wide as the composer allows, whatever the
+ * composer is in: a phone, the pane beside the chat list, a thread. */
+.attach.pack-menu { position: static; }
+.pack-panel {
+    position: absolute;
+    z-index: 5;
+    bottom: 100%;
+    left: 16px;
+    margin-bottom: 6px;
+    width: min(348px, calc(100% - 32px));
+    max-height: min(320px, 50vh);
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
+    padding: 8px;
+    outline: none;
+}
+.pack-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; list-style: none; margin: 0; padding: 0; }
+.pack-cell {
+    position: relative;
+    display: block;
+    width: 100%;
+    aspect-ratio: 1;
+    padding: 4px;
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+}
+button.pack-cell { cursor: pointer; }
+button.pack-cell:hover:not(:disabled), button.pack-cell:focus-visible { background: var(--soft); }
+button.pack-cell:disabled { cursor: default; }
+/* The pack on the Family screen: each sticker with its own way out, for
+ * whoever may take it. */
+.pack-item { position: relative; }
+.pack-item .staged-remove { position: absolute; top: 0; right: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 50%; width: 22px; height: 22px; padding: 0; line-height: 1; font-size: 11px; }
+/* A width of its own: `input` is 100% wide by default, which in a row of
+ * actions is a row of its own. */
+.pack-label { width: 190px; flex: 0 1 190px; min-width: 0; }
+/* A sticker shown larger: at most the 512 a made one is, and inside the
+ * dialog whatever the window's size. */
+.dialog.chat-sticker-view { width: min(560px, 100%); }
+/* The picture is laid OVER the stage rather than in it: a percentage
+ * height inside an auto-sized box resolves against the picture's own size,
+ * and a 2000-pixel sticker opened over the button under it. The stage is a
+ * square as wide as there is room for; the picture fits in it whole. */
+.chat-sticker-stage { position: relative; display: grid; place-items: center; width: min(512px, 100%, 56vh); aspect-ratio: 1; justify-self: center; }
+.chat-sticker-stage img { position: absolute; inset: 0; }
+
 /* --- polls ---------------------------------------------------------------- */
 
 .poll { display: grid; gap: 6px; margin-top: 6px; min-width: 240px; }
@@ -1244,6 +1348,9 @@ button.mention { cursor: pointer; }
 
 .muted { color: var(--muted); }
 .hint { font-size: 13px; color: var(--muted); margin: 0; }
+/* Under an event's backdrop button while the consent question is open: the
+   composer's line, set as the hint beside it is. */
+.note-sheet .consent-notice { font-size: 13px; margin: 0; }
 .visually-hidden {
     position: absolute;
     width: 1px;

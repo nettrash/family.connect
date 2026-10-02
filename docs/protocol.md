@@ -141,7 +141,7 @@ The consequences worth stating rather than discovering:
   READER's language and it is nobody else's: the family's language is what the assistant answers
   in, and the two are deliberately separate, so a Serbian grandmother reads a Russian family's
   chat in Serbian (see "The family's language", which says the same thing from the other end).
-- **The board's two seen-marks are the one thing a browser keeps past the tab.** They live in
+- **The board's two seen-marks are one of the two things a browser keeps past the tab.** They live in
   `localStorage`, under the account's user id, and they are two numbers — the highest note id and
   the highest `content_seq` this browser has shown that account (see "Board") — which say how far
   somebody has looked and nothing whatever about what the notes say. Kept for the tab alone, like
@@ -150,6 +150,9 @@ The consequences worth stating rather than discovering:
   that IS the board — its notes, their text, their pictures — lives in the tab's memory and goes
   with it, and a browser reads the whole board again on every sign-in. A browser that has never
   shown an account the board counts the whole wall, exactly as an app does on its first launch.
+  The other thing is which stickers this browser's person sent most recently (see "Sticker pack"):
+  pack item ids and nothing else, in `localStorage` for the same reason the marks are, and — unlike
+  the marks — removed at sign-out.
 
 Everything else in this document applies to a browser unchanged. Where a section says Windows and
 web are "not asked to draw" something yet, that is a statement about what has been BUILT, never a
@@ -201,8 +204,9 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `message_empty`, `message_too_long`, `message_not_found`, `not_message_author`, `invalid_emoji`,
 `note_not_found`, `not_note_author`, `invalid_note_color`, `invalid_note_size`,
 `invalid_note_font`, `invalid_note_kind`, `invalid_rsvp`, `invalid_task`, `invalid_language`,
-`board_full`, `invalid_pagination`, `device_not_found`, `invalid_poll`, `poll_closed`,
-`pictures_unavailable`,
+`board_full`, `pack_full`, `pack_item_too_large`, `pack_item_not_found`, `not_pack_item_author`,
+`invalid_pagination`, `device_not_found`, `invalid_poll`, `poll_closed`,
+`pictures_unavailable`, `picture_refused`,
 `calls_disabled`, `video_calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`,
 `peer_busy`, `peer_unreachable`, `avatar_too_large`, `invalid_image`, `attachment_too_large`,
 `invalid_attachment`, `attachment_not_found`, `attachment_expired`, `attachment_already_used`,
@@ -384,6 +388,11 @@ Attachment {"id": 34, "kind": "photo|video|audio|file|location", "mime": "image/
              "latitude"/"longitude" on a location only, and always both — a location
              IS its coordinates; "accuracy_m" additionally when the sending device
              reported one
+           — plus "sticker": true when (and only when) the message that carries it was
+             sent as a STICKER: still a kind=photo in every other respect, drawn without
+             a bubble by a client that knows the flag and as a photo by one that does
+             not. Set by the send and never changed; never on a pack item's or a note's
+             picture — see "Sticker pack"
 Poll      {"poll_seq": 88, "closed": false,
            "options": [{"id": 5, "text": "Pizza", "votes": [7, 9]},
                        {"id": 6, "text": "Pasta", "votes": []}]}
@@ -430,6 +439,10 @@ Note      {"id": 12, "author_id": 7, "kind": "text", "text": "Milk", "color": "y
             finds it missing (an older server) reads "text", which is what every note
             was. A client that does not know a kind draws the note as a text one — see
             "Board"
+PackItem  {"id": 5, "added_by": 7, "attachment": {Attachment}, "created_at": "…",
+           "pack_seq": 12}
+          — one sticker of the family's pack. Plus "label" when one was given, and
+            "deleted": true INSTEAD of the content fields on a tombstone — see "Sticker pack"
 ```
 
 **A body is plain text on the wire, and always has been.** No markup is parsed, transformed or
@@ -625,6 +638,15 @@ through this path** (see "Pictures"). Nothing else ever adds, removes or replace
 editing. It is stated here rather than only there because it is the reason the rule below — apply
 the whole `Message`, not the body alone — is worth following even for a client that has never seen
 a picture answer.
+
+**A STICKER message cannot be edited at all.** It has no body and an edit is not a way to give it
+one (see "Sticker pack"): `PATCH /chats/{id}/messages/{mid}` on a message whose attachment carries
+`sticker: true` is `validation` (400), changes nothing, takes no `edit_seq` and fans out nothing.
+The server asks this question LAST — after the body's own rules, after `message_not_found` and
+after `not_message_author` — so it is only ever the message's own author, with a body that would
+otherwise have been accepted, who is told so; an empty body is `message_empty` on a sticker as on
+anything else. A client states the rule rather than waiting for the answer: it offers no "Edit" on
+a message it draws as a sticker.
 
 Editing has the same catch-up problem reactions have, and takes the same shape. `after_id` is
 `WHERE id > cursor`, so it can never see a change to an OLDER row — a client that was offline
@@ -1033,7 +1055,10 @@ picture).
 who is coming, not the family's history, not a language instruction. That is the `/draw` rule
 applied unchanged (see "Pictures"), and it is why this takes no prompt from the client: a request
 body would be a second way to send words to a model from a screen that is not the assistant's chat,
-and the words on the sticker are the ones the family already chose to put on their wall.
+and the words on the sticker are the ones the family already chose to put on their wall. When the
+images deployment refuses the title, the title — still nothing else — also goes once to the text
+deployment to be reworded, and the backdrop is drawn from the rewrite: the rule under "Pictures",
+"A refused description is reworded once", which a `/draw` follows too.
 
 It needs a server with an images deployment, which is the same `assistant.images` that `GET
 /families/mine` already reports, and which is what a client hangs the action on; a server without
@@ -1041,6 +1066,34 @@ one answers `pictures_unavailable` (403) rather than drawing nothing. The pictur
 attachment afterwards in every respect — claimed by that one note, served to the family, counted in
 statistics, swept with the note — and it is made the way a `/draw` picture is, by the server's own
 process with no upload and nobody to authenticate.
+
+**It needs the author's consent to the assistant** (*amended 2026-09-30*), for the reason a `/draw`
+does: the title is the author's own words going to the model. Without it the answer is
+`assistant_consent_required` (403) and nothing is sent — not to the images deployment and not, on a
+refusal, to the text deployment. See "Consenting to the assistant", which says what a client does
+with that answer.
+
+**A title the provider's filter refuses to draw answers `picture_refused` (400)** — decided exactly
+where a refused `/draw` is (see "The assistant": the provider's structured error fields, never its
+wording alone), and only once the one rewrite has been tried and has not produced a backdrop
+either. It is TERMINAL, like every 4xx with a code: the same title gets the same refusal,
+so a client does not retry it, and it shows the sentence a refused answer shows — "The assistant's
+provider refused that. Try putting it another way." — where it shows a backdrop that failed. The
+note is untouched: the backdrop it had, if any, stays, nothing is counted and nothing is written.
+Every OTHER failure of the provider stays what it always was, `internal` (500), which is transient.
+Before this code existed a refusal was an `internal` too, which a client rightly retried to no
+purpose; an old client that does not know `picture_refused` treats it as the terminal 4xx it is.
+
+**It is SLOW, and a client waits for it as such** (*amended 2026-09-30*). It is the one request in
+this protocol whose answer waits on the model: one picture being drawn, or — when the title is
+refused and reworded — a picture, a rewrite and a second picture, one after another, each bounded
+by the server's `[ai] timeout_secs`. That is routinely longer than the 15 or 20 seconds that suit
+an ordinary JSON call, so a client gives this request a timeout of its OWN, no shorter than 90 s —
+the reference proxy's read timeout on `/api/v1/`, past which the proxy answers for the server anyway
+— the way it gives an upload one. A client that stops waiting shows the failure a backdrop shows,
+and that is true: the server stops drawing when the connection closes, so nothing is written,
+counted or bound to the note afterwards. And were one ever to land after all, it takes a
+`board_seq` like any other change, so the board feed shows the wall as it is either way.
 
 Asking again REPLACES it: the note's picture is otherwise fixed at creation, and this is the one
 exception, because a family who dislikes what the model drew should not have to take the event down
@@ -1246,6 +1299,326 @@ board_full`, and a client tells whoever was pinning it that the board is full, a
 wrote where they can keep it — the ceiling is the family's, and a note that silently did not appear
 is a note its author will assume everyone has read.
 
+### Sticker pack
+
+**A word first, because this document already uses it.** Everywhere ELSE in this document
+"sticker" means a board NOTE — the thing on the wall, as in "on the sticker" under "Board". In THIS
+section, and wherever a field is spelled `sticker` or `pack`, it means the other thing: a small
+picture sent in a chat, the way a messenger's stickers are. The two never meet. The apps say
+"sticker" to people for the chat one and have never said it for a note; the wire says `pack` for
+the collection — `pack_items`, `GET /families/mine/pack`, a `pack_item` frame, `max_pack_seq` — so
+that no table, endpoint or frame has to be read twice to know which is meant. The one place the
+wire says `sticker` is the flag on an attachment, below.
+
+Each family has exactly one pack: the stickers anybody in the family has added, which everybody in
+the family may send. It is family PROPERTY, like the board, and not message history — so it is not
+paged like a chat, retention never touches it, and it is there for a member who joined yesterday.
+Adding to it and removing from it notify nobody and count as unread nowhere.
+
+```json
+PackItem  {"id": 5, "added_by": 7, "attachment": {Attachment}, "created_at": "…",
+           "pack_seq": 12}
+          — plus "label": "party cat" when (and only when) whoever added it gave one: a few
+            words for a screen reader, never drawn over the picture
+          — plus "deleted": true INSTEAD of the content fields on a tombstone:
+            {"id": 5, "deleted": true, "pack_seq": 14}
+          — "attachment" is an ordinary kind=photo Attachment whose bytes are the sticker;
+            it carries NO "sticker" flag (that is a message's — see below)
+```
+
+**Two things, and the difference is the design.** A PACK ITEM is a picture the family keeps. A
+STICKER MESSAGE is a message somebody sent, carrying its OWN copy of that picture as an ordinary
+`kind=photo` attachment with one extra field, `sticker: true`. The message does not name the pack
+item and the pack does not know about the message: removing an item breaks nothing that was ever
+sent, retention sweeping a message takes nothing from the pack, and a client that has never heard
+of any of this draws a photo. The copy is cheap — identical bytes are one file per family (see "One
+copy per family"), so what a send costs is the upload and not the disk.
+
+#### What a sticker is made of
+
+A pack item's picture is `image/webp` or `image/png`, and nothing else (`invalid_attachment`).
+WebP because it carries transparency and animation in one small file; PNG because not every
+platform here can WRITE a WebP — an Apple device decodes one and cannot encode one — and a pack
+only some members could add to is not the family's.
+
+`image/webp` is therefore an accepted type for `kind=photo`, beside the four that were (see
+"Photos, videos, audio, files and locations"). Its magic number is `RIFF` at offset 0 and `WEBP`
+at offset 8; the four bytes between are the file's length and are not checked. It is accepted for
+ANY photo, not only a sticker — the upload does not know what it will become — and that changes
+nothing about what a composer does with a `.webp` somebody picked from disk.
+
+**Animation is stored, never refused and never stripped.** An animated WebP is a WebP: the server
+checks twelve bytes and stores the rest, as it does for everything. A client draws it ANIMATED
+where its platform can and draws FRAME ZERO where it cannot, and both are correct — a still
+sticker on an older phone is the same sticker. No client re-encodes an animated sticker, for the
+plain reason that none of them can do it without losing the animation.
+
+**A sticker is NOT prepared before upload.** "Preparing media before upload" and every other thing
+a client does to a photograph on its way up — scaling it down, re-encoding it as JPEG, dropping its
+metadata — would destroy exactly what makes a sticker one: a JPEG has no transparency and one
+frame. So the bytes of a pack item, and of a sticker message, go up AS THEY ARE, byte for byte.
+That is also what makes the copy free: the message's upload hashes to the pack item's file.
+
+**And it has no preview.** A preview is a JPEG (see `PUT /attachments/{id}/preview`), which is the
+same destruction by another door. A client uploads none for a pack item or a sticker message, and
+draws both from `GET /attachments/{id}` — the original bytes — WHATEVER `has_preview` says. It can
+say `true`: an upload whose bytes the family already holds inherits the flag from the row it
+deduplicated against, and somebody may once have sent that same PNG as a photograph.
+
+**512 × 512 is the CLIENT's rule.** The server never decodes an image and cannot measure one. A
+client that MAKES a pack item out of a larger still picture scales it to fit 512 × 512 — whole,
+never cropped, its proportions and its transparency kept — and writes PNG, or WebP where its
+platform can. A `.webp` or `.png` that is already a sticker is taken AS GIVEN, whatever its pixel
+size, so long as it is within the byte ceiling: re-encoding somebody's finished sticker buys
+nothing and, for an animated one, is not possible. A client sends `width` and `height` with the
+upload when it knows them, as for any photo.
+
+**What may be PICKED is any still picture the platform can decode**, and this too is the client's
+rule. A still that is neither WebP nor PNG — a JPEG, a HEIC — is fitted into 512 × 512 in the same
+way, whether or not it is larger, and written as PNG, or WebP where the platform can; it never
+goes through the JPEG path a photograph takes. An ANIMATED picture that is not already an
+acceptable WebP — an animated GIF, an animated PNG the platform would flatten — is REFUSED where
+it is picked, with a sentence saying that an animated sticker must be a WebP: a client never
+quietly turns one into its first frame, because a sticker that stopped moving on its way into the
+pack is one its adder will take for a bug.
+
+#### The pack
+
+**Anybody in the family may add.** The picture is uploaded first, as any attachment is, and then
+claimed:
+
+```
+POST /attachments?kind=photo&width=512&height=512      (the sticker's own bytes, unprepared)
+  → 201 {attachment: {id: 71, mime: "image/webp", …}}
+POST /families/mine/pack  {attachment_id: 71, label: "party cat"}
+  → 201 {item: {id: 5, added_by: 7, attachment: {id: 71, …}, pack_seq: 12, …}}
+```
+
+The pack is a THIRD way an attachment is claimed, beside a message and a board note, and under the
+same rule: once, by its uploader, and by one owner only. An id that is not the caller's upload —
+or is one they made while in ANOTHER family, whose file belongs to that family's set — is
+`attachment_not_found` whether or not it exists; one already on a message or a note is
+`attachment_already_used`; one the unclaimed sweep took is `attachment_expired`, and the client
+uploads again. It does so ONCE and by itself — the same bytes, then the claim again with the new
+id — and shows nothing; only a second failure is said to the person. A claimed pack picture is READABLE BY EVERY MEMBER of the family, the third way in
+beside chat membership and the board.
+
+The size is checked HERE, at the claim, because the upload did not know what it was for: a picture
+over the per-item ceiling is `pack_item_too_large` (413), and a pack already at its ceiling is
+`pack_full` (409). Both are said to the person, like `board_full`: the limit is the family's, and
+a sticker that silently did not appear is one its adder will go looking for.
+
+**Adding the same sticker twice is not an error and not two stickers.** A claim whose bytes the
+pack ALREADY holds answers `200` with the item that is there, and adds nothing; so does a claim
+repeated with the same `attachment_id`, which is what a retry after a lost answer is. The fresh
+upload is dropped in the first case, so the item that comes back carries the attachment id the pack
+already had and not the one the claim named. This is what lets a client offer "Add to family
+stickers" on a sticker in a chat without first proving it is not in the pack — and what stops two
+members who both liked it from filling the panel with copies.
+
+`label` is optional, trimmed, and at most 64 characters (`validation` over that); an empty one is
+no label. A character here is a Unicode scalar value, counted after the trim, and a client that
+offers a label counts the same way and refuses a longer one in words, before any request. It is
+fixed when the item is added. There is no edit: an item is its picture, and a
+different picture is a different item.
+
+**Removing is for whoever added it, or the family owner.** `DELETE /families/mine/pack/{id}`. This
+is a permission shape the board does not have — a note is its author's alone — and the reason is
+the pack's other difference: it is the family's, and a member who has left, or deleted their
+account, leaves their stickers behind. Under an author-only rule nobody could ever remove those.
+Anybody else is `not_pack_item_author` (403). Whoever added it may remove it only while they are
+still in THIS family; from outside it the item is `pack_item_not_found`, like every other id of a
+family the caller is not in.
+
+Removal is idempotent — removing an item already removed is `204` and takes no new seq — and it
+takes the pack's picture with it: the attachment row, and the file once no other row names those
+bytes. Every message that was ever sent with that sticker keeps its own row and goes on drawing.
+`pack_item_not_found` on a `DELETE` tells a client the same thing a `204` does — the item is not
+in this family's pack — so it drops the item from what it holds and shows no error.
+
+**The pack has its own cursor, and it is the board's machinery unchanged.** Every add and every
+removal takes the next value of a server-wide sequence and stamps it on the item as `pack_seq`;
+the family exposes its maximum as `max_pack_seq` on `GET /families/mine`, omitted while the pack
+is empty and untouched. No client learns a new sync idea:
+
+- `GET /families/mine/pack` is the WHOLE pack as it now stands — `{items, max_pack_seq}`,
+  tombstones excluded, in the order the items were added (`id` ascending), which is the order a
+  panel shows them in. **A full read REPLACES what a client holds**, under the board's rule and its
+  one exception: an item held at a `pack_seq` above the read's `max_pack_seq` arrived after the
+  read was taken, and stays. `max_pack_seq` is read BEFORE the items, and a family's pack changes
+  COMMIT IN `pack_seq` ORDER, so the mark is a promise: every change at or below it is in the items
+  that came with it. A client ignores a full read whose `max_pack_seq` is below one it has already
+  applied.
+- **A live item ALWAYS carries its `attachment`**, in a full read, on a catch-up page and in a
+  frame; only a tombstone is without one. Each read is taken at one instant, so an item being
+  removed while it is read comes back whole or as its tombstone, never as a live item with no
+  picture. A client may decode the field as required. What it may not do is draw half an item: a
+  live item that arrives without `added_by` or without `attachment` is DROPPED — not held, not
+  shown as a blank square — and the rest of the read or page is applied as usual.
+- `GET /families/mine/pack/changes?after_seq=` is the catch-up, ordered by `pack_seq` ascending,
+  tombstones INCLUDED, looped until a short page. It is a state feed, not a log: each item once,
+  in the state it is now in.
+- **Removals leave tombstones.** A removed item keeps its row, takes a new `pack_seq`, and appears
+  in the feed as `{"id": 5, "deleted": true, "pack_seq": 14}`. Item ids are never reused, so an
+  item a client has seen removed — by a tombstone, by a full read that left it out, or by its own
+  `DELETE` — is never brought back by an older copy arriving late: the gone set, exactly as the
+  board keeps it.
+- An item is written only when the incoming `pack_seq` is greater than the one held.
+- **The cursor moves in three ways and no others**: a full read sets it to its `max_pack_seq`, a
+  catch-up page to the highest `pack_seq` on the page, and a `pack_item` frame to its own
+  `pack_seq` — the frame only once this connection has caught up. The item in the answer to a
+  client's own `POST` is applied under the per-item guard and moves no cursor, for the reason the
+  board gives.
+- **"Caught up" belongs to ONE connection.** A catch-up pass that a reconnect has overtaken — it
+  began under a socket that has since been replaced — still applies what it read, item by item
+  under the guard above, but does not mark the NEW connection as caught up: that connection runs
+  its own pass, and until it has, its frames move no cursor.
+
+On every (re)connect, after `GET /families/mine`: a client that holds no pack reads the whole of
+it; one that does, and whose stored cursor is below `max_pack_seq`, loops the change feed. A
+client that reads the pack only when somebody opens the panel is not wrong, merely late.
+
+The `pack_item` frame carries one item in whatever state it now has — added, or a tombstone — to
+every connection of every member of the family, the actor's own included; the actor's request is
+answered by its HTTP response. It never notifies and never counts as unread.
+
+**A client keeps the pack, as it keeps the board**: the items, and the bytes under the attachment
+id, which never names different bytes. A browser keeps both for the tab and no longer, like
+almost everything else it holds. Which stickers somebody used most recently is that DEVICE's own
+business and is never on the wire: it says something about a person's habits and nothing about the
+family's pack. A client keeps the last 16 a person sent from it, newest first, and its panel shows
+them before the rest. They are kept PER DEVICE and they outlast a restart — in a browser that
+means `localStorage` and not the tab, the second thing a browser keeps past it (see "A browser is
+a client too") — because a list that emptied itself every time the app was closed would never
+hold the sticker somebody reaches for every day. They are CLEARED AT SIGN-OUT, on every client,
+so that they are not left on a shared machine for the next person who opens the panel. A recent
+whose item the pack no longer holds is simply not shown.
+
+#### Sending one
+
+A sticker is sent as a message with one attachment and one flag:
+
+```
+POST /attachments?kind=photo&width=512&height=512      (the pack item's bytes, as cached)
+  → 201 {attachment: {id: 90, …}}
+POST /chats/42/messages  {client_msg_id, body: "", attachment_ids: [90], sticker: true}
+  → 201 {message: {…, attachments: [{id: 90, kind: "photo", mime: "image/webp",
+                                     sticker: true, …}]}}
+```
+
+`sticker: true` on the send — REST or the `send` frame — is what makes it one; absent, or `false`,
+the message is an ordinary photo. The server stores it on the ATTACHMENT, and every read of that
+attachment carries `"sticker": true` from then on: in `attachments`, in the legacy `attachment`,
+in a `last_message` preview, in the `message` frame. It is absent otherwise, by the usual rule,
+and it never changes.
+
+A sticker message is exactly ONE attachment, and that attachment is a photo of `image/webp` or
+`image/png` no larger than the pack's per-item ceiling — anything else is `invalid_attachment`. It
+has NO body: `sticker: true` beside a non-empty body is `validation`, and beside a `poll` it is
+`invalid_poll`, as any attachment is. A sticker is its own message. It may be a reply
+(`reply_to_message_id`), which is how one answers something.
+
+**And it cannot be edited**, which is the same rule seen from the other side. `PATCH
+/chats/{id}/messages/{mid}` on a sticker message is `validation` (400), as it is on a call record
+and for the same kind of reason: the edit path would otherwise let its author put words on a
+message that is drawn with no bubble to hold them — and, because an edit to an empty body is
+refused, never take them off again. It is the AUTHOR who is told so; anybody else is
+`not_message_author` as for any message. A client offers no "Edit" on a sticker. A photo is
+unaffected, WebP or not: what cannot be edited is a message whose attachment says `sticker: true`.
+
+**The server does NOT check that the bytes are in the pack**, and deliberately. The message is a
+copy: an item removed between the tap and the send must still go, the send must survive an outbox
+that waited a day, and "Add to family stickers" exists precisely because a message can hold a
+sticker the pack no longer does.
+
+Everything else about it is a message: the outbox, `client_msg_id` dedup, background uploads and
+"Sending on an unreliable network" are unchanged, because nothing on the send path is new. It can
+be replied to, reacted to, reported and threaded, though not edited; it moves the unread count and
+it pushes — with the body `"Sticker"` where a photo would say `"Photo"`. It can be sent in any
+chat, and a client offers the sticker button in EVERY place a message can be written: the family
+chat, a one-to-one chat, the assistant's chat, and the composer of a thread. In the `ai` chat it
+is a photo to the assistant as it is to everything else on the server, under the rules in
+"Pictures" — and it is a message there like any other, so it goes through the same consent
+question: a member who has not agreed is answered `assistant_consent_required`, and the client
+asks and offers to send the sticker again exactly as it would for words (see "Consenting to the
+assistant"), never around it.
+
+**How it is drawn** — a drawing rule and not a wire one, written down because five clients must
+agree. WHICH message is drawn this way is one test, the same on every client: the message has
+exactly ONE attachment, that attachment's `kind` is `photo`, and it carries `sticker: true`.
+Anything else — two attachments, the flag on something that is not a photo — is drawn as the
+ordinary message it otherwise is. A sticker is drawn with NO BUBBLE: the picture alone, its transparency showing the chat
+behind it, the sender's name and the time where that client puts them for any message. It is
+drawn LARGER than an emoji and smaller than a photograph, in one fixed box that is the same for
+every sticker on that client, fitted whole and never cropped — never at the picture's own pixel
+size, which would make a 96-pixel sticker a speck and a 2000-pixel one a poster. The box is 160
+on a side in the platform's own unit — points, dp, CSS pixels, effective pixels — which is a
+RECOMMENDATION each client applies and nothing the wire carries or the server knows. Animated where
+the platform can, frame zero where it cannot. On a chat-list row it is the word "Sticker", in the
+reader's language, where a photo's row says so of a photo.
+
+**Tapping one shows it larger**, and offers "Add to family stickers" when the family's pack does
+not hold it. "Holds it" is decided by the CLIENT from bytes it already has: a pack item whose
+`attachment.size` and `mime` match and whose bytes are the same. Nothing on the wire names the
+item a message was sent from, and nothing needs to — a client that guesses wrong and offers it
+anyway is answered `200` with the item that was already there. Adding is the pack's own flow:
+upload the message's bytes again, unprepared, and claim them.
+
+**In the panel, one tap sends.** No caption, no confirmation: the sticker is the message. That is
+the client's to build and is mentioned here because it is what the rules above are for — a send
+that needed a second step would not need a flag.
+
+#### What old clients and old servers do
+
+A client that has never heard of `sticker` ignores the field, as it ignores every unknown one, and
+draws what the attachment otherwise is: a photo, in a bubble, its first frame. Every platform this
+protocol has a client on decodes a still WebP, so nothing is a blank. It ignores the `pack_item`
+frame and `max_pack_seq` under the same rule.
+
+A SERVER that predates the pack answers `GET /families/mine` without `max_pack_items`, and that
+absence is how a client knows: it offers no sticker button and no pack management there, rather
+than discovering a `404` when somebody taps one. Such a server also refuses `image/webp` as a
+photo and ignores `sticker` on a send.
+
+#### Limits
+
+| Limit | Default | Config key |
+|---|---|---|
+| Items in one family's pack | 200 | `limits.max_pack_items` |
+| One item's bytes | 512 KiB (524 288) | `limits.max_pack_item_bytes` |
+| Pixel size | 512 × 512 | none — a client rule, above |
+| Label | 64 characters | fixed |
+
+A client reads the first two from `GET /families/mine` — `max_pack_items` and
+`max_pack_item_bytes`, always present on a server that has packs — and refuses where the person is
+choosing a picture, so the refusal arrives as "that one is too big" beside the picker rather than
+as a rejected request. The per-item ceiling binds a sticker MESSAGE too, which is the same number.
+An operator lowering `max_pack_items` below what a family already holds removes nothing: the pack
+is frozen until items are removed, the way a member cap below the family's size is.
+
+#### What does not touch the pack
+
+- **Retention.** The sweep deletes messages and what they own. A pack item is owned by the pack,
+  so it stays, however old. A sticker MESSAGE past `retention_days` goes like any other, its
+  attachment row with it — and the file stays for as long as the pack item, or any other row,
+  still names those bytes.
+- **The unclaimed sweep.** A pack item's picture is claimed. The sweep removes an upload with no
+  message, no note AND no pack item, after the same 24 hours.
+- **A member leaving, or deleting their account.** Their items stay — they are the family's — with
+  `added_by` still naming them, resolved the way their old messages are. The owner can remove
+  them; nobody else can.
+- **A block.** A blocked member's sticker MESSAGE is hidden like any other message of theirs,
+  under every rule in "Blocking a member": the hidden row, the one-tap reveal, the fetch that
+  draws nothing. Their PACK ITEMS are not hidden, from anybody: an item is a picture the family
+  keeps, not something a person said, and a panel that was one sticker short for one member would
+  be a quantity that moved when they blocked somebody. The `pack_item` frame reaches a blocker
+  exactly as it reaches everyone.
+- **Statistics.** The attachment counts are of what MESSAGES carry (see "Family statistics"): a
+  sent sticker is one `photo`, and the pack's own pictures are not counted at all.
+
+What DOES take the pack: deleting the family takes its items and their files with it, like its
+board.
+
 ### Starting a family
 
 Family Connect is one family on a server of its own: the point of the product is that a family
@@ -1449,6 +1822,63 @@ without a line of new code.
 A reply that fails midway leaves the row with whatever text arrived and an `ai_error` frame; the
 member sees a partial answer and can ask again, which is better than a bubble that never resolves.
 
+**`ai_error` may say WHY, in an optional `reason`** (added 2026-09-30). One value is defined:
+
+```json
+{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused"}
+```
+
+- **`"refused"`** — the AI provider's OWN safety or content filter refused the question, the
+  answer, or a picture's description (a description only once the server's one rewrite of it has
+  not produced a picture either — see "A refused description is reworded once" under
+  "Pictures"). It is not this server's judgement and not a fault: the
+  provider read the request and declined it, so asking again in the same words gets the same
+  refusal. A client says so instead of "ask again" — the failed answer reads **"The assistant's
+  provider refused that. Try putting it another way."** wherever the failure sentence appears (the
+  bubble, the streaming row, the accessibility label), and the failed row remembers WHICH sentence
+  it failed with for exactly as long as it remembers that it failed.
+- **absent** — any other failure, exactly as before this field existed: the provider could not be
+  reached or answered an error that is not a refusal, the stream broke, the answer came back empty
+  for a reason that was not the filter, a picture could not be stored. The sentence stays
+  "Couldn't answer that. Ask again."
+
+A client MUST treat a `reason` it does not know as ABSENT — the compatibility rules above, applied
+to a value rather than a field — so a later value can be added without an old client inventing a
+meaning for it. A client that predates the field ignores it and shows the sentence it always did,
+which is less helpful but still true.
+
+**Where the server decides "refused"**, so that it is decided the same way on every path — a
+member's private thread, an `@ai` mention in the family chat, a `/draw`, the text model's own
+`draw_picture` call, and the board's backdrop (which answers over HTTP instead: `picture_refused`,
+see "Board"):
+
+- the provider answered an HTTP 4xx whose JSON error names a content refusal in a STRUCTURED field —
+  `error.code` or `error.type` is `content_filter`, `content_policy_violation`,
+  `content_safety_violation` or `moderation_blocked`, or `error.innererror.code` is
+  `ResponsibleAIPolicyViolation` (Azure's chat completions answer
+  `{"error": {"code": "content_filter", …, "innererror": {"code": "ResponsibleAIPolicyViolation"}}}`
+  when the QUESTION is filtered; its images endpoint answers
+  `{"error": {"code": "content_safety_violation", …}}` or `content_policy_violation` when the
+  DESCRIPTION is). Only when those fields are absent or merely generic (`BadRequest`,
+  `invalid_request_error`) does the error's `message` count, and then only a message naming Azure's
+  policy outright (`ResponsibleAIPolicyViolation`, "RAI policy", "content management policy"). Any
+  other 4xx — `max_tokens` too large, an unknown deployment, a malformed body — is NOT a refusal, and
+  says nothing about the member's words;
+- or a streamed answer ENDED with `finish_reason: "content_filter"` and no words at all: the
+  provider accepted the question and then filtered the answer. (One that was cut off by the filter
+  after some words finishes with those words, as a reply that stops midway always has.)
+
+**The reason carries no provider text to a client.** Not the provider's message, not its code, not
+which category tripped the filter: the frame is one fixed word, and the provider's detail goes to
+the server's own log, on one line, bounded at 400 characters, and never alongside the member's
+question or the model's answer. **The log keeps only the fields that NAME the failure**: the
+error's `code`, `type` and `param`, its inner error's `code`, the content-filter categories that
+tripped (with their severity), and a 422's field-and-rule pairs, each only while it is shaped like
+an identifier. The provider's `message` and every other field are withheld, because an error can
+repeat what it was sent (a picture refusal can carry the model's `revised_prompt` of the
+description; a validation error can echo the input), and a body that is not JSON is logged as its
+size alone.
+
 The assistant sends under a **reserved account** that belongs to no family, so `sender_id` stays a
 real user id and every foreign key, join and index over messages keeps working untouched. It is not
 in the `members` roster (`GET /families/mine` selects by family, and the assistant has none) and the
@@ -1544,6 +1974,24 @@ is off; a photo goes only where "Pictures" says it does, and only while `ai_visi
 answer comes back as a message in the chat. A client that cannot name `processor` does not offer
 the assistant at all, so there is no screen to write.
 
+*Amended 2026-09-30:* a picture description is words the member wrote too, and there is now one
+more place it can go — still to `processor`, never anywhere else. When the provider's images
+model refuses a description, the server sends that description, once, to the same provider's
+TEXT model to be reworded, and draws from the rewrite (see "A refused description is reworded
+once" under "Pictures"). The sentence above — the message goes to `processor` — stays true, so
+this widens no consent; it is written here because a disclosure that is true only by omission is
+not the disclosure this section asks for. A client may say it in a line of its own; it must not
+say anything that contradicts it.
+
+*Amended 2026-10-01:* and one more, also to `processor`. When the assistant decides to draw and the
+images model refuses the description the assistant wrote, the server sends the images model the
+member's OWN message instead — the one message that asked, with the `@ai` taken out — exactly as
+`/draw` followed by those words would have (see "Drawing without being told to") — so if the
+images model refuses them too, it is those words, not the assistant's description, that go once to
+the same provider's TEXT model to be reworded, as the amendment above says of a `/draw`. These are
+the member's words, going to the provider they agreed to, in the shape they could have sent them
+themselves; this widens no consent either.
+
 **Recorded on the server, not on the device.** `GET /me` carries `assistant_consent_at`, a
 timestamp or null, and `POST /me/assistant-consent` sets it. Server-side for three reasons: the
 SERVER is what calls the model, so it is the only place a refusal cannot be bypassed by a client
@@ -1558,9 +2006,19 @@ to lose would be its own surprise — and consenting again resumes from there.
 
 **Without consent the server refuses**, and refuses the same way everywhere it would otherwise
 call the model: a message to an `ai` chat, an `@ai` mention in the family chat, a picture for it to
-look at, a `/draw`. The answer is `assistant_consent_required` (403). It is a REFUSAL and not a
-silent drop, because a message that vanishes is a bug report; the client shows the consent screen
-and offers to send again.
+look at, a `/draw`, an event's backdrop on the board. The answer is `assistant_consent_required`
+(403). It is a REFUSAL and not a silent drop, because a message that vanishes is a bug report; the
+client shows the consent screen and offers to send again.
+
+*Amended 2026-09-30:* the backdrop was missing from that list, and the server did not ask it there:
+`POST /families/mine/board/notes/{id}/backdrop` sent the author's event title to the images model
+whether or not the author had agreed — and, once a refused description began to be reworded, to the
+text model as well. The title is words the author wrote, going to `processor`, which is exactly
+what this section is about. The server now asks the author's consent before anything is drawn and
+answers `assistant_consent_required` (403) without it, with nothing sent anywhere. A client that
+reads `assistant_consent_at` as null asks before it offers "Draw a backdrop" — or offers it and
+shows the consent screen on this answer, then asks again — exactly as it would before a `/draw`. A
+client that predates this treats it as the backdrop failing, which it did.
 
 **`ai_history` carries only the words of members who have consented.** This is the half that is
 easy to miss and the one that matters most: a member who declined still writes in the family chat,
@@ -2550,6 +3008,13 @@ instruction — an image has no language to come back in — and it translates n
 translation is another request to another model carrying the same words for no gain the family asked
 for.
 
+*Amended 2026-09-30: there is exactly one case in which the words after `/draw` go to a second
+model, and it is a gain the family did ask for — a picture. When the images deployment's filter
+REFUSES them, they are sent once to the text deployment to be reworded without real names or
+brands, and the picture is drawn from the rewrite (see "A refused description is reworded once"
+below). Only then, only once, and never as a translation; on every `/draw` the images deployment
+does not refuse, what leaves is still the words and nothing else.*
+
 Both surfaces take it: a member's own `ai` chat, and `@ai /draw …` in the family chat, where the
 whole family sees the answer arrive. The family chat is allowed here precisely because generation
 sends only the asking member's own words, which a mention already sends today.
@@ -2593,6 +3058,14 @@ to whom" then becomes "whatever the model decided". Neither is true of this desi
   decides WHETHER; the server still decides WHAT leaves and TO WHOM, and this document can still say
   what that is.
 
+*Amended 2026-10-01:* "not the question" is no longer the whole truth, and is corrected here rather
+than left to be found. When the images deployment REFUSES the tool's prompt, the next thing that
+goes to it is the asker's own message — the words of the one message that asked, with the `@ai`
+taken out — exactly as `/draw` followed by those words would have sent them (see "The member's own
+words, after a refused prompt" below). Still not the thread, not the transcript, not a quoted
+message, not another member's words and not any picture: one message, which its author typed and
+addressed to the assistant.
+
 **What it cannot say, and says so.** The words in that `prompt` are the model's. They will usually
 paraphrase the question; they may draw on the thread or the transcript the model was shown; and on
 a family that has turned `ai_vision` on, they may describe a photograph it was shown — "draw our
@@ -2602,6 +3075,82 @@ this section cannot enumerate what leaves by pointing at something a member type
 (the message-body ceiling, 4000 characters by default — a longer prompt is refused as an error, not
 cut), it is one string, and this server does not log it, for the reason no member's words reach a
 log; but it is written by the model, and a reader should know that.
+
+**The tool tells the model what the images deployment refuses** (*amended 2026-10-01*). A `/draw`
+carries the member's own words; a `draw_picture` prompt is written by a model that has just read a
+thread or a transcript full of names — "draw me something for Anna's birthday card" became a prompt
+with Anna in it — and the provider's filter refused those far more often than it refused `/draw`.
+So the tool's description says, besides what the tool is for, that the prompt must name nobody: no
+family member, no real person, no public figure, no brand, logo, or trademarked or copyrighted
+character — each person described by how they look and what they are doing instead. It is guidance
+to the model, not a check: the server still sends the prompt as the model wrote it, and a refusal
+still gets the one rewrite of "A refused description is reworded once".
+
+*Amended again 2026-10-01:* it also says to keep the member's OWN words. A member who describes the
+picture ("draw a cat in a hat") gets a prompt that is that description as written — the same words
+a `/draw` would have sent — with only what the conversation makes necessary for it to stand alone
+added (what "it" or "the same, but in winter" refers to), and nothing embellished: no extra detail,
+no style, mood, age or realism the member did not ask for. The same request was drawn when sent as
+`/draw` and refused when asked in words, and the difference was the model's own additions.
+
+**The member's own words, after a refused prompt** (*added 2026-10-01*). Guidance is not a check,
+and the operator's own family proved it: "draw a cat in a hat", asked in words, was refused even
+after both amendments above — the model's prompt refused, and the one rewrite of that prompt
+refused too — while `/draw a cat in a hat` was drawn. So the tool path now falls back to the words
+that `/draw` had already proved:
+
+1. the tool's `prompt` goes to the images deployment, as above;
+2. **only if the images deployment REFUSES it** — a refusal exactly as "The assistant" decides one;
+   never on a `5xx`, a timeout, any other `4xx`, or a malformed or empty tool call — the server
+   takes the body of the ONE message that asked (the question in the member's own `ai` chat, or the
+   message carrying the `@ai` in the family chat), removes every `@ai` in it by the mention grammar
+   of "Mentioning the assistant in the family chat" — each token, at the same boundaries, together
+   with the whitespace after it, as `/draw` removes its one leading `@ai` — and trims it. Those are
+   the member's own words, and they go through exactly what a `/draw` of them goes through: drawn,
+   and, if the images deployment refuses them too, given the one rewrite of "A refused description
+   is reworded once". **Once the model's prompt is refused, the member's words get exactly the
+   attempts `/draw` followed by them would have got — with one difference in how a failure
+   ends:** the picture the member asked for was refused, so a fallback that does not become a
+   picture ends as that refusal (`"reason": "refused"`) even where a `/draw` of the same words
+   would not have — a `5xx` or a timeout on the member's words, which a `/draw` would end with
+   an `ai_error` carrying no reason.
+
+The model's own prompt is **not** reworded before the fallback. Rewording it first was considered
+and rejected: the one rewrite is better spent on the member's words, because those are what a
+`/draw` showed the filter accepts, while the model's prompt is the thing the filter just refused —
+and spending a rewrite on each would make a picture cost four requests to the images deployment
+and two to the text one instead of three and one. So, per picture the model asks for: **at most
+three requests to the images deployment** (the model's prompt, the member's words, the rewrite of
+the member's words) **and one to the text deployment** for a rewrite, besides the question itself.
+Never a loop.
+
+Two cases skip the fallback, each decided:
+
+- **the member's words are empty** once the `@ai` is out and they are trimmed — a photograph sent
+  with no caption, or a message that is only `@ai` — or longer than a draw prompt may be (the
+  message-body ceiling, which a stored message cannot exceed; checked anyway rather than trusted).
+  There is nothing of theirs to fall back to, and the request is the one it was before this
+  amendment: the model's prompt gets the one rewrite, and a refusal of that ends as it always did;
+- **the member's words are the model's prompt** (compared trimmed) — the model kept the member's
+  words, as the tool tells it to. Sending the same text a second time unchanged would be asked of a
+  filter that has just refused it, so the server goes straight to the one rewrite of that text,
+  which is the rewrite of the member's words.
+
+Nothing is consented to that was not consented to: the member's words go to the images deployment
+of the same `processor` the member agreed to (see "Consenting to the assistant"), and they are the
+words that member addressed to the assistant in that message — the same words a `/draw` of them
+would send. What was rejected, and why: falling back to the THREAD, the transcript or a quoted
+message ("it", "the one above") would make the picture better in some cases and would send other
+people's words, or the member's older ones, to a second deployment that a `/draw` never reaches;
+the fallback is the asker's one message or nothing.
+
+Success is one picture, exactly as before: one `question`, one `image`, the tokens the text model
+spent deciding plus any it spent on the rewrite (see "Family statistics"). Failure is exactly the
+refusal it was: `ai_error` with `"reason": "refused"`, nothing stored, nothing counted. The log says
+which way it went — the member's words drawn, refused, failed, or absent — and, when they were not
+drawn, the provider's error on the same line (status, URL and the identifying fields "The
+assistant" allows, as the rewrite's lines carry theirs), because the member is handed the first
+refusal and no other line would say what the second request met; never the words or the prompt.
 
 Three rules about the edges, each decided rather than left to happen:
 
@@ -2622,10 +3171,18 @@ Three rules about the edges, each decided rather than left to happen:
   call naming any other is refused with `ai_error`, never executed. A model that calls the tool
   more than once in one reply has asked for one picture several times: the first call is honoured
   and the rest are dropped.
+  None of these three carries a `reason`: the model's mistake is not the provider's refusal — and
+  none of them is reworded, because nothing was refused. A `prompt` the images deployment's filter
+  then refuses IS one: it gets the one rewrite a refused `/draw` gets (see "A refused description
+  is reworded once"), and when that does not produce a picture its `ai_error` carries
+  `"reason": "refused"` exactly as a refused `/draw` does. *Amended 2026-10-01:* when the asking
+  message has words of its own, it is those words, not the refused `prompt`, that get the
+  fallback and the one rewrite — see "The member's own words, after a refused prompt" above.
 
 `/draw` stays, unchanged, and is still the explicit path: a member who writes it gets a picture
 whether or not the model would have thought of one, and what leaves on it is still the words after
-the token alone — it never goes through the text model at all. Contextual drawing is an addition,
+the token alone — it never goes through the text model at all, save for the one rewrite of a
+description the images deployment refused (2026-09-30). Contextual drawing is an addition,
 never a replacement. An operator whose text deployment refuses a `tools` key may switch the
 declaration off with `[ai.images] contextual = false`; `/draw` keeps working, `assistant.images`
 stays true, and nothing on the wire changes.
@@ -2672,7 +3229,11 @@ editing changes — a picture answer still does not re-notify through the edit, 
 notification the assistant raises per answer is raised as it always was, once the reply exists.
 
 Failure is the failure a text answer already has: the row keeps whatever it has (nothing) and an
-`ai_error` frame names it. `ai_error` needs no new shape and the member can simply ask again. That
+`ai_error` frame names it. `ai_error` needs no new shape and the member can simply ask again. A
+description the images deployment's own filter refuses is the one failure where asking again in the
+same words does not help, and — once the one rewrite below has been tried and has not produced a
+picture — it says so the way a refused text answer does: `"reason": "refused"`
+(see "The assistant"). That
 is the reason the empty row is created BEFORE the provider is called rather than the finished
 picture arriving as a message of its own — an answer that failed has to have somewhere to fail.
 
@@ -2683,6 +3244,80 @@ preview (`has_preview: false`) — the server generates none, here as everywhere
 from its full bytes, exactly as they already do for a photo whose preview has not arrived. And it is
 never sent to any model afterwards: a picture the assistant made is a `[photo]` in a later prompt
 like any other.
+
+##### A refused description is reworded once
+
+Added 2026-09-30. An images deployment's filter refuses far more than a text model's does. Azure's
+FLUX deployment answers `400 content_safety_violation` to almost any description that names a real
+person, a public figure, a brand or a trademarked character — "Taylor Swift singing to our cat", "a
+Lego castle", "Pikachu at Anna's birthday" — when what the member wanted was a singer, a castle of
+toy bricks, a small yellow cartoon creature. Nothing tells a family which word was the problem.
+
+So **when — and only when — the images deployment REFUSES a description** (a refusal exactly as
+"The assistant" decides one: the provider's structured error fields), the server makes ONE more
+attempt before it says so:
+
+1. it asks the TEXT deployment (`[ai]`) once to rewrite the description so that it keeps what is to
+   be drawn but names no real person, public figure, brand, trademarked or copyrighted character —
+   describing each of them in general words instead — and answers with the rewritten description
+   and nothing else. *Amended 2026-10-01:* "no real person" means no person's NAME at all, a first
+   name or a nickname included — "Anna" is as much a real person to the filter as a celebrity is,
+   and a rewriter told only "real person" left ordinary first names in;
+2. it asks the images deployment once more, with the rewrite.
+
+It applies wherever a description meets the images deployment: a `/draw`, the text model's own
+`draw_picture` call, and an event's backdrop on the board (whose description is the note's title).
+
+**What goes to the text deployment on that request is the description, and nothing else**: one
+fixed instruction of the server's own (not the operator's configured prompt) and the description as
+the only user turn. No thread, no transcript, no member's name, no language line, no picture and
+no tool. It is the string that was just sent to the images deployment, going to the same provider
+— `processor` — that the member already agreed to (see "Consenting to the assistant", whose
+disclosure says so). Nothing about who may ask changes: the rewrite follows only a first attempt
+that was already allowed to run, under exactly the checks that attempt passed — the member's own
+consent to the assistant among them, on every one of the three paths, the backdrop included (see
+"Consenting to the assistant").
+
+- **Success looks exactly like a first-time success**: the same `photo` attachment on the same row,
+  the same `message_edited`, the same single notification — or, on the board, the same backdrop and
+  `board_seq`. It is ONE `image` in "Family statistics", and the tokens the text deployment reported
+  for the rewrite are counted like any other tokens the assistant spends. The picture is of the
+  rewrite rather than of the member's exact words, and nothing on the wire says so: the member
+  asked for a picture and got one.
+- **Failure is exactly the refusal it would have been without this**: `ai_error` with
+  `"reason": "refused"`, or `picture_refused` (400) for a backdrop, with nothing stored and nothing
+  counted. That covers the rewrite request failing or being refused, a rewrite the model did not
+  FINISH — one whose stream ended on anything but `finish_reason: "stop"`: the filter's
+  `content_filter`, however many words had streamed before it, the token ceiling's `length`, or no
+  reason at all, because words cut off part-way are a fragment and not a description — a rewrite
+  that is empty, longer than a draw prompt may be (the message-body ceiling, 4000 characters by
+  default — never cut) or the description unchanged, and the images deployment refusing the rewrite
+  too, or failing on it in any other way: the member's description WAS refused, and that is what
+  they are told.
+- **Only a refusal starts it.** A `5xx`, a timeout, any other `4xx`, a picture that could not be
+  stored and a malformed `draw_picture` call are the failures they always were, and the text
+  deployment is asked nothing.
+- **Once.** Never a second rewrite and never a third picture request: per picture asked for, at most
+  one request to the text deployment and two to the images deployment. *Amended 2026-10-01:* the
+  text model's own `draw_picture` is the one path with a third, and still exactly one rewrite.
+  There the order of attempts is: (1) the model's `prompt`; (2) only if that is REFUSED, the
+  asker's own message with the `@ai` taken out (see "The member's own words, after a refused
+  prompt" under "Drawing without being told to"); (3) only if that is refused too, the one rewrite
+  of the member's words — so at most three requests to the images deployment and one rewrite
+  request to the text deployment. The model's prompt is not reworded when the member's words are
+  there to fall back to; it is reworded, as before, only when they are not (empty once the `@ai`
+  is out, or longer than the message-body ceiling) — two requests and one rewrite — and when the member's words ARE the model's prompt the
+  same text is not sent twice: its refusal goes straight to the rewrite. A failure at any step
+  hands back the first refusal, and the member is told their picture was refused.
+- **Not in the log.** The server's log says that a rewrite was tried and how it ended — drawn, no
+  usable rewrite, refused again, failed again — with the provider's identifying fields and the
+  rewrite's token counts, and never the description or the rewrite, for the reason no member's
+  words ever reach it. On the `draw_picture` path one more line says how the fallback to the
+  member's own words went — drawn, refused, failed, the words the same as the prompt, or no words
+  to fall back to — with the provider's error when they were not drawn, and never the words or the
+  prompt (2026-10-01).
+
+Nothing new reaches a client, and a client needs no change to stay correct.
 
 ##### What a client is told
 
@@ -2731,7 +3366,8 @@ per request and the family never sees the seam:
 | `/draw …` | `[ai.images]` | the words after `/draw`, and nothing else |
 | an `@ai` mention carrying a photo, or replying to one (#56) | `[ai.vision]` | what a mention sends, plus up to four photos off those two messages together |
 | an `@ai` mention in a family whose owner has turned `ai_history_photos` on, when photos travel (2026-09-03) | `[ai.vision]` | what a mention sends, plus up to four photos under ONE budget — the mention's, then the quote's, then the transcript's newest — each `[photo N]`-numbered where it is written |
-| a question the text model answers by calling `draw_picture` (#56) | `[ai]`, then `[ai.images]` | the usual text request — with one tool declared — and then the tool's `prompt`, and nothing else |
+| a question the text model answers by calling `draw_picture` (#56) | `[ai]`, then `[ai.images]` | the usual text request — with one tool declared — and then the tool's `prompt`, and nothing else; only if that `prompt` is REFUSED, the asking message's own words with the `@ai` taken out, as a `/draw` of them would send (2026-10-01) |
+| a description the images deployment REFUSED — from any of the rows above that reach it, or a board backdrop (2026-09-30) | `[ai]`, then `[ai.images]` once more | the refused description under a fixed instruction to reword it, and then the rewrite, and nothing else — on the `draw_picture` row, the member's own words when there are any, never the refused `prompt` as well (2026-10-01) |
 
 `[ai]` is the section that already existed and it keeps its meaning exactly: it is the TEXT
 deployment, and a server that configures nothing else behaves precisely as it did before — which is
@@ -2774,6 +3410,13 @@ this paragraph was right to be written: the decision never leaves the server. Th
 whether; it does not choose the provider, the question never reaches the images deployment, and
 what does reach it is one bounded string the server read out of the reply. `/draw` is still there,
 still five characters a reader can point at.*
+
+*Amended 2026-10-01:* "the question never reaches the images deployment" now has one exception, and
+it is the member's words rather than the model's: when the images deployment refuses the model's
+string, the asker's own message — that one message, with the `@ai` taken out — goes to it as a
+`/draw` of those words would have gone. The decision still never leaves the server; the server, not
+the model, chooses that fallback and what it carries (see "The member's own words, after a refused
+prompt").
 
 #### The daily greeting
 
@@ -2910,6 +3553,12 @@ transcodes, so the size of a family's history is decided on the sending device. 
 a video to the profile below before uploading it, and audio where the rules below say so. The profile
 is a target for SENDERS only: the server accepts every listed type at any resolution, and every client
 MUST still play anything it receives, including uploads from clients that predate this section.
+
+**A sticker is never prepared.** Nothing in this section, and nothing else a client does to a
+photograph before it uploads one — scaling it down, re-encoding it as JPEG, stripping its metadata
+— applies to a pack item or to a sticker message: both upload the ORIGINAL bytes, because a
+re-encode would cost a WebP its transparency and its animation (see "Sticker pack"). The pack's
+own limits are what bind them instead.
 
 **The format is fixed by what every client can PLAY**, not by what one of them can encode. H.264 video
 and AAC-LC audio in an MP4 container play in every browser and on every platform this protocol has a
@@ -3073,11 +3722,12 @@ mutation path and a sequence cursor of its own, and would be a new section here.
 An attachment belongs to whoever uploaded it until a message claims it, and to that message's chat
 afterwards. Before it is claimed only the uploader may read it; after, every member of the chat may.
 An attachment can be claimed once — by one message, alongside up to nine others, OR by one board
-note (see "Board"): a second message naming it, or a message naming a picture already pinned to the
-board, is `attachment_already_used`, and the same id twice in one `attachment_ids` array is
+note (see "Board"), OR by one item of the family's pack (see "Sticker pack"): a second message
+naming it, or a message naming a picture already pinned to the board or added to the pack, is
+`attachment_already_used`, and the same id twice in one `attachment_ids` array is
 `invalid_attachment`. One owner per upload is what lets deleting either one take the bytes with it.
 **Unclaimed attachments are deleted after 24 hours** — a send the user abandoned must not leave
-100 MB on the server forever. The id is remembered for a further 30 days, without the bytes, so a
+100 MB on the server forever. Unclaimed means all three: on no message, on no note and in no pack. The id is remembered for a further 30 days, without the bytes, so a
 client coming back with it is answered `attachment_expired` rather than `attachment_not_found` and
 knows to upload again (see "Sending on an unreliable network").
 
@@ -3102,7 +3752,8 @@ neither cancel the send nor drop the picture — they keep it and let the sender
 they would for a network failure.
 
 For `kind=photo` and `kind=video` the accepted types are `image/jpeg`, `image/png`, `image/heic`,
-`image/heif`, `video/mp4` and `video/quicktime`; a type outside that list, a type that contradicts
+`image/heif`, `image/webp`, `video/mp4` and `video/quicktime` (`image/webp` arrived with the
+family's stickers — see "Sticker pack" — and is a photo like the others); a type outside that list, a type that contradicts
 the kind, or bytes that do not match the type declared, is `invalid_attachment`. For `kind=file`
 any type is accepted and none is verified — an absent or unparseable one is stored as
 `application/octet-stream`.
@@ -3179,6 +3830,19 @@ Since #56 there is one reply that carries both: a picture the text model asked f
 text model reported for the request in which it decided, and one `image`. Two bills, one reply, and
 both are recorded against it — the zero-token sentence above is true of `/draw` and of nothing else.
 
+*Amended 2026-09-30:* a picture drawn from a rewrite (see "A refused description is reworded
+once") is still one `question` and one `image` — two requests to the images deployment, one
+picture. The tokens the text deployment reported for the rewrite are added to that reply's
+`prompt_tokens` and `completion_tokens`, beside any it spent deciding to draw; so a reworded
+`/draw`, and a reworded backdrop, are the ones that carry tokens. A rewrite that did not end in a
+picture records nothing, as every failed reply records nothing.
+
+*Amended 2026-10-01:* a picture the text model asked for, drawn from the member's own words after
+its `prompt` was refused (see "Drawing without being told to"), is still one `question` and one
+`image` — up to three requests to the images deployment, one picture — with the tokens spent
+deciding to draw, plus the rewrite's when the member's words had to be reworded too. A request
+the images deployment refused is not an image: the bill counts pictures, never requests.
+
 ### Retention
 
 The server deletes messages older than `limits.retention_days` (**100 days** by default), together
@@ -3189,7 +3853,9 @@ What goes with a message: its reactions, and its attachment (whose FILE is remov
 other message shares those bytes — see "One copy per family"). What survives: a newer **reply** that
 quoted it, which keeps existing and simply loses its quote, because a reply is a message in its own
 right and deleting today's conversation to enforce a policy about last spring's would be wrong. The
-family **board** is not touched at all — a note is a live thing on a wall, not history.
+family **board** is not touched at all — a note is a live thing on a wall, not history. Neither is
+the family's **sticker pack**, for the same reason: a sticker MESSAGE is swept like any other, and
+the pack item it was sent from stays (see "Sticker pack").
 
 This is a SERVER-side policy. Clients keep whatever history they have already downloaded, and
 nothing in the protocol tells them to forget it: `after_id` catch-up only ever adds. A device that
@@ -3228,11 +3894,12 @@ departing member can take with them without taking somebody else's. The other pe
 it go too; that is the honest reading of a private conversation ending. The member's private
 assistant thread goes the same way.
 
-Uploads the member never USED — on no message and pinned to no note — are removed from the
-server's disk, subject to the one rule attachment deletion always obeys: a file is removed only
+Uploads the member never USED — on no message, pinned to no note and in no sticker pack — are
+removed from the server's disk, subject to the one rule attachment deletion always obeys: a file is removed only
 once no row still names those bytes (see "One copy per family"). A picture on a message, or pinned
 to the board as a photo note or an event's backdrop, is part of what the family said and stays
-with it, exactly like the words. Their votes are retracted from any poll still open, which re-stamps that
+with it, exactly like the words. A sticker they added to the family's pack stays too: the pack is
+the family's (see "Sticker pack"). Their votes are retracted from any poll still open, which re-stamps that
 poll and fans out its new state — a tally must not go on counting somebody who no longer exists.
 
 **A deleted account is still resolvable, and that is what `former_members` is for.** Their messages
@@ -3444,7 +4111,9 @@ lists go out whole and every client counts them itself). Integers are not presen
 changed when you blocked somebody would tell you they had reacted. A board NOTE is the one object
 where the client hides the CONTENT as well as the author: a note is a piece of writing pinned to a
 shared wall with no bubble to collapse into a hidden row, and leaving the text up while dropping the
-name would hide nothing that mattered (see "Board"). Every roster the server sends is COMPLETE — a
+name would hide nothing that mattered (see "Board"). A STICKER a blocked member sent is a message
+and is hidden as one; an item they added to the family's PACK is not hidden at all, because it is
+the family's picture and not their words (see "Sticker pack"). Every roster the server sends is COMPLETE — a
 blocked member is still in `members`, still in a poll's vote lists, still nameable, still a person
 whose old messages need a name — and the server projects per caller in exactly TWO
 places — the statistics leaderboard, because a row there is a ranking rather than an identity, and
@@ -3809,7 +4478,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 |---|---|
 | `POST /families` | `{name}` (1–64 chars) → `201 {family: Family}`. Caller becomes owner; the family chat is created automatically. Errors: `already_in_family`; `family_registration_disabled` (403) when the operator has closed this server to new families — see "Starting a family". |
 | `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). A family whose policy is `closed` admits nobody: the invite code answers `invalid_invite_code` (404), byte-identical to a code that never existed, so a shut door tells a stranger nothing — the same non-enumeration reasoning the avatar and password-reset endpoints follow. A family that is full answers `family_full` (409) — full meaning at its own `max_members`, or at the operator's ceiling when it has set none, because a valve that limited only what an owner may TYPE would hold nothing shut. The checks run in order — closed, then already in a family, then a pending request, then full — so a closed family answers `invalid_invite_code` whatever else is true of it, and under policy `approval` this door is where the REQUEST is created and the cap is read there too, then read again at approval. `family_full` does admit that the code is real, and that is the one thing this endpoint tells a stranger: the alternative is telling an invited member their code is invalid on the day the family filled up, which costs a real person a real join, where a closed family's code may be years old and in anybody's hands. Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`, `family_full` (409). |
-| `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, assistant: {user_id, display_name, mention, draw, vision, images}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. Its `vision` and `images` booleans say whether this SERVER can look at a picture and make one — a client offers to attach a picture in an `ai` chat only when `vision` and the family's own `ai_vision` are both true, and offers `draw` (the `/draw` token) only when `images` is true (see "Pictures"). `family.invite_code` present for the owner only. Plus `blocked_user_ids: [11, 14]` as on `GET /me`, always present and `[]` when empty, and a complete state-set there too. Plus `next_owner_user_id: 11`, present for the OWNER only, naming the member who would inherit the family if the owner left right now — the same rule as "Deleting an account", computed once server-side so the leave dialog can say who it is instead of two clients computing it and eventually disagreeing (the roster does not carry join times, so no client could compute it anyway); omitted when the owner is the sole member. It is a PREDICTION and takes no frame of its own: any `member_joined` or `member_left` can change the answer, so a client re-reads `GET /families/mine` immediately before it shows the leave dialog and never names a successor from a cached value. Absence on that fresh read means the owner is the last member and leaving DELETES the family, which is a different dialog and a different confirmation. Error: `not_in_family`. |
+| `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, max_pack_seq: 14, max_pack_items: 200, max_pack_item_bytes: 524288, assistant: {user_id, display_name, mention, draw, vision, images}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `max_pack_seq` is the same mark for the family's sticker pack, omitted while the pack is empty and untouched; `max_pack_items` and `max_pack_item_bytes` are the pack's two ceilings, ALWAYS present on a server that has packs — so their absence is how a client knows this server predates them and offers no stickers (see "Sticker pack"). `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. Its `vision` and `images` booleans say whether this SERVER can look at a picture and make one — a client offers to attach a picture in an `ai` chat only when `vision` and the family's own `ai_vision` are both true, and offers `draw` (the `/draw` token) only when `images` is true (see "Pictures"). `family.invite_code` present for the owner only. Plus `blocked_user_ids: [11, 14]` as on `GET /me`, always present and `[]` when empty, and a complete state-set there too. Plus `next_owner_user_id: 11`, present for the OWNER only, naming the member who would inherit the family if the owner left right now — the same rule as "Deleting an account", computed once server-side so the leave dialog can say who it is instead of two clients computing it and eventually disagreeing (the roster does not carry join times, so no client could compute it anyway); omitted when the owner is the sole member. It is a PREDICTION and takes no frame of its own: any `member_joined` or `member_left` can change the answer, so a client re-reads `GET /families/mine` immediately before it shows the leave dialog and never names a successor from a cached value. Absence on that fresh read means the owner is the last member and leaving DELETES the family, which is a different dialog and a different confirmation. Error: `not_in_family`. |
 | `POST /families/invite-code/rotate` | (owner) → `200 {invite_code}`. Old code stops working; pending requests survive. |
 | `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval"\|"closed", max_members?: int\|null, language?: "ru"\|null, ai_history?: true\|false, ai_vision?: true\|false, ai_history_photos?: true\|false, ai_greeting?: true\|false, ai_faces?: true\|false}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language and `"max_members": null` CLEARS the cap, while leaving either key out entirely leaves it alone — these are **the two places** in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"); `ai_vision` is a second boolean of exactly that shape, differing only in defaulting to FALSE (see "Pictures"); `ai_history_photos` is a third, defaulting to FALSE, and the one with a rule between it and its neighbour: it may only be `true` while `ai_vision` is — sending `true` for it while `ai_vision` is off, or would be off after this same request, is `validation`, and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Recent photos from the family chat"). A cap must be between 1 and the operator's ceiling (`limits.max_family_members`). A cap BELOW the family's current size is ACCEPTED and acts as a freeze — nobody new until people leave — rather than being refused: an owner who inherits a large family must still be able to shut the door, and the cap is read at the door and never enforced over the room. `ai_greeting` is a FOURTH boolean of the same shape, defaulting to FALSE, and it is the one with no rule between it and any neighbour: it is about whether the assistant speaks unprompted, not about what it may be shown, so it may be set true or false regardless of the other three and it is never cleared by any of them (see "The daily greeting"). `ai_faces` is a FIFTH, defaulting to FALSE, under exactly `ai_history_photos`'s rule: it may only be `true` while `ai_vision` is — `true` while `ai_vision` is off, or would be off after this same request, is `validation` — and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Profile pictures of members"). Errors: `not_family_owner` (403), `validation` (a `join_policy` that is none of the three, a `max_members` outside 1..ceiling, or `ai_history_photos: true` or `ai_faces: true` without `ai_vision`), `invalid_language`. |
 | `GET /families/join-requests` | (owner) → `200 {requests: [JoinRequest]}` (pending only). |
@@ -3831,9 +4500,9 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Query: `kind` (`photo`\|`video`\|`audio`\|`file`\|`location`), `width`, `height`, `duration_ms`, `name`, `latitude`, `longitude`, `accuracy_m`. `name` is REQUIRED for `kind=file` (1–255 characters) and optional on audio and a location; `latitude` and `longitude` are REQUIRED for `kind=location` and refused on anything else. A location sends **no body** — it is metadata only. → `201 {attachment: Attachment}`. Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a media type not accepted on a photo/video/audio, 400 when the bytes do not match the declared type, a file has no name, or a location has no or out-of-range coordinates), `not_in_family`. |
+| `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Query: `kind` (`photo`\|`video`\|`audio`\|`file`\|`location`), `width`, `height`, `duration_ms`, `name`, `latitude`, `longitude`, `accuracy_m`. `name` is REQUIRED for `kind=file` (1–255 characters) and optional on audio and a location; `latitude` and `longitude` are REQUIRED for `kind=location` and refused on anything else. A location sends **no body** — it is metadata only. → `201 {attachment: Attachment}`. A sticker or a pack item is uploaded here as `kind=photo`, its bytes unprepared (see "Sticker pack"). Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a media type not accepted on a photo/video/audio, 400 when the bytes do not match the declared type, a file has no name, or a location has no or out-of-range coordinates), `not_in_family`. |
 | `PUT /attachments/{id}/preview` | Raw JPEG bytes of the downscaled photo or poster frame → `204`. Uploader only, and never on a `file`, `audio` or `location` (`invalid_attachment`). IDEMPOTENT and not closed by the message that claims the attachment: a repeat overwrites the stored preview and sets `has_preview` to true, which is what lets a client finish a poster upload that failed (see "Photos, videos, audio, files and locations"). Errors: `attachment_not_found`, `attachment_too_large`, `invalid_attachment`. |
-| `GET /attachments/{id}` | → `200` with the stored bytes and their `Content-Type`. A location has none and answers `invalid_attachment` (400). A `file` additionally gets `Content-Disposition: attachment; filename=…` (sanitised) and `X-Content-Type-Options: nosniff`, so an uploaded document can never render or execute from the server's own origin. Readable by the uploader always, and by every member of the chat once a message claims it; anyone else gets `404 attachment_not_found`. Sends `ETag` and `Cache-Control: private, max-age=31536000, immutable`, and honours `If-None-Match` with `304`. Honours a single-byte-range `Range` request with `206` + `Content-Range` (`416` for a range past the end) — that is how a video player seeks, and without it scrubbing a 90 MB clip re-downloads it from the start. A multi-range or unrecognised `Range` is ignored and the whole body sent, per RFC 9110. |
+| `GET /attachments/{id}` | → `200` with the stored bytes and their `Content-Type`. A location has none and answers `invalid_attachment` (400). A `file` additionally gets `Content-Disposition: attachment; filename=…` (sanitised) and `X-Content-Type-Options: nosniff`, so an uploaded document can never render or execute from the server's own origin. Readable by the uploader always, by every member of the chat once a message claims it, and by every member of the family once a board note or the family's pack does; anyone else gets `404 attachment_not_found`. Sends `ETag` and `Cache-Control: private, max-age=31536000, immutable`, and honours `If-None-Match` with `304`. Honours a single-byte-range `Range` request with `206` + `Content-Range` (`416` for a range past the end) — that is how a video player seeks, and without it scrubbing a 90 MB clip re-downloads it from the start. A multi-range or unrecognised `Range` is ignored and the whole body sent, per RFC 9110. |
 | `GET /attachments/{id}/preview` | → `200` with the preview JPEG, same access rules. `404` when there is no preview yet. |
 
 ### Board
@@ -3845,10 +4514,19 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /families/mine/board/notes` | `{text, color, x, y, size?, font?, kind?, attachment_id?, starts_at?, ends_at?, place?, mentions?, items?}` → `201 {note: Note}`. `mentions: [{user_id, name}]` names members of this family, at most 20, each once, each a name the `text` says after an `@` — the same rules and the same grammar as a message's (`validation` otherwise, see "Board"). Caller becomes the author. `size` defaults to `medium`, `font` to `plain` and `kind` to `text` when absent. `attachment_id` claims one photo this caller uploaded: REQUIRED by `kind: "photo"` (whose `text` may then be empty), optional on `kind: "event"` (the backdrop), refused on a text note. `starts_at` is required by — and only accepted on — an event, with `ends_at` and `place` optional there and nowhere else. Errors: `validation` (text empty on a text note or > 280; an `attachment_id` without the kind, or the kind without one), `invalid_note_kind`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `invalid_attachment` (not a photo), `attachment_not_found`, `attachment_already_used`, `attachment_expired`, `board_full` (409, over the note ceiling), `not_in_family`. An event also answers `validation` for a missing or unparseable `starts_at`, an `ends_at` before it, a `place` over 200 characters, or any of the three on a note that is not an event. `items: [{text}]` is the TASK LIST's lines, accepted on — and only on — `kind: "tasks"`, whose `text` is its title: at most 20, each trimmed, non-empty and at most 100 characters, `validation` otherwise. An `id` on a created item is refused: ids are the server's. |
 | `PATCH /families/mine/board/notes/{id}` | `{text?, color?, size?, font?, x?, y?, starts_at?, ends_at?, place?, mentions?, items?}` → `200 {note: Note}`. `mentions` REPLACES the list — a note's names are re-decided on every edit, unlike a message's, because an edit to a note notifies nobody (see "Board"); sending `text` without `mentions` clears them. A note's KIND and its picture are fixed at creation: neither is patchable, and a photo note's caption may be set to empty here. An event's `starts_at`, `ends_at` and `place` are the AUTHOR'S, like its title — `place` may be sent empty to clear it, `ends_at` null to clear it — and are refused on any other kind. `items` REPLACES a task list's lines and is the author's too (refused on any other kind): an entry `{id, text}` whose `id` the note holds is that item, rewritten and moved, and KEEPS ITS TICK; an entry `{text}` is new; an item left out is gone; an `id` that is not this note's is `validation`, and a `done` sent here is ignored (see "Board"). Any member may send `x`/`y`; only the author may send `text`, `color`, `size` or `font` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `validation`, `not_in_family`. |
 | `PUT /families/mine/board/notes/{id}/rsvp` | `{answer}` → `200 {note: Note}`. Records the caller as `going`, `maybe` or `no` on an event — an idempotent state-set, not a toggle, and ANY member may send it. Re-sending the answer already held is a no-op: no new seq, no fan-out. Errors: `invalid_rsvp` (400 — not one of the three, or the note is not an event), `note_not_found` (404), `not_in_family`. |
-| `POST /families/mine/board/notes/{id}/backdrop` | → `200 {note: Note}`. Asks the assistant for a picture to sit behind an EVENT, drawn from the note's TITLE and nothing else; the AUTHOR only. No request body: the prompt is the title (see "Board"). Replaces the backdrop it has, taking the old picture's row and bytes with it — the one way a note's picture changes after creation. Costs one image against the family's count, takes a `board_seq`, notifies nobody and leaves `content_seq` alone. Errors: `pictures_unavailable` (403 — this server has no images deployment; `assistant.images` on `GET /families/mine` is what a client checks first), `note_not_found` (404), `not_note_author` (403), `validation` (the note is not an event), `storage_full`, `not_in_family`. |
+| `POST /families/mine/board/notes/{id}/backdrop` | → `200 {note: Note}`. Asks the assistant for a picture to sit behind an EVENT, drawn from the note's TITLE and nothing else (reworded once by the text deployment when the images deployment refuses it — "A refused description is reworded once"); the AUTHOR only. No request body: the prompt is the title (see "Board"). Replaces the backdrop it has, taking the old picture's row and bytes with it — the one way a note's picture changes after creation. Costs one image against the family's count (and the rewrite's tokens, when there was one), takes a `board_seq`, notifies nobody and leaves `content_seq` alone. SLOW — it waits on the model, up to three calls in a row — so a client gives it a timeout of its own, no shorter than 90 s, never its ordinary request timeout; a request whose connection closes first draws nothing (see "Board"). Errors: `pictures_unavailable` (403 — this server has no images deployment; `assistant.images` on `GET /families/mine` is what a client checks first), `assistant_consent_required` (403 — the author has not agreed that their words may go to the model; nothing was sent, see "Consenting to the assistant"), `picture_refused` (400 — the provider's own filter refused to draw this title, and the one rewrite did not produce a backdrop either; terminal, and the note is untouched), `note_not_found` (404), `not_note_author` (403), `validation` (the note is not an event), `storage_full`, `not_in_family`; any other provider failure is `internal` (500). |
 | `PUT /families/mine/board/notes/{id}/tasks/{item_id}` | `{done}` → `200 {note: Note}`. Ticks or unticks one line of a task list — an idempotent state-set, not a toggle, and ANY member may send it; the server records who. Re-sending the state already held is a no-op: no new seq, no fan-out. Errors: `invalid_task` (400 — the note is not a task list, or the item is not one of its lines), `note_not_found` (404), `not_in_family`. |
 | `DELETE /families/mine/board/notes/{id}/rsvp` | → `200 {note: Note}`. Retracts the caller's answer; idempotent (retracting nothing returns the event unchanged and burns no seq). Errors: `invalid_rsvp` (the note is not an event), `note_not_found`, `not_in_family`. |
 | `DELETE /families/mine/board/notes/{id}` | → `204`. Author only. Idempotent: deleting an already-deleted note is still `204` and takes no new seq. A photo note's picture goes with it. Errors: `note_not_found`, `not_note_author`, `not_in_family`. |
+
+### Sticker pack
+
+| Method & path | Body → Response |
+|---|---|
+| `GET /families/mine/pack` | → `200 {items: [PackItem], max_pack_seq: 14}`. The whole pack as it now stands, tombstones excluded, in the order the items were added (`id` ascending). `max_pack_seq` is `0` for a pack nothing has ever been added to, and is read BEFORE the items, so it is never above a change they missed; a client REPLACES what it holds with this read (see "Sticker pack"). Not paged: a pack is at most `max_pack_items`. Error: `not_in_family`. |
+| `GET /families/mine/pack/changes` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {items: [PackItem]}` ordered by `pack_seq` ascending, INCLUDING tombstones — the pack catch-up, looped until a short page. Errors: `not_in_family`, `invalid_pagination`. |
+| `POST /families/mine/pack` | `{attachment_id, label?}` → `201 {item: PackItem}`, or `200 {item: PackItem}` when the pack already holds it — the same `attachment_id` claimed again, or a second upload of bytes the pack already holds, which is then dropped, so the item's `attachment.id` is NOT the id that was sent; a `200` adds nothing, takes no seq and fans nothing out. ANY member may add. `attachment_id` is a `kind=photo` upload the caller made in THIS family, `image/webp` or `image/png`, no larger than `max_pack_item_bytes`, that nothing else has claimed. `label` is optional, trimmed, at most 64 characters. The checks run in this order, so the answer is the most basic thing wrong: the label, the attachment's existence, its type, whether it is taken, its size, whether the pack already holds those bytes, and only then whether the pack is full. Errors: `validation` (a label over 64 characters), `attachment_not_found` (404 — no such upload, or not the caller's: the same answer), `attachment_expired` (404), `invalid_attachment` (400 — not a photo, or a photo that is neither WebP nor PNG), `attachment_already_used` (409 — on a message or a board note), `pack_item_too_large` (413), `pack_full` (409, at `max_pack_items`), `not_in_family`. |
+| `DELETE /families/mine/pack/{id}` | → `204`. Whoever added the item, or the family OWNER. Idempotent: removing an item already removed is still `204` and takes no new seq. The item tombstones and its picture goes with it — the row, and the file once no other row names those bytes; messages sent with that sticker are untouched. Errors: `pack_item_not_found` (404 — no such item in the caller's family), `not_pack_item_author` (403), `not_in_family`. |
 
 ### Chats & messages
 
@@ -3858,8 +4536,8 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self` (400), `not_in_family` (409, the caller belongs to no family), `not_same_family` (409), `user_not_found` (404). Plus `blocked` (409) when the CALLER has blocked this member. Only that direction refuses: somebody who has been blocked may go on opening and sending into the chat exactly as before, and it is the blocker who no longer sees it (see "Blocking a member"). |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `GET /chats/{id}/messages/{message_id}/thread` | Query: `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}` — the chain `message_id` belongs to, resolved to its ROOT whether the id named is the root or any reply in it: the root first — the oldest in its chain, so any `after_id` at or past it leaves it off — then every message whose `thread_root_id` is that root, ordered by id ASCENDING, oldest first; `after_id` is strictly newer, looped until a short page. A message that is neither a reply nor answered comes back as a chain of one. Not a cursor and no part of catch-up. Errors: `chat_not_found`, `not_chat_member`, `message_not_found` (no such message in THIS chat), `invalid_pagination`. See "Threads". |
-| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?, mentions?}` → `201 {message: Message}`. `mentions: [{user_id, name}]` names members, family chat only — see "Mentioning a member" for what is checked (`validation` otherwise). In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"), and a body that begins `/draw ` — after one leading `@ai` there, or at the very start in an `ai` chat — asks it for a picture instead of an answer (see "Pictures"). In an `ai` chat `attachment_ids` naming photos is how a member shows the assistant a picture; whether the pixels leave the server depends on `ai_vision` and on the server having a vision deployment, and nothing about that is refused here. In the family chat, photos on an `@ai` message — or on the message it replies to through `reply_to_message_id` — reach it the same way, under the same two locks (see "Showing the assistant a picture from the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_ids: [34, 61]` claims 1–10 attachments this caller uploaded, in the order given; `attachment_id` (one id) is the legacy spelling of a one-element array, still accepted — sending BOTH is `validation`. A message carrying any may have an empty body. A location id must be the array's only element, and one id may not appear twice (`invalid_attachment`). `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. `assistant_consent_required` (403) when the chat is the caller's `ai` chat, or the body mentions the assistant, and they have not agreed that their words may go to the model — the message is REFUSED and not silently dropped, so the client can show the consent screen and offer to send it again ("Consenting to the assistant"). Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
-| `PATCH /chats/{id}/messages/{mid}` | `{body}` → `200 {message: Message}`. Author only. Replaces the body, stamps `edited_at` and the next `edit_seq`, and fans out `message_edited`. Body rules are the send rules: trimmed, non-empty, ≤ 4000 chars. Re-sending the body it already has is a no-op: no new seq, no fan-out. Errors: `message_empty`, `message_too_long`, `not_message_author` (403), `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
+| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?, mentions?, sticker?}` → `201 {message: Message}`. `sticker: true` sends the message's one attachment as a STICKER (see "Sticker pack"): exactly one attachment, a `kind=photo` of `image/webp` or `image/png` no larger than `max_pack_item_bytes` (`invalid_attachment` otherwise), and no body (`validation`); the attachment then carries `sticker: true` on every read. Absent or `false` is an ordinary message. `mentions: [{user_id, name}]` names members, family chat only — see "Mentioning a member" for what is checked (`validation` otherwise). In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"), and a body that begins `/draw ` — after one leading `@ai` there, or at the very start in an `ai` chat — asks it for a picture instead of an answer (see "Pictures"). In an `ai` chat `attachment_ids` naming photos is how a member shows the assistant a picture; whether the pixels leave the server depends on `ai_vision` and on the server having a vision deployment, and nothing about that is refused here. In the family chat, photos on an `@ai` message — or on the message it replies to through `reply_to_message_id` — reach it the same way, under the same two locks (see "Showing the assistant a picture from the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_ids: [34, 61]` claims 1–10 attachments this caller uploaded, in the order given; `attachment_id` (one id) is the legacy spelling of a one-element array, still accepted — sending BOTH is `validation`. A message carrying any may have an empty body. A location id must be the array's only element, and one id may not appear twice (`invalid_attachment`). `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. `assistant_consent_required` (403) when the chat is the caller's `ai` chat, or the body mentions the assistant, and they have not agreed that their words may go to the model — the message is REFUSED and not silently dropped, so the client can show the consent screen and offer to send it again ("Consenting to the assistant"). Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
+| `PATCH /chats/{id}/messages/{mid}` | `{body}` → `200 {message: Message}`. Author only. Replaces the body, stamps `edited_at` and the next `edit_seq`, and fans out `message_edited`. Body rules are the send rules: trimmed, non-empty, ≤ 4000 chars. Re-sending the body it already has is a no-op: no new seq, no fan-out. A STICKER message — one whose attachment carries `sticker: true` — is never edited: its author is answered `validation` (400) whatever the body says, and nothing changes (see "Editing" and "Sticker pack"). Errors: `message_empty`, `message_too_long`, `not_message_author` (403), `message_not_found` (404 — no such message *in this chat*), `validation` (400 — the message is a sticker), `not_chat_member`, `chat_not_found`. |
 | `GET /chats/{id}/edits` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {messages: [Message]}` ordered by `edit_seq` ascending — the edit catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `PUT /chats/{id}/messages/{mid}/vote` | `{option_id: 5}` → `200 {message_id, poll: {Poll}}`. Sets the caller's choice on a poll — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or clear). One choice per member; there is no multiple choice. Re-PUT of the option already held is a no-op: no seq bump, no fan-out. Errors: `invalid_poll` (400 — no such option on this poll), `poll_closed` (409), `message_not_found` (404 — no such poll *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `DELETE /chats/{id}/messages/{mid}/vote` | → `200 {message_id, poll: {Poll}}`. Retracts the caller's vote; idempotent (retracting nothing returns the current state unchanged and burns no seq). Errors: `poll_closed` (409), `message_not_found`, `not_chat_member`, `chat_not_found`. |
@@ -3907,6 +4585,8 @@ Frames are JSON text messages tagged by `"type"`.
                    "reply_to_message_id": 1337}
 {"type": "send",   "chat_id": 42, "client_msg_id": "9d3f1e77-…", "body": "",
                    "attachment_ids": [34, 35, 36]}
+{"type": "send",   "chat_id": 42, "client_msg_id": "c81d4e2a-…", "body": "",
+                   "attachment_ids": [90], "sticker": true}
 {"type": "send",   "chat_id": 42, "client_msg_id": "5b2e0c14-…", "body": "Pizza or pasta?",
                    "poll": {"options": ["Pizza", "Pasta"]}}
 {"type": "send",   "chat_id": 42, "client_msg_id": "e7a1d9c3-…", "body": "@Anna are you in?",
@@ -3947,8 +4627,12 @@ the other, or both, and the receiving stack accepts whichever it was given.)
                           "options": [{"id": 5, "text": "Pizza", "votes": [7, 9]},
                                       {"id": 6, "text": "Pasta", "votes": []}]}}
 {"type": "board_note", "note": {Note}}
+{"type": "pack_item", "item": {PackItem}}
 {"type": "ai_delta", "chat_id": 42, "message_id": 1339, "text": "…"}   — assistant, mid-reply
 {"type": "ai_error", "chat_id": 42, "message_id": 1339}                — it stopped early
+{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused"}
+                                                                       — the provider's own filter refused it;
+                                                                         an unknown "reason" is read as absent
 {"type": "call_offer",   "call_id": "6a1f0c3e-…", "chat_id": 42, "from_user_id": 7, "sdp": "v=0\r\n…"}
 {"type": "call_offer",   "call_id": "7b2e1d4f-…", "chat_id": 42, "from_user_id": 7, "sdp": "v=0\r\n…",
                          "video": true}
@@ -4022,6 +4706,11 @@ newer vote.
 tombstone — to every member of the family. It never notifies and never counts as unread. Clients
 apply it under the same rule the board catch-up uses: a note is written only when the incoming
 `board_seq` is greater than the one held, so an out-of-order frame cannot undo a newer move.
+
+`pack_item` carries one item of the family's sticker pack in whatever state it now has — added, or
+a tombstone — to every member of the family, the actor's own connections included. It never
+notifies and never counts as unread, and clients apply it under the `pack_seq` guard, exactly as
+`board_note` is applied under its own (see "Sticker pack").
 
 ### Semantics
 
@@ -4109,7 +4798,7 @@ apply it under the same rule the board catch-up uses: a note is written only whe
   dropped; REST is the source of truth. On every (re)connect a client must resync:
   1. `GET /me` — reconcile membership, and REPLACE the stored block list with `blocked_user_ids`.
      Then `GET /families/mine`, unless step 1 says the caller has no family: the roster,
-     `former_members`, `next_owner_user_id` and `max_board_seq` live only there, and nothing else
+     `former_members`, `next_owner_user_id`, `max_board_seq` and `max_pack_seq` live only there, and nothing else
      replays a roster change missed while offline — a join, a leave, a birthday, the join policy,
      the member cap and the family's language either raise no frame at all or raise one a sleeping
      client did not get.
@@ -4353,7 +5042,8 @@ pushes to nobody (see "Reporting a member").
 
 A message carrying attachments MAY have an empty body — which is how photos are normally sent —
 and an alert showing a name above a blank line says nothing arrived. Such a message pushes what
-arrived instead: for ONE attachment, `"Photo"`, `"Video"`, `"Audio"`, the file's name, or a
+arrived instead: for ONE attachment, `"Photo"` — or `"Sticker"` when it was sent as one (see
+"Sticker pack") — `"Video"`, `"Audio"`, the file's name, or a
 location's label falling back to `"Location"`; for several of one kind, a count — `"3 Photos"`,
 `"2 Videos"`, `"2 Audio"`, `"4 Files"` (names give way to the count); for a mixed set,
 `"N attachments"`. A caption, when there is one, still wins. A location's COORDINATES are never
@@ -4483,9 +5173,13 @@ unregistered deletes the row, as an ordinary push would.
 | Photos shown to the assistant with one question | 4 — from that one message in a private thread; in the family chat, from the `@ai` message and the message it replies to together, and — only with `ai_history_photos` on — the transcript's newest photos filling whatever those two left of the same four (fixed) |
 | Profile pictures shown to the assistant with one mention | 4 — only with `ai_faces` on, only the members whose lines are in the transcript, most recently active first, under a budget SEPARATE from the four photographs above and never displacing one (fixed) |
 | A picture prompt the assistant writes for itself (`draw_picture`) | the message-body ceiling, 4000 chars by default; over it is `ai_error`, never cut |
+| Requests per picture asked for | `/draw` and a board backdrop: 2 to the images deployment and 1 rewrite to the text deployment; `draw_picture`: 3 to the images deployment (its prompt, the member's own words, their rewrite) and 1 rewrite (fixed) |
 | Largest photo shown to the assistant | 5 MiB after preferring the preview; a larger one is left out and the assistant is told so (fixed) |
 | Attachment size | 100 MB (`limits.max_attachment_bytes`; keep nginx in step) |
 | Attachments per message | 10 (`limits.max_attachments_per_message`; the fewest is 1, fixed) |
+| Items in one family's sticker pack | 200 (`limits.max_pack_items`) |
+| One sticker — a pack item, or a sticker message's picture | 512 KiB (`limits.max_pack_item_bytes`); 512 × 512 pixels is a CLIENT rule, the server never decodes |
+| Sticker label | 64 chars (fixed) |
 | Call ring timeout | 45 s |
 | Buffered caller candidates while ringing | 64 (fixed) |
 | Offer / answer SDP | 64 KiB (fixed) |

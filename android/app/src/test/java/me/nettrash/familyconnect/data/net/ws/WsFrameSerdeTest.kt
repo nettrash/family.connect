@@ -519,6 +519,47 @@ class WsFrameSerdeTest {
         )
     }
 
+    /** protocol.md's `ai_error` example, as every failure but a refusal sends it. */
+    @Test
+    fun aiErrorFrameRoundTrips() {
+        assertRoundTrips(
+            """{"type": "ai_error", "chat_id": 42, "message_id": 1339}""",
+            ServerFrame.AiError(chatId = 42, messageId = 1339),
+        )
+        assertThat(ServerFrame.AiError(chatId = 42, messageId = 1339).isRefused).isFalse()
+    }
+
+    /**
+     * …and as a refusal by the provider's own filter sends it
+     * (protocol.md, "The assistant": `ai_error` may say WHY).
+     */
+    @Test
+    fun aRefusedAiErrorFrameRoundTripsWithItsReason() {
+        val literal = """{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused"}"""
+        assertRoundTrips(
+            literal,
+            ServerFrame.AiError(chatId = 42, messageId = 1339, reason = "refused"),
+        )
+        assertThat((parseServerFrame(json, literal) as ServerFrame.AiError).isRefused).isTrue()
+    }
+
+    /**
+     * A `reason` this client does not know is ABSENT: the frame still
+     * decodes — it must not be dropped, or the row would never stop
+     * looking busy — and it is not a refusal.
+     */
+    @Test
+    fun anAiErrorWithAnUnknownReasonDecodesAndIsNotARefusal() {
+        val decoded = parseServerFrame(
+            json,
+            """{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "quota_spent"}""",
+        )
+        assertThat(decoded).isInstanceOf(ServerFrame.AiError::class.java)
+        decoded as ServerFrame.AiError
+        assertThat(decoded.messageId).isEqualTo(1339L)
+        assertThat(decoded.isRefused).isFalse()
+    }
+
     @Test
     fun errorFrameWithoutClientMsgIdDecodes() {
         val decoded = parseServerFrame(json, """{"type": "error", "code": "internal", "message": "boom"}""")

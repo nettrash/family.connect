@@ -30,7 +30,14 @@ public sealed record OutboxRow(
     DateTimeOffset QueuedAt = default,
     int Attempts = 0,
     DateTimeOffset? NextAttemptAt = null,
-    string? FailedCode = null)
+    string? FailedCode = null,
+    /// <summary>
+    /// This send is a STICKER (docs/protocol.md, "Sending one"): its one attachment goes up as
+    /// the bytes it is — never prepared, never with a preview — and the message says
+    /// <c>sticker: true</c>. Written down with the row, because a sticker tapped while offline is
+    /// still a sticker when the app has been closed and opened again before it lands.
+    /// </summary>
+    bool Sticker = false)
 {
     /// <summary>Shown as failed, with a retry affordance — and nothing else is coming.</summary>
     public bool Failed => FailedCode is not null;
@@ -69,9 +76,9 @@ public sealed class OutboxStore(Database database)
             """
             INSERT INTO outbox (client_msg_id, chat_id, body, reply_to_id, attachment_ids,
                                 pending_files, staged_files, poll_json, mentions_json, queued_at,
-                                attempts, next_attempt_at, failed_code)
+                                attempts, next_attempt_at, failed_code, sticker)
             VALUES ($id, $chat, $body, $reply, $attachments, $files, $staged, $poll, $mentions,
-                    $queued, $attempts, $next, $failed)
+                    $queued, $attempts, $next, $failed, $sticker)
             ON CONFLICT(client_msg_id) DO UPDATE SET
                 body = excluded.body, attachment_ids = excluded.attachment_ids,
                 pending_files = excluded.pending_files, attempts = excluded.attempts,
@@ -101,6 +108,7 @@ public sealed class OutboxStore(Database database)
         command.Parameters.AddWithValue("$next",
             row.NextAttemptAt?.ToUnixTimeMilliseconds() ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$failed", row.FailedCode ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("$sticker", row.Sticker ? 1 : 0);
         command.ExecuteNonQuery();
     }
 
@@ -297,6 +305,7 @@ public sealed class OutboxStore(Database database)
             NextAttemptAt: Number("next_attempt_at") is { } next
                 ? DateTimeOffset.FromUnixTimeMilliseconds(next)
                 : null,
-            FailedCode: Text("failed_code"));
+            FailedCode: Text("failed_code"),
+            Sticker: Convert.ToInt64(reader["sticker"]) != 0);
     }
 }

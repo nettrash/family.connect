@@ -68,6 +68,14 @@ public sealed class AttachmentCache(ApiClient api, IBlobStore blobs)
     }
 
     /// <summary>
+    /// Keep bytes this device ALREADY HAS under an attachment's id — a sticker it just uploaded,
+    /// which it would otherwise download straight back to draw. The original, never a preview.
+    /// An id never names different bytes, so this cannot go stale.
+    /// </summary>
+    public void Remember(AttachmentDto attachment, ReadOnlyMemory<byte> bytes) =>
+        blobs.Write(KeyFor(attachment.Id, preview: false), bytes);
+
+    /// <summary>
     /// Whether these bytes are already here — what a view asks before it decides to show a
     /// spinner.
     /// </summary>

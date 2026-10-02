@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 21.
+ * Room database, version 29.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -43,8 +43,10 @@ fun interface LocalDataWiper {
         NoteEntity::class,
         GoneNoteEntity::class,
         PendingAttachmentEntity::class,
+        PackItemEntity::class,
+        GonePackItemEntity::class,
     ],
-    version = 28,
+    version = 29,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -56,6 +58,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun memberDao(): MemberDao
     abstract fun noteDao(): NoteDao
+    abstract fun packDao(): PackDao
 
     /** Logout / removed-from-family: drop every table, keep the schema. */
     suspend fun wipeAll() = withContext(Dispatchers.IO) {
@@ -464,6 +467,43 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v29: the family's sticker pack (docs/protocol.md, "Sticker pack")
+         * — the items, and the ids a tombstone has taken.
+         *
+         * Two NEW TABLES and nothing else. `messages` is untouched on
+         * purpose: whether a message is a sticker rides INSIDE its
+         * attachment (`sticker: true` in the JSON column it already has), so
+         * every message cached before this version reads exactly as it did —
+         * a photo — and needs no column to say so.
+         *
+         * Column order, types and NOT NULLs byte-match PackItemEntity and
+         * GonePackItemEntity, without which Room's validation refuses every
+         * upgraded database on launch. Nothing is backfilled: the pack fills
+         * from the next resync's full read.
+         */
+        val MIGRATION_28_29: Migration = object : Migration(28, 29) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS packItems (
+                        id INTEGER NOT NULL,
+                        addedBy INTEGER NOT NULL,
+                        attachmentJson TEXT NOT NULL,
+                        label TEXT,
+                        createdAt INTEGER NOT NULL,
+                        packSeq INTEGER NOT NULL,
+                        PRIMARY KEY(id)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS gonePackItems " +
+                        "(itemId INTEGER NOT NULL, PRIMARY KEY(itemId))",
+                )
+            }
+        }
+
         val MIGRATION_26_27: Migration = object : Migration(26, 27) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE notes ADD COLUMN mentionsJson TEXT")
@@ -559,6 +599,7 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_25_26,
                 MIGRATION_26_27,
                 MIGRATION_27_28,
+                MIGRATION_28_29,
             )
         }
     }

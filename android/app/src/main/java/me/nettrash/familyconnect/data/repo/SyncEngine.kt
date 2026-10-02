@@ -17,6 +17,7 @@
  *      this is what repairs reactions missed while offline.
  *   3f. The board's own catch-up, on the third cursor — a board is
  *       nothing but changes to older rows, which after_id cannot see.
+ *   3g. The sticker pack's, on its own cursor and by the board's rules.
  *   4. Re-send locally pending outbound messages (client_msg_id dedups).
  *
  * Also refreshes the family roster so sender names resolve.
@@ -38,6 +39,7 @@ class SyncEngine @Inject constructor(
     private val familyRepository: FamilyRepository,
     private val messageRepository: MessageRepository,
     private val boardRepository: BoardRepository,
+    private val packRepository: PackRepository,
     private val chatDao: ChatDao,
     private val messageDao: MessageDao,
 ) {
@@ -58,6 +60,10 @@ class SyncEngine @Inject constructor(
         val me = sessionRepository.refreshMe().okOrNull() ?: return
         if (!me.canChat) return
 
+        // Which connection the pack's catch-up below will vouch for —
+        // asked BEFORE the family read whose mark it catches up to (see
+        // PackRepository.connectionNow).
+        val packConnection = packRepository.connectionNow()
         val mine = familyRepository.refreshMine().okOrNull()
 
         // 2. Chat list + authoritative unread counts (and the server's
@@ -120,6 +126,24 @@ class SyncEngine @Inject constructor(
         // materialised counted that drag as news (issue #53). The Apple
         // clients have always caught the board up in their resync.
         boardRepository.catchUpBoard(mine?.maxBoardSeq ?: 0L)
+
+        // 3d¾. The family's sticker pack, on ITS own cursor — the board's
+        // machinery unchanged (docs/protocol.md, "Sticker pack"): a device
+        // that holds no pack reads the whole of it, one that does loops the
+        // change feed, tombstones included. Gated the same way: the family
+        // read said where the server is, so a pack nothing has happened to
+        // costs no request — and a server that predates packs says nothing
+        // at all, which reads as 0 and asks for nothing.
+        //
+        // Only after a family read that ANSWERED. A failed one says nothing
+        // about the pack, and treating it as "untouched" would be a
+        // decision made from no information.
+        if (mine != null) {
+            packRepository.catchUpPack(mine.maxPackSeq ?: 0L, packConnection)
+            // The pictures, behind the rows: fetched now, while there is a
+            // network, so a sticker can be sent later without one.
+            packRepository.prefetchInBackground()
+        }
 
         // 3e. Repair any location stored without its coordinates. Same
         // reason as edits above: `after_id` can never see an older row, so

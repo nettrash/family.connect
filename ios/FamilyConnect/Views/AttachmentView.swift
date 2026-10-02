@@ -123,6 +123,14 @@ struct AttachmentView: View {
     /// A 404 settles the key after a bounded re-check and the tile keeps its
     /// play badge; see `AttachmentStore.image(id:preview:mayArriveLate:)`.
     static func image(for attachment: AttachmentDTO, in store: AttachmentStore) -> Image? {
+        // A STICKER is drawn from its original bytes whatever `hasPreview`
+        // says — a preview is a JPEG, and the flag can be true by
+        // inheritance (docs/protocol.md, "And it has no preview"). This arm
+        // is also what a HIDDEN row asks for, so a blocked member's sticker
+        // fetches exactly what a visible one would and nothing else.
+        if attachment.sticker {
+            return store.stickerImage(id: attachment.id)
+        }
         if attachment.hasPreview || attachment.isVideo {
             return store.image(
                 id: attachment.id, preview: true, mayArriveLate: attachment.isVideo)

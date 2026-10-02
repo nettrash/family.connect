@@ -415,6 +415,7 @@
     <string name="s_assistant_mention_sees_quoted_pictures_and_recent">Ovaj odgovor pominje asistenta, pa će mu biti prikazane fotografije na koje odgovaraš, a može da ode i do %1$d najnovijih fotografija iz ovog četa. One napuštaju ovaj server i idu modelu s kojim on razgovara.</string>
     <string name="s_assistant_mention_sees_both_and_recent">Ovaj odgovor pominje asistenta, pa će mu biti prikazane fotografije odavde i one na koje odgovaraš, a može da ode i do %1$d najnovijih fotografija iz ovog četa. One napuštaju ovaj server i idu modelu s kojim on razgovara.</string>
     <string name="s_assistant_answer_failed">Asistent nije uspeo da završi ovaj odgovor. Pitajte ponovo.</string>
+    <string name="s_assistant_provider_refused">Dobavljač asistenta je to odbio. Pokušaj da to kažeš drugačije.</string>
     <string name="s_assistant_vision">Asistent sme da gleda fotografije</string>
     <string name="s_assistant_vision_explanation">Kada neko u svom četu s asistentom priloži fotografiju uz pitanje, priloži je uz poruku koja pominje asistenta u porodičnom četu, ili odgovori na fotografiju pominjući ga, ta fotografija ide modelu zajedno s pitanjem — najviše 4 po pitanju. Fotografija na koju asistentu niko nije ukazao ne šalje se nikada, ni iz ranije poruke osim ako je uključeno „Asistent vidi nedavne fotografije“, kao ni video, fajlovi, audio i lokacije. Isključeno dok ga ne uključite; kad je isključeno, nijedna fotografija se ne šalje.</string>
     <string name="e_change_assistant_vision_failed">Nije uspela promena podešavanja</string>
@@ -551,6 +552,7 @@
     <string name="s_draw_another_backdrop">Nacrtaj drugu pozadinu</string>
     <string name="s_drawing">Crta…</string>
     <string name="s_draw_failed">Nije moglo da se nacrta.</string>
+    <string name="s_describe_in_general_words">Opiši ljude i stvari opštim rečima — prava imena i brendovi se često odbijaju.</string>
     <string name="s_tick_failed">Nije moglo da se označi.</string>
     <string name="s_no_calendar_app">Nema aplikacije kalendara za dodavanje.</string>
     <string name="s_the_assistant">Asistent</string>
@@ -572,4 +574,31 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">Dok ne prihvatiš, ništa što napišeš ne ide ka %1$s i asistent ti ne odgovara.</string>
     <string name="s_consent_stopping_takes_effect_at_once">Ono što napišeš asistentu ide ka %1$s. Zaustavljanje važi odmah; ono što je već poslato ne može da se vrati.</string>
     <string name="s_couldnt_save_your_answer">Tvoj odgovor nije sačuvan. Pokušaj ponovo.</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">Stiker</string>
+    <string name="s_stickers">Stikeri</string>
+    <string name="s_family_stickers">Porodični stikeri</string>
+    <string name="s_family_stickers_count">%1$d od %2$d</string>
+    <string name="s_family_stickers_explanation">Svako u porodici može da doda stiker. Može da ga ukloni onaj ko ga je dodao ili vlasnik porodice.</string>
+    <string name="s_recently_used">Nedavno korišćeni</string>
+    <string name="s_no_stickers_yet">Još nema stikera</string>
+    <string name="s_no_stickers_hint">Dodaj ih na ekranu Porodica.</string>
+    <string name="s_add_sticker">Dodaj stiker</string>
+    <string name="s_add_to_family_stickers">Dodaj u porodične stikere</string>
+    <string name="s_sticker_label">Opis (neobavezno)</string>
+    <string name="s_sticker_label_hint">Nekoliko reči za čitač ekrana. Nikada se ne iscrtavaju preko slike.</string>
+    <string name="s_remove_sticker">Ukloni stiker</string>
+    <string name="s_remove_sticker_q">Ukloniti ovaj stiker?</string>
+    <string name="s_remove_sticker_explanation">Nestaje iz porodičnih stikera. Već poslate poruke ga zadržavaju.</string>
+    <string name="s_sticker_added">Dodato u porodične stikere</string>
+    <string name="s_sticker_already_in_pack">Već je u porodičnim stikerima</string>
+    <string name="s_sticker_pack_full">Porodica već ima %1$d stikera. Ukloni jedan da bi dodao novi.</string>
+    <string name="s_sticker_too_large">Taj je prevelik. Stiker može da ima najviše %1$s.</string>
+    <string name="s_sticker_add_failed">Stiker nije dodat. Pokušaj ponovo.</string>
+    <string name="s_sticker_unreadable">Ta slika ne može da se pročita.</string>
+    <string name="s_sticker_animated_must_be_webp">Animirani stikeri moraju biti WebP. Ovaj se ne može dodati.</string>
+    <string name="s_sticker_label_too_long">Opis može imati najviše %1$d znakova.</string>
+    <string name="s_sticker_remove_not_allowed">Stiker može da ukloni samo onaj ko ga je dodao ili vlasnik porodice.</string>
+    <string name="s_sticker_remove_failed">Stiker nije uklonjen. Pokušaj ponovo.</string>
+    <string name="s_sticker_not_available_offline">Taj stiker još nije na ovom telefonu. Pokušaj ponovo kad budeš na mreži.</string>
 </resources>

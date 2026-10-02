@@ -153,6 +153,7 @@ import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.EmojiEmotions
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Flag
@@ -264,6 +265,11 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import me.nettrash.familyconnect.ui.stickers.ChatSticker
+import me.nettrash.familyconnect.ui.stickers.StickerNotices
+import me.nettrash.familyconnect.ui.stickers.StickerPanelSheet
+import me.nettrash.familyconnect.ui.stickers.StickerPreviewDialog
+import me.nettrash.familyconnect.ui.stickers.StickerViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
@@ -280,6 +286,7 @@ import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.LinkPreviewState
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.repo.AssistantFailure
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import android.net.Uri
@@ -353,8 +360,20 @@ fun ChatScreen(
     /** Open another chat — the one-to-one a tapped mention leads to (docs/protocol.md, "Mentioning a member"). */
     onOpenChat: (Long) -> Unit = {},
     viewModel: ChatViewModel = hiltViewModel(),
+    /**
+     * The family's chat stickers: the panel, and the larger view a tap
+     * opens (docs/protocol.md, "Sticker pack"). Its own model because the
+     * thread screen and the Family screen need the same things.
+     */
+    stickerViewModel: StickerViewModel = hiltViewModel(),
 ) {
     val items by viewModel.items.collectAsStateWithLifecycle()
+    // Null on a server that predates packs, and then nothing about
+    // stickers is offered — no button, no "Add to family stickers".
+    val stickerLimits by stickerViewModel.limits.collectAsStateWithLifecycle()
+    var stickerPanelOpen by rememberSaveable { mutableStateOf(false) }
+    var viewingSticker by remember { mutableStateOf<AttachmentDto?>(null) }
+    StickerNotices(stickerViewModel)
     val mentionCandidates by viewModel.mentionCandidates.collectAsStateWithLifecycle()
     val chat by viewModel.chat.collectAsStateWithLifecycle()
     val typingUser by viewModel.typingUser.collectAsStateWithLifecycle()
@@ -370,8 +389,9 @@ fun ChatScreen(
     val streamingIds by viewModel.streamingMessageIds.collectAsStateWithLifecycle()
     // Rows an `ai_error` frame named. A picture answer streams nothing, so
     // its failure is an empty balloon and nothing else unless the bubble
-    // says so (docs/protocol.md, "Pictures").
-    val failedAssistantIds by viewModel.failedAssistantMessageIds.collectAsStateWithLifecycle()
+    // says so (docs/protocol.md, "Pictures"). Each remembers HOW it failed,
+    // which picks the sentence (docs/protocol.md, "The assistant").
+    val failedAssistantAnswers by viewModel.failedAssistantAnswers.collectAsStateWithLifecycle()
     // The two picture affordances, each behind its own capability check —
     // no surface at all where the server cannot do the thing, rather than
     // a disabled one that lies about what would happen.
@@ -380,6 +400,7 @@ fun ChatScreen(
     // What the composer must say out loud about what is staged, right now.
     val assistantPictureNotice by viewModel.assistantPictureNotice.collectAsStateWithLifecycle()
     val mentionPictureNotice by viewModel.mentionPictureNotice.collectAsStateWithLifecycle()
+    val showsPictureDescriptionHint by viewModel.showsPictureDescriptionHint.collectAsStateWithLifecycle()
     // Nothing reaches the model before this member has agreed
     // (docs/protocol.md, "Consenting to the assistant").
     val assistantProcessor by viewModel.assistantProcessor.collectAsStateWithLifecycle()
@@ -1216,10 +1237,10 @@ fun ChatScreen(
                                         assistantUserId = assistantUserId,
                                         myUserId = myUserId,
                                         streamingIds = streamingIds,
-                                        failedIds = failedAssistantIds,
+                                        failedIds = failedAssistantAnswers.keys,
                                     ),
-                                    answerFailed = item.entity.serverId
-                                        ?.let { it in failedAssistantIds } == true,
+                                    answerFailure = item.entity.serverId
+                                        ?.let { failedAssistantAnswers[it] },
                                     myUserId = myUserId,
                                     memberNames = memberNames,
                                     memberAvatars = memberAvatars,
@@ -1241,7 +1262,14 @@ fun ChatScreen(
                                     onOpenThread = { rootId -> chat?.id?.let { onOpenThread(it, rootId) } },
                                     onTapMention = { userId -> viewModel.openDirectChat(userId, onOpenChat) },
                                     onOpenAttachment = { attachment ->
-                                        if (attachment.isFile) {
+                                        if (attachment.isSticker) {
+                                            // Shown larger, with "Add to
+                                            // family stickers" — not the
+                                            // photo viewer, which zooms a
+                                            // photograph and would draw
+                                            // frame zero on black.
+                                            viewingSticker = attachment
+                                        } else if (attachment.isFile) {
                                             openFile(attachment)
                                         } else {
                                             // Built here, the one place the
@@ -1394,6 +1422,8 @@ fun ChatScreen(
                 onPasteTruncated = viewModel::reportPasteTruncated,
                 showsPoll = canCreatePoll,
                 onStartPoll = viewModel::beginPoll,
+                showsStickers = stickerLimits != null,
+                onOpenStickers = { stickerPanelOpen = true },
                 staged = staged,
                 onTakePhoto = { startCapture(false) },
                 onTakeVideo = { startCapture(true) },
@@ -1423,12 +1453,36 @@ fun ChatScreen(
                 onAskForPicture = viewModel::insertDrawToken,
                 pictureNotice = assistantPictureNotice,
                 mentionPictureNotice = mentionPictureNotice,
+                showsPictureDescriptionHint = showsPictureDescriptionHint,
                 assistantProcessor = assistantProcessor,
                 assistantConsentNeeded = assistantConsentNeeded,
                 assistantIsUnnamed = assistantIsUnnamed,
                 onReviewAssistantConsent = viewModel::send,
             )
         }
+    }
+
+    if (stickerPanelOpen) {
+        StickerPanelSheet(
+            viewModel = stickerViewModel,
+            onPick = { item ->
+                // ONE TAP SENDS: no caption, no confirmation. The sheet
+                // closes so the sticker is seen landing in the thread.
+                stickerPanelOpen = false
+                viewModel.beginStickerSend { quote ->
+                    stickerViewModel.send(item, viewModel.chatId, quote)
+                }
+            },
+            onDismiss = { stickerPanelOpen = false },
+        )
+    }
+
+    viewingSticker?.let { attachment ->
+        StickerPreviewDialog(
+            attachment = attachment,
+            viewModel = stickerViewModel,
+            onDismiss = { viewingSticker = null },
+        )
     }
 
     pickerTarget?.let { target ->
@@ -1844,8 +1898,9 @@ private fun ReactionPickerPopup(
                     canSave = target.item.entity.attachment?.isFile == false,
                     canReply = target.item.entity.serverId != null,
                     canViewThread = canViewThread,
-                    canEdit = target.item.entity.serverId != null &&
-                        target.item.entity.senderId == myUserId,
+                    // The reader's own, and never a sticker — the rule is
+                    // [canEditMessage]'s, where a test holds it.
+                    canEdit = canEditMessage(target.item.entity, myUserId),
                     // Closing is the AUTHOR's, and one-way — the family
                     // owner does not outrank them here, exactly as with
                     // editing. Hidden once the poll is already closed:
@@ -2404,9 +2459,10 @@ internal fun MessageBubble(
     isStreaming: Boolean,
     /**
      * An `ai_error` frame named this row: the answer stopped early and
-     * nothing more is coming (docs/protocol.md, "Pictures").
+     * nothing more is coming (docs/protocol.md, "Pictures") — and HOW, which
+     * picks the sentence it shows. Null when it did not fail.
      */
-    answerFailed: Boolean,
+    answerFailure: AssistantFailure?,
     myUserId: Long?,
     memberNames: Map<Long, String>,
     memberAvatars: Map<Long, Long>,
@@ -2479,6 +2535,13 @@ internal fun MessageBubble(
     // below: an 18dp balloon corner over the tile's own 14dp corner at
     // zero inset would shave the tile into a shape neither of them has.
     val mediaOnly = remember(entity, isStreaming) { isMediaOnly(entity, isStreaming) }
+    // A STICKER is bare too, and more so: "drawn with NO BUBBLE — the
+    // picture alone, its transparency showing the chat behind it"
+    // (docs/protocol.md, "Sticker pack"). Unlike a bare photo it stays bare
+    // when it is a REPLY — replying with a sticker is how one answers
+    // something, and the quote then sits above it on the chat background.
+    val sticker = remember(entity) { stickerOf(entity) }
+    val bareMedia = mediaOnly || sticker != null
     // A reveal is a PEEK, not a setting: per row and per device, never on
     // the wire, never stored, and gone on the next launch. Keyed on the
     // message so a recycled row cannot inherit somebody else's reveal, and
@@ -2488,7 +2551,7 @@ internal fun MessageBubble(
     // A hidden row is never bare and never media-shaped: it draws one line
     // of placeholder text in an ordinary balloon, whatever the message
     // underneath it turns out to be.
-    val surfaceShape = if (mediaOnly && !isHidden) RectangleShape else bubbleShape
+    val surfaceShape = if (bareMedia && !isHidden) RectangleShape else bubbleShape
     // MARKDOWN FIRST, and the order is load-bearing. Markdown DELETES
     // characters (`**`, backticks, `](url)`), so detecting links over the
     // raw body and drawing the rendered one would leave every link after
@@ -2658,7 +2721,7 @@ internal fun MessageBubble(
             // emoji-only, and media-only (which also drops the inset and
             // the clip — see `surfaceShape`). One flag for both, so
             // nothing adapts to one half of the rule and not the other.
-            val isBare = (isEmojiOnly || mediaOnly) && !isHidden
+            val isBare = (isEmojiOnly || bareMedia) && !isHidden
             Surface(
                 shape = surfaceShape,
                 color = when {
@@ -2681,8 +2744,9 @@ internal fun MessageBubble(
                     chat = chat,
                     isMine = isMine,
                     isStreaming = isStreaming,
-                    answerFailed = answerFailed,
-                    mediaOnly = mediaOnly,
+                    answerFailure = answerFailure,
+                    mediaOnly = bareMedia,
+                    sticker = sticker,
                     emojiFontSize = emojiFontSize,
                     blocks = bodyBlocks,
                     memberNames = memberNames,
@@ -3604,8 +3668,8 @@ private fun BubbleContent(
     isMine: Boolean,
     /** The assistant is still writing into this row. */
     isStreaming: Boolean,
-    /** The answer stopped early — see [MessageBubble]. */
-    answerFailed: Boolean,
+    /** The answer stopped early, and how — see [MessageBubble]. */
+    answerFailure: AssistantFailure?,
     /**
      * Nothing but photos/videos: the balloon is gone (MessageBubble), so
      * the content's inset goes with it — the tile's edge is the message's
@@ -3613,6 +3677,12 @@ private fun BubbleContent(
      * the balloon's 12dp. Resolved by the caller, which owns the fill.
      */
     mediaOnly: Boolean = false,
+    /**
+     * The message's picture when it was sent as a STICKER, else null. Drawn
+     * in the one fixed box from its original bytes, in place of the photo
+     * tile (docs/protocol.md, "Sticker pack"). Resolved by the caller.
+     */
+    sticker: AttachmentDto? = null,
     /** Emoji-ladder size for an emoji-only body, else null. Resolved by the caller. */
     emojiFontSize: Float?,
     /**
@@ -3816,7 +3886,19 @@ private fun BubbleContent(
         // exactly as before, an album as a stack of cards, files and audio
         // as rows (see AttachmentGroup).
         val bubbleAttachments = entity.attachmentList
-        if (bubbleAttachments.isNotEmpty()) {
+        if (sticker != null) {
+            // Not an AttachmentGroup: that draws a photograph — cropped to
+            // its tile, from its preview when it has one. A sticker is
+            // fitted whole and drawn from its ORIGINAL bytes, which is the
+            // only copy with its transparency and its animation.
+            ChatSticker(
+                attachment = sticker,
+                onOpen = { onOpenAttachment(sticker) },
+                onLongPress = onTextLongPress,
+                onDoubleTap = onDoubleTap,
+                modifier = measureBlock,
+            )
+        } else if (bubbleAttachments.isNotEmpty()) {
             AttachmentGroup(
                 attachments = bubbleAttachments,
                 showMapPreviews = mapPreviewsEnabled,
@@ -3834,7 +3916,7 @@ private fun BubbleContent(
         // the same thing.
         if (isStreaming && entity.body.isEmpty()) {
             StreamingCursor()
-        } else if (answerFailed && entity.body.isEmpty() && bubbleAttachments.isEmpty()) {
+        } else if (answerFailure != null && entity.body.isEmpty() && bubbleAttachments.isEmpty()) {
             // The answer stopped with nothing on the row at all — which is
             // every PICTURE answer that failed, because an image model
             // produces no token stream and so there are no deltas to have
@@ -3842,9 +3924,12 @@ private fun BubbleContent(
             // empty row was created before the provider was called
             // precisely so a failure would have somewhere to fail; this is
             // that somewhere. A text answer that failed half-written keeps
-            // its half instead, and says nothing extra.
+            // its half instead, and says nothing extra. A refusal by the
+            // provider's own filter says so instead of "ask again", which
+            // would only earn the same refusal (docs/protocol.md, "The
+            // assistant").
             Text(
-                text = stringResource(R.string.s_assistant_answer_failed),
+                text = stringResource(AssistantAnswer.failureSentence(answerFailure)),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontStyle = FontStyle.Italic,
@@ -4653,6 +4738,25 @@ private fun AssistantConsentStrip(processor: String?, onReview: (() -> Unit)?) {
     }
 }
 
+/**
+ * The one sentence said beside a picture request — in the composer while
+ * `/draw` is being typed, and in the board's event dialog beside "Draw a
+ * backdrop" — about what the provider's filter tends to refuse
+ * (docs/protocol.md, "Pictures"). Small secondary text rather than a
+ * strip with an icon: it is advice, not a disclosure, and it must not
+ * outweigh the ones above it. Plain [Text], so a screen reader reads it
+ * in place with the control it sits by.
+ */
+@Composable
+internal fun PictureDescriptionHintText(modifier: Modifier = Modifier) {
+    Text(
+        text = stringResource(R.string.s_describe_in_general_words),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier.fillMaxWidth(),
+    )
+}
+
 @Composable
 private fun MentionPictureStrip(notice: MentionPictureNotice) {
     Row(
@@ -5008,6 +5112,14 @@ private fun InputBar(
      */
     showsPoll: Boolean,
     onStartPoll: () -> Unit,
+    /**
+     * Offer the sticker panel. Only on a server that HAS packs — the
+     * absence of `max_pack_items` on `GET /families/mine` is the whole
+     * capability check, so there is no button that leads to a 404
+     * (docs/protocol.md, "Sticker pack").
+     */
+    showsStickers: Boolean = false,
+    onOpenStickers: () -> Unit = {},
     recordingMs: Long?,
     onStopRecording: () -> Unit,
     onCancelRecording: () -> Unit,
@@ -5058,6 +5170,12 @@ private fun InputBar(
      * draft may carry the chat's recent photos and the strip says so.
      */
     mentionPictureNotice: MentionPictureNotice?,
+    /**
+     * A picture request is being typed where this client offers `/draw`:
+     * say that real names and brands are often refused, while the member
+     * can still describe it another way ([PictureDescriptionHint]).
+     */
+    showsPictureDescriptionHint: Boolean,
     /**
      * WHO would receive what is typed, verbatim as the operator named
      * them. Null on a server that named nobody (docs/protocol.md,
@@ -5116,6 +5234,15 @@ private fun InputBar(
             // one the family chat.
             if (mentionPictureNotice != null) {
                 MentionPictureStrip(notice = mentionPictureNotice)
+            }
+            // A picture request being typed: the words are still the
+            // member's to change, which is the moment to say what the
+            // provider's filter tends to refuse (docs/protocol.md,
+            // "Pictures").
+            if (showsPictureDescriptionHint) {
+                PictureDescriptionHintText(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
             }
             // Before any of those: nothing goes to the model until this
             // member has said so, and the strip appears as the draft
@@ -5312,6 +5439,24 @@ private fun InputBar(
                                 attachMenuOpen = false
                                 onTakeVideo()
                             },
+                        )
+                    }
+                }
+                if (showsStickers) {
+                    // Its own button rather than a line in the attach menu:
+                    // a sticker is SENT by the tap that picks it, which is a
+                    // different promise from everything in that menu — those
+                    // stage something for Send.
+                    IconButton(
+                        onClick = onOpenStickers,
+                        // An edit borrows the composer to rewrite one
+                        // message; a sticker is a new one.
+                        enabled = !isEditing,
+                        modifier = Modifier.size(44.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.EmojiEmotions,
+                            contentDescription = stringResource(R.string.s_stickers),
                         )
                     }
                 }
