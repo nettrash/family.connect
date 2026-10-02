@@ -213,6 +213,17 @@ fun AttachmentGroup(
      * a CompositionLocal, like every other dependency in this file.
      */
     onBalloon: Boolean = true,
+    /**
+     * Drawn under each AUDIO row and under every VIDEO — the chat's "Show
+     * text" line (docs/protocol.md, "Transcripts on request"). A slot, so
+     * this file knows nothing of transcripts; empty everywhere else.
+     *
+     * Under an album, one per video, below the pile; the second argument
+     * is that video's number among the pile's videos when there is more
+     * than one ([AttachmentAlbum.transcriptVideos]) — the pile is one card,
+     * so a line under it has to say which video it is the text of.
+     */
+    recordingFooter: @Composable (AttachmentDto, Int?) -> Unit = { _, _ -> },
 ) {
     val media = AttachmentAlbum.media(attachments)
     val rows = AttachmentAlbum.rows(attachments)
@@ -221,21 +232,28 @@ fun AttachmentGroup(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         when {
-            media.size >= 2 -> AlbumStack(
-                media = media,
-                onOpen = { onOpen(media[0]) },
-                onLongPress = onLongPress,
-                onDoubleTap = onDoubleTap,
-            )
-            media.size == 1 -> AttachmentBlock(
-                attachment = media[0],
-                onOpen = { onOpen(media[0]) },
-                streamUrl = streamUrl,
-                onLongPress = onLongPress,
-                onDoubleTap = onDoubleTap,
-                showMapPreviews = showMapPreviews,
-                onBalloon = onBalloon,
-            )
+            media.size >= 2 -> {
+                AlbumStack(
+                    media = media,
+                    onOpen = { onOpen(media[0]) },
+                    onLongPress = onLongPress,
+                    onDoubleTap = onDoubleTap,
+                )
+                // One "Show text" per video, under the pile.
+                AttachmentAlbum.transcriptVideos(media).forEach { (video, number) -> recordingFooter(video, number) }
+            }
+            media.size == 1 -> {
+                AttachmentBlock(
+                    attachment = media[0],
+                    onOpen = { onOpen(media[0]) },
+                    streamUrl = streamUrl,
+                    onLongPress = onLongPress,
+                    onDoubleTap = onDoubleTap,
+                    showMapPreviews = showMapPreviews,
+                    onBalloon = onBalloon,
+                )
+                if (media[0].isVideo) recordingFooter(media[0], null)
+            }
         }
         rows.forEach { item ->
             AttachmentBlock(
@@ -250,6 +268,7 @@ fun AttachmentGroup(
                 // passed everywhere rather than two rules to keep in step.
                 onBalloon = onBalloon,
             )
+            if (item.isAudio) recordingFooter(item, null)
         }
     }
 }

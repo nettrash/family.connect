@@ -5,6 +5,9 @@
 //  Carrying out a transcode `MediaPlan` asked for: a video to the profile's
 //  MP4 (H.264 High, AAC-LC, `moov` first, 8-bit SDR), a picked sound file to
 //  an M4A of AAC-LC. docs/protocol.md, "Preparing media before upload".
+//  And one job that is not a send: a file's SOUND TRACK, taken out as an
+//  M4A for the text of a recording (`extractSound`, "Transcripts on
+//  request") — the same reader, writer and pumps, with no picture read.
 //
 //  WHY A READER AND A WRITER, NOT AN EXPORT SESSION. 1.1 used
 //  `AVAssetExportPreset1920x1080`, and a preset is a bundle of decisions this
@@ -297,6 +300,58 @@ nonisolated enum MediaTranscoder {
         try await Pump.run([pump], reader: reader, writer: writer)
     }
 
+    // MARK: - A sound track, for a transcript
+
+    /// Take the sound track out of the video or sound file at `source` and
+    /// write it to `output` as an M4A — the multipart `audio` part of a
+    /// transcript request (docs/protocol.md, "Transcripts on request").
+    ///
+    /// ONLY THE AUDIO TRACK IS READ. The reader is given one output, for
+    /// the first audio track, so no picture is ever decoded — a 90 MB
+    /// video costs the reading of its sound and nothing more.
+    ///
+    /// `.passThrough` copies an AAC track's own samples into the new
+    /// container, untouched; `.reencode` decodes it and encodes 64 kbit/s
+    /// MONO AAC-LC — mono because a speech model hears one voice as well
+    /// from one channel, and at that rate about fifty minutes fit the
+    /// protocol's 25 MiB. `TranscriptSound.treatment` decides which.
+    @concurrent
+    static func extractSound(
+        from source: URL, treatment: TranscriptSound.Treatment, writingTo output: URL
+    ) async throws {
+        try Task.checkCancellation()
+        let asset = AVURLAsset(url: source)
+        guard let track = try await asset.loadTracks(withMediaType: .audio).first else {
+            throw Failure.noTrack
+        }
+        try? FileManager.default.removeItem(at: output)
+        let reader = try AVAssetReader(asset: asset)
+        // `.m4a`: the `M4A ` brand in an ISO base media `ftyp`, which is what
+        // the server checks the part for.
+        let writer = try AVAssetWriter(outputURL: output, fileType: .m4a)
+        writer.shouldOptimizeForNetworkUse = true
+        let pump: Pump
+        switch treatment {
+        case .passThrough:
+            let description = try await track.load(.formatDescriptions).first
+            pump = try passThroughPump(
+                track: track, description: description, reader: reader, writer: writer)
+        case .reencode:
+            let description = try await track.load(.formatDescriptions).first
+            let sampleRate = description
+                .flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee }?
+                .mSampleRate
+            guard let aac = AACFormat.fitting(
+                bitrate: TranscriptSound.bitrate, channels: 1, sourceSampleRate: sampleRate)
+            else {
+                throw Failure.unsupportedSettings
+            }
+            pump = try encodingPump(
+                track: track, aac: aac, channels: 1, reader: reader, writer: writer)
+        }
+        try await Pump.run([pump], reader: reader, writer: writer)
+    }
+
     // MARK: - AAC-LC
 
     /// What becomes of one audio track.
@@ -404,7 +459,7 @@ nonisolated enum MediaTranscoder {
     /// writer: no output settings on either end, and the source's format
     /// handed over as the hint an MP4 writer needs to write the track's
     /// description before it has seen a sample.
-    private static func passThroughPump(
+    static func passThroughPump(
         track: AVAssetTrack, description: CMFormatDescription?, reader: AVAssetReader,
         writer: AVAssetWriter
     ) throws -> Pump {
@@ -420,7 +475,7 @@ nonisolated enum MediaTranscoder {
         return Pump(output: output, input: input, label: "audio")
     }
 
-    private static func encodingPump(
+    static func encodingPump(
         track: AVAssetTrack, aac: AACFormat, channels: Int, reader: AVAssetReader,
         writer: AVAssetWriter
     ) throws -> Pump {

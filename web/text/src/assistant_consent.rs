@@ -77,8 +77,16 @@ pub fn is_withheld_from_an_unnamed_assistant(
 /// behind a link. The two family-chat lines depend on the owner's
 /// `ai_history`: with it on a mention takes the chat's recent history with
 /// it, and with it off it takes nothing but itself — saying the wrong one
-/// would be worse than saying neither.
-pub fn disclosure(processor: &str, family_history: bool, family_vision: bool) -> Vec<String> {
+/// would be worse than saying neither. `transcribe` is the server's
+/// `assistant.transcribe`: where a recording's text can be asked for, the
+/// person is told its sound goes too (docs/protocol.md, "Transcripts on
+/// request").
+pub fn disclosure(
+    processor: &str,
+    family_history: bool,
+    family_vision: bool,
+    transcribe: bool,
+) -> Vec<String> {
     let mut lines = vec![t1(
         "What you write to the assistant leaves this family's server and is sent to %@.",
         processor,
@@ -99,6 +107,12 @@ pub fn disclosure(processor: &str, family_history: bool, family_vision: bool) ->
             t("A photo is sent only when you attach one to a message for the assistant, and only while your family allows it.")
                 .to_string(),
         );
+    }
+    if transcribe {
+        lines.push(t1(
+            "If you ask for the text of a voice note, audio file or video, its sound is sent to %@.",
+            processor,
+        ));
     }
     lines.push(
         t("The answer comes back as a message in that chat, where everyone in the chat can read it.")
@@ -232,7 +246,7 @@ mod tests {
 
     #[test]
     fn the_disclosure_names_the_processor_and_follows_the_switches() {
-        let with_history = disclosure("Azure OpenAI", true, true);
+        let with_history = disclosure("Azure OpenAI", true, true, false);
         assert!(with_history
             .iter()
             .any(|line| line.contains("Azure OpenAI")));
@@ -240,7 +254,7 @@ mod tests {
             .iter()
             .any(|line| line.contains("30") && line.contains("200")));
 
-        let without = disclosure("Azure OpenAI", false, false);
+        let without = disclosure("Azure OpenAI", false, false, false);
         assert!(
             !without
                 .iter()
@@ -248,9 +262,22 @@ mod tests {
             "with history off a mention takes nothing but itself: {without:?}"
         );
         assert_eq!(
-            disclosure("Azure OpenAI", false, true).len(),
+            disclosure("Azure OpenAI", false, true, false).len(),
             without.len() + 1,
             "photos are mentioned only where a photo could go"
         );
+    }
+
+    /// Where the server can turn a recording into text, the person is told
+    /// before they agree that a recording's sound goes to the processor —
+    /// and not told it where nothing of the kind can happen.
+    #[test]
+    fn the_disclosure_names_recordings_only_where_they_can_go() {
+        let line = "If you ask for the text of a voice note, audio file or video, its sound is sent to Azure OpenAI.";
+        let with = disclosure("Azure OpenAI", true, false, true);
+        assert!(with.iter().any(|said| said == line), "{with:?}");
+        let without = disclosure("Azure OpenAI", true, false, false);
+        assert!(!without.iter().any(|said| said.contains("voice note")));
+        assert_eq!(with.len(), without.len() + 1);
     }
 }

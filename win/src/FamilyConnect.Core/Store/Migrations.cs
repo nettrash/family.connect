@@ -261,8 +261,31 @@ public static class Migrations
     ];
 
     /// <summary>
+    /// Step 5: THE TEXT OF A RECORDING, KEPT ON THIS DEVICE (docs/protocol.md, "Transcripts on request"). A transcript
+    /// is the answer to one member's request and is in no message, page or frame, so nothing else on this device could
+    /// draw it again — and asking again would be a second provider call for an answer made from sound this device
+    /// supplied. Keyed by the attachment, which never names other bytes. Nothing held is read again.
+    /// </summary>
+    private static readonly string[] Five =
+    [
+        """
+        CREATE TABLE transcripts (
+            attachment_id INTEGER PRIMARY KEY,
+            -- "" is SILENCE, an answer drawn as "No speech": never NULL, which would read as "not asked".
+            text          TEXT    NOT NULL,
+            -- Only when the provider named the language it heard, spelled as it spelled it.
+            language      TEXT,
+            -- 1 when the answer was made from sound THIS DEVICE sent: the server never kept it, so this row is the only
+            -- copy. 0 for one made from the server's stored bytes, which any member the rule allows gets back too.
+            supplied      INTEGER NOT NULL DEFAULT 0,
+            kept_at       INTEGER NOT NULL DEFAULT 0
+        )
+        """,
+    ];
+
+    /// <summary>
     /// Every step, in order. The index is the version it upgrades FROM, so
     /// <c>All.Count</c> is the schema this build expects.
     /// </summary>
-    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four];
+    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five];
 }

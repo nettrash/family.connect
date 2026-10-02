@@ -46,6 +46,11 @@ struct AttachmentView: View {
     /// nothing for a pale photo to melt into, and the stroke would be a
     /// frame around a picture.
     var onBalloon: Bool = true
+    /// The message this attachment is on, for "Show text" under a voice
+    /// note, an audio file or a video (docs/protocol.md, "Transcripts on
+    /// request"). Nil where there is no message to name, and then no
+    /// action is drawn.
+    var transcriptSubject: TranscriptSubject? = nil
 
     @Environment(AttachmentStore.self) private var store
     /// Compact means a phone-width window, whatever the device: an iPad
@@ -174,11 +179,29 @@ struct AttachmentView: View {
         } else if attachment.isAudio {
             // Audio has nothing to look at, so it gets a player rather than
             // a tile or a document row (docs/protocol.md, "Audio").
-            AudioPlayerView(attachment: attachment, isMine: isMine)
-                .onTapGesture(count: 2) { onDoubleTap() }
-                .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
+            //
+            // The text of the recording, when somebody asks for it, sits
+            // under the player and OUTSIDE its gestures: a long press on
+            // the text selects it rather than opening the reaction menu.
+            VStack(alignment: .leading, spacing: 4) {
+                AudioPlayerView(attachment: attachment, isMine: isMine)
+                    .onTapGesture(count: 2) { onDoubleTap() }
+                    .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
+                TranscriptSection(
+                    attachment: attachment, subject: transcriptSubject, isMine: isMine)
+            }
         } else if attachment.isFile {
             fileRow
+        } else if attachment.isVideo, transcriptSubject != nil {
+            // A video's text sits under its tile like a voice note's under
+            // its player, and outside the tile's gestures for the same
+            // reason. Only where there is a message to name: a viewer or
+            // a pile passes none, and gets the tile it always had.
+            VStack(alignment: .leading, spacing: 4) {
+                mediaThumbnail
+                TranscriptSection(
+                    attachment: attachment, subject: transcriptSubject, isMine: isMine)
+            }
         } else {
             mediaThumbnail
         }

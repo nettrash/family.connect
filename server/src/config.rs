@@ -7,7 +7,7 @@
 //! value surface later as a confusing runtime error (e.g. an idle timeout
 //! shorter than the ping interval would silently kill every socket).
 //!
-//! Unknown keys are IGNORED everywhere except under `[ai]` and its two
+//! Unknown keys are IGNORED everywhere except under `[ai]` and its three
 //! sub-tables, where they fail the load by name (see
 //! [`reject_unknown_ai_keys`]). The asymmetry is deliberate: a mistyped
 //! `[limits]` key costs a default, while a mistyped — or misplaced — key
@@ -376,6 +376,13 @@ pub struct AiConfig {
     /// offer the affordance.
     #[serde(default)]
     pub images: AiImagesConfig,
+
+    /// `[ai.transcribe]` — the deployment that turns a recording into text,
+    /// reached only by a member asking for a transcript (protocol.md,
+    /// "Transcripts on request"). Absent means no recording ever leaves for
+    /// a speech model and clients are told not to offer "Show text".
+    #[serde(default)]
+    pub transcribe: AiTranscribeConfig,
 }
 
 /// How the key is presented to the provider.
@@ -504,6 +511,55 @@ pub struct AiImagesConfig {
     pub contextual: bool,
 }
 
+/// `[ai.transcribe]` — a deployment plus the one knob a transcription
+/// endpoint has that the others do not: how much sound one request may
+/// carry.
+///
+/// The same flattened [`AiDeployment`] the images section uses, so it
+/// inherits the endpoint, key, auth and api-version of `[ai]` and is turned
+/// on by naming a deployment — the fourth deployment on what is, in
+/// practice, one resource.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AiTranscribeConfig {
+    #[serde(flatten)]
+    pub deployment: AiDeployment,
+
+    /// The most bytes of sound one transcript request may send — the stored
+    /// recording, or the sound track a device supplies. Sent to clients as
+    /// `assistant.transcribe_max_bytes` so they can choose BEFORE asking.
+    ///
+    /// 25 MiB by default and never more: Azure's transcription contract
+    /// refuses files over 25 MB, so a larger ceiling would only move the
+    /// refusal from this server, where a client is told
+    /// `not_transcribable`, to the provider, where it is an opaque failure
+    /// and a wasted upload. `validate` refuses a value above
+    /// [`TRANSCRIBE_MAX_BYTES_CEILING`] rather than clamping it, because a
+    /// config that says one thing and a server that does another is the
+    /// failure this file exists to prevent.
+    #[serde(default = "default_ai_transcribe_max_bytes")]
+    pub max_bytes: usize,
+}
+
+/// Azure's own ceiling on one transcription file — "25 MB or smaller" —
+/// read as the binary unit the rest of this file uses. A deployment that
+/// meant decimal megabytes would refuse the last 1.2 MB of this; nobody's
+/// voice note is that close to the line, and a device sending its own
+/// sound track re-encodes far below it.
+pub const TRANSCRIBE_MAX_BYTES_CEILING: usize = 25 * 1024 * 1024;
+
+fn default_ai_transcribe_max_bytes() -> usize {
+    TRANSCRIBE_MAX_BYTES_CEILING
+}
+
+impl Default for AiTranscribeConfig {
+    fn default() -> Self {
+        Self {
+            deployment: AiDeployment::default(),
+            max_bytes: default_ai_transcribe_max_bytes(),
+        }
+    }
+}
+
 /// One resolved provider call: where to POST it, which key opens it, what to
 /// name in the body, and the cap the server owns.
 ///
@@ -552,6 +608,7 @@ impl Default for AiConfig {
             title: default_ai_title(),
             vision: AiDeployment::default(),
             images: AiImagesConfig::default(),
+            transcribe: AiTranscribeConfig::default(),
         }
     }
 }
@@ -784,6 +841,46 @@ impl AiConfig {
     /// Whether it can make one — sent as `assistant.images`.
     pub fn images_usable(&self) -> bool {
         self.images_route().is_some()
+    }
+
+    /// The deployment that turns a recording into text, or `None`.
+    ///
+    /// `max_tokens` means nothing to a transcription endpoint and is carried
+    /// for the reason [`AiConfig::images_route`] carries it; the cap that
+    /// binds here is [`AiTranscribeConfig::max_bytes`], on what is SENT.
+    /// The URL is built by the same [`azure_url`] as the other three, so a
+    /// pasted target URI, the `/openai/v1` surface and the classic shape
+    /// all behave exactly as they do for chat and pictures.
+    pub fn transcribe_route(&self) -> Option<ModelRoute> {
+        let transcribe = &self.transcribe;
+        if !self.is_usable() || !transcribe.deployment.is_configured() {
+            return None;
+        }
+        Some(ModelRoute {
+            url: azure_url(
+                transcribe.deployment.endpoint_or(&self.endpoint),
+                transcribe.deployment.deployment_or(&self.deployment),
+                transcribe.deployment.api_version_or(&self.api_version),
+                "audio/transcriptions",
+            ),
+            api_key: transcribe
+                .deployment
+                .api_key_or(&self.api_key)
+                .trim()
+                .to_string(),
+            auth: transcribe.deployment.auth_or(self.auth),
+            model: transcribe
+                .deployment
+                .request_model_or(&self.deployment)
+                .to_string(),
+            max_tokens: self.max_tokens,
+        })
+    }
+
+    /// Whether this server can transcribe at all — sent as
+    /// `assistant.transcribe`.
+    pub fn transcribe_usable(&self) -> bool {
+        self.transcribe_route().is_some()
     }
 }
 
@@ -1370,7 +1467,7 @@ impl Default for PushConfig {
 }
 
 /// The keys `[ai]` itself takes — the fields of [`AiConfig`], by their
-/// TOML names, plus the two sub-tables. Held beside the struct rather than
+/// TOML names, plus the three sub-tables. Held beside the struct rather than
 /// derived from it because serde offers no way to list a struct's fields,
 /// and `deny_unknown_fields` cannot be used on [`AiImagesConfig`] (serde
 /// refuses it beside `flatten`). The tests hold each list to its struct:
@@ -1392,6 +1489,7 @@ const AI_KEYS: &[&str] = &[
     "title",
     "vision",
     "images",
+    "transcribe",
 ];
 
 /// The fields of [`AiDeployment`] — what `[ai.vision]` takes, and what
@@ -1414,6 +1512,9 @@ const AI_IMAGES_OWN_KEYS: &[&str] = &[
     "max_bytes",
     "contextual",
 ];
+
+/// The fields [`AiTranscribeConfig`] adds beside its flattened deployment.
+const AI_TRANSCRIBE_OWN_KEYS: &[&str] = &["max_bytes"];
 
 /// Refuse a key the `[ai]` tables do not know, by name and by table.
 ///
@@ -1439,7 +1540,12 @@ fn reject_unknown_ai_keys(raw: &str) -> Result<()> {
         .chain(AI_IMAGES_OWN_KEYS)
         .copied()
         .collect();
-    let tables: [(&str, Option<&toml::Table>, &[&str]); 3] = [
+    let transcribe_keys: Vec<&str> = AI_DEPLOYMENT_KEYS
+        .iter()
+        .chain(AI_TRANSCRIBE_OWN_KEYS)
+        .copied()
+        .collect();
+    let tables: [(&str, Option<&toml::Table>, &[&str]); 4] = [
         ("[ai]", Some(ai), AI_KEYS),
         (
             "[ai.vision]",
@@ -1450,6 +1556,11 @@ fn reject_unknown_ai_keys(raw: &str) -> Result<()> {
             "[ai.images]",
             ai.get("images").and_then(toml::Value::as_table),
             &images_keys,
+        ),
+        (
+            "[ai.transcribe]",
+            ai.get("transcribe").and_then(toml::Value::as_table),
+            &transcribe_keys,
         ),
     ];
     for (name, table, known) in &tables {
@@ -1672,6 +1783,19 @@ impl Config {
             anyhow::bail!(
                 "ai.timeout_secs must be at least 10 — below that every answer fails, \
                  and `[ai] enabled = false` is the honest way to switch the assistant off"
+            );
+        }
+        // Refused rather than clamped, either way. Zero would make every
+        // recording `not_transcribable` — an off switch that does not say
+        // so — and above the provider's own ceiling the refusal only moves
+        // to where nobody can explain it (see `AiTranscribeConfig`).
+        if self.ai.transcribe.max_bytes == 0
+            || self.ai.transcribe.max_bytes > TRANSCRIBE_MAX_BYTES_CEILING
+        {
+            anyhow::bail!(
+                "ai.transcribe.max_bytes must be between 1 and {TRANSCRIBE_MAX_BYTES_CEILING} \
+                 (25 MiB, the provider's own ceiling on one file), got {}",
+                self.ai.transcribe.max_bytes
             );
         }
         if self.calls.ring_timeout_secs < 5 {
@@ -2026,6 +2150,23 @@ mod tests {
         );
         assert!(opted_out.ai.contextual_images_route().is_none());
         assert!(opted_out.ai.images_usable(), "`/draw` is untouched by it");
+
+        // The fourth deployment is documented, and documented working: its
+        // own table, its default ceiling, inheriting the rest from [ai].
+        assert!(
+            out.contains("\n[ai.transcribe]\n"),
+            "the example documents [ai.transcribe]: {out}"
+        );
+        assert!(cfg.ai.transcribe_usable(), "a named deployment is on");
+        assert_eq!(cfg.ai.transcribe.max_bytes, TRANSCRIBE_MAX_BYTES_CEILING);
+        let transcribe = cfg.ai.transcribe_route().expect("transcribe route");
+        assert!(
+            transcribe
+                .url
+                .ends_with("/audio/transcriptions?api-version=2024-10-21"),
+            "{}",
+            transcribe.url
+        );
     }
 
     /// THE SILENT OPT-OUT. `contextual = false` under `[ai.vision]` used to
@@ -2090,7 +2231,7 @@ deployment = "draws"
         let mut raw = String::from("[ai]\n");
         for key in AI_KEYS {
             let value = match *key {
-                "vision" | "images" => continue,
+                "vision" | "images" | "transcribe" => continue,
                 "enabled" => "true".to_string(),
                 "auth" => "\"bearer\"".to_string(),
                 "max_tokens" | "history_messages" => "7".to_string(),
@@ -2119,8 +2260,20 @@ deployment = "draws"
             };
             raw.push_str(&format!("{key} = {value}\n"));
         }
+        raw.push_str("\n[ai.transcribe]\n");
+        for key in AI_DEPLOYMENT_KEYS.iter().chain(AI_TRANSCRIBE_OWN_KEYS) {
+            let value = match *key {
+                "auth" => "\"bearer\"".to_string(),
+                "max_bytes" => "2048".to_string(),
+                _ => format!("\"{key}\""),
+            };
+            raw.push_str(&format!("{key} = {value}\n"));
+        }
         let cfg = Config::from_toml_str(&raw).unwrap_or_else(|err| panic!("{err:#}\n{raw}"));
         // And they were READ, not merely tolerated.
+        assert_eq!(cfg.ai.transcribe.max_bytes, 2048);
+        assert_eq!(cfg.ai.transcribe.deployment.model, "model");
+        assert_eq!(cfg.ai.transcribe.deployment.auth, Some(AuthScheme::Bearer));
         assert_eq!(cfg.ai.title, "title");
         assert_eq!(cfg.ai.history_messages, 7);
         assert_eq!(cfg.ai.vision.api_version, "api_version");
@@ -2242,6 +2395,104 @@ size = "1024x1024"
         assert_eq!(images.api_key, "secret");
         assert_eq!(vision.model, "nettrash-gpt-4o", "the DEPLOYMENT routes");
         assert_eq!(images.model, "nettrash-FLUX.2-pro");
+    }
+
+    /// The fourth deployment, as an operator writes it: three lines under
+    /// its own header, everything else inherited from `[ai]` — and OFF until
+    /// it is named, like the other two.
+    #[test]
+    fn the_transcription_deployment_inherits_and_is_off_until_named() {
+        let base = r#"
+[ai]
+enabled = true
+endpoint = "https://nettrash.openai.azure.com"
+deployment = "nettrash-gpt-oss-120b"
+api_key = "secret"
+processor = "Microsoft - Azure OpenAI"
+api_version = "2024-10-21"
+"#;
+        let off = Config::from_toml_str(base).expect("valid");
+        assert!(!off.ai.transcribe_usable(), "unnamed is off");
+        assert!(off.ai.transcribe_route().is_none());
+        assert_eq!(off.ai.transcribe.max_bytes, 25 * 1024 * 1024);
+
+        let on = Config::from_toml_str(&format!(
+            "{base}\n[ai.transcribe]\ndeployment = \"nettrash-whisper\"\nmodel = \"whisper\"\n"
+        ))
+        .expect("valid");
+        let route = on.ai.transcribe_route().expect("route");
+        assert_eq!(
+            route.url,
+            "https://nettrash.openai.azure.com/openai/deployments/nettrash-whisper\
+             /audio/transcriptions?api-version=2024-10-21"
+        );
+        assert_eq!(route.api_key, "secret", "inherited, not retyped");
+        assert_eq!(route.auth, AuthScheme::ApiKey);
+        assert_eq!(route.model, "nettrash-whisper", "the DEPLOYMENT routes");
+
+        // A pasted target URI is used verbatim, as everywhere else.
+        let pasted = Config::from_toml_str(&format!(
+            "{base}\n[ai.transcribe]\nendpoint = \"https://x.openai.azure.com/openai/deployments/w/audio/transcriptions?api-version=2025-03-01-preview\"\n"
+        ))
+        .expect("valid");
+        assert_eq!(
+            pasted.ai.transcribe_route().expect("route").url,
+            "https://x.openai.azure.com/openai/deployments/w/audio/transcriptions\
+             ?api-version=2025-03-01-preview"
+        );
+
+        // And nothing without the assistant itself.
+        let mut disabled = on.ai.clone();
+        disabled.enabled = false;
+        assert!(!disabled.transcribe_usable());
+    }
+
+    /// The ceiling is the provider's, and a config above it — or at zero —
+    /// is refused at startup by name rather than clamped in silence.
+    #[test]
+    fn validate_holds_the_transcription_ceiling_to_the_providers() {
+        let ok = Config::from_toml_str("[ai.transcribe]\nmax_bytes = 1048576\n").expect("valid");
+        assert_eq!(ok.ai.transcribe.max_bytes, 1_048_576);
+        for bad in ["0", "26214401"] {
+            let err = format!(
+                "{:#}",
+                Config::from_toml_str(&format!("[ai.transcribe]\nmax_bytes = {bad}\n"))
+                    .unwrap_err()
+            );
+            assert!(err.contains("ai.transcribe.max_bytes"), "{err}");
+        }
+        assert!(Config::from_toml_str("[ai.transcribe]\nmax_bytes = 26214400\n").is_ok());
+    }
+
+    /// The strict-key check reads the fourth table too, and names a key from
+    /// a sibling table as such.
+    #[test]
+    fn a_misplaced_key_under_ai_transcribe_fails_the_load_by_name() {
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.transcribe]\ndeployment = \"w\"\nsize = \"1x1\"\n")
+                .unwrap_err()
+        );
+        assert!(err.contains("`size`"), "{err}");
+        assert!(err.contains("[ai.transcribe]"), "{err}");
+        assert!(err.contains("belongs under [ai.images]"), "{err}");
+
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.transcribe]\nmax_byte = 1\n").unwrap_err()
+        );
+        assert!(err.contains("`max_byte`"), "{err}");
+        assert!(err.contains("max_bytes"), "the keys it takes: {err}");
+
+        // `max_bytes` under [ai.vision] belongs under either sibling.
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.vision]\nmax_bytes = 1\n").unwrap_err()
+        );
+        assert!(
+            err.contains("belongs under [ai.images] or [ai.transcribe]"),
+            "{err}"
+        );
     }
 
     /// The default, and the one that matters most: a server that configured

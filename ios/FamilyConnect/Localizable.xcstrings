@@ -2267,6 +2267,59 @@
         }
       }
     },
+    "%lld recordings as text" : {
+      "comment" : "In a member's line on the statistics screen: how many recordings they had turned into text (ai.transcripts).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld Aufnahmen als Text"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld grabaciones a texto"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld enregistrements transcrits"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "テキストにした録音 %lld 件"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "записей в текст: %lld"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "снимака у текст: %lld"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "snimaka u tekst: %lld"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音转文字 %lld 次"
+          }
+        }
+      }
+    },
     "%lld replies" : {
       "comment" : "Under a message somebody answered; %lld is how many replies its thread holds. Tapping opens the thread.",
       "localizations" : {
@@ -9784,6 +9837,59 @@
         }
       }
     },
+    "Couldn't get the text. Try again." : {
+      "comment" : "Shown under a recording when getting its text failed for a reason that may pass: no connection, a timeout, or a passing server or provider problem.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Text konnte nicht abgerufen werden. Versuche es erneut."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo obtener el texto. Inténtalo de nuevo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible d’obtenir le texte. Réessaie."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "テキストを取得できませんでした。もう一度お試しください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось получить текст. Попробуй снова."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Текст није добијен. Покушај поново."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tekst nije dobijen. Pokušaj ponovo."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法获取文字。请重试。"
+          }
+        }
+      }
+    },
     "Couldn't leave right now. Try again." : {
       "comment" : "Error after Leave Family failed.",
       "localizations" : {
@@ -10712,6 +10818,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法读取该视频。"
+          }
+        }
+      }
+    },
+    "Couldn't read the sound in this file." : {
+      "comment" : "Shown under a video or audio file when this device could not take the sound out of it to send for its text, for example a video with no sound or a format it can't open.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Ton in dieser Datei konnte nicht gelesen werden."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo leer el sonido de este archivo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible de lire le son de ce fichier."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このファイルの音声を読み取れませんでした。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось прочитать звук в этом файле."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Звук у овој датотеци није прочитан."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zvuk u ovoj datoteci nije pročitan."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法读取这个文件中的声音。"
           }
         }
       }
@@ -14831,6 +14990,59 @@
         }
       }
     },
+    "Getting the text…" : {
+      "comment" : "Shown under a voice note, audio file or video while its text is being made. A long recording can take a minute or more.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text wird erstellt…"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obteniendo el texto…"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Récupération du texte…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "テキストを取得中…"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Получаем текст…"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Текст се припрема…"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tekst se priprema…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在获取文字…"
+          }
+        }
+      }
+    },
     "Going" : {
       "comment" : "An event answer.",
       "localizations" : {
@@ -15425,6 +15637,59 @@
         }
       }
     },
+    "Hide text" : {
+      "comment" : "Action that folds away a recording's text shown under its player; the opposite of Show text. The text stays on this device.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text ausblenden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ocultar texto"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Masquer le texte"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "テキストを隠す"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Скрыть текст"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сакриј текст"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sakrij tekst"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏文字"
+          }
+        }
+      }
+    },
     "How to run your own server" : {
       "comment" : "Family gate: the link to the project's repository, which holds the server and its install notes.",
       "localizations" : {
@@ -15580,6 +15845,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "如果问题出在所有者身上"
+          }
+        }
+      }
+    },
+    "If you ask for the text of a voice note, audio file or video, its sound is sent to %@." : {
+      "comment" : "Assistant consent screen, when the server can make text from recordings (assistant.transcribe); %@ is who receives the sound. protocol.md requires this line.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn du den Text einer Sprachnachricht, einer Audiodatei oder eines Videos abrufst, wird der Ton an %@ gesendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Si pides el texto de una nota de voz, un archivo de audio o un vídeo, su sonido se envía a %@."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Si vous demandez le texte d’un message vocal, d’un fichier audio ou d’une vidéo, le son est envoyé à %@."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ボイスメッセージ、オーディオファイル、ビデオのテキストを求めると、その音声が %@ に送られます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Если вы попросите текст голосового сообщения, аудиофайла или видео, его звук будет отправлен в %@."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ако затражиш текст гласовне поруке, аудио датотеке или видеа, звук се шаље ка %@."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ako zatražiš tekst glasovne poruke, audio datoteke ili videa, zvuk se šalje ka %@."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "如果你请求获取语音消息、音频文件或视频的文字，它的声音会发送给 %@。"
           }
         }
       }
@@ -19836,6 +20154,59 @@
         }
       }
     },
+    "No speech" : {
+      "comment" : "Shown in place of a recording's text when nothing was said in it (silence or only noise). It is an answer, not an error.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nichts gesprochen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nadie habla"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aucune parole"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "話し声なし"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Без речи"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нема говора"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nema govora"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有说话声"
+          }
+        }
+      }
+    },
     "No stickers yet" : {
       "comment" : "Shown where the family's sticker pack is empty.",
       "localizations" : {
@@ -20007,6 +20378,59 @@
         }
       }
     },
+    "Not available for this message." : {
+      "comment" : "Shown under a recording whose text cannot be had: the server can't read this kind of file, or the rules don't allow it, such as another member's recording while the family owner's switch is off (not_transcribable, transcript_not_allowed, transcripts_unavailable).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Für diese Nachricht nicht verfügbar."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No disponible para este mensaje."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indisponible pour ce message."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このメッセージでは使えません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для этого сообщения недоступно."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Није доступно за ову поруку."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nije dostupno za ovu poruku."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法为这条消息获取文字。"
+          }
+        }
+      }
+    },
     "Not available here: the assistant on this server can't look at pictures." : {
       "localizations" : {
         "de" : {
@@ -20055,6 +20479,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此处不可用：这个服务器上的助手无法查看图片。"
+          }
+        }
+      }
+    },
+    "Not available here: this server can't turn recordings into text." : {
+      "comment" : "Added after the Voice and video as text footer when the server has no transcription deployment (assistant.transcribe is false).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hier nicht verfügbar: Dieser Server kann Aufnahmen nicht in Text umwandeln."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No disponible aquí: este servidor no puede pasar grabaciones a texto."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indisponible ici : ce serveur ne peut pas transcrire les enregistrements."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ここでは使えません。このサーバーは録音をテキストにできません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Здесь недоступно: этот сервер не умеет превращать записи в текст."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Овде није доступно: овај сервер не може да претвори снимке у текст."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovde nije dostupno: ovaj server ne može da pretvori snimke u tekst."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此处不可用：这个服务器无法把录音转成文字。"
           }
         }
       }
@@ -23520,6 +23997,112 @@
         }
       }
     },
+    "Recording time" : {
+      "comment" : "Family statistics row: the total length of the recordings sent for their text (ai.transcript_duration_ms), shown as a duration. Text from recordings is billed by length.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufnahmedauer"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Duración de las grabaciones"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Durée des enregistrements"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音の長さ"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Длительность записей"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Трајање снимака"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trajanje snimaka"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音时长"
+          }
+        }
+      }
+    },
+    "Recordings as text" : {
+      "comment" : "Family statistics row: how many recordings the assistant's provider turned into text (ai.transcripts).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufnahmen als Text"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabaciones a texto"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrements transcrits"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "テキストにした録音"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Записи в текст"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Снимци у текст"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimci u tekst"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音转文字"
+          }
+        }
+      }
+    },
     "Refresh" : {
       "localizations" : {
         "de" : {
@@ -26742,6 +27325,59 @@
         }
       }
     },
+    "Show text" : {
+      "comment" : "Action on a voice note, audio file or video in a chat: asks for the recording's text. The text appears under the player, for whoever asked only.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text anzeigen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostrar texto"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afficher le texte"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "テキストを表示"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показать текст"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прикажи текст"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prikaži tekst"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示文字"
+          }
+        }
+      }
+    },
     "Show the Assistant a Photo…" : {
       "localizations" : {
         "de" : {
@@ -28306,6 +28942,59 @@
         }
       }
     },
+    "Text of the recording" : {
+      "comment" : "Accessibility label for the text shown under a voice note, audio file or video, so a screen reader does not read it as the message itself.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text der Aufnahme"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Texto de la grabación"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Texte de l’enregistrement"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音のテキスト"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Текст записи"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Текст снимка"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tekst snimka"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音的文字"
+          }
+        }
+      }
+    },
     "That code doesn't match any family. Check it and try again." : {
       "comment" : "Join error for an unknown invite code.",
       "localizations" : {
@@ -29266,6 +29955,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "这台服务器上的助手看不了图片。它会被告知这里有一张照片，但不会看到它。"
+          }
+        }
+      }
+    },
+    "The assistant's provider refused this recording." : {
+      "comment" : "Shown under a recording when the AI provider's own content filter refused to turn it into text (transcript_refused). Asking again would be refused again, so it offers no retry.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Anbieter des Assistenten hat diese Aufnahme abgelehnt."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El proveedor del asistente rechazó esta grabación."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le fournisseur de l'assistant a refusé cet enregistrement."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アシスタントの提供元にこの録音を断られました。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сервис ассистента отказался обработать эту запись."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добављач асистента је одбио овај снимак."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dobavljač asistenta je odbio ovaj snimak."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "助手的服务提供方拒绝了这段录音。"
           }
         }
       }
@@ -31869,6 +32611,59 @@
         }
       }
     },
+    "This recording is too long to turn into text." : {
+      "comment" : "Shown under a voice note, audio file or video whose sound is over the server's size limit for getting text (transcribe_max_bytes), even after this device made it smaller. Asking again will not help.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diese Aufnahme ist zu lang, um sie in Text umzuwandeln."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esta grabación es demasiado larga para pasarla a texto."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cet enregistrement est trop long pour être transcrit."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この録音は長すぎてテキストにできません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Эта запись слишком длинная, чтобы превратить её в текст."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Овај снимак је предугачак да би се претворио у текст."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovaj snimak je predugačak da bi se pretvorio u tekst."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这段录音太长，无法转成文字。"
+          }
+        }
+      }
+    },
     "This server doesn't support profile pictures yet — it needs updating." : {
       "comment" : "Profile-picture error for a server without the endpoint.",
       "localizations" : {
@@ -33885,6 +34680,59 @@
         }
       }
     },
+    "Voice and video as text" : {
+      "comment" : "The family owner's switch in the family's assistant settings (ai_transcripts): whether members may get the text of OTHER members' voice notes, audio files and videos in the family chat. Off by default.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachrichten und Videos als Text"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voz y vídeo como texto"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voix et vidéo en texte"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音声とビデオをテキストに"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Голос и видео текстом"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Глас и видео као текст"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glas i video kao tekst"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音和视频转文字"
+          }
+        }
+      }
+    },
     "Voice call" : {
       "localizations" : {
         "de" : {
@@ -35113,6 +35961,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开后，当家里的某人在自己与助手的聊天中给问题附上照片、在家庭聊天中给带有 %@ 的消息附上照片，或用 %@ 回复一张照片时，这张照片会发送给你的服务器所用的模型——绝不会发送没有指给助手看的照片，除非打开了“最近的照片”，否则绝不会来自更早的消息，也绝不会发送视频、文件或位置。关闭时，任何照片都不会被发送。"
+          }
+        }
+      }
+    },
+    "With this on, members can ask for the text of other members' voice notes, audio and videos in the family chat, and that recording's sound is then sent to %@. It is sent only when someone asks, and only if the member who sent it has agreed to the assistant. Everyone can get the text of their own recordings without this. It is off unless you turn it on." : {
+      "comment" : "Footer under the Voice and video as text switch; %@ is who receives the sound (the server's named processor).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn das an ist, können Mitglieder im Familienchat den Text der Sprachnachrichten, Audios und Videos anderer Mitglieder abrufen, und der Ton dieser Aufnahme wird dann an %@ gesendet. Er wird nur gesendet, wenn jemand danach fragt, und nur, wenn das Mitglied, das sie geschickt hat, dem Assistenten zugestimmt hat. Den Text der eigenen Aufnahmen kann jeder auch ohne diese Einstellung abrufen. Es ist aus, solange du es nicht einschaltest."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Con esto activado, los miembros pueden pedir el texto de las notas de voz, audios y vídeos de otros miembros en el chat familiar, y el sonido de esa grabación se envía entonces a %@. Solo se envía cuando alguien lo pide, y solo si el miembro que la envió ha aceptado el asistente. Cualquiera puede obtener el texto de sus propias grabaciones sin esto. Está desactivado a menos que lo actives."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avec ceci activé, les membres peuvent demander le texte des messages vocaux, audios et vidéos des autres membres dans la discussion familiale, et le son de cet enregistrement est alors envoyé à %@. Il n’est envoyé que si quelqu’un le demande, et seulement si le membre qui l’a envoyé a accepté l’assistant. Chacun peut obtenir le texte de ses propres enregistrements sans cela. C’est désactivé tant que vous ne l’activez pas."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "これをオンにすると、家族のチャットでメンバーがほかのメンバーのボイスメッセージ、オーディオ、ビデオのテキストを求められるようになり、そのときその録音の音声が %@ に送られます。送られるのは誰かが求めたときだけで、送ったメンバー本人がアシスタントに同意している場合に限ります。自分の録音のテキストは、これがなくても誰でも見られます。オンにしない限りオフのままです。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда это включено, участники могут попросить текст голосовых сообщений, аудио и видео других участников в семейном чате, и тогда звук этой записи отправляется в %@. Он уходит только по чьей-то просьбе и только если отправивший его участник согласился на ассистента. Текст своих записей каждый может получить и без этого. Выключено, пока ты это не включишь."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Када је ово укључено, чланови могу да затраже текст гласовних порука, аудио снимака и видео снимака других чланова у породичном чету, и тада се звук тог снимка шаље ка %@. Шаље се само када неко затражи, и само ако је члан који га је послао прихватио асистента. Свако може да добије текст својих снимака и без овога. Искључено је док га не укључиш."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kada je ovo uključeno, članovi mogu da zatraže tekst glasovnih poruka, audio snimaka i video snimaka drugih članova u porodičnom četu, i tada se zvuk tog snimka šalje ka %@. Šalje se samo kada neko zatraži, i samo ako je član koji ga je poslao prihvatio asistenta. Svako može da dobije tekst svojih snimaka i bez ovoga. Isključeno je dok ga ne uključiš."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开后，成员可以在家庭聊天中获取其他成员的语音消息、音频和视频的文字，届时该录音的声音会发送给 %@。只有在有人请求时才会发送，而且只在发送者本人已同意使用助手时。每个人无需此开关也能获取自己录音的文字。除非你打开，否则它是关闭的。"
           }
         }
       }

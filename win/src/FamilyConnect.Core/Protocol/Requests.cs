@@ -228,7 +228,13 @@ public sealed record FamilyDto(
     [property: JsonPropertyName("ai_history_photos")] bool AiHistoryPhotos = false,
     [property: JsonPropertyName("ai_greeting")] bool AiGreeting = false,
     [property: JsonPropertyName("ai_faces")] bool AiFaces = false,
-    string? Language = null);
+    string? Language = null,
+    /// <summary>
+    /// The owner's switch for OTHER members' recordings (docs/protocol.md, "Transcripts on request"): with it on, a
+    /// member may ask for the text of somebody else's voice note or audio in the family chat. Off by default, tied to no
+    /// other switch, and never needed for a member's OWN recordings.
+    /// </summary>
+    [property: JsonPropertyName("ai_transcripts")] bool AiTranscripts = false);
 
 /// <summary>
 /// The family as the family screen needs it, with the assistant's capabilities.
@@ -292,7 +298,17 @@ public sealed record AssistantDto(
     /// assistant"). Absent on a server that predates the field, and a client that cannot name
     /// the recipient offers no assistant there at all.
     /// </summary>
-    string? Processor = null);
+    string? Processor = null,
+    /// <summary>
+    /// Whether this server can turn a recording into text — the whole of the capability check for "Show text"
+    /// (docs/protocol.md, "Transcripts on request"). Absent on an older server, which reads as false.
+    /// </summary>
+    bool Transcribe = false,
+    /// <summary>
+    /// The most bytes of sound one transcript request may send; present only while <see cref="Transcribe"/> is true.
+    /// 25 MiB by default and never more.
+    /// </summary>
+    [property: JsonPropertyName("transcribe_max_bytes")] long? TranscribeMaxBytes = null);
 
 /// <summary>
 /// <c>POST /me/assistant-consent</c> — this member's own answer to the assistant question, and
@@ -343,6 +359,9 @@ public sealed record FamilyPatch
 
     [JsonPropertyName("ai_faces")]
     public bool? AiFaces { get; init; }
+
+    [JsonPropertyName("ai_transcripts")]
+    public bool? AiTranscripts { get; init; }
 
     /// <summary>Send <c>"max_members": null</c> — clear the cap, rather than leave it alone.</summary>
     [JsonIgnore]
@@ -474,8 +493,23 @@ public sealed record StatsMediaDto(
 /// share of <c>questions</c>: an image model reports no tokens, so a family reading only the token
 /// counts would see the expensive half of the assistant as free.
 /// </summary>
+/// <remarks>
+/// <c>transcripts</c> and <c>transcript_duration_ms</c> are the recordings turned into text and their length: billed by
+/// audio length, not tokens, and charged to the member who ASKED. A kept answer handed out again counts nothing.
+/// </remarks>
 public sealed record StatsAiDto(
     int Questions,
     [property: JsonPropertyName("prompt_tokens")] long PromptTokens = 0,
     [property: JsonPropertyName("completion_tokens")] long CompletionTokens = 0,
-    int Images = 0);
+    int Images = 0,
+    int Transcripts = 0,
+    [property: JsonPropertyName("transcript_duration_ms")] long TranscriptDurationMs = 0);
+
+/// <summary>
+/// <c>POST /chats/{id}/messages/{mid}/attachments/{aid}/transcript</c>'s answer (docs/protocol.md, "Transcripts on
+/// request"). <c>text</c> is always present and <c>""</c> is SILENCE — an answer, drawn as "No speech", never an error;
+/// <c>language</c> only when the provider named one, spelled as the provider spells it.
+/// </summary>
+public sealed record TranscriptDto(string? Text = null, string? Language = null);
+
+public sealed record TranscriptResponse(TranscriptDto? Transcript = null);

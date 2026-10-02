@@ -12,7 +12,7 @@ use crate::state::AppState;
 use crate::{
     handlers_attachment, handlers_auth, handlers_avatar, handlers_board, handlers_call,
     handlers_chat, handlers_device, handlers_family, handlers_pack, handlers_poll, handlers_report,
-    handlers_stats, ws,
+    handlers_stats, handlers_transcript, ws,
 };
 
 /// Build the full application router for the given state. Used identically
@@ -29,6 +29,10 @@ pub fn build_router(state: AppState) -> Router {
     // can explain. The layer is the backstop against an endless body.
     let attachment_limit = state.cfg.limits.max_attachment_bytes + 65_536;
     let preview_limit = state.cfg.limits.max_preview_bytes + 4096;
+    // The sound a device may send with a transcript request, with the same
+    // slack and for the same reason: the handler counts the part itself and
+    // answers `not_transcribable`, and the layer is only the backstop.
+    let transcript_limit = state.cfg.ai.transcribe.max_bytes + 65_536;
     Router::new()
         // Auth
         .route("/api/v1/auth/register", post(handlers_auth::register))
@@ -155,6 +159,13 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/chats/{id}/reactions",
             get(handlers_chat::get_reactions),
+        )
+        // The text of one recording, for the caller only (protocol.md,
+        // "Transcripts on request"). Its own body limit: the one JSON-API
+        // route that may carry sound.
+        .route(
+            "/api/v1/chats/{id}/messages/{message_id}/attachments/{attachment_id}/transcript",
+            post(handlers_transcript::transcript).layer(DefaultBodyLimit::max(transcript_limit)),
         )
         .route("/api/v1/chats/{id}/edits", get(handlers_chat::get_edits))
         // A chain of replies, read on its own (protocol.md, "Threads").

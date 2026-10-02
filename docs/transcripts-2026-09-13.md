@@ -6,6 +6,14 @@ a second layer to the message."* This document says what the request implies, wh
 checked rather than assumed, where the hard parts are, what design is recommended and why, and what
 has to be decided before any code is written. **No code has been written for it.**
 
+> **Revised 2026-10-02 — on request, not automatically.** The owner has decided the shape: a member
+> gets the text of a voice note, an audio file or a video **when they ask for it**, not every message
+> all the time. The checked facts below still hold (one correction: the Apple apps' minimum is
+> iOS 17 / macOS 14, not 26, so on-device `SpeechTranscriber` is not available to every install
+> either). The automatic design — the worker, the pending marker, the frame and the feed — is
+> **superseded** by "The design on request" at the end of this document, which has its own
+> decisions. The sections between are kept as the record of why.
+
 ---
 
 ## What is asked, and what it implies
@@ -224,3 +232,118 @@ exactly what it draws today.
    version.
 5. **Use the family's language as a hint?** Recommended: yes when it is set; auto-detect otherwise.
 6. **Messages sent before the switch was turned on?** Recommended: not transcribed.
+
+---
+
+## The design on request (2026-10-02)
+
+### What changes when a member has to ask
+
+- **Delivery gets simple.** A transcript is the ANSWER to a request, so it comes back in that
+  request's response. There is no frame, no `transcript_seq`, no catch-up feed and no edit-feed
+  problem: nothing is added to the message for everyone, so no installed app has anything to
+  misread.
+- **No worker, no pending marker, no boot sweep.** Nothing is queued; a restart loses at most the
+  one request in flight, which the member sees fail and asks again.
+- **Cost follows use.** Only what somebody asked to read is sent, not every voice note of every
+  family.
+- **Consent gets a person.** The member who asks is the member sending the sound to the provider,
+  so their own consent to the assistant is required — the same consent a `/draw` needs. Whose
+  VOICE it is still matters, and is decision R2.
+- **Old messages are fine.** The question "before the switch was turned on?" disappears: any
+  message still held can be asked about.
+
+### The request
+
+```
+POST /chats/{chat_id}/messages/{message_id}/attachments/{attachment_id}/transcript
+→ 200 {"transcript": {"text": "…", "language": "ru"}}
+```
+
+- For a **voice note or audio file** whose stored type is in the provider's list (m4a, mp3, mp4,
+  wav, webm …) and whose size is within `[ai.transcribe] max_bytes` (default 25 MiB): the server
+  sends the STORED bytes. It decodes nothing.
+- **Kept once, per attachment.** The first answer is written down (a `transcripts` row keyed by
+  attachment), and anyone in the chat who asks later gets it back at once, with no second provider
+  call and no second bill. It is still shown only to whoever asked: the text is not pushed, not in
+  history pages, not in `Attachment` — every member taps for it themselves.
+- **One provider call per attachment at a time.** Two members, or two devices, asking together wait
+  on the same call.
+- **Finished even if the asker gives up.** Unlike a backdrop, the call is not dropped with the
+  connection: the next request gets the stored answer instead of paying again.
+- **Slow by nature**, so a client gives this request its own timeout of at least 90 s (the backdrop's
+  rule, for the same reason).
+- **Language**: the family's language as a hint when set, auto-detect otherwise; the detected
+  language comes back when the provider reports one.
+- **Statistics**: one `transcript` per provider call and its audio `duration_ms` in `ai_usage` —
+  billing is by audio length, not tokens. A stored answer handed out again counts nothing.
+- **Never logged**: not the text, not the language.
+- **Errors**: `transcripts_unavailable` (no deployment), `assistant_consent_required`,
+  `not_transcribable` (wrong kind, unsupported type, over `max_bytes`), `transcript_refused` (the
+  provider's filter). Silence is not an error: it comes back as `{"transcript": {"text": ""}}` and
+  is drawn as "No speech", because "nothing was said" is an answer.
+
+### Video, and audio the provider will not take
+
+A video's sound cannot be cut out on the server (checked above), and most videos are over 25 MB.
+On request there is a better source than the sender: **the asking device already holds the file** —
+it downloaded it to play it — and since #74 every client carries media code that can take the sound
+track out without decoding the pictures (Apple AVFoundation, Android `MediaExtractor` +
+`MediaMuxer`, the web's own MP4 reader and writer in `web/text`, Windows Media Foundation), and
+re-encode it to 64 kbit/s mono AAC where needed (≈ 50 minutes in 25 MB). The same path covers an
+Ogg file or an audio file over `max_bytes`.
+
+The client then sends that sound WITH the request (`multipart`, the same endpoint). The catch: the
+server cannot check that uploaded sound is really this video's. If the answer were kept and handed to
+other members, one member could put words in another's video. So **an answer made from sound the
+client supplied is returned to the asker and NOT kept** — the asker's device keeps it. Only an
+answer made from the server's own stored bytes is shared.
+
+The sender-side sound track (phase 3 of the automatic design) is not needed any more: it would only
+help videos sent by 1.3 apps, and on request the asker's device can do it for every video ever sent.
+
+### Phases
+
+1. **Protocol and server** — protocol.md first, then `[ai.transcribe]` + `assistant.transcribe`,
+   the switch (if R2 says so), the endpoint (stored bytes and supplied sound), the `transcripts`
+   table, the single-flight, usage, multipart in `reqwest`, and integration tests with a stub
+   provider. Old clients see nothing new.
+2. **Clients** — a "Show text" action on voice notes, audio and video on web, iOS/macOS, Android
+   and Windows; the text appears under the player, selectable, with "Hide text"; the device keeps
+   what it was given; nine languages.
+3. **Video and unsupported audio** — the sound-track extraction per client, built on the #74 code.
+
+### What has to be decided (replaces the list above)
+
+- **R1. Server-side through the operator's provider, as a fourth deployment `[ai.transcribe]`?**
+  Recommended: yes. On-device is uneven (no Serbian on Apple, iOS 26+ only; Android API 33+;
+  nothing in browsers) and would give different members different answers.
+- **R2. Whose voice may be sent?** Recommended: **your own messages, wherever you sent them, need
+  only your consent; other members' messages also need an owner's switch, `ai_transcripts`, off by
+  default** — the written rule that nothing anybody else said leaves the server unasked, now with
+  the asker doing the asking.
+- **R3. Which chats?** Recommended: the family chat, threads, and your own assistant chat. **Direct
+  chats: your own messages only** — the other person's voice in a one-to-one chat stays under the
+  rule that nothing reads a direct chat. (Allowing it would need that rule rewritten, and is yours
+  to choose.)
+- **R4. Share a stored answer with other members who ask?** Recommended: yes, for answers made from
+  the server's own bytes — one bill per voice note, not one per reader. Never for answers made from
+  sound a client supplied.
+- **R5. Video in the first release, or after voice notes?** Recommended: voice notes and audio
+  first (phases 1–2), video right after (phase 3), so the server and the action are proven on the
+  simplest case.
+- **R6. Should the assistant see transcripts instead of `[voice note]`?** Recommended: no, not in
+  this work.
+
+### A limit of R2, found in review (2026-10-02)
+
+The owner's switch and the sender's consent are checked on the attachment a request names, so they
+hold for the server's stored copy and for every client that follows the protocol. They cannot hold
+against a member who sets out to get round them: anyone who can play another member's recording —
+a direct-chat partner's included — can download it and send those bytes as the supplied sound of a
+recording of their own (or upload them again as their own voice note), and the server cannot tell a
+sound track from somebody else's voice. That reaches the provider on the asker's consent alone and is
+billed to the family. It is the reach a member always has over what they can see (forwarding it,
+playing it into another app); closing it would need the server to decode and fingerprint sound. The
+switch is therefore what the family's own apps promise to do, not a lock, and protocol.md ("What the
+rule can and cannot hold") says so for the owner.

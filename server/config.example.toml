@@ -675,3 +675,48 @@ ring_timeout_secs = 45
 # # needs no `api_key` of its own; it inherits [ai]'s and changes only the
 # # header it goes in.
 # # ---------------------------------------------------------------------------
+#
+#
+# # ---------------------------------------------------------------------------
+# # Transcripts (docs/protocol.md, "Transcripts on request")
+# #
+# # The deployment that turns a recording into TEXT — a voice note, an audio
+# # file, or a video's sound — when a member ASKS for it, one recording at a
+# # time. OFF until you name a deployment here, like the two above, and it
+# # inherits the endpoint, key, auth and api-version of [ai] the same way.
+# # Clients are told by `assistant.transcribe` on GET /families/mine.
+# #
+# # What leaves the server, and the whole of it: that ONE recording's sound —
+# # the stored file for a voice note or an audio file the provider reads
+# # (m4a/mp4 audio, mp3, wav), or the sound track the asking device took out
+# # of a video or an Ogg file itself — plus the family's language as a hint
+# # when the owner has set one. No prompt, no words, no history, no picture.
+# # The server decodes nothing; it sends bytes it already holds or was given.
+# #
+# # Who may ask is decided per request (docs/protocol.md has the rule): a
+# # member's OWN recordings need only their own consent to the assistant;
+# # somebody ELSE's need the family owner's `ai_transcripts` switch — OFF by
+# # default for every family — and that person's own consent too, and only
+# # ever in the family chat. Another member's voice in a direct chat is never
+# # sent, at any setting.
+# #
+# # An answer made from the stored file is kept, and every later member who
+# # may ask gets it with no second call and no second bill. Each call is one
+# # "transcript" and the recording's length in Family Statistics, because
+# # transcription is billed by audio length, not tokens.
+# #
+# # The request is Azure's documented one (POST .../audio/transcriptions,
+# # multipart, response_format=json). Like the images contract it has to be
+# # confirmed against your live deployment; a mismatch shows up in this
+# # server's log as a provider failure. A pasted full target URI works here
+# # exactly as it does under [ai].
+# [ai.transcribe]
+# deployment = "YOUR-TRANSCRIBE-DEPLOYMENT"
+# model = "gpt-4o-transcribe"
+# # The most bytes of sound one request may send. 25 MiB is both the default
+# # and the most this accepts — the provider refuses larger files, and the
+# # server refuses to start configured above it rather than let a family
+# # wait on an upload the provider will throw away. Lower it if you like.
+# max_bytes = 26214400
+# # endpoint / api_key / api_version / auth may be given here too, when this
+# # model answers somewhere else entirely. Omitted, they come from [ai] above.

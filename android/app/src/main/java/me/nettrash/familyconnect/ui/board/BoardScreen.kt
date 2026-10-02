@@ -1531,6 +1531,7 @@ fun BoardScreen(
             processor = ask.processor,
             familyHistory = ask.familyHistory,
             familyVision = ask.familyVision,
+            transcripts = ask.transcripts,
             onAgree = viewModel::agreeToTheAssistant,
             onDismiss = viewModel::dismissAssistantConsent,
         )

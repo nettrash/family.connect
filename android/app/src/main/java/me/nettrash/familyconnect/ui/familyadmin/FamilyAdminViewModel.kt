@@ -143,6 +143,23 @@ class FamilyAdminViewModel @Inject constructor(
          * are offered.
          */
         val aiFaces: Boolean = false,
+        /**
+         * Whether members may ask for the text of OTHER members' recordings
+         * in the family chat (`ai_transcripts`, docs/protocol.md,
+         * "Transcripts on request"). FALSE by default and bound to no other
+         * switch.
+         */
+        val aiTranscripts: Boolean = false,
+        /**
+         * Whether this SERVER can turn recordings into text at all
+         * (`assistant.transcribe`). The switch above is DISABLED with the
+         * reason when this is false, following the greeting switch: it
+         * promises nothing frightening, and an owner is owed why it does
+         * nothing here.
+         */
+        val assistantTranscribe: Boolean = false,
+        /** Who the sound would go to (`assistant.processor`), named in the switch's footer. */
+        val assistantProcessor: String? = null,
         /** The owner's own cap, or null for none of their own. */
         val maxMembers: Int? = null,
         /** The operator's ceiling; null on a server too old to say. */
@@ -236,6 +253,9 @@ class FamilyAdminViewModel @Inject constructor(
                         assistantVision = mine.assistant?.vision == true,
                         aiGreeting = mine.family.aiGreeting,
                         aiFaces = mine.family.aiFaces,
+                        aiTranscripts = mine.family.aiTranscripts,
+                        assistantTranscribe = mine.assistant?.transcribe == true,
+                        assistantProcessor = mine.assistant?.processor,
                         greetingsEnabled = settings.state.first().greetingsEnabled,
                         maxMembers = mine.family.maxMembers,
                         memberCount = mine.members.size,
@@ -528,6 +548,34 @@ class FamilyAdminViewModel @Inject constructor(
                             busy = false,
                             error = result.message
                                 ?: appContext.getString(R.string.e_change_assistant_greeting_failed),
+                        )
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /**
+     * Owner-only: the transcripts switch (docs/protocol.md, "Transcripts on
+     * request"). Bound to no other switch, so a failure here is a network
+     * or permission problem and nothing else; the switch stays where the
+     * server says it is.
+     */
+    fun setAiTranscripts(enabled: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setAiTranscripts(enabled)) {
+                is ApiResult.Ok ->
+                    _state.update {
+                        it.copy(busy = false, aiTranscripts = result.value.family.aiTranscripts)
+                    }
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = result.message
+                                ?: appContext.getString(R.string.e_change_assistant_transcripts_failed),
                         )
                     }
                 is ApiResult.NetworkError ->

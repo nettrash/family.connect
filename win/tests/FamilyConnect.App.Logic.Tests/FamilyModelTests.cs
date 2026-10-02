@@ -124,6 +124,28 @@ public class FamilyModelTests : IDisposable
     }
 
     /// <summary>
+    /// THE TRANSCRIPT SWITCH DEPENDS ON NOTHING (docs/protocol.md, "Transcripts on request"): vision going off leaves it
+    /// where it was, it is always offered, and it goes out as its own key — even beside vision off.
+    /// </summary>
+    [Fact]
+    public async Task TheTranscriptSwitchIsTiedToNoOther()
+    {
+        var on = Smiths(vision: true) with { AiTranscripts = true };
+        Assert.True(FamilyModel.AsApplied(on, new FamilyPatch { AiVision = false }).AiTranscripts);
+        Assert.False(FamilyModel.AsApplied(on, new FamilyPatch { AiTranscripts = false }).AiTranscripts);
+        Assert.True(FamilyModel.AsApplied(Smiths(), new FamilyPatch { AiTranscripts = true }).AiTranscripts);
+        Assert.True(FamilyModel.MayTurnOn("ai_transcripts", Smiths()));
+
+        var (family, handler) = Build(new Server().On("/families/mine", """
+            {"family": {"id": 3, "name": "The Smiths", "ai_transcripts": true}}
+            """));
+        var (changed, error) = await family.ChangeAsync(Smiths(), new FamilyPatch { AiTranscripts = true });
+        Assert.Null(error);
+        Assert.True(changed!.AiTranscripts);
+        Assert.Equal("{\"ai_transcripts\":true}", Assert.Single(handler.Bodies));
+    }
+
+    /// <summary>
     /// A dependent switch is never SENT true alongside vision off: that answer is
     /// <c>validation</c>, and the person would be told their own screen was wrong.
     /// </summary>

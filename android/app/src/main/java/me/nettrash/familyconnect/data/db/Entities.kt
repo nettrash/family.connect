@@ -672,3 +672,36 @@ data class PackItemEntity(
 data class GonePackItemEntity(
     @PrimaryKey val itemId: Long,
 )
+
+/**
+ * The text of one recording, as the server answered THIS member's request
+ * for it (docs/protocol.md, "Transcripts on request"). Keyed by attachment:
+ * the device keeps what it was given, so reopening the chat shows the text
+ * without asking again, and "Hide text" only folds it away.
+ *
+ * Never pushed, never in history, never on the attachment: a row exists
+ * only because this member tapped "Show text". Wiped with every other table
+ * on logout.
+ */
+@Entity(tableName = "transcripts")
+data class TranscriptEntity(
+    @PrimaryKey val attachmentId: Long,
+    /** `""` is an answer — nothing was said — drawn as "No speech". */
+    val text: String,
+    /** The provider's own spelling, when it named one. Never relied on. */
+    val language: String?,
+    /**
+     * Where the sound came from: [SOURCE_STORED] (the server's own copy,
+     * whose answer the server also keeps and shares) or [SOURCE_SUPPLIED]
+     * (sound this device took out of a file, whose answer is this
+     * device's alone — the server keeps none).
+     */
+    val source: String,
+    /** Folded away with "Hide text"; the text is kept either way. */
+    val hidden: Boolean,
+) {
+    companion object {
+        const val SOURCE_STORED = "stored"
+        const val SOURCE_SUPPLIED = "supplied"
+    }
+}

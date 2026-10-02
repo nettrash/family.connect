@@ -1,5 +1,5 @@
-//! The assistant: Azure OpenAI chat completions (streamed) and image
-//! generations.
+//! The assistant: Azure OpenAI chat completions (streamed), image
+//! generations, and — since 2026-10-02 — transcriptions.
 //!
 //! What leaves this server depends on WHERE the question was asked, and the
 //! difference has to be stated plainly here: an operator reads this file to
@@ -40,6 +40,13 @@
 //! refused description is reworded once"). Whether and when that happens is
 //! the caller's (`handlers_ai::draw_or_reword`); what is SENT is decided
 //! here, like every other request.
+//!
+//! A TRANSCRIPTION is the narrowest request of all ([`transcribe`]): one
+//! recording's sound, the bytes the caller hands over and nothing it went
+//! looking for, plus the family's language as a two-letter hint — no prompt,
+//! no words, no history (protocol.md, "Transcripts on request"). Whose
+//! recording may go, and which bytes, is decided by the caller
+//! (`handlers_transcript`), like every other "may this leave" here.
 //!
 //! WHICH DEPLOYMENT a request goes to is not decided here either. It arrives
 //! as a [`ModelRoute`] built by `config.rs`, so "text, vision or images?" is
@@ -963,6 +970,149 @@ async fn download(client: &reqwest::Client, url: &str, max_bytes: usize) -> Resu
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+/// One recording, ready to travel to the transcription deployment.
+///
+/// Bytes, a media type and a file NAME — and the name is not decoration: the
+/// OpenAI transcription surface reads a file's FORMAT from its extension, so
+/// an `.m4a` sent as `file.bin` is refused as an unsupported format. The
+/// caller picks both from the attachment's stored type (or from the one
+/// shape a device may supply), so nothing here guesses.
+#[derive(Debug, Clone)]
+pub struct Recording {
+    pub bytes: Vec<u8>,
+    pub mime: &'static str,
+    pub filename: &'static str,
+}
+
+/// What came back: the words, and the language when the provider named one.
+///
+/// `text` may be EMPTY — silence is an answer ("No speech"), not a failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transcript {
+    pub text: String,
+    pub language: Option<String>,
+}
+
+/// The most bytes a transcription ANSWER may be. Fifty minutes of speech is
+/// tens of kilobytes of text; this bounds the read against a runaway or
+/// misdirected response, the way `max_bytes` bounds a picture.
+const TRANSCRIPT_MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+/// The family's language as a transcription HINT: the bare ISO 639-1
+/// language, with the script and anything else after the first `-` dropped
+/// (`sr-Latn` → `sr`, `zh-Hans` → `zh`).
+///
+/// A speech model hears a language, not an alphabet, and the provider's
+/// `language` field takes the two-letter code. `None` for anything that is
+/// not two or three ASCII letters, so a value this server never stored can
+/// never be sent (protocol.md, "The family's language").
+pub fn transcription_language(family_language: &str) -> Option<String> {
+    let language = family_language
+        .trim()
+        .split('-')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let shaped =
+        (2..=3).contains(&language.len()) && language.chars().all(|c| c.is_ascii_lowercase());
+    shaped.then_some(language)
+}
+
+/// Ask the transcription deployment for the text of ONE recording.
+///
+/// What leaves, and the whole of it: the recording's bytes as `file`,
+/// `response_format=json`, the `model` field every request here carries (the
+/// DEPLOYMENT name — the v1 surface routes on it, the classic surface
+/// ignores it), and `language` when the caller has a hint. Azure's
+/// documented contract (Microsoft Learn, "Speech to text with transcription
+/// models"); like the images surface it is confirmed against a live
+/// endpoint by the operator, not from here.
+///
+/// A refusal by the provider's filter comes back as [`Refused`] in the
+/// error's chain, decided by [`refused_by_provider`] exactly as for every
+/// other request. The error never carries the text: an error body is
+/// logged only through [`loggable_detail`].
+pub async fn transcribe(
+    client: &reqwest::Client,
+    route: &ModelRoute,
+    recording: Recording,
+    language: Option<&str>,
+) -> Result<Transcript> {
+    let file = reqwest::multipart::Part::bytes(recording.bytes)
+        .file_name(recording.filename)
+        .mime_str(recording.mime)
+        .context("naming the recording's media type")?;
+    let mut form = reqwest::multipart::Form::new()
+        .part("file", file)
+        .text("model", route.model.clone())
+        .text("response_format", "json");
+    if let Some(language) = language {
+        form = form.text("language", language.to_string());
+    }
+
+    let response = with_key(client.post(&route.url), route)
+        .multipart(form)
+        .send()
+        .await
+        .context("asking for a transcript")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        // The URL in the message for the reason it is everywhere here; the
+        // body only through the allow-list, because an error can repeat
+        // what it was sent — and what it was sent is somebody's voice.
+        let detail = response.text().await.unwrap_or_default();
+        return Err(provider_error(
+            status,
+            format!(
+                "transcription returned {status} for {}: {}",
+                route.url,
+                loggable_detail(&detail)
+            ),
+            &detail,
+        ));
+    }
+
+    let mut body: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("reading the transcript")?;
+        if body.len() + chunk.len() > TRANSCRIPT_MAX_RESPONSE_BYTES {
+            bail!("transcript is over the {TRANSCRIPT_MAX_RESPONSE_BYTES} bytes the server reads");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    parse_transcript(&body)
+}
+
+/// The `json` response: `{"text": "…"}`, sometimes with a `language`.
+///
+/// `text` is required — a 200 without it is a deployment answering some
+/// other contract, and a failure rather than silence. `language` is kept
+/// only while it is shaped like a language name or code (letters, `-`, at
+/// most 32): it is handed to a client, and prose has no business there.
+fn parse_transcript(body: &[u8]) -> Result<Transcript> {
+    let parsed: Value = serde_json::from_slice(body).context("the transcript was not JSON")?;
+    let Some(text) = parsed["text"].as_str() else {
+        bail!("transcription response carried no text");
+    };
+    let language = parsed["language"]
+        .as_str()
+        .map(str::trim)
+        .filter(|language| {
+            !language.is_empty()
+                && language.len() <= 32
+                && language
+                    .chars()
+                    .all(|c| c.is_ascii_alphabetic() || c == '-')
+        })
+        .map(str::to_string);
+    Ok(Transcript {
+        text: text.trim().to_string(),
+        language,
+    })
 }
 
 /// What these bytes actually are, or `None`.
@@ -2171,5 +2321,47 @@ mod tests {
             line.starts_with("code=content_filter filtered=category_"),
             "{line}"
         );
+    }
+
+    #[test]
+    fn the_transcription_hint_is_the_bare_language() {
+        use super::transcription_language;
+        assert_eq!(transcription_language("ru").as_deref(), Some("ru"));
+        assert_eq!(transcription_language("sr-Latn").as_deref(), Some("sr"));
+        assert_eq!(transcription_language("sr").as_deref(), Some("sr"));
+        assert_eq!(transcription_language("zh-Hans").as_deref(), Some("zh"));
+        assert_eq!(transcription_language(" EN ").as_deref(), Some("en"));
+        assert_eq!(transcription_language(""), None);
+        assert_eq!(transcription_language("e"), None);
+        assert_eq!(transcription_language("english"), None);
+        assert_eq!(transcription_language("1a"), None);
+    }
+
+    #[test]
+    fn a_transcript_answer_is_read_for_its_text_and_a_shaped_language() {
+        use super::{Transcript, parse_transcript};
+        assert_eq!(
+            parse_transcript(br#"{"text": " hello there "}"#).expect("parses"),
+            Transcript {
+                text: "hello there".to_string(),
+                language: None
+            }
+        );
+        assert_eq!(
+            parse_transcript(br#"{"text": "", "language": "russian"}"#).expect("silence"),
+            Transcript {
+                text: String::new(),
+                language: Some("russian".to_string())
+            },
+            "silence is an answer"
+        );
+        let prose = parse_transcript(br#"{"text": "x", "language": "not a language at all!"}"#)
+            .expect("parses");
+        assert_eq!(prose.language, None, "prose is not passed on");
+        assert!(
+            parse_transcript(br#"{"words": "x"}"#).is_err(),
+            "no text is a failure"
+        );
+        assert!(parse_transcript(b"not json").is_err());
     }
 }

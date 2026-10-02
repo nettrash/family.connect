@@ -320,6 +320,11 @@ class SessionRepository @Inject constructor(
                 }
                 settings.setFamilyStatus(next)
                 settings.setFamilyName(me.family?.name ?: me.pendingJoinRequest?.familyName)
+                // The owner's transcripts switch rides on `/me` too
+                // (docs/protocol.md, "Transcripts on request"). Only from a
+                // family that is there: without one the teardown below
+                // takes it with everything else.
+                me.family?.let { settings.setFamilyAiTranscripts(it.aiTranscripts) }
                 if (previous == FamilyStatus.PENDING && next == FamilyStatus.NONE) {
                     // Neither family nor pending request: the request was
                     // rejected (protocol GET /me note). The waiting screen

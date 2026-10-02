@@ -325,9 +325,9 @@ internal static class Dialogs
     /// does not happen.
     /// </remarks>
     public static async Task<bool> AssistantConsentAsync(
-        XamlRoot root, IStringCatalog say, string processor, bool familyHistory, bool familyVision)
+        XamlRoot root, IStringCatalog say, string processor, bool familyHistory, bool familyVision, bool transcribe = false)
     {
-        var content = AssistantConsentContent(say, processor, familyHistory, familyVision);
+        var content = AssistantConsentContent(say, processor, familyHistory, familyVision, transcribe);
         var dialog = Create(root, say.Get("The Assistant"), content);
         dialog.PrimaryButtonText = say.Get("I Agree");
         dialog.CloseButtonText = say.Get("Not Now");
@@ -343,10 +343,11 @@ internal static class Dialogs
     /// is Not Now.
     /// </summary>
     public static Task<bool> AssistantConsentOverAsync(
-        FrameworkElement anchor, IStringCatalog say, string processor, bool familyHistory, bool familyVision)
+        FrameworkElement anchor, IStringCatalog say, string processor, bool familyHistory, bool familyVision,
+        bool transcribe = false)
     {
         var answered = new TaskCompletionSource<bool>();
-        var content = AssistantConsentContent(say, processor, familyHistory, familyVision);
+        var content = AssistantConsentContent(say, processor, familyHistory, familyVision, transcribe);
         content.Children.Insert(0, new TextBlock
         {
             Text = say.Get("The Assistant"),
@@ -394,8 +395,12 @@ internal static class Dialogs
     }
 
     /// <summary>What the assistant question says, wherever it is asked: every line of it, and the policy.</summary>
+    /// <remarks>
+    /// <paramref name="transcribe"/> is the server's <c>assistant.transcribe</c>: where a member can ask for a recording's
+    /// text, the screen says in a line of its own that its sound goes to the processor.
+    /// </remarks>
     private static StackPanel AssistantConsentContent(
-        IStringCatalog say, string processor, bool familyHistory, bool familyVision)
+        IStringCatalog say, string processor, bool familyHistory, bool familyVision, bool transcribe)
     {
         var content = Column(new TextBlock
         {
@@ -403,7 +408,7 @@ internal static class Dialogs
             Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"],
             TextWrapping = TextWrapping.Wrap,
         });
-        foreach (var line in AssistantConsent.Disclosure(processor, familyHistory, familyVision, say))
+        foreach (var line in AssistantConsent.Disclosure(processor, familyHistory, familyVision, say, transcribe))
         {
             content.Children.Add(Text(line));
         }

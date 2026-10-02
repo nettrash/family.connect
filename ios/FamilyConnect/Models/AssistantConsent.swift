@@ -101,10 +101,17 @@ nonisolated enum AssistantConsent {
     /// it on a mention takes the chat's recent history with it, and with it
     /// off it takes nothing but itself. Saying the wrong one of those would
     /// be worse than saying neither.
+    ///
+    /// `transcribes` adds the line protocol.md requires once a server can
+    /// turn a recording into text: asking for one sends that recording's
+    /// SOUND to the processor — a new kind of thing leaving the server, so
+    /// it is said in a line of its own (protocol.md, "Consenting to the
+    /// assistant", amended 2026-10-02).
     static func disclosure(
         processor: String,
         familyHistory: Bool,
-        familyVision: Bool
+        familyVision: Bool,
+        transcribes: Bool = false
     ) -> [String] {
         // One line per `String(localized:)` call, long as they are: the
         // catalogue checker reads source text, and a call wrapped over
@@ -120,6 +127,9 @@ nonisolated enum AssistantConsent {
         }
         if familyVision {
             lines.append(String(localized: "A photo is sent only when you attach one to a message for the assistant, and only while your family allows it."))
+        }
+        if transcribes {
+            lines.append(String(localized: "If you ask for the text of a voice note, audio file or video, its sound is sent to \(processor)."))
         }
         lines.append(String(localized: "The answer comes back as a message in that chat, where everyone in the chat can read it."))
         lines.append(String(localized: "You can stop this at any time in Settings. What has already been sent cannot be taken back."))
