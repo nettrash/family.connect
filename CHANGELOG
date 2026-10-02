@@ -1,3 +1,151 @@
+2026-10-02          v1.2.0
+
+                    A family sticker pack, videos and sound files
+                    brought down to one profile before they leave the
+                    device, and an assistant that says when its
+                    provider refused something instead of failing as
+                    though the network had.
+
+                    STICKERS. Each family now has one sticker pack,
+                    any member can add to it, and a sticker button in
+                    every composer — the family chat, one-to-one
+                    chats, the assistant's chat and a thread — sends
+                    one with a single tap and no caption. A sticker is
+                    drawn without a bubble, in one fixed box, always
+                    from its original bytes, and animated where the
+                    platform can: Android needs Android 9 for that and
+                    shows the first frame before it, and on Windows a
+                    WebP needs the WebP Image Extension. Only WebP and
+                    PNG are stored, checked by magic number, at most
+                    512 KiB each and 200 to a pack by default. A WebP
+                    or PNG within that is taken as given, still or
+                    animated; any other still picture is fitted into
+                    512×512 by the client with its transparency kept;
+                    and an animated picture that cannot go as given —
+                    an animated GIF, or an animated PNG over the limit
+                    — is refused rather than flattened to one frame.
+                    Whoever added a sticker can remove it, and so can
+                    the owner, nobody else — so a departed member's
+                    stickers stay until the owner decides. A sticker
+                    message can be replied to, reacted to, reported
+                    and threaded, but not edited. Adding or removing
+                    one tells nobody.
+
+                    MEDIA BEFORE UPLOAD. A picked video is brought to
+                    one profile before it is sent: MP4 with its index
+                    at the front, H.264, at most 720 on the short side
+                    and 30 frames a second, about 2 Mbit/s at 720p30,
+                    HDR tone-mapped to SDR. Lossless sound files, Ogg
+                    where the platform can decode it, and MP3 or AAC
+                    above 192 kbit/s become AAC. Four rules decide it,
+                    written into the protocol and ported to every
+                    client, which CI holds to one set of vectors: a
+                    clip already within the profile goes untouched,
+                    nothing is ever raised, a transcode that fails
+                    sends exactly what 1.1 would have, and a result
+                    larger than its source is dropped for the source.
+                    There is no setting for it on any client. The web
+                    and Windows clients compress video for the first
+                    time. On iOS and macOS this reverses 1.1's rule of
+                    re-encoding only past 100 MB — the 1.1 export
+                    preset is now only the fallback — and on Android
+                    every clip outside the profile is transcoded, not
+                    only an oversized one. The Windows transcoder has
+                    not yet been run on Windows itself: every result
+                    is read back and compared with its source frame by
+                    frame, and anything that fails goes as the
+                    original. Stickers and voice notes are never
+                    re-encoded, and the 100 MB ceiling is unchanged.
+
+                    VOICE NOTES. The web client records AAC where the
+                    browser can encode it, then with the browser's own
+                    MP4 recorder, and only then as the mono 16 kHz
+                    WAV; 1.1 tried the recorder first. It captures in
+                    an AudioWorklet, which ends the holes a busy page
+                    used to leave in a note. iOS and macOS record at
+                    an explicit 64 kbit/s, and Windows asks for the
+                    same rate, or the nearest its encoder offers,
+                    where 1.1 took whatever Windows chose.
+
+                    THE ASSISTANT. When the provider refuses
+                    something, the reply now says so — "The
+                    assistant's provider refused that. Try putting it
+                    another way." — on all five clients, where it used
+                    to say "Couldn't answer that" like any other
+                    failure. ai_error carries reason "refused" only
+                    when the provider's own content-filter fields say
+                    so, and none of the provider's text reaches the
+                    client. A refused picture is not given up on at
+                    once: the server asks the text model once to
+                    reword the description without names or brands,
+                    and where the model wrote the description itself
+                    it first tries the member's own words. That costs
+                    at most three image requests and one rewrite for a
+                    picture, with the rewrite's tokens counted in
+                    Family Statistics. A /draw draft, and Draw a
+                    backdrop, now carry a hint to describe people and
+                    things in general words.
+
+                    BACKDROPS ASK FIRST. Drawing an event backdrop
+                    sends the event's title to the assistant's
+                    provider, so it now needs the author's assistant
+                    consent like anything else sent there: the server
+                    answers assistant_consent_required (403) without
+                    it, and a 1.2 client asks the question and draws
+                    on a yes. A refused backdrop is now
+                    picture_refused (400) instead of internal (500). A
+                    1.1 client shows both as a failed backdrop. The
+                    Apple, Android and Windows clients now wait 120
+                    seconds for one, where 1.1 gave up after 15, 20
+                    and 100, and the web waits on the browser; a 1.1
+                    phone can still give up on a slow or reworded
+                    backdrop, and the server stops drawing when the
+                    connection closes.
+
+                    FIXED. On Android, a redraw that failed, was
+                    refused or was declined no longer blanks the
+                    backdrop already showing in the event; only a
+                    picture that landed replaces it. On the Mac, Draw
+                    a backdrop reads "Drawing…" and stays disabled
+                    while that note's request is out, so a second
+                    click sends nothing. On Windows, a video dropped
+                    onto the board is refused before anything is
+                    transcoded, because the board takes photos.
+
+                    SERVER. One migration, 0048 (sticker_pack),
+                    applied at startup as always: the pack table, a
+                    pack sequence, and a sticker flag and pack link on
+                    attachments. Three new keys. [limits]
+                    max_pack_items = 200, at least 1 — 0 is refused,
+                    not an off switch. [limits] max_pack_item_bytes =
+                    524288, at most max_attachment_bytes, so a server
+                    whose max_attachment_bytes was set below 512 KiB
+                    refuses to start until this is lowered too. [ai]
+                    timeout_secs = 180, at least 10, which was
+                    hard-coded before and bounds every assistant call;
+                    it is not in config.example.toml yet. WebP is now
+                    accepted for any photo, and push notifications say
+                    "Sticker" where a photo says "Photo". Provider
+                    errors are logged on one line with
+                    identifier-shaped fields only — never the
+                    provider's message, never the member's words.
+
+                    OLD CLIENTS KEEP WORKING. A 1.1 client against
+                    this server draws a sticker as an ordinary photo
+                    in a bubble, lists it as "Photo", cannot add or
+                    send one, ignores the refusal reason, offers Edit
+                    on a sticker the same account sent from a 1.2
+                    device (the server answers 400), and shows a
+                    backdrop that needs consent, or was refused, as a
+                    failure. A 1.2 client against a 1.1 server offers
+                    no stickers — the missing pack limits are the
+                    feature check — and everything else, preparing
+                    media included, works unchanged.
+
+                    The server and web crates are 1.2.0, the Windows
+                    package 1.2.0.0, and the Apple and Android apps
+                    1.2.
+
 2026-09-16          v1.1.0
 
                     Two new clients, threads and mentions in the

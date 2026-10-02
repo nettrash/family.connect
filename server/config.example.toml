@@ -487,6 +487,13 @@ ring_timeout_secs = 45
 # # one long answer cannot run up a bill.
 # max_tokens = 1024
 #
+# # How long, in seconds, one request to the provider may take before it is
+# # given up — a reply, a picture, a rewrite. Raise it if your images
+# # deployment is slow; lower it if you would rather a stuck call gave up
+# # sooner. At least 10: the server refuses to start below that, because
+# # every answer would fail and the assistant would be off without saying so.
+# timeout_secs = 180
+#
 # # How many earlier turns of that member's own thread go with a question.
 # # Larger means better continuity and a bigger request; nothing outside that
 # # one thread is ever included whatever this is set to.

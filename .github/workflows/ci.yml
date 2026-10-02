@@ -815,8 +815,8 @@ jobs:
       # number cannot be a date.
       #
       # Stamped into the working copy, never committed: the checked-in manifest stays at
-      # `1.1.0.0`, so a local build is visibly unstamped (Settings then says "1.1", not
-      # "1.1 (0)" — AppVersionText) and can never be mistaken for a Store build.
+      # `1.2.0.0`, so a local build is visibly unstamped (Settings then says "1.2", not
+      # "1.2 (0)" — AppVersionText) and can never be mistaken for a Store build.
       - name: Stamp the build number
         id: version
         shell: pwsh
