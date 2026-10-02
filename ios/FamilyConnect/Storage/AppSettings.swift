@@ -95,6 +95,12 @@ nonisolated enum AppSettings {
         /// key means no assistant is offered at all, which is the honest
         /// answer for a server that names nobody.
         static let assistantProcessor = "v1.assistant.processor"
+        /// Whether this SERVER can turn a recording into text, and the most
+        /// bytes one request may send, as `GET /families/mine` last reported
+        /// them (protocol.md, "Transcripts on request"). Stored the plain way
+        /// round, like `assistantVision`: a missing key reads as "cannot".
+        static let assistantTranscribe = "v1.assistant.transcribe"
+        static let assistantTranscribeMaxBytes = "v1.assistant.transcribeMaxBytes"
         /// Pre-push installs stored a "registered once, token null"
         /// boolean under this key; superseded by the pair above and only
         /// referenced by wipe() so upgraded installs shed it.
@@ -424,6 +430,30 @@ nonisolated enum AppSettings {
         }
     }
 
+    /// Whether this server has a transcription deployment — the whole of
+    /// the server's half of "Show text" (protocol.md, "Transcripts on
+    /// request"). False here means the action is ABSENT, not disabled.
+    static var assistantTranscribe: Bool {
+        get { defaults.bool(forKey: Key.assistantTranscribe) }
+        set { defaults.set(newValue, forKey: Key.assistantTranscribe) }
+    }
+
+    /// `assistant.transcribe_max_bytes`, or nil when the server did not say
+    /// (it says only while `transcribe` is true). `TranscriptDoor` reads nil
+    /// as the protocol's default, 25 MiB.
+    static var assistantTranscribeMaxBytes: Int64? {
+        get {
+            (defaults.object(forKey: Key.assistantTranscribeMaxBytes) as? NSNumber)?.int64Value
+        }
+        set {
+            if let newValue {
+                defaults.set(NSNumber(value: newValue), forKey: Key.assistantTranscribeMaxBytes)
+            } else {
+                defaults.removeObject(forKey: Key.assistantTranscribeMaxBytes)
+            }
+        }
+    }
+
     /// The picture token the server named, or nil when it named none.
     static var assistantDraw: String? {
         get { defaults.string(forKey: Key.assistantDraw) }
@@ -458,6 +488,8 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.assistantVision)
         defaults.removeObject(forKey: Key.assistantImages)
         defaults.removeObject(forKey: Key.assistantDraw)
+        defaults.removeObject(forKey: Key.assistantTranscribe)
+        defaults.removeObject(forKey: Key.assistantTranscribeMaxBytes)
         // The operator's half of the daily greeting is a fact about THIS
         // server, like the three above; a different server must not inherit it.
         defaults.removeObject(forKey: Key.greetingsEnabled)

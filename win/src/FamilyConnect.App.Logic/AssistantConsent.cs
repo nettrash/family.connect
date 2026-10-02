@@ -67,9 +67,14 @@ public static class AssistantConsent
     /// The two family-chat lines depend on the owner's <c>ai_history</c>: with it on a mention
     /// takes the chat's recent history with it, and with it off it takes nothing but itself.
     /// Saying the wrong one of those would be worse than saying neither.
+    /// <para>
+    /// <paramref name="transcribe"/> is the server's <c>assistant.transcribe</c>: where a member can ask for the text of
+    /// a recording, its SOUND goes to the same provider — a new kind of thing leaving the server, so it gets a line of
+    /// its own (docs/protocol.md, "What a client must say before it asks", amended 2026-10-02).
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<string> Disclosure(
-        string processor, bool familyHistory, bool familyVision, IStringCatalog say)
+        string processor, bool familyHistory, bool familyVision, IStringCatalog say, bool transcribe = false)
     {
         ArgumentNullException.ThrowIfNull(say);
         var lines = new List<string>
@@ -86,6 +91,11 @@ public static class AssistantConsent
         if (familyVision)
         {
             lines.Add(say.Get("A photo is sent only when you attach one to a message for the assistant, and only while your family allows it."));
+        }
+        if (transcribe)
+        {
+            lines.Add(say.Format(
+                "If you ask for the text of a voice note, audio file or video, its sound is sent to %@.", processor));
         }
 
         lines.Add(say.Get("The answer comes back as a message in that chat, where everyone in the chat can read it."));

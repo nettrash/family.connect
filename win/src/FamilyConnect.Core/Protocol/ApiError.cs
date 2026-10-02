@@ -137,10 +137,29 @@ public static class ErrorCodes
     /// "Consenting to the assistant"): a 403, and the answer to it is the consent question, then asking again.
     /// </summary>
     /// <remarks>
-    /// Not in <see cref="All"/>: that list is held to the one under "Error shape", which does not name this code
-    /// although the endpoints that raise it do. A REST answer always has its status, so it is terminal either way.
+    /// In <see cref="All"/> since 2026-10-02: the document's list under "Error shape" was missing it until the
+    /// transcript endpoint answered it too, and that list is what <see cref="All"/> is held to.
     /// </remarks>
     public const string AssistantConsentRequired = "assistant_consent_required";
+
+    /// <summary>
+    /// This server has no transcription deployment (docs/protocol.md, "Transcripts on request"): a 403 about the SERVER,
+    /// which <c>assistant.transcribe</c> already says before anybody asks.
+    /// </summary>
+    public const string TranscriptsUnavailable = "transcripts_unavailable";
+
+    /// <summary>
+    /// The rule says no for this member and this recording — another member's, with the owner's
+    /// <c>ai_transcripts</c> off or that sender not having agreed to the assistant, or another member's in a direct chat.
+    /// Terminal until the switch or that consent changes.
+    /// </summary>
+    public const string TranscriptNotAllowed = "transcript_not_allowed";
+
+    /// <summary>The recording cannot be sent in the form asked for: wrong kind, a type the provider does not read, too big.</summary>
+    public const string NotTranscribable = "not_transcribable";
+
+    /// <summary>The provider's own content filter refused the recording: a 400, terminal — asking again gets the same.</summary>
+    public const string TranscriptRefused = "transcript_refused";
 
     public const string CallsDisabled = "calls_disabled";
     public const string VideoCallsDisabled = "video_calls_disabled";
@@ -175,7 +194,8 @@ public static class ErrorCodes
         MessageTooLong, MessageNotFound, NotMessageAuthor, InvalidEmoji, NoteNotFound,
         NotNoteAuthor, InvalidNoteColor, InvalidNoteSize, InvalidNoteFont, InvalidNoteKind,
         InvalidRsvp, InvalidTask, InvalidLanguage, BoardFull, InvalidPagination, DeviceNotFound,
-        InvalidPoll, PollClosed, PicturesUnavailable, PictureRefused, CallsDisabled, VideoCallsDisabled,
+        InvalidPoll, PollClosed, AssistantConsentRequired, PicturesUnavailable, PictureRefused,
+        TranscriptsUnavailable, TranscriptNotAllowed, NotTranscribable, TranscriptRefused, CallsDisabled, VideoCallsDisabled,
         InvalidCall, CallNotFound, CallBusy, PeerBusy, PeerUnreachable, AvatarTooLarge,
         InvalidImage, AttachmentTooLarge, InvalidAttachment, AttachmentNotFound,
         AttachmentExpired, AttachmentAlreadyUsed, StorageFull, PackFull, PackItemTooLarge,

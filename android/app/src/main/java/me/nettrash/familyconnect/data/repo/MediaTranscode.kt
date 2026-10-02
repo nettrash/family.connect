@@ -118,6 +118,12 @@ data class TranscodeSettings(
     val audioBitrate: Int,
     /** HDR in, 8-bit SDR out. */
     val toneMapToSdr: Boolean,
+    /**
+     * The most channels the output keeps: 2 for everything the upload
+     * profile makes (surround is mixed to stereo, mono stays mono), 1 for
+     * the sound a transcript request supplies — speech, at 64 kbit/s.
+     */
+    val maxAudioChannels: Int = 2,
 ) {
     /** A picked sound file: no video track goes into the output. */
     val audioOnly: Boolean get() = width == null || height == null
@@ -137,6 +143,18 @@ data class TranscodeSettings(
                 toneMapToSdr = true,
             )
         }
+
+        /**
+         * The sound of a recording or a video, taken out for a transcript
+         * request (docs/protocol.md, "Transcripts on request"): AAC-LC at
+         * [TRANSCRIPT_SOUND_BITRATE], mono, no picture. About 52 minutes fit
+         * in the server's default 25 MiB.
+         */
+        fun forTranscriptSound(): TranscodeSettings =
+            forAudio(TRANSCRIPT_SOUND_BITRATE.toLong()).copy(maxAudioChannels = 1)
+
+        /** 64 kbit/s: what the design names for supplied sound. */
+        const val TRANSCRIPT_SOUND_BITRATE = 64_000
 
         /** A picked sound file, re-encoded at MediaPlan's [bitrate]. */
         fun forAudio(bitrate: Long): TranscodeSettings =
@@ -188,11 +206,12 @@ object TranscodeRecipe {
      * Past six there is no default mix; that transcode fails, and rule C
      * sends the original.
      */
-    fun audioProcessors(): List<AudioProcessor> = listOf(
+    fun audioProcessors(maxOutputChannels: Int = 2): List<AudioProcessor> = listOf(
         ChannelMixingAudioProcessor().apply {
+            val cap = maxOutputChannels.coerceIn(1, 2)
             for (channels in 1..MAX_MIXED_CHANNELS) {
                 putChannelMixingMatrix(
-                    ChannelMixingMatrix.createForConstantPower(channels, minOf(channels, 2)),
+                    ChannelMixingMatrix.createForConstantPower(channels, minOf(channels, cap)),
                 )
             }
         },
@@ -200,9 +219,30 @@ object TranscodeRecipe {
 
     fun editedMediaItem(input: Uri, settings: TranscodeSettings): EditedMediaItem =
         EditedMediaItem.Builder(MediaItem.fromUri(input))
-            // Cover art an audio file carries as a picture track is not sound.
+            // Cover art an audio file carries as a picture track is not sound
+            // — and a video's pictures are not sound either: removed, so not
+            // one frame is decoded.
             .setRemoveVideo(settings.audioOnly)
-            .setEffects(Effects(audioProcessors(), videoEffects(settings)))
+            .setEffects(Effects(audioProcessors(settings.maxAudioChannels), videoEffects(settings)))
+            .build()
+
+    /**
+     * A recording's or a video's AAC track copied into an M4A as it is —
+     * no effect and no encoder settings, so Transformer transmuxes: not a
+     * sample is decoded or re-encoded (TransformerUtil.shouldTranscodeAudio).
+     * Asking for AAC by name only keeps a track that is not AAC from being
+     * copied into a file that says it is; the caller sends only AAC here.
+     */
+    fun soundPassthroughItem(input: Uri): EditedMediaItem =
+        EditedMediaItem.Builder(MediaItem.fromUri(input))
+            .setRemoveVideo(true)
+            .build()
+
+    /** The Transformer for [soundPassthroughItem]: Media3's defaults, AAC out. */
+    fun passthroughTransformer(context: Context, listener: Transformer.Listener): Transformer =
+        Transformer.Builder(context)
+            .setAudioMimeType(MimeTypes.AUDIO_AAC)
+            .addListener(listener)
             .build()
 
     /**

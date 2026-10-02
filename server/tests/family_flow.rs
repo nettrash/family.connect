@@ -1322,6 +1322,10 @@ async fn the_owner_decides_whether_a_mention_sees_the_family_chats_history() {
             // may go with a mention (protocol.md, "Profile pictures of
             // members"). False by default, like every disclosure switch.
             "ai_faces": false,
+            // And the sixth: whether a member may ask for the text of
+            // ANOTHER member's recording (protocol.md, "Transcripts on
+            // request"). False by default, like every disclosure switch.
+            "ai_transcripts": false,
         }),
         "the whole Family object, exactly the shape in protocol.md — no language key, \
          because nobody has chosen one, and ai_history present because it always is"
@@ -1351,6 +1355,7 @@ async fn the_owner_decides_whether_a_mention_sees_the_family_chats_history() {
             "ai_history_photos": false,
             "ai_greeting": false,
             "ai_faces": false,
+            "ai_transcripts": false,
         }),
         "and the whole object again with a cap — one key more, nothing else moved"
     );

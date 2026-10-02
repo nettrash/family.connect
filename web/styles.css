@@ -471,6 +471,25 @@ button.link, .link {
 .audio-track input { width: 100%; accent-color: var(--tint); margin: 0; }
 .audio-times { display: flex; justify-content: space-between; font-size: 11px; font-variant-numeric: tabular-nums; opacity: .75; }
 .audio audio { display: none; }
+/* The text of a recording, under its player (docs/protocol.md, "Transcripts
+ * on request"): as wide as the player, selectable, and plainly not the
+ * message's own words. */
+.transcript { width: 260px; max-width: 100%; display: grid; gap: 2px; justify-items: start; font-size: 13px; }
+.transcript p { margin: 0; }
+.transcript-text {
+    width: 100%;
+    padding: 6px 8px;
+    border-left: 2px solid color-mix(in srgb, var(--ink) 20%, transparent);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+}
+.transcript-text .is-silence, .transcript-status, .transcript-failure { color: var(--muted); font-style: italic; }
+.transcript-status, .transcript-failure { padding: 2px 0; }
+.transcript-action { font-size: 13px; padding: 2px 0; }
+.transcript-marker { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 /* --- the viewer ------------------------------------------------------------ */
 .viewer {

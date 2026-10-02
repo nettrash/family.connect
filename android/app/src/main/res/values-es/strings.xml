@@ -191,6 +191,11 @@
     <string name="s_saved_by_one_copy">%1$s ahorrados al guardar una sola copia de los archivos idénticos.</string>
     <string name="s_attachments_and_size">%1$d adjuntos, %2$s</string>
     <string name="s_questions_to_assistant">%1$d preguntas al asistente</string>
+    <string name="s_stats_pictures">Imágenes</string>
+    <string name="s_stats_recordings_as_text">Grabaciones a texto</string>
+    <string name="s_stats_recording_time">Duración de las grabaciones</string>
+    <string name="s_pictures_from_assistant">%1$d imágenes del asistente</string>
+    <string name="s_recordings_as_text">%1$d grabaciones a texto</string>
     <string name="s_family_language">Idioma de la familia</string>
     <string name="s_family_language_explanation">El idioma en el que el asistente responde cuando se le pregunta en el chat familiar. No cambia el idioma en el que se muestra esta app. Sin ninguno elegido, responde en el idioma de quien pregunte.</string>
     <string name="s_not_set">Sin definir</string>
@@ -601,4 +606,21 @@
     <string name="s_sticker_remove_not_allowed">Solo quien añadió un sticker, o el propietario de la familia, puede quitarlo.</string>
     <string name="s_sticker_remove_failed">No se pudo quitar el sticker. Inténtalo de nuevo.</string>
     <string name="s_sticker_not_available_offline">Ese sticker aún no está en este teléfono. Inténtalo de nuevo cuando tengas conexión.</string>
+
+    <!-- Transcripts on request (#62): text under a recording, the owner's switch, the consent line. -->
+    <string name="s_transcript_show">Mostrar texto</string>
+    <string name="s_transcript_hide">Ocultar texto</string>
+    <string name="s_transcript_getting">Obteniendo el texto…</string>
+    <string name="s_transcript_no_speech">Nadie habla</string>
+    <string name="s_transcript_failed">No se pudo obtener el texto. Inténtalo de nuevo.</string>
+    <string name="s_transcript_refused">El proveedor del asistente rechazó esta grabación.</string>
+    <string name="s_transcript_unavailable">No disponible para este mensaje.</string>
+    <string name="s_transcript_too_long">Esta grabación es demasiado larga para pasarla a texto.</string>
+    <string name="s_transcript_unreadable">No se pudo leer el sonido de este archivo.</string>
+    <string name="s_transcript_a11y">Texto de la grabación</string>
+    <string name="s_assistant_transcripts">Voz y vídeo como texto</string>
+    <string name="s_assistant_transcripts_explanation">Con esto activado, los miembros pueden pedir el texto de las notas de voz, audios y vídeos de otros miembros en el chat familiar, y el sonido de esa grabación se envía entonces a %1$s. Solo se envía cuando alguien lo pide, y solo si el miembro que la envió ha aceptado el asistente. Cualquiera puede obtener el texto de sus propias grabaciones sin esto. Está desactivado a menos que lo actives.</string>
+    <string name="s_assistant_transcripts_no_server">No disponible aquí: este servidor no puede pasar grabaciones a texto.</string>
+    <string name="s_consent_transcript_sound_sent">Si pides el texto de una nota de voz, un archivo de audio o un vídeo, su sonido se envía a %1$s.</string>
+    <string name="e_change_assistant_transcripts_failed">No se pudo cambiar ese ajuste</string>
 </resources>

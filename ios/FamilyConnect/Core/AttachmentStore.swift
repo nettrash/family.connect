@@ -37,6 +37,10 @@ final class AttachmentStore {
 
     private let api: APIClient
     private let directory: URL
+    /// The text of recordings this device asked for (docs/protocol.md,
+    /// "Transcripts on request"), kept in a folder inside this store's own
+    /// so `forget` and `clear` take it with the attachments it is about.
+    let transcripts: TranscriptStore
     /// Bumped when a fetch lands, so views drawing one re-render.
     private(set) var generation = 0
     /// In-flight ids, so N bubbles of the same photo fetch once.
@@ -88,6 +92,8 @@ final class AttachmentStore {
             self.directory = caches.appendingPathComponent("attachments", isDirectory: true)
         }
         try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
+        self.transcripts = TranscriptStore(
+            api: api, directory: self.directory.appendingPathComponent("transcripts", isDirectory: true))
     }
 
     private func key(_ id: Int64, preview: Bool) -> String {
@@ -589,6 +595,9 @@ final class AttachmentStore {
             // find a marker with nothing behind it.
             try? FileManager.default.removeItem(at: posterMarkerURL(id))
         }
+        // A kept transcript is about one of these attachments too, and the
+        // words in it are the last thing that should outlive the chat.
+        transcripts.forget(attachmentIDs: attachmentIDs)
         generation &+= 1
     }
 
@@ -600,6 +609,9 @@ final class AttachmentStore {
         missing.removeAll()
         try? FileManager.default.removeItem(at: directory)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // The kept transcripts were inside that directory; this empties
+        // their memory too, so the next account reads none of them.
+        transcripts.clear()
         generation &+= 1
     }
 }

@@ -62,6 +62,23 @@ public sealed class SettingsTests
         Assert.EndsWith("1 question to the assistant · 3 pictures from the assistant", SettingsText.MemberLine(member, Say, culture));
     }
 
+    /// <summary>
+    /// The recordings a member had turned into text, beside their questions — charged to whoever ASKED, and counted in
+    /// English as one and many.
+    /// </summary>
+    [Fact]
+    public void AMembersLineCountsTheRecordingsTheyHadAsText()
+    {
+        var culture = CultureInfo.InvariantCulture;
+        var member = new StatsMemberDto(1, "Anna", 3, Ai: new StatsAiDto(2, Transcripts: 1));
+        Assert.Equal("2 questions to the assistant · 1 recording as text", SettingsText.MemberLine(member, Say, culture));
+        member = member with { Ai = new StatsAiDto(0, Transcripts: 4) };
+        Assert.Equal("4 recordings as text", SettingsText.MemberLine(member, Say, culture));
+        Assert.Equal(
+            "записей в текст: 4",
+            SettingsText.MemberLine(member, JsonCatalog.For("ru"), culture));
+    }
+
     /// <summary>A translation the apps say one way whatever the count is said that way, with its own order.</summary>
     [Fact]
     public void AMembersLineReadsInTheReadersLanguage()

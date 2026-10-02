@@ -355,6 +355,55 @@ class MediaTranscodeTest {
         assertThat(hint.audioNeedsEncoding()).isFalse()
     }
 
+    // -- The sound a transcript request supplies (docs/protocol.md, "Transcripts on request") --
+
+    /**
+     * RE-ENCODE: 64 kbit/s AAC-LC, mono, and the video track removed before
+     * anything reads it — not one frame is decoded.
+     */
+    @Test
+    fun `transcript sound is re-encoded to 64 kbit s mono AAC-LC with no picture`() {
+        val settings = TranscodeSettings.forTranscriptSound()
+        assertThat(settings.audioOnly).isTrue()
+        assertThat(settings.audioBitrate).isEqualTo(64_000)
+        assertThat(settings.maxAudioChannels).isEqualTo(1)
+        assertThat(TranscodeRecipe.videoEffects(settings)).isEmpty()
+        val audio = TranscodeRecipe.audioEncoderSettings(settings)
+        assertThat(audio.bitrate).isEqualTo(64_000)
+        assertThat(audio.profile).isEqualTo(MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+
+        val item = TranscodeRecipe.editedMediaItem(Uri.parse("file:///clip.mp4"), settings)
+        assertThat(item.removeVideo).isTrue()
+        assertThat(item.effects.videoEffects).isEmpty()
+
+        // Every count the decoder may produce comes out as ONE channel —
+        // mono by being left alone (an identity mix is not active).
+        val mixer = item.effects.audioProcessors.single()
+        fun mixed(channels: Int): AudioProcessor.AudioFormat? {
+            val out = mixer.configure(AudioProcessor.AudioFormat(48_000, channels, C.ENCODING_PCM_16BIT))
+            mixer.flush(AudioProcessor.StreamMetadata.DEFAULT)
+            return out.takeIf { mixer.isActive }
+        }
+        for (channels in 2..6) assertThat(mixed(channels)?.channelCount).isEqualTo(1)
+        assertThat(mixed(1)).isNull()
+        // And the upload profile still keeps stereo: the default is unchanged.
+        assertThat(TranscodeSettings.forAudio(128_000).maxAudioChannels).isEqualTo(2)
+    }
+
+    /**
+     * PASSTHROUGH: no effect and no encoder settings, so Transformer copies
+     * the AAC samples (TransformerUtil.shouldTranscodeAudio): nothing it is
+     * told would make it decode the sound, and the picture is removed.
+     */
+    @Test
+    fun `transcript sound passthrough removes the picture and asks for nothing that re-encodes`() {
+        val item = TranscodeRecipe.soundPassthroughItem(Uri.parse("file:///clip.mp4"))
+        assertThat(item.removeVideo).isTrue()
+        assertThat(item.removeAudio).isFalse()
+        assertThat(item.effects.audioProcessors).isEmpty()
+        assertThat(item.effects.videoEffects).isEmpty()
+    }
+
     private fun video(frameRate: Float): Format =
         Format.Builder()
             .setSampleMimeType(MimeTypes.VIDEO_H264)

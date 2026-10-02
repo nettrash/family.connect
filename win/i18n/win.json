@@ -38,6 +38,12 @@
         "other": "%lld questions to the assistant"
       }
     },
+    "%lld recordings as text": {
+      "en": {
+        "one": "%lld recording as text",
+        "other": "%lld recordings as text"
+      }
+    },
     "+%lld": {},
     "A few words for a screen reader. They are never drawn over the picture.": {
       "de": "Ein paar Worte für einen Screenreader. Sie werden nie über das Bild gezeichnet.",

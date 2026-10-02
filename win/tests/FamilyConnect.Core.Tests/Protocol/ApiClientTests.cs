@@ -24,6 +24,12 @@ public class ApiClientTests
         public List<HttpRequestMessage> Sent { get; } = [];
         public List<string?> Bodies { get; } = [];
 
+        /// <summary>Each request body's own type header, read while it is still open — a multipart one carries its boundary.</summary>
+        public List<MediaTypeHeaderValue?> BodyTypes { get; } = [];
+
+        /// <summary>Each multipart body's parts, read while it is still open: name, file name, type and bytes.</summary>
+        public List<List<(string? Name, string? FileName, string? Type, byte[] Bytes)>> Parts { get; } = [];
+
         public Fake Then(HttpStatusCode status, string? json = null, string? retryAfter = null)
         {
             replies.Enqueue(_ =>
@@ -59,6 +65,20 @@ public class ApiClientTests
             Bodies.Add(request.Content is null
                 ? null
                 : await request.Content.ReadAsStringAsync(cancellationToken));
+            BodyTypes.Add(request.Content?.Headers.ContentType);
+            if (request.Content is MultipartContent multipart)
+            {
+                var parts = new List<(string?, string?, string?, byte[])>();
+                foreach (var part in multipart)
+                {
+                    parts.Add((
+                        part.Headers.ContentDisposition?.Name,
+                        part.Headers.ContentDisposition?.FileName,
+                        part.Headers.ContentType?.MediaType,
+                        await part.ReadAsByteArrayAsync(cancellationToken)));
+                }
+                Parts.Add(parts);
+            }
             if (Delays.TryDequeue(out var delay))
             {
                 // A slow server: the deadline, when it passes, cancels this wait exactly as it would the socket.
@@ -685,5 +705,262 @@ public class ApiClientTests
         var older = (await client.Family()).Value!;
         Assert.Null(older.MaxPackItems);
         Assert.Null(older.MaxPackItemBytes);
+    }
+
+    // ---- transcripts on request (#62) -------------------------------------------------------------
+
+    /// <summary>
+    /// The STORED-BYTES form (docs/protocol.md, "Transcripts on request"): a POST to the attachment's own path with NO
+    /// BODY — the form whose answer the server keeps — and the text read back with the language the provider named.
+    /// </summary>
+    [Fact]
+    public async Task ATranscriptIsAskedForWithNoBodyAtTheAttachmentsOwnPath()
+    {
+        var (client, handler) = Client(new Fake().Then(
+            HttpStatusCode.OK, """{"transcript": {"text": "Мы будем в шесть", "language": "ru"}}"""));
+        var answer = await client.Transcript(42, 1338, 34);
+        Assert.True(answer.Ok);
+        Assert.Equal("Мы будем в шесть", answer.Value!.Transcript!.Text);
+        Assert.Equal("ru", answer.Value.Transcript.Language);
+        var request = Assert.Single(handler.Sent);
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal(
+            "https://chat.example.com/api/v1/chats/42/messages/1338/attachments/34/transcript",
+            request.RequestUri?.ToString());
+        // No body at all: a multipart one would be the OTHER form, whose answer is never kept.
+        Assert.Null(Assert.Single(handler.Bodies));
+        Assert.Equal("t0ken", request.Headers.Authorization?.Parameter);
+    }
+
+    /// <summary>SILENCE IS AN ANSWER: the empty text, and no language, read as a success.</summary>
+    [Fact]
+    public async Task SilenceIsASuccessWithEmptyText()
+    {
+        var (client, _) = Client(new Fake().Then(HttpStatusCode.OK, """{"transcript": {"text": ""}}"""));
+        var answer = await client.Transcript(42, 1338, 34);
+        Assert.True(answer.Ok);
+        Assert.Equal(string.Empty, answer.Value!.Transcript!.Text);
+        Assert.Null(answer.Value.Transcript.Language);
+    }
+
+    /// <summary>
+    /// Every refusal the endpoint answers, read as its code and status — the ones the bubble branches on — and only
+    /// <c>internal</c> transient. A write, so nothing here repeats it: not even the 500.
+    /// </summary>
+    [Theory]
+    [InlineData("transcripts_unavailable", 403, false)]
+    [InlineData("assistant_consent_required", 403, false)]
+    [InlineData("transcript_not_allowed", 403, false)]
+    [InlineData("not_transcribable", 400, false)]
+    [InlineData("transcript_refused", 400, false)]
+    [InlineData("message_not_found", 404, false)]
+    [InlineData("internal", 500, true)]
+    public async Task ATranscriptRefusalIsReadAsItsCode(string code, int status, bool transient)
+    {
+        var (client, handler) = Client(new Fake().Then(
+            (HttpStatusCode)status, $$$"""{"error": {"code": "{{{code}}}", "message": "no"}}"""));
+        var answer = await client.Transcript(42, 1338, 34);
+        Assert.False(answer.Ok);
+        Assert.Equal(code, answer.Error!.Code);
+        Assert.Equal(status, answer.Error.Status);
+        Assert.Equal(transient, answer.Error.Transient);
+        Assert.Single(handler.Sent);
+    }
+
+    /// <summary>
+    /// SLOW: "a timeout of its OWN, no shorter than 90 s … never its ordinary request timeout" — and longer than the
+    /// ordinary one, with nothing in the HttpClient the app builds to cap it.
+    /// </summary>
+    [Fact]
+    public void ATranscriptHasADeadlineOfItsOwn()
+    {
+        Assert.True(ApiClient.TranscriptTimeout >= TimeSpan.FromSeconds(90));
+        Assert.True(ApiClient.TranscriptTimeout > ApiClient.OrdinaryTimeout);
+        using var http = ApiClient.NewHttpClient();
+        var client = new ApiClient(http, ServerUrl.Normalise("chat.example.com")!, new MemoryTokenStore("t0ken"));
+        Assert.Equal(ApiClient.TranscriptTimeout, client.TranscriptDeadline);
+    }
+
+    /// <summary>
+    /// The deadline covers the whole request, the upload included: a supplied sound of up to 25 MiB goes up BEFORE the
+    /// provider's own wait (the server's 180 s) begins, and the reference proxy waits 300 s on this route. A client that
+    /// gives up first never gets an answer for supplied sound — the server drops that call with the connection and
+    /// keeps nothing — so "try again" would fail the same way every time. Past the proxy's wait, as iOS (310 s), Android
+    /// (310 s) and the web (300 s) wait: the server, or the proxy answering for it, ends the wait.
+    /// </summary>
+    [Fact]
+    public void ATranscriptWaitsPastTheProxy()
+    {
+        Assert.True(ApiClient.TranscriptTimeout > TimeSpan.FromSeconds(300));
+        Assert.True(ApiClient.TranscriptTimeout > TimeSpan.FromSeconds(180) + TimeSpan.FromSeconds(60));
+    }
+
+    /// <summary>An M4A's first bytes: a size, then <c>ftyp</c>, then its brand — what the server checks the part for.</summary>
+    private static readonly byte[] M4a = [0, 0, 0, 0x18, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'M', (byte)'4', (byte)'A', (byte)' ', 0, 0, 2, 0, 0xFF, 0x00];
+
+    /// <summary>
+    /// THE SUPPLIED-SOUND FORM (docs/protocol.md, "Transcripts on request"): the same path, as
+    /// <c>multipart/form-data</c> with ONE part named <c>audio</c> — the device's M4A, typed <c>audio/mp4</c>, its bytes
+    /// exactly as made — and the answer read as the stored form's is.
+    /// </summary>
+    [Fact]
+    public async Task SuppliedSoundGoesAsOneMultipartAudioPart()
+    {
+        var (client, handler) = Client(new Fake().Then(
+            HttpStatusCode.OK, """{"transcript": {"text": "Back at six", "language": "en"}}"""));
+        var answer = await client.Transcript(42, 1338, 34, M4a);
+        Assert.True(answer.Ok);
+        Assert.Equal("Back at six", answer.Value!.Transcript!.Text);
+        var request = Assert.Single(handler.Sent);
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal(
+            "https://chat.example.com/api/v1/chats/42/messages/1338/attachments/34/transcript",
+            request.RequestUri?.ToString());
+        Assert.Equal("t0ken", request.Headers.Authorization?.Parameter);
+        var type = Assert.Single(handler.BodyTypes);
+        Assert.Equal("multipart/form-data", type?.MediaType);
+        Assert.Contains(type!.Parameters, parameter => parameter.Name == "boundary" && !string.IsNullOrEmpty(parameter.Value));
+        var part = Assert.Single(Assert.Single(handler.Parts));
+        Assert.Equal("audio", part.Name?.Trim('"'));
+        Assert.Equal("audio.m4a", part.FileName?.Trim('"'));
+        Assert.Equal("audio/mp4", part.Type);
+        Assert.Equal(M4a, part.Bytes);
+    }
+
+    /// <summary>A write like the stored form: a 500 is said once, never repeated here — and so is a lost connection.</summary>
+    [Fact]
+    public async Task SuppliedSoundIsNeverRepeatedHere()
+    {
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.InternalServerError, """{"error": {"code": "internal", "message": "provider"}}"""));
+        var answer = await client.Transcript(42, 1338, 34, M4a);
+        Assert.False(answer.Ok);
+        Assert.True(answer.Error!.Transient);
+        Assert.Single(handler.Sent);
+
+        var (unreached, gone) = Client(new Fake().ThenUnreachable());
+        Assert.Equal(ErrorCodes.Transport, (await unreached.Transcript(42, 1338, 34, M4a)).Error!.Code);
+        Assert.Single(gone.Sent);
+    }
+
+    /// <summary>The server's verdict on supplied sound is read as its code: not MPEG-4, too big or missing — terminal.</summary>
+    [Fact]
+    public async Task SuppliedSoundTheServerRefusesIsReadAsItsCode()
+    {
+        var (client, _) = Client(new Fake().Then(
+            HttpStatusCode.BadRequest, """{"error": {"code": "not_transcribable", "message": "not mpeg-4"}}"""));
+        var answer = await client.Transcript(42, 1338, 34, M4a);
+        Assert.Equal(ErrorCodes.NotTranscribable, answer.Error!.Code);
+        Assert.False(answer.Error.Transient);
+    }
+
+    /// <summary>It runs under the transcript's deadline too, never the ordinary one.</summary>
+    [Fact]
+    public async Task SuppliedSoundOutlastsTheOrdinaryDeadline()
+    {
+        var handler = new Fake().Then(HttpStatusCode.OK, """{"transcript": {"text": ""}}""");
+        handler.Delays.Enqueue(TimeSpan.FromMilliseconds(300));
+        var client = new ApiClient(
+            new HttpClient(handler), ServerUrl.Normalise("chat.example.com")!, new MemoryTokenStore("t0ken"))
+        {
+            RequestDeadline = TimeSpan.FromMilliseconds(50),
+            TranscriptDeadline = TimeSpan.FromSeconds(30),
+        };
+        var answer = await client.Transcript(42, 1338, 34, M4a);
+        Assert.True(answer.Ok);
+        Assert.Equal(string.Empty, answer.Value!.Transcript!.Text);
+    }
+
+    /// <summary>The rule, run: a server slower than the ordinary deadline still answers a transcript.</summary>
+    [Fact]
+    public async Task ATranscriptOutlastsTheOrdinaryDeadline()
+    {
+        var handler = new Fake().Then(HttpStatusCode.OK, """{"transcript": {"text": "Back at six"}}""");
+        handler.Delays.Enqueue(TimeSpan.FromMilliseconds(300));
+        var client = new ApiClient(
+            new HttpClient(handler), ServerUrl.Normalise("chat.example.com")!, new MemoryTokenStore("t0ken"))
+        {
+            RequestDeadline = TimeSpan.FromMilliseconds(50),
+            TranscriptDeadline = TimeSpan.FromSeconds(30),
+        };
+        var answer = await client.Transcript(42, 1338, 34);
+        Assert.True(answer.Ok);
+        Assert.Equal("Back at six", answer.Value!.Transcript!.Text);
+    }
+
+    /// <summary>And its own deadline does end it: a transport failure, transient, which the member may retry.</summary>
+    [Fact]
+    public async Task ATranscriptPastItsOwnDeadlineIsATransportFailure()
+    {
+        var handler = new Fake().Then(HttpStatusCode.OK, """{"transcript": {"text": "too late"}}""");
+        handler.Delays.Enqueue(TimeSpan.FromSeconds(5));
+        var client = new ApiClient(
+            new HttpClient(handler), ServerUrl.Normalise("chat.example.com")!, new MemoryTokenStore("t0ken"))
+        {
+            TranscriptDeadline = TimeSpan.FromMilliseconds(50),
+        };
+        var answer = await client.Transcript(42, 1338, 34);
+        Assert.False(answer.Ok);
+        Assert.Equal(ErrorCodes.Transport, answer.Error!.Code);
+        Assert.True(answer.Error.Transient);
+        // Never repeated here: a write.
+        Assert.Single(handler.Sent);
+    }
+
+    /// <summary>
+    /// The server's capability and the owner's switch, as <c>GET /families/mine</c> carries them — and an older server,
+    /// which carries neither, reads as "no".
+    /// </summary>
+    [Fact]
+    public async Task TheTranscriptCapabilityAndTheOwnersSwitchArriveWithTheFamily()
+    {
+        var (client, _) = Client(new Fake()
+            .Then(HttpStatusCode.OK, """
+                {"family": {"id": 3, "name": "The Smiths", "ai_transcripts": true},
+                 "assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai",
+                               "processor": "Azure OpenAI", "transcribe": true, "transcribe_max_bytes": 26214400}}
+                """)
+            .Then(HttpStatusCode.OK, """
+                {"family": {"id": 3, "name": "The Smiths"},
+                 "assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai"}}
+                """));
+        var newer = (await client.Family()).Value!;
+        Assert.True(newer.Family.AiTranscripts);
+        Assert.True(newer.Assistant!.Transcribe);
+        Assert.Equal(26_214_400, newer.Assistant.TranscribeMaxBytes);
+        var older = (await client.Family()).Value!;
+        Assert.False(older.Family.AiTranscripts);
+        Assert.False(older.Assistant!.Transcribe);
+        Assert.Null(older.Assistant.TranscribeMaxBytes);
+    }
+
+    /// <summary>The owner's switch goes out as its own key, and only when it is in the patch.</summary>
+    [Fact]
+    public async Task TheTranscriptSwitchIsPatchedAsItsOwnKey()
+    {
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths", "ai_transcripts": true}}""")
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths", "ai_vision": true}}"""));
+        var on = await client.PatchFamily(new FamilyPatch { AiTranscripts = true });
+        Assert.True(on.Value!.Family.AiTranscripts);
+        Assert.Equal("{\"ai_transcripts\":true}", handler.Bodies[0]);
+        await client.PatchFamily(new FamilyPatch { AiVision = true });
+        Assert.DoesNotContain("ai_transcripts", handler.Bodies[1], StringComparison.Ordinal);
+    }
+
+    /// <summary>The statistics' two new numbers, read where they are and zero where an older server sends neither.</summary>
+    [Fact]
+    public async Task TheRecordingsAsTextAreInTheStatistics()
+    {
+        var (client, _) = Client(new Fake().Then(HttpStatusCode.OK, """
+            {"generated_at": "2026-10-02T10:00:00Z",
+             "totals": {"members": 2, "messages": 10, "board_notes": 0,
+                        "ai": {"questions": 3, "transcripts": 2, "transcript_duration_ms": 95000}},
+             "members": [{"user_id": 7, "display_name": "Anna", "messages": 6, "ai": {"questions": 1}}]}
+            """));
+        var stats = (await client.Stats()).Value!;
+        Assert.Equal(2, stats.Totals.Ai!.Transcripts);
+        Assert.Equal(95_000, stats.Totals.Ai.TranscriptDurationMs);
+        Assert.Equal(0, stats.Members![0].Ai!.Transcripts);
     }
 }

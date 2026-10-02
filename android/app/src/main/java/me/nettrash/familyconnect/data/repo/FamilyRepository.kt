@@ -316,6 +316,11 @@ class FamilyRepository @Inject constructor(
                 // the question (protocol.md, "Consenting to the
                 // assistant").
                 processor = result.value.assistant?.processor,
+                // Whether a recording can be turned into text here, and
+                // the largest stored copy the server will send
+                // (docs/protocol.md, "Transcripts on request").
+                transcribe = result.value.assistant?.transcribe == true,
+                transcribeMaxBytes = result.value.assistant?.transcribeMaxBytes,
             )
             // …and what this FAMILY allows, which is a different question
             // with a different answer and its own owner-only switch —
@@ -326,6 +331,9 @@ class FamilyRepository @Inject constructor(
             settings.setFamilyAiHistory(result.value.family.aiHistory)
             settings.setFamilyAiVision(result.value.family.aiVision)
             settings.setFamilyAiHistoryPhotos(result.value.family.aiHistoryPhotos)
+            // The owner's transcripts switch, for the bubbles: whether
+            // another member's recording may be offered "Show text".
+            settings.setFamilyAiTranscripts(result.value.family.aiTranscripts)
             // The second apply of the same complete state-set. Idempotent
             // and last-writer-wins, which is why the fixed resync order
             // (/me, then /families/mine) needs no coordination — and why
@@ -438,6 +446,20 @@ class FamilyRepository @Inject constructor(
      * it — the protocol asks for the switch and its sentence, nothing more.
      */
     suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> = familyApi.setAiFaces(enabled)
+
+    /**
+     * Owner-only: the transcripts switch (docs/protocol.md, "Transcripts on
+     * request"). Mirrored like the others so the owner's own bubbles agree
+     * with the server at once — no frame will tell this device what it
+     * just did itself.
+     */
+    suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse> {
+        val result = familyApi.setAiTranscripts(enabled)
+        if (result is ApiResult.Ok) {
+            settings.setFamilyAiTranscripts(result.value.family.aiTranscripts)
+        }
+        return result
+    }
 
     /**
      * My own birthday, mirrored onto my roster row.

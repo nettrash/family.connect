@@ -173,6 +173,8 @@ pub struct FamilyPatch {
     pub ai_greeting: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_faces: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_transcripts: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1337,6 +1339,133 @@ pub async fn draw_backdrop(token: &str, note_id: i64) -> Result<Note, ApiError> 
     Ok(response.note)
 }
 
+/// How long asking for a recording's text may take before this client
+/// stops waiting: its OWN deadline, never an ordinary request's — the
+/// provider listens to the whole recording first, and the protocol's floor
+/// for it is 90 s. Five minutes is the reference proxy's own read timeout
+/// on this route, so waiting longer could only wait on a closed connection.
+/// Giving up loses nothing: the server finishes a stored-bytes request and
+/// keeps its answer, so asking again later is answered at once
+/// (docs/protocol.md, "Transcripts on request").
+pub const TRANSCRIPT_DEADLINE_MS: u32 = 300_000;
+
+/// `POST /chats/{id}/messages/{id}/attachments/{id}/transcript` — the text
+/// of a voice note or an audio file, from the server's STORED bytes.
+///
+/// The body is `{}`: anything that is not `multipart/form-data` asks for
+/// the stored copy. The answer is this asker's alone.
+pub async fn transcript(
+    token: &str,
+    chat_id: i64,
+    message_id: i64,
+    attachment_id: i64,
+) -> Result<fc_text::transcript::Transcript, ApiError> {
+    transcript_within(
+        token,
+        chat_id,
+        message_id,
+        attachment_id,
+        None,
+        TRANSCRIPT_DEADLINE_MS,
+    )
+    .await
+}
+
+/// The name the supplied sound's part goes under, as the protocol names it.
+pub const SUPPLIED_PART: &str = "audio";
+
+/// The type the supplied sound's part declares: AAC in an MPEG-4 container,
+/// the one shape the server takes.
+pub const SUPPLIED_TYPE: &str = "audio/mp4";
+
+/// The same request with SOUND THIS DEVICE SUPPLIED — the sound track of a
+/// video, or of an audio file the server's stored copy will not do for —
+/// as `multipart/form-data` with one part, [`SUPPLIED_PART`], an M4A
+/// (fc_text::transcript_sound). The server keeps nothing of the answer, so
+/// asking again asks the provider again; this device keeps it instead.
+pub async fn transcript_of_sound(
+    token: &str,
+    chat_id: i64,
+    message_id: i64,
+    attachment_id: i64,
+    sound: &Blob,
+) -> Result<fc_text::transcript::Transcript, ApiError> {
+    transcript_within(
+        token,
+        chat_id,
+        message_id,
+        attachment_id,
+        Some(sound),
+        TRANSCRIPT_DEADLINE_MS,
+    )
+    .await
+}
+
+/// `sound` as the multipart form the server reads: one part named `audio`,
+/// declared `audio/mp4`, under a name ending `.m4a`. The browser writes the
+/// boundary and the part's headers itself, and sets the request's
+/// `Content-Type` to match — which is why the request names none.
+fn supplied_form(sound: &Blob) -> Result<web_sys::FormData, ApiError> {
+    // Never shown as it is: a request with no code is "try again".
+    let unmade = |error: wasm_bindgen::JsValue| ApiError::Network(format!("{error:?}"));
+    let sound = if sound.type_() == SUPPLIED_TYPE {
+        sound.clone()
+    } else {
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type(SUPPLIED_TYPE);
+        Blob::new_with_blob_sequence_and_options(&js_sys::Array::of1(sound), &options)
+            .map_err(unmade)?
+    };
+    let form = web_sys::FormData::new().map_err(unmade)?;
+    form.append_with_blob_and_filename(SUPPLIED_PART, &sound, "sound.m4a")
+        .map_err(unmade)?;
+    Ok(form)
+}
+
+async fn transcript_within(
+    token: &str,
+    chat_id: i64,
+    message_id: i64,
+    attachment_id: i64,
+    sound: Option<&Blob>,
+    deadline_ms: u32,
+) -> Result<fc_text::transcript::Transcript, ApiError> {
+    let controller = controller()?;
+    let url = path(&format!(
+        "/chats/{chat_id}/messages/{message_id}/attachments/{attachment_id}/transcript"
+    ));
+    let request = bearer(Request::post(&url), token).abort_signal(Some(&controller.signal()));
+    let request = match sound {
+        None => request.json(&serde_json::json!({})),
+        Some(sound) => request.body(wasm_bindgen::JsValue::from(supplied_form(sound)?)),
+    }
+    .map_err(network)?;
+    let attempt = async {
+        let response: TranscriptResponse = read(request.send().await.map_err(network)?).await?;
+        Ok(fc_text::transcript::Transcript {
+            text: response.transcript.text,
+            language: response
+                .transcript
+                .language
+                .filter(|language| !language.trim().is_empty()),
+        })
+    };
+    within(controller, deadline_ms, attempt).await
+}
+
+#[derive(Debug, Deserialize)]
+struct TranscriptResponse {
+    transcript: TranscriptBody,
+}
+
+/// `text` is always present — `""` is silence, an answer.
+#[derive(Debug, Deserialize)]
+struct TranscriptBody {
+    text: String,
+    #[serde(default)]
+    language: Option<String>,
+}
+
 /// `DELETE /families/mine/board/notes/{id}` — the author's; idempotent.
 pub async fn delete_note(token: &str, note_id: i64) -> Result<(), ApiError> {
     let url = path(&format!("/families/mine/board/notes/{note_id}"));
@@ -1878,6 +2007,198 @@ mod tests {
         assert_eq!(
             person,
             serde_json::json!({"reported_user_id": 9, "reason": "harassment"})
+        );
+    }
+
+    /// THE TRANSCRIPT CALL: the stored-bytes shape (`POST`, a JSON `{}`
+    /// that is not multipart), the answer read as given — silence is `""`
+    /// and an answer — and every refusal kept as the code it is.
+    #[wasm_bindgen_test]
+    async fn a_transcript_is_asked_for_the_stored_bytes() {
+        use crate::fake_server::{Answer, FakeServer};
+        const ROUTE: &str = "/chats/42/messages/1338/attachments/34/transcript";
+        let answer = std::rc::Rc::new(std::cell::RefCell::new(Answer::Json(
+            200,
+            serde_json::json!({"transcript": {"text": "Dinner at seven", "language": "en"}}),
+        )));
+        let server = {
+            let answer = answer.clone();
+            FakeServer::answering(move |asked| {
+                if asked.path == ROUTE {
+                    std::mem::replace(&mut *answer.borrow_mut(), Answer::Nothing)
+                } else {
+                    Answer::refusal(404, "not_found")
+                }
+            })
+        };
+        let said = transcript("t", 42, 1338, 34).await.expect("an answer");
+        assert_eq!(said.text, "Dinner at seven");
+        assert_eq!(said.language.as_deref(), Some("en"));
+        let asked = server.asked(&[ROUTE]);
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].method, "POST");
+        assert!(
+            asked[0].content_type.starts_with("application/json"),
+            "not multipart: {}",
+            asked[0].content_type
+        );
+        assert_eq!(asked[0].json(), serde_json::json!({}));
+
+        // Silence, with no language named.
+        *answer.borrow_mut() = Answer::Json(200, serde_json::json!({"transcript": {"text": ""}}));
+        let silence = transcript("t", 42, 1338, 34).await.expect("an answer");
+        assert!(silence.is_silence());
+        assert_eq!(silence.language, None);
+
+        for (status, code) in [
+            (400, "transcript_refused"),
+            (400, "not_transcribable"),
+            (403, "transcript_not_allowed"),
+            (403, "transcripts_unavailable"),
+            (403, "assistant_consent_required"),
+            (500, "internal"),
+        ] {
+            *answer.borrow_mut() = Answer::refusal(status, code);
+            assert_eq!(
+                transcript("t", 42, 1338, 34).await.unwrap_err().code(),
+                Some(code)
+            );
+        }
+        // No connection at all: no code, which is worth another try.
+        *answer.borrow_mut() = Answer::Nothing;
+        assert!(matches!(
+            transcript("t", 42, 1338, 34).await,
+            Err(ApiError::Network(_))
+        ));
+    }
+
+    /// THE SUPPLIED-SOUND SHAPE: `multipart/form-data` with exactly one
+    /// part, named `audio`, declared `audio/mp4` under an `.m4a` name, the
+    /// sound byte for byte in it — and the boundary the browser chose named
+    /// in the request's own `Content-Type`. A blob that came without a type
+    /// goes declared all the same; the answer and every refusal are read as
+    /// for the stored-bytes shape.
+    #[wasm_bindgen_test]
+    async fn a_transcript_of_supplied_sound_is_one_audio_part() {
+        use crate::fake_server::{Answer, FakeServer};
+        const ROUTE: &str = "/chats/42/messages/1338/attachments/36/transcript";
+        let answer = std::rc::Rc::new(std::cell::RefCell::new(Answer::Json(
+            200,
+            serde_json::json!({"transcript": {"text": "Look at the snow"}}),
+        )));
+        let server = {
+            let answer = answer.clone();
+            FakeServer::answering(move |asked| {
+                if asked.path == ROUTE {
+                    std::mem::replace(&mut *answer.borrow_mut(), Answer::Nothing)
+                } else {
+                    Answer::refusal(404, "not_found")
+                }
+            })
+        };
+        let sound: Vec<u8> = b"\0\0\0\x18ftypM4A \0\0\0\0M4A mp42"
+            .iter()
+            .copied()
+            .chain((0..=255u8).cycle().take(3_000))
+            .collect();
+        let find = |haystack: &[u8], needle: &[u8]| {
+            haystack
+                .windows(needle.len())
+                .filter(|window| *window == needle)
+                .count()
+        };
+        for declared in ["audio/mp4", ""] {
+            let options = web_sys::BlobPropertyBag::new();
+            options.set_type(declared);
+            let blob = Blob::new_with_u8_array_sequence_and_options(
+                &js_sys::Array::of1(&js_sys::Uint8Array::from(sound.as_slice())),
+                &options,
+            )
+            .unwrap();
+            *answer.borrow_mut() = Answer::Json(
+                200,
+                serde_json::json!({"transcript": {"text": "Look at the snow"}}),
+            );
+            let said = transcript_of_sound("t", 42, 1338, 36, &blob)
+                .await
+                .expect("an answer");
+            assert_eq!(said.text, "Look at the snow");
+            assert_eq!(said.language, None);
+            let asked = server.asked(&[ROUTE]).pop().unwrap();
+            assert_eq!(asked.method, "POST");
+            let boundary = asked
+                .content_type
+                .strip_prefix("multipart/form-data; boundary=")
+                .unwrap_or_else(|| panic!("multipart: {}", asked.content_type))
+                .to_string();
+            let body = &asked.body;
+            let opening = format!("--{boundary}\r\n");
+            let closing = format!("--{boundary}--");
+            assert_eq!(find(body, opening.as_bytes()), 1, "exactly one part");
+            assert_eq!(find(body, closing.as_bytes()), 1);
+            assert_eq!(
+                find(
+                    body,
+                    b"Content-Disposition: form-data; name=\"audio\"; filename=\"sound.m4a\"\r\n"
+                ),
+                1
+            );
+            assert_eq!(
+                find(body, b"Content-Type: audio/mp4\r\n\r\n"),
+                1,
+                "{declared:?}"
+            );
+            assert_eq!(find(body, &sound), 1, "the sound, byte for byte");
+        }
+        assert_eq!(server.asked(&[ROUTE]).len(), 2);
+
+        for (status, code) in [
+            (400, "not_transcribable"),
+            (400, "validation"),
+            (403, "assistant_consent_required"),
+            (500, "internal"),
+        ] {
+            *answer.borrow_mut() = Answer::refusal(status, code);
+            let blob = Blob::new_with_u8_array_sequence(&js_sys::Array::of1(
+                &js_sys::Uint8Array::from(sound.as_slice()),
+            ))
+            .unwrap();
+            assert_eq!(
+                transcript_of_sound("t", 42, 1338, 36, &blob)
+                    .await
+                    .unwrap_err()
+                    .code(),
+                Some(code)
+            );
+        }
+    }
+
+    /// Its own deadline, of at least the protocol's 90 s and never the
+    /// ten seconds a message gets — and past it the request is given up
+    /// as a failure to try again, not left hanging.
+    #[wasm_bindgen_test]
+    async fn a_transcript_has_a_deadline_of_its_own() {
+        use crate::fake_server::{Answer, FakeServer};
+        const ROUTE: &str = "/chats/42/messages/1338/attachments/35/transcript";
+        const { assert!(TRANSCRIPT_DEADLINE_MS >= 90_000) };
+        assert_ne!(TRANSCRIPT_DEADLINE_MS, SEND_DEADLINE_MS);
+        let _server = FakeServer::answering(|asked| {
+            if asked.path == ROUTE {
+                Answer::Hang
+            } else {
+                Answer::refusal(404, "not_found")
+            }
+        });
+        let gave_up = transcript_within("t", 42, 1338, 35, None, 50).await;
+        assert_eq!(
+            gave_up,
+            Err(ApiError::Network(
+                "The server did not answer in time.".to_string()
+            ))
+        );
+        assert_eq!(
+            fc_text::transcript::after_refusal(gave_up.unwrap_err().code()),
+            fc_text::transcript::Next::Fail(fc_text::transcript::Failure::TryAgain)
         );
     }
 }

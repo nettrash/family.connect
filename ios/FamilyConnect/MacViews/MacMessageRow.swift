@@ -783,6 +783,14 @@ struct MacMessageRow: View {
                         // rule the single block explains.
                         .onTapGesture(count: 2) { quickHeart() }
                         .onTapGesture(count: 1) { onOpenAttachment(media[0]) }
+                    // Each video in the pile gets its own "Show text" under
+                    // the pile, numbered when there are several so each
+                    // says which it is the text of.
+                    ForEach(TranscriptDoor.pileVideos(media)) { video in
+                        TranscriptSection(
+                            attachment: video.attachment, subject: transcriptSubject,
+                            isMine: attachmentsOnTint, videoNumber: video.number)
+                    }
                 } else if let single = media.first {
                     singleAttachment(single)
                 }
@@ -802,41 +810,68 @@ struct MacMessageRow: View {
             LocationAttachmentView(attachment: attachment, isMine: attachmentsOnTint)
         } else if attachment.isAudio {
             // The player IS the interaction; a click belongs to its
-            // own controls, so no open/heart pair here.
-            MacAttachmentBlock(attachment: attachment, isMine: attachmentsOnTint)
+            // own controls, so no open/heart pair here. The text of the
+            // recording, once somebody asks for it, sits under it
+            // (docs/protocol.md, "Transcripts on request").
+            VStack(alignment: .leading, spacing: 4) {
+                MacAttachmentBlock(attachment: attachment, isMine: attachmentsOnTint)
+                TranscriptSection(
+                    attachment: attachment, subject: transcriptSubject, isMine: attachmentsOnTint)
+            }
+        } else if attachment.isVideo {
+            // A video's text sits under its tile, outside the tile's drag
+            // and click pair, as a voice note's sits under its player.
+            VStack(alignment: .leading, spacing: 4) {
+                mediaBlock(attachment)
+                TranscriptSection(
+                    attachment: attachment, subject: transcriptSubject, isMine: attachmentsOnTint)
+            }
         } else {
-            MacAttachmentBlock(
-                attachment: attachment, isMine: attachmentsOnTint, onBalloon: !isMediaOnly)
-                // Drag out to the Finder, which on a Mac is what people try
-                // on a picture before they look for a menu. A PROMISE, not
-                // a URL — `DraggedAttachment` has the whole reason, and it
-                // is not a small one: the bytes this tile is DRAWING are
-                // usually the 600px preview, and handing those over would
-                // put the wrong picture on somebody's Desktop under the
-                // right name.
-                //
-                // Innermost of the three modifiers on purpose, so the tap
-                // pair below keeps the exact order and precedence it had
-                // (count 2 before count 1, both above this view). A drag
-                // needs pointer movement and a click does not, so they do
-                // not compete — but the ordering here is the part a human
-                // has to confirm at a trackpad, because a drag cannot be
-                // synthesised in a test.
-                //
-                // Only this branch, which is exactly photo / video / file:
-                // a location has no bytes and a voice note's tile is a
-                // scrubber. `DraggedAttachment.isDraggable` is that rule
-                // written down, and refuses both again on the way through.
-                .draggable(dragPromise(for: attachment))
-                // Count 2 BEFORE count 1, and both as onTapGesture:
-                // that is what makes them exclusive. A bare
-                // single-click handler on a CHILD masks the
-                // balloon's double-click outright, and
-                // double-clicking a photo would open it AND heart
-                // it — the same bug the phone had.
-                .onTapGesture(count: 2) { quickHeart() }
-                .onTapGesture(count: 1) { onOpenAttachment(attachment) }
+            mediaBlock(attachment)
         }
+    }
+
+    /// The message, as "Show text" under a recording needs it
+    /// (docs/protocol.md, "Transcripts on request").
+    private var transcriptSubject: TranscriptSubject {
+        TranscriptSubject(
+            chatID: message.chatID, messageID: message.serverID, senderID: message.senderID)
+    }
+
+    /// A photo, video or file tile with its drag-out and its click pair.
+    @ViewBuilder
+    private func mediaBlock(_ attachment: AttachmentDTO) -> some View {
+        MacAttachmentBlock(
+            attachment: attachment, isMine: attachmentsOnTint, onBalloon: !isMediaOnly)
+            // Drag out to the Finder, which on a Mac is what people try
+            // on a picture before they look for a menu. A PROMISE, not
+            // a URL — `DraggedAttachment` has the whole reason, and it
+            // is not a small one: the bytes this tile is DRAWING are
+            // usually the 600px preview, and handing those over would
+            // put the wrong picture on somebody's Desktop under the
+            // right name.
+            //
+            // Innermost of the three modifiers on purpose, so the tap
+            // pair below keeps the exact order and precedence it had
+            // (count 2 before count 1, both above this view). A drag
+            // needs pointer movement and a click does not, so they do
+            // not compete — but the ordering here is the part a human
+            // has to confirm at a trackpad, because a drag cannot be
+            // synthesised in a test.
+            //
+            // Only this branch, which is exactly photo / video / file:
+            // a location has no bytes and a voice note's tile is a
+            // scrubber. `DraggedAttachment.isDraggable` is that rule
+            // written down, and refuses both again on the way through.
+            .draggable(dragPromise(for: attachment))
+            // Count 2 BEFORE count 1, and both as onTapGesture:
+            // that is what makes them exclusive. A bare
+            // single-click handler on a CHILD masks the
+            // balloon's double-click outright, and
+            // double-clicking a photo would open it AND heart
+            // it — the same bug the phone had.
+            .onTapGesture(count: 2) { quickHeart() }
+            .onTapGesture(count: 1) { onOpenAttachment(attachment) }
     }
 
     /// A sticker: the picture alone, in the one fixed box every sticker on

@@ -1031,6 +1031,13 @@ struct MessageBubbleView: View {
     /// files, audio or location stack under it as the rows they have
     /// always been. The pile opens its first item; the viewer pages from
     /// there. No new image pipeline — the pile draws the same previews.
+    /// The message, as "Show text" under a voice note, an audio file or a
+    /// video needs it (docs/protocol.md, "Transcripts on request").
+    private var transcriptSubject: TranscriptSubject {
+        TranscriptSubject(
+            chatID: message.chatID, messageID: message.serverID, senderID: message.senderID)
+    }
+
     @ViewBuilder
     private func attachmentBlock(_ attachments: [AttachmentDTO]) -> some View {
         if isSticker, let attachment = attachments.first {
@@ -1042,7 +1049,8 @@ struct MessageBubbleView: View {
                 onLongPress: { onLongPress() },
                 onDoubleTap: { toggleQuickHeart() },
                 isMine: attachmentsOnTint,
-                onBalloon: !isMediaOnly)
+                onBalloon: !isMediaOnly,
+                transcriptSubject: transcriptSubject)
         } else {
             let media = AttachmentAlbum.media(of: attachments)
             let rows = AttachmentAlbum.rows(of: attachments)
@@ -1054,6 +1062,14 @@ struct MessageBubbleView: View {
                         onLongPress: { onLongPress() },
                         onDoubleTap: { toggleQuickHeart() },
                         isMine: attachmentsOnTint)
+                    // Each video in the pile gets its own "Show text" under
+                    // the pile, numbered when there are several so each
+                    // says which it is the text of.
+                    ForEach(TranscriptDoor.pileVideos(media)) { video in
+                        TranscriptSection(
+                            attachment: video.attachment, subject: transcriptSubject,
+                            isMine: attachmentsOnTint, videoNumber: video.number)
+                    }
                 } else if let single = media.first {
                     AttachmentView(
                         attachment: single,
@@ -1061,7 +1077,8 @@ struct MessageBubbleView: View {
                         onLongPress: { onLongPress() },
                         onDoubleTap: { toggleQuickHeart() },
                         isMine: attachmentsOnTint,
-                        onBalloon: !isMediaOnly)
+                        onBalloon: !isMediaOnly,
+                        transcriptSubject: transcriptSubject)
                 }
                 ForEach(rows) { attachment in
                     AttachmentView(
@@ -1073,7 +1090,8 @@ struct MessageBubbleView: View {
                         // A row always keeps its balloon (isMediaOnly is
                         // false whenever one is present), so this is
                         // always true — one rule, passed everywhere.
-                        onBalloon: !isMediaOnly)
+                        onBalloon: !isMediaOnly,
+                        transcriptSubject: transcriptSubject)
                 }
             }
         }

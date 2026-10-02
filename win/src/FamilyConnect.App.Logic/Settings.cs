@@ -160,6 +160,11 @@ public static class SettingsText
         {
             parts.Add(say.Plural("%lld pictures from the assistant", images.Images, images.Images));
         }
+        if (member.Ai is { Transcripts: > 0 } heard)
+        {
+            // Charged to the member who ASKED, whoever's voice it was (docs/protocol.md, "Family statistics").
+            parts.Add(say.Plural("%lld recordings as text", heard.Transcripts, heard.Transcripts));
+        }
         return parts.Count == 0 ? say.Get("Words only") : string.Join(" · ", parts);
     }
 

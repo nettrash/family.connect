@@ -26,6 +26,14 @@
 //! A transcode is minutes of work for a long clip, so whoever asks for one
 //! holds a [`Job`]: it is told how far the work has got, and it can be told
 //! to stop — by the person, or because the chat it was for has gone.
+//!
+//! The same reader, writer and AAC encoder take a RECORDING's sound out for
+//! its text ([`sound_for_text`], docs/protocol.md, "Transcripts on
+//! request"), where the server's stored copy will not do: a video's AAC
+//! copied frame for frame into an M4A, anything else decoded and encoded
+//! again at 64 kbit/s mono — fc_text::transcript_sound decides which. That
+//! path answers why it could not, rather than None: there is no original to
+//! fall back on, only a line under the player.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -36,6 +44,8 @@ use fc_text::media_probe::{self, AudioProbe};
 use fc_text::mp4::{self, Brand, Media};
 use fc_text::mp4_read::{self, Movie};
 use fc_text::transcode::{self, AudioRoute, KEYFRAME_SECONDS};
+use fc_text::transcript::Failure as TextFailure;
+use fc_text::transcript_sound::{self, Extraction, Found, TEXT_BITRATE, TEXT_CHANNELS};
 use futures::channel::mpsc;
 use futures::future::{select, Either};
 use futures::StreamExt;
@@ -1418,6 +1428,187 @@ fn colour(space: &JsValue) -> Option<mp4::Colour> {
     })
 }
 
+// --- a recording's sound, for its text ----------------------------------------------------------
+
+/// The sound of `file` — a video or a sound file the chat holds, of type
+/// `mime` where its metadata says — as an M4A of AAC to send for its text,
+/// within `max_bytes` (docs/protocol.md, "Transcripts on request"). What
+/// becomes of it is fc_text::transcript_sound's decision; this is the part
+/// only a browser can do, with the same reader, writer and encoder a picked
+/// file is prepared with. Nothing of a picture is ever decoded.
+///
+/// - An MP4 or QuickTime file is read by its index. AAC that fits is
+///   COPIED: its frames read by the offsets the index gives and written
+///   behind a new index, byte for byte.
+/// - Anything else — AAC too big to copy, ALAC, an Ogg, MP3 or WAV file — is
+///   decoded by the browser's own `decodeAudioData` (AAC from the frames
+///   copied out first, so the video around them is never read), mixed down
+///   to one channel, and encoded as 64 kbit/s AAC-LC.
+///
+/// The error is why there is nothing to send: [`TextFailure::TooLong`] or
+/// [`TextFailure::Unreadable`], each terminal.
+pub async fn sound_for_text(
+    file: &Blob,
+    mime: Option<&str>,
+    max_bytes: u64,
+) -> Result<Blob, TextFailure> {
+    let index = movie(file).await;
+    let (found, copy) = match &index {
+        Some(index) => match transcript_sound::in_movie(index) {
+            Some(sound) => (Some(sound.found), sound.copy),
+            // A film with no sound track: nothing to hear.
+            None => (None, None),
+        },
+        None => {
+            let container = mime.map(fc_text::media::essence).unwrap_or_default();
+            // A video is an MP4 or a QuickTime movie, or it is nothing
+            // this client can read.
+            if container.starts_with("video/") {
+                (None, None)
+            } else {
+                let probe = probe_audio(file, &container).await;
+                let found = Found {
+                    copy_bytes: None,
+                    duration_ms: probe.source.duration_ms,
+                    sample_rate: probe.sample_rate,
+                    channels: probe.source.channels,
+                };
+                (Some(found), None)
+            }
+        }
+    };
+    let mut plan = transcript_sound::extraction(found.as_ref(), max_bytes, true);
+    if let Extraction::Encode { sample_rate } = plan {
+        if !webcodecs::aac_supported(sample_rate, TEXT_CHANNELS, TEXT_BITRATE).await {
+            plan = transcript_sound::extraction(found.as_ref(), max_bytes, false);
+        }
+    }
+    let made = match plan {
+        Extraction::TooLong => return Err(TextFailure::TooLong),
+        Extraction::Unreadable => return Err(TextFailure::Unreadable),
+        Extraction::Copy => {
+            let (Some(index), Some(copy)) = (index.as_ref(), copy.as_ref()) else {
+                return Err(TextFailure::Unreadable);
+            };
+            copied(file, index, copy)
+                .await
+                .ok_or(TextFailure::Unreadable)?
+        }
+        Extraction::Encode { sample_rate } => {
+            // AAC is decoded from its own frames, copied out of the file:
+            // the browser's decoder is handed a few megabytes of sound, not
+            // the gigabyte of video around it.
+            let source = match (index.as_ref(), copy.as_ref()) {
+                (Some(index), Some(copy)) => copied(file, index, copy)
+                    .await
+                    .ok_or(TextFailure::Unreadable)?,
+                _ => file.clone(),
+            };
+            let found = found.unwrap_or_default();
+            let whole = AudioSource {
+                container: String::new(),
+                codec: String::new(),
+                channels: found.channels,
+                bitrate: None,
+                size_bytes: source.size() as u64,
+                duration_ms: found.duration_ms,
+            };
+            if !could_decode(&whole, sample_rate) {
+                return Err(TextFailure::Unreadable);
+            }
+            one_voice(&source, sample_rate)
+                .await
+                .ok_or(TextFailure::Unreadable)?
+        }
+    };
+    if transcript_sound::fits(made.size() as u64, max_bytes) {
+        Ok(made)
+    } else {
+        Err(TextFailure::TooLong)
+    }
+}
+
+/// `copy`'s frames, read out of `file` by the offsets `index` gives for
+/// them, behind an M4A's own index — the sound as it was, and only the
+/// sound.
+async fn copied(file: &Blob, index: &Movie, copy: &mp4::Track) -> Option<Blob> {
+    let track = index.audio()?;
+    if track.samples.len() != copy.samples.len() {
+        return None;
+    }
+    let mut reader = Reader::new(file);
+    let mut parts = Vec::with_capacity(track.samples.len());
+    for sample in &track.samples {
+        let bytes = reader.read(sample.offset, sample.size).await?;
+        // A copy of its own: a view would keep its whole window.
+        parts.push(JsValue::from(bytes.slice(0, bytes.length())));
+    }
+    let layout = mp4::layout(std::slice::from_ref(copy), Brand::M4a);
+    let blob = assemble(
+        &layout.header,
+        layout
+            .order
+            .iter()
+            .map(|&(_, sample)| parts[sample].clone()),
+        "audio/mp4",
+    )?;
+    (blob.size() as u64 == layout.total_len).then_some(blob)
+}
+
+/// `file` decoded whole by the browser at `sample_rate` — which also
+/// resamples it, from an 8 kHz phone call or a 16 kHz voice note — its
+/// channels mixed down to one, and encoded at [`TEXT_BITRATE`]. None when
+/// the browser does not decode it or does not encode the result.
+async fn one_voice(file: &Blob, sample_rate: u32) -> Option<Blob> {
+    let buffer = JsFuture::from(file.array_buffer()).await.ok()?;
+    let context =
+        web_sys::OfflineAudioContext::new_with_number_of_channels_and_length_and_sample_rate(
+            1,
+            1,
+            sample_rate as f32,
+        )
+        .ok()?;
+    let decoding = context.decode_audio_data(buffer.unchecked_ref()).ok()?;
+    let decoded: web_sys::AudioBuffer = JsFuture::from(decoding).await.ok()?.dyn_into().ok()?;
+    let channels = decoded.number_of_channels();
+    let frames = decoded.length();
+    let rate = decoded.sample_rate().round() as u32;
+    if channels == 0 || frames == 0 || rate == 0 {
+        return None;
+    }
+    let samples: &Samples = decoded.unchecked_ref();
+    let planes: Vec<Float32Array> = (0..channels)
+        .map(|index| samples.channel(index).ok())
+        .collect::<Option<_>>()?;
+    let mut at = 0u32;
+    let blocks = move || {
+        if at >= frames {
+            return None;
+        }
+        let count = SOUND_BLOCK.min(frames - at);
+        let data = if planes.len() == 1 {
+            planes[0].slice(at, at + count)
+        } else {
+            let mut mixed = vec![0f32; count as usize];
+            for plane in &planes {
+                for (sum, sample) in mixed
+                    .iter_mut()
+                    .zip(plane.subarray(at, at + count).to_vec())
+                {
+                    *sum += sample;
+                }
+            }
+            let share = planes.len() as f32;
+            mixed.iter_mut().for_each(|sum| *sum /= share);
+            Float32Array::from(mixed.as_slice())
+        };
+        at += count;
+        Some((data, count))
+    };
+    let aac = aac_from_pcm(blocks, rate, TEXT_CHANNELS, TEXT_BITRATE).await?;
+    m4a(&aac)
+}
+
 /// What the tests of this module and of prep.rs make and read files with.
 #[cfg(test)]
 pub mod testing {
@@ -2741,5 +2932,172 @@ mod tests {
         assert!(!could_decode(&source(Some(60 * 60_000), 600 << 20), 48_000));
         assert!(could_decode(&source(None, 20 << 20), 48_000));
         assert!(!could_decode(&source(None, 100 << 20), 48_000));
+    }
+
+    // --- a recording's sound, for its text ------------------------------------------------------
+
+    const MAX: u64 = 26_214_400;
+
+    /// An M4A this client made for a transcript: index first, one sound
+    /// track, and nothing of a picture.
+    async fn sound_only(sound: &Blob) -> (Vec<u8>, Movie) {
+        assert_eq!(sound.type_(), "audio/mp4");
+        let bytes = whole(sound).await;
+        assert!(fc_text::media::matches_magic("audio/mp4", &bytes[..12]));
+        let (kinds, movie) = read(&bytes);
+        assert_eq!(kinds, vec![*b"ftyp", *b"moov", *b"mdat"], "the index first");
+        assert!(movie.video().is_none(), "nothing of the picture");
+        assert_eq!(movie.tracks.len(), 1);
+        (bytes, movie)
+    }
+
+    /// COPY, from a real QuickTime movie a phone's writer made: its AAC
+    /// frames come out byte for byte, behind an M4A's own index, and the
+    /// browser's decoder hears them — with or without an AAC encoder,
+    /// because nothing is encoded.
+    #[wasm_bindgen_test]
+    async fn a_videos_aac_is_copied_out_byte_for_byte() {
+        let (_, original) = read(QUICKTIME);
+        let from = original.audio().expect("the fixture has sound").clone();
+        for lack in [None, Some(without as Lack), Some(refusing as Lack)] {
+            let _stand = lack.map(|lack| lack("AudioEncoder"));
+            let source = blob(QUICKTIME, "video/quicktime");
+            let sound = sound_for_text(&source, Some("video/quicktime"), MAX)
+                .await
+                .expect("its sound");
+            let (bytes, movie) = sound_only(&sound).await;
+            let track = movie.audio().unwrap();
+            assert_eq!(track.samples.len(), from.samples.len());
+            for (made, read) in track.samples.iter().zip(&from.samples) {
+                let (at, was) = (made.offset as usize, read.offset as usize);
+                assert_eq!(
+                    &bytes[at..at + made.size as usize],
+                    &QUICKTIME[was..was + read.size as usize]
+                );
+            }
+            assert_eq!(
+                track.entry.as_ref().unwrap().config,
+                from.entry.as_ref().unwrap().config,
+                "the same decoder configuration"
+            );
+        }
+        let sound = sound_for_text(&blob(QUICKTIME, "video/quicktime"), None, MAX)
+            .await
+            .unwrap();
+        let decoded = heard(&sound, 48_000).await;
+        assert!(decoded.duration() > 0.2, "{} s", decoded.duration());
+    }
+
+    /// RE-ENCODE: AAC too big to copy within the ceiling is decoded from
+    /// its own frames and encoded again as one channel at 64 kbit/s — the
+    /// sound of a three-second clip, at under half its bytes — and a
+    /// browser that cannot encode AAC says so instead.
+    #[wasm_bindgen_test]
+    async fn sound_too_big_to_copy_is_re_encoded_to_one_channel() {
+        let clip = film(320, 180, 30, 3, 400_000, Some(128_000)).await;
+        let (_, movie) = read(&whole(&clip).await);
+        let copy = transcript_sound::copied_track(&movie).unwrap();
+        let copy_bytes = transcript_sound::m4a_bytes(&copy);
+        let max = copy_bytes - 1;
+        let sound = sound_for_text(&clip, Some("video/mp4"), max)
+            .await
+            .expect("re-encoded");
+        let made = sound.size() as u64;
+        assert!(
+            made <= max && made < copy_bytes * 2 / 3,
+            "{made} of {copy_bytes}"
+        );
+        let (_, made) = sound_only(&sound).await;
+        let track = made.audio().unwrap();
+        let config = mp4_read::audio_config(&track.entry.as_ref().unwrap().config).unwrap();
+        assert_eq!(
+            (config.object_type, config.channels, config.sample_rate),
+            (2, 1, 48_000),
+            "AAC-LC, one channel"
+        );
+        let rate = track.data_rate().unwrap();
+        assert!((40_000..=80_000).contains(&rate), "{rate} bit/s");
+        let decoded = heard(&sound, 48_000).await;
+        assert_eq!(decoded.number_of_channels(), 1);
+        assert!(
+            (2.9..=3.2).contains(&decoded.duration()),
+            "{} s",
+            decoded.duration()
+        );
+
+        for lack in [without as Lack, refusing as Lack] {
+            let _stand = lack("AudioEncoder");
+            assert_eq!(
+                sound_for_text(&clip, Some("video/mp4"), max).await.err(),
+                Some(TextFailure::Unreadable)
+            );
+            // …while one that fits is still copied.
+            assert!(sound_for_text(&clip, Some("video/mp4"), copy_bytes)
+                .await
+                .is_ok());
+        }
+    }
+
+    /// A sound file with no index — WAV here, and Ogg, MP3 and the rest the
+    /// same way — is decoded whole by the browser, which also brings a
+    /// 16 kHz voice up to a rate the encoder takes, and encoded at 64 kbit/s.
+    /// Too long for the ceiling even then is said without the work — with
+    /// an encoder or without one.
+    #[wasm_bindgen_test]
+    async fn a_sound_file_is_decoded_whole_and_too_long_is_said_first() {
+        let voice = fc_text::wav::encode(&noise(16_000 * 3, 16_000, 5), 16_000);
+        let file = blob(&voice, "audio/wav");
+        let sound = sound_for_text(&file, Some("audio/wav"), 40_000)
+            .await
+            .expect("re-encoded");
+        assert!(sound.size() as u64 <= 40_000);
+        let (_, made) = sound_only(&sound).await;
+        let config =
+            mp4_read::audio_config(&made.audio().unwrap().entry.as_ref().unwrap().config).unwrap();
+        assert_eq!((config.channels, config.sample_rate), (1, 48_000));
+        let decoded = heard(&sound, 48_000).await;
+        assert!(
+            (2.9..=3.2).contains(&decoded.duration()),
+            "{} s",
+            decoded.duration()
+        );
+
+        // Three seconds is 24 000 bytes at 64 kbit/s.
+        assert_eq!(
+            sound_for_text(&file, Some("audio/wav"), 20_000).await.err(),
+            Some(TextFailure::TooLong)
+        );
+        {
+            let _gone = without("AudioEncoder");
+            assert_eq!(
+                sound_for_text(&file, Some("audio/wav"), 20_000).await.err(),
+                Some(TextFailure::TooLong)
+            );
+            assert_eq!(
+                sound_for_text(&file, Some("audio/wav"), 40_000).await.err(),
+                Some(TextFailure::Unreadable)
+            );
+        }
+    }
+
+    /// Nothing to hear: a film with no sound track, a "video" that is no
+    /// movie at all, and sound the browser cannot decode.
+    #[wasm_bindgen_test]
+    async fn no_sound_is_nothing_to_send() {
+        let silent = film(160, 120, 30, 1, 200_000, None).await;
+        assert_eq!(
+            sound_for_text(&silent, Some("video/mp4"), MAX).await.err(),
+            Some(TextFailure::Unreadable)
+        );
+        let junk = blob(b"not a movie, and not a sound either", "video/mp4");
+        assert_eq!(
+            sound_for_text(&junk, Some("video/mp4"), MAX).await.err(),
+            Some(TextFailure::Unreadable)
+        );
+        let noise = blob(&[0x5Au8; 4_096], "audio/ogg");
+        assert_eq!(
+            sound_for_text(&noise, Some("audio/ogg"), MAX).await.err(),
+            Some(TextFailure::Unreadable)
+        );
     }
 }
