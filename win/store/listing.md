@@ -82,13 +82,31 @@ If you want your family's conversations off big-tech servers — and, when you a
 
 ## What's new in this version (≤ 1500)
 
-This one fixes two bad bugs, adds something only the Windows app has, and makes a conversation easier to read.
+This one adds a family sticker pack and makes videos smaller before they are sent.
 
+- Family stickers. Your family now has its own sticker pack. Anyone can add a picture to it from the Family view, and the sticker button beside the message box sends one with a single click. Whoever added a sticker, or the family owner, can remove it. WebP stickers need the WebP Image Extension, which comes with Windows 11.
+- Smaller videos. A video bigger than 720p at 30 frames a second is brought down to that before it is sent, so it uploads sooner and is quicker for everyone to download. Where Windows cannot prepare one, the original goes exactly as before, and "Preparing…" can be cancelled.
+- Where a server runs an assistant, a request its provider refuses now says so, and drawing an event backdrop now needs the same agreement as a message.
+
+*Written on 2026-10-02 against what `win/` gained since the v1.1 tag (issues #58 and #74) and the CHANGELOG v1.2.0
+entry. NEITHER HEADLINE HAS RUN ON WINDOWS (`win/README.md`): not one transcode, not one sticker decoded or made. So
+the video line promises only what the fallback guarantees — the original, exactly as 1.1 sent it, when preparing fails
+— and the sticker line claims no animation. Before submitting, on a real machine: send a portrait 1080p60 phone clip
+and see it arrive upright at 720p30, and add a JPEG and an animated WebP to the pack and send both. If either fails,
+take its line out rather than ship it. The assistant line keeps this listing's own wording, "where a server runs an
+assistant"; the Apple copy leaves the assistant out because it has never mentioned it.*
+
+*If the published package is still 1.1.115.0 (the update below was never released), append these lines too:
 - Settings opens again. On the released 1.1 it could not be opened at all — clicking Settings did nothing — which put the privacy switches, Change Password, Log Out and Delete Account out of reach. That is fixed.
 - The assistant asks, and you can answer. Where a server runs an assistant, nothing you write is sent to it until you have agreed — but on the released 1.1 the question never appeared, so there was no way to agree or to change your mind. It is now over the message box where it applies, and in Settings, which says who answers and takes your answer back whenever you want.
 - Start when you sign in. Family Connect can open in the notification area as you sign in to Windows, so a message or a call reaches you without opening it first. Settings, under Notifications.
 - Replies say what they answer again. A reply shows the name and the words it is answering — and the message under that one, where the exchange went two deep — and clicking the quote goes to that message in the conversation. Every reply used to read "Someone", with nothing under the name.
-- Your own words stay white, and a poll reads at a glance. In the dark theme your own messages were drawn in black on the blue; a poll's bars now carry the accent colour, with the option you chose at full strength.
+- Your own words stay white, and a poll reads at a glance. In the dark theme your own messages were drawn in black on the blue; a poll's bars now carry the accent colour, with the option you chose at full strength.*
+
+*That update opened with "This one fixes two bad bugs, adds something only the Windows app has, and makes a
+conversation easier to read." With all five of its lines this field is 2123 characters, over the 1,500 limit; the
+first two alone make it 1424, and they are the two a customer on 1.1.115.0 cannot work around. Its own note,
+unchanged:*
 
 *The published package (1.1.115.0) already carries the assistant's report, the attachment-name fix and the consent
 screen's code — it is only the consent screen nobody could reach — so none of those is listed as new here. One

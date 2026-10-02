@@ -1,0 +1,5 @@
+Family stickers: your family now has its own sticker pack. Anyone can add a picture, and the sticker button in every chat sends one with a tap. Animated stickers move on Android 9 and later.
+
+Smaller videos: any video bigger than 720p at 30 frames a second is brought down to that before it is sent, not only very large ones. HDR is converted to standard range.
+
+Sound files: FLAC and Ogg now go as AAC audio that plays on every device, and high-bitrate files are made smaller.

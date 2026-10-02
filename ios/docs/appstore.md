@@ -51,7 +51,34 @@ at 75 characters, and the 25 freed are better spent on terms the listing carries
 
 A private messenger for one family. Messages, photos, voice notes and calls. Start on our server, move to your own whenever you like. No ads, no analytics, no tracking.
 
+## What's New in 1.2 (949/4000 chars)
+
+FAMILY STICKERS. Your family now has a sticker pack of its own. Anyone in the family can add a picture to it from Photos or Files, and the sticker button in every chat sends one with a single tap. Stickers are drawn without a bubble, and animated ones move. Find the pack in Settings, under Manage Family (Family Members if you are not the owner); whoever added a sticker, or the family owner, can remove it.
+
+SMALLER VIDEOS. A video you send is brought down to 720p at 30 frames a second before it goes up, so it uploads sooner and is quicker for everyone to download. HDR video is converted to standard range. A video is never made larger than it was, and if one cannot be prepared, the original goes instead. Preparing can now be cancelled from the message box.
+
+SOUND FILES THAT PLAY. AIFF and FLAC files now arrive as audio that plays in the chat rather than as a file, and WAV files and high-bitrate MP3s are made smaller before they are sent.
+
+*Per-platform in App Store Connect, so the Mac has its own further down. Written on 2026-10-02
+against what the `ios/` tree gained since the v1.1 tag (`git log v1.1..HEAD`, issues #58 and #74)
+— the sticker panel, pack screen and viewer (`StickerPanel`, `StickerPackView`, `StickerViewer`,
+reached from `FamilyManageView`), media preparation (`MediaPrep`, `MediaTranscoder`, the Cancel in
+`ConversationView`) — and the CHANGELOG v1.2.0 entry comes from the same reading. Stickers depend
+on the SERVER'S VERSION rather than its configuration: the button and the pack screen appear only
+when `GET /families/mine` carries the pack limits, so fc.nettrash.me must run the 1.2 server
+before this is filed, or the first paragraph describes a button the reviewer never sees.*
+
+*The assistant is left out again, for the reason the 1.1 note gives — it exists only where a
+server's operator configures it — and that takes all of its 1.2 work with it: the provider-refused
+sentence, the `/draw` hint and the consent now asked before an event backdrop. Also left out:
+Ogg (Apple cannot decode it, so it still goes as a file), CAF (too obscure to name) and the voice
+note's explicit 64 kbit/s, which nobody hears. Nothing in this repository shows 1.1 was ever filed
+for iOS — 1.0 (119) is the last build this file records as reviewed — so if 1.1 never went out,
+paste the 1.1 text below this one: the two together are 1791 characters.*
+
 ## What's New in 1.1 (840/4000 chars)
+
+*History: the 1.1 field, superseded by 1.2 above and kept as written — paste it only where the 1.2 note says to.*
 
 THREADS. A reply chain opens on a screen of its own, so a side conversation stops burying the family chat.
 
@@ -789,7 +816,25 @@ keyword-overlap consequence: dropping "private", "chat" and "server" leaves
 
 A private messenger for one family, native on the Mac: a sidebar, chats in their own windows, photos, voice notes and calls. Start on our server, move to your own.
 
+### macOS What's New in 1.2 (884/4000 chars)
+
+FAMILY STICKERS. Your family now has a sticker pack of its own. Anyone in the family can add a picture to it, and the sticker button in every chat sends one with a single click. Stickers are drawn without a bubble, and animated ones move. Manage the pack from Family in the toolbar; whoever added a sticker, or the family owner, can remove it.
+
+SMALLER VIDEOS. A video you send is brought down to 720p at 30 frames a second before it goes up, so it uploads sooner and is quicker for everyone to download. HDR video is converted to standard range. A video is never made larger than it was, and if one cannot be prepared, the original goes instead. Preparing can now be cancelled from the message box.
+
+SOUND FILES THAT PLAY. AIFF and FLAC files now arrive as audio that plays in the chat rather than as a file, and WAV files and high-bitrate MP3s are made smaller before they are sent.
+
+*The Mac's own, from the same reading of `v1.1..HEAD` as the iOS field. The pack is managed from a
+sheet of its own, opened from the Family sheet the toolbar's Family button shows (`MacFamilyView`,
+"Family Stickers" → Manage…), and the Cancel is in `MacConversationView`. The assistant is left out
+for the iOS reason, which takes the Mac's one assistant fix with it: Draw a backdrop now reads
+"Drawing…" and ignores a second click (`MacBoardView`). Stickers need the 1.2 server on
+fc.nettrash.me, as on iOS. Nothing here may claim a quit Mac is notified or rung. If 1.1 never went
+out on the Mac, paste the 1.1 text below this one: the two together are 2037 characters.*
+
 ### macOS What's New in 1.1 (1151/4000 chars)
+
+*History: the 1.1 field, superseded by 1.2 above and kept as written — paste it only where the 1.2 note says to.*
 
 THREADS. A reply chain opens in its own place, so a side conversation stops burying the family chat.
 
