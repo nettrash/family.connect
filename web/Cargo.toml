@@ -133,6 +133,7 @@ web-sys = { version = "0.3", features = [
     "MouseEventInit",
     "StorageEvent",
     "CompositionEvent",
+    "FormData",
 ] }
 
 [dev-dependencies]

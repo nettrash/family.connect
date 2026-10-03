@@ -9,9 +9,9 @@ use fc_text::i18n::{t, tn};
 use yew::prelude::*;
 
 use crate::actions::Action;
-use crate::model::{AiFailure, Call, Message};
+use crate::model::{AiFailure, Assistant, Call, Family, Message};
 use crate::time;
-use crate::views::attachments::AttachmentStack;
+use crate::views::attachments::{AttachmentStack, Transcribing};
 use crate::views::avatar::Avatar;
 use crate::views::body::Body;
 use crate::views::poll::PollView;
@@ -30,6 +30,83 @@ pub const HEART: &str = "\u{2764}\u{FE0F}";
 /// `mine` is whether this device's person placed the call.
 pub fn call_record_line(call: &Call, mine: bool) -> String {
     fc_text::call_record::label(&call.outcome, call.duration_secs, call.video, mine)
+}
+
+/// What a chat knows about turning recordings into text — the same for
+/// every bubble in it (docs/protocol.md, "Transcripts on request").
+#[derive(Debug, Clone, PartialEq)]
+pub struct Transcription {
+    /// `assistant.transcribe`.
+    pub transcribe: bool,
+    /// `assistant.transcribe_max_bytes`.
+    pub max_bytes: Option<i64>,
+    /// `assistant.processor` — who the sound goes to.
+    pub processor: Option<String>,
+    /// The family's `ai_transcripts`.
+    pub family_allows: bool,
+    /// Raise the consent screen — the answer when this member has not
+    /// agreed to the assistant.
+    pub on_review_consent: Callback<()>,
+}
+
+impl Transcription {
+    /// Where there is anything to offer: a server that transcribes. None
+    /// draws no "Show text" anywhere, and costs a bubble nothing.
+    pub fn of(
+        assistant: Option<&Assistant>,
+        family: Option<&Family>,
+        on_review_consent: Callback<()>,
+    ) -> Option<Transcription> {
+        let assistant = assistant.filter(|assistant| assistant.transcribe)?;
+        Some(Transcription {
+            transcribe: true,
+            max_bytes: assistant.transcribe_max_bytes,
+            processor: assistant.processor.clone(),
+            family_allows: family.is_some_and(|family| family.ai_transcripts),
+            on_review_consent,
+        })
+    }
+
+    /// The attachments of `message` that offer "Show text" to `my_user_id`
+    /// in a chat of `chat_kind` (`fc_text::transcript::offers_show_text`).
+    pub fn offered(
+        &self,
+        message: &Message,
+        chat_kind: &str,
+        my_user_id: i64,
+        assistant_user_id: Option<i64>,
+    ) -> HashSet<i64> {
+        use fc_text::transcript::{offers_show_text, Asking, Recording, Server};
+        let server = Server {
+            transcribe: self.transcribe,
+            max_bytes: self.max_bytes,
+            processor: self.processor.as_deref(),
+        };
+        let asking = Asking {
+            chat_kind,
+            sender_id: message.sender_id,
+            my_user_id,
+            assistant_user_id,
+            family_allows: self.family_allows,
+        };
+        message
+            .attachments()
+            .iter()
+            .filter(|attachment| {
+                offers_show_text(
+                    &server,
+                    &asking,
+                    &Recording {
+                        id: attachment.id,
+                        kind: &attachment.kind,
+                        mime: attachment.mime.as_deref(),
+                        size: attachment.size,
+                    },
+                )
+            })
+            .map(|attachment| attachment.id)
+            .collect()
+    }
 }
 
 #[derive(Properties, PartialEq)]
@@ -96,6 +173,13 @@ pub struct BubbleProps {
     pub on_report_assistant: Callback<i64>,
     /// Asked to show the quoted message.
     pub on_jump: Callback<i64>,
+    /// "Show text" under a recording — None where nothing is offered.
+    #[prop_or_default]
+    pub transcription: Option<Transcription>,
+    /// What this device holds of this message's recordings' text, by
+    /// attachment id (`Transcripts::of`).
+    #[prop_or_default]
+    pub transcripts: HashMap<i64, fc_text::transcript::State>,
 }
 
 fn name_of(names: &HashMap<i64, String>, user: i64) -> String {
@@ -560,6 +644,57 @@ pub fn bubble(props: &BubbleProps) -> Html {
     // this page's 15px the way the Mac scales it to 13, so the proportion
     // is the phone's.
     let emoji_size = fc_text::emoji::display_font_size_for_body(&message.body, BODY_PX);
+    // "Show text" under a recording: offered by the server's rule as far as
+    // this client can know it, and whatever this device already holds
+    // drawn either way (docs/protocol.md, "Transcripts on request").
+    let transcribing = {
+        let chat_kind = if props.is_family_chat {
+            crate::model::Chat::FAMILY
+        } else if props.is_ai_chat {
+            crate::model::Chat::AI
+        } else {
+            crate::model::Chat::DIRECT
+        };
+        let offered = props
+            .transcription
+            .as_ref()
+            .map(|transcription| {
+                transcription.offered(message, chat_kind, me, props.assistant_user_id)
+            })
+            .unwrap_or_default();
+        (!offered.is_empty() || !props.transcripts.is_empty()).then(|| {
+            let on_action = props.on_action.clone();
+            let ask_consent = props
+                .transcription
+                .as_ref()
+                .map(|transcription| transcription.on_review_consent.clone())
+                .unwrap_or_default();
+            Transcribing {
+                offered,
+                held: props.transcripts.clone(),
+                on_show: {
+                    let attachments = message.attachments().to_vec();
+                    Callback::from(move |attachment_id: i64| {
+                        let Some(attachment) = attachments
+                            .iter()
+                            .find(|attachment| attachment.id == attachment_id)
+                        else {
+                            return;
+                        };
+                        on_action.emit(Action::ShowTranscript {
+                            chat_id,
+                            message_id: id,
+                            attachment: attachment.clone(),
+                            ask_consent: ask_consent.clone(),
+                        })
+                    })
+                },
+                on_hide: props
+                    .on_action
+                    .reform(|attachment_id| Action::HideTranscript { attachment_id }),
+            }
+        })
+    };
     let body = if let Some(call) = &message.call {
         let missed_incoming = call.outcome == "missed" && !mine;
         // Calling back is what a call record is FOR, half the time — and a
@@ -650,6 +785,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
                     mine={mine && !media_only}
                     on_open={props.on_action.reform(|(items, index)| Action::OpenViewer { items, index })}
                     on_notice={props.on_action.reform(Action::Fail)}
+                    {transcribing}
                 />
             }
             { body }
@@ -766,6 +902,8 @@ mod tests {
             on_report: Callback::noop(),
             on_report_assistant: Callback::noop(),
             on_jump: Callback::noop(),
+            transcription: None,
+            transcripts: Default::default(),
             sender_avatar_version: 0,
         }
     }
@@ -1428,6 +1566,335 @@ mod tests {
         }
     }
 
+    fn recording(id: i64, mime: &str) -> crate::model::Attachment {
+        crate::model::Attachment {
+            id,
+            kind: "audio".into(),
+            mime: Some(mime.into()),
+            size: Some(40_000),
+            duration_ms: Some(4_000),
+            ..Default::default()
+        }
+    }
+
+    fn transcription(family_allows: bool) -> Transcription {
+        Transcription {
+            transcribe: true,
+            max_bytes: Some(26_214_400),
+            processor: Some("Microsoft — Azure OpenAI".into()),
+            family_allows,
+            on_review_consent: Callback::noop(),
+        }
+    }
+
+    fn show_buttons(root: &Element) -> Vec<HtmlElement> {
+        let found = root.query_selector_all(".transcript-action").unwrap();
+        (0..found.length())
+            .filter_map(|at| found.item(at))
+            .filter_map(|node| node.dyn_into::<HtmlElement>().ok())
+            .collect()
+    }
+
+    /// "SHOW TEXT" IS DRAWN BY THE RULE: under a voice note this member may
+    /// ask about — their own anywhere; another member's in the family chat
+    /// only with the owner's switch on — whether the server sends it as
+    /// stored or this device supplies its sound (an Ogg file), and never on
+    /// a server with no transcription deployment. Pressed, it asks for THAT
+    /// attachment, with the metadata the device path needs.
+    #[wasm_bindgen_test]
+    async fn show_text_is_offered_by_the_rule_and_asks_for_its_attachment() {
+        let with = |sender: i64, family: bool, allows: bool, attachments| {
+            let actions = Rc::new(RefCell::new(Vec::new()));
+            let mut message = message(1338, sender, "");
+            message.attachments = Some(attachments);
+            let mut props = props(message, actions.clone());
+            props.is_family_chat = family;
+            props.transcription = Some(transcription(allows));
+            (props, actions)
+        };
+        // (sender, family chat, switch, offered)
+        for (sender, family, allows, offered) in [
+            (ME, false, false, true),
+            (ME, true, false, true),
+            (ANNA, true, true, true),
+            (ANNA, true, false, false),
+            (ANNA, false, true, false),
+            (2, true, true, false),
+        ] {
+            let (props, _) = with(sender, family, allows, vec![recording(34, "audio/mp4")]);
+            let (root, handle) = render(props).await;
+            assert_eq!(
+                show_buttons(&root).len(),
+                usize::from(offered),
+                "sender {sender}, family {family}, switch {allows}"
+            );
+            handle.destroy();
+            root.remove();
+        }
+
+        // An Ogg file is offered too — this device supplies its sound —
+        // and each button asks for its own recording.
+        let (props, actions) = with(
+            ME,
+            true,
+            false,
+            vec![recording(33, "audio/ogg"), recording(34, "audio/mp4")],
+        );
+        let (root, handle) = render(props).await;
+        let buttons = show_buttons(&root);
+        assert_eq!(buttons.len(), 2);
+        assert_eq!(buttons[0].text_content().as_deref(), Some("Show text"));
+        buttons[1].click();
+        buttons[0].click();
+        let asked: Vec<(i64, i64, crate::model::Attachment)> = actions
+            .borrow()
+            .iter()
+            .filter_map(|action| match action {
+                Action::ShowTranscript {
+                    chat_id,
+                    message_id,
+                    attachment,
+                    ..
+                } => Some((*chat_id, *message_id, attachment.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            asked,
+            vec![
+                (42, 1338, recording(34, "audio/mp4")),
+                (42, 1338, recording(33, "audio/ogg")),
+            ]
+        );
+        handle.destroy();
+        root.remove();
+
+        // No transcription deployment: nothing offered at all.
+        let (mut props, _) = with(ME, true, true, vec![recording(34, "audio/mp4")]);
+        props.transcription = None;
+        let (root, handle) = render(props).await;
+        assert!(show_buttons(&root).is_empty());
+        assert!(root.query_selector(".transcript").unwrap().is_none());
+        handle.destroy();
+        root.remove();
+    }
+
+    /// Each state under the player: "Getting the text…"; the text, labelled
+    /// as the recording's and keeping its own double-click; "No speech" for
+    /// silence; a refusal with no retry; a transient failure with one.
+    #[wasm_bindgen_test]
+    async fn the_text_draws_under_the_player_in_each_state() {
+        use fc_text::transcript::{Failure, State, Transcript};
+        let drawn = |state: State| {
+            let actions = Rc::new(RefCell::new(Vec::new()));
+            let mut message = message(1338, ME, "");
+            message.attachments = Some(vec![recording(34, "audio/mp4")]);
+            let mut props = props(message, actions.clone());
+            props.transcription = Some(transcription(false));
+            props.transcripts = HashMap::from([(34, state)]);
+            (props, actions)
+        };
+
+        let (props, _) = drawn(State::Asking);
+        let (root, handle) = render(props).await;
+        assert!(text(&root).contains("Getting the text…"));
+        assert!(show_buttons(&root).is_empty(), "nothing to press meanwhile");
+        handle.destroy();
+        root.remove();
+
+        let said = Transcript {
+            text: "Dinner at seven".into(),
+            language: Some("en".into()),
+        };
+        let (props, actions) = drawn(State::Shown(said.clone()));
+        let (root, handle) = render(props).await;
+        let block = root
+            .query_selector(".transcript-text")
+            .unwrap()
+            .expect("the text");
+        assert_eq!(
+            block.get_attribute("aria-label").as_deref(),
+            Some("Text of the recording")
+        );
+        assert_eq!(block.text_content().as_deref(), Some("Dinner at seven"));
+        // Double-clicking a word to select it is not a heart.
+        let event = web_sys::MouseEvent::new_with_mouse_event_init_dict("dblclick", &{
+            let init = web_sys::MouseEventInit::new();
+            init.set_bubbles(true);
+            init
+        })
+        .unwrap();
+        block
+            .query_selector("p")
+            .unwrap()
+            .unwrap()
+            .dispatch_event(&event)
+            .unwrap();
+        assert!(
+            !actions
+                .borrow()
+                .iter()
+                .any(|action| matches!(action, Action::React { .. })),
+            "no heart"
+        );
+        let hide = show_buttons(&root);
+        assert_eq!(hide.len(), 1);
+        assert_eq!(hide[0].text_content().as_deref(), Some("Hide text"));
+        hide[0].click();
+        assert!(actions
+            .borrow()
+            .iter()
+            .any(|action| matches!(action, Action::HideTranscript { attachment_id: 34 })));
+        handle.destroy();
+        root.remove();
+
+        let (props, _) = drawn(State::Hidden(said));
+        let (root, handle) = render(props).await;
+        assert!(!text(&root).contains("Dinner at seven"));
+        assert_eq!(
+            show_buttons(&root)[0].text_content().as_deref(),
+            Some("Show text")
+        );
+        handle.destroy();
+        root.remove();
+
+        let (props, _) = drawn(State::Shown(Transcript::default()));
+        let (root, handle) = render(props).await;
+        assert!(text(&root).contains("No speech"));
+        assert!(root
+            .query_selector(".transcript-failure")
+            .unwrap()
+            .is_none());
+        handle.destroy();
+        root.remove();
+
+        let (props, _) = drawn(State::Failed(Failure::Refused));
+        let (root, handle) = render(props).await;
+        assert!(text(&root).contains("The assistant's provider refused this recording."));
+        assert!(show_buttons(&root).is_empty(), "no retry for a refusal");
+        handle.destroy();
+        root.remove();
+
+        let (props, _) = drawn(State::Failed(Failure::NotAvailable));
+        let (root, handle) = render(props).await;
+        assert!(text(&root).contains("Not available for this message."));
+        assert!(show_buttons(&root).is_empty());
+        handle.destroy();
+        root.remove();
+
+        let (props, actions) = drawn(State::Failed(Failure::TryAgain));
+        let (root, handle) = render(props).await;
+        assert!(text(&root).contains("Couldn't get the text. Try again."));
+        let retry = show_buttons(&root);
+        assert_eq!(retry[0].text_content().as_deref(), Some("Try Again"));
+        retry[0].click();
+        assert!(actions.borrow().iter().any(|action| matches!(
+            action,
+            Action::ShowTranscript { attachment, .. } if attachment.id == 34
+        )));
+        handle.destroy();
+        root.remove();
+
+        // What this device could not make: terminal, no retry.
+        for (failure, said) in [
+            (
+                Failure::TooLong,
+                "This recording is too long to turn into text.",
+            ),
+            (Failure::Unreadable, "Couldn't read the sound in this file."),
+        ] {
+            let (props, _) = drawn(State::Failed(failure));
+            let (root, handle) = render(props).await;
+            assert!(text(&root).contains(said), "{failure:?}");
+            assert!(show_buttons(&root).is_empty(), "{failure:?}: no retry");
+            handle.destroy();
+            root.remove();
+        }
+    }
+
+    fn video(id: i64) -> crate::model::Attachment {
+        crate::model::Attachment {
+            id,
+            kind: "video".into(),
+            mime: Some("video/quicktime".into()),
+            size: Some(60_000_000),
+            width: Some(1920),
+            height: Some(1080),
+            duration_ms: Some(30_000),
+            has_preview: false,
+            ..Default::default()
+        }
+    }
+
+    /// A VIDEO OFFERS "SHOW TEXT" TOO, under its picture — its sound comes
+    /// from this device, so its size is no bar — by the same rule as a
+    /// voice note. In a pile with more than one video, each video's block
+    /// says which it is, and asks for its own; a photo has none.
+    #[wasm_bindgen_test]
+    async fn a_video_offers_show_text_under_its_picture() {
+        let with = |sender: i64, allows: bool, attachments| {
+            let actions = Rc::new(RefCell::new(Vec::new()));
+            let mut message = message(1338, sender, "");
+            message.attachments = Some(attachments);
+            let mut props = props(message, actions.clone());
+            props.is_family_chat = true;
+            props.transcription = Some(transcription(allows));
+            (props, actions)
+        };
+        let (props, actions) = with(ME, false, vec![video(40)]);
+        let (root, handle) = render(props).await;
+        let buttons = show_buttons(&root);
+        assert_eq!(buttons.len(), 1);
+        assert_eq!(buttons[0].text_content().as_deref(), Some("Show text"));
+        assert!(
+            root.query_selector(".tile + .transcript")
+                .unwrap()
+                .is_some(),
+            "under the picture"
+        );
+        assert!(root.query_selector(".transcript-marker").unwrap().is_none());
+        buttons[0].click();
+        assert!(actions.borrow().iter().any(|action| matches!(
+            action,
+            Action::ShowTranscript { attachment, .. } if *attachment == video(40)
+        )));
+        handle.destroy();
+        root.remove();
+
+        // Another member's video, with the owner's switch off: nothing.
+        let (props, _) = with(ANNA, false, vec![video(40)]);
+        let (root, handle) = render(props).await;
+        assert!(show_buttons(&root).is_empty());
+        handle.destroy();
+        root.remove();
+
+        // A pile: a photo, then two videos — two blocks, marked by place.
+        let photo = crate::model::Attachment {
+            id: 41,
+            kind: "photo".into(),
+            mime: Some("image/jpeg".into()),
+            width: Some(800),
+            height: Some(600),
+            ..Default::default()
+        };
+        let (props, actions) = with(ANNA, true, vec![photo, video(42), video(43)]);
+        let (root, handle) = render(props).await;
+        let buttons = show_buttons(&root);
+        assert_eq!(buttons.len(), 2);
+        let marks = root.query_selector_all(".transcript-marker").unwrap();
+        let marks: Vec<String> = (0..marks.length())
+            .filter_map(|at| marks.item(at)?.text_content())
+            .collect();
+        assert_eq!(marks, vec!["▶ 2".to_string(), "▶ 3".to_string()]);
+        buttons[1].click();
+        assert!(actions.borrow().iter().any(|action| matches!(
+            action,
+            Action::ShowTranscript { attachment, .. } if attachment.id == 43
+        )));
+        handle.destroy();
+        root.remove();
+    }
+
     impl BubbleProps {
         fn clone_for_test(&self) -> BubbleProps {
             BubbleProps {
@@ -1459,6 +1926,8 @@ mod tests {
                 on_report: self.on_report.clone(),
                 on_report_assistant: self.on_report_assistant.clone(),
                 on_jump: self.on_jump.clone(),
+                transcription: self.transcription.clone(),
+                transcripts: self.transcripts.clone(),
                 sender_avatar_version: 0,
             }
         }

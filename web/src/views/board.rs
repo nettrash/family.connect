@@ -81,6 +81,10 @@ pub struct BoardProps {
     pub family_history: bool,
     #[prop_or_default]
     pub family_vision: bool,
+    /// Whether this server can turn a recording into text — one more line
+    /// the same screen says (`assistant.transcribe`).
+    #[prop_or_default]
+    pub transcribe: bool,
     /// Hidden notes peeked at.
     pub revealed: HashSet<i64>,
     /// A photo on its way up.
@@ -457,6 +461,7 @@ pub fn board_pane(props: &BoardProps) -> Html {
                     {processor}
                     family_history={props.family_history}
                     family_vision={props.family_vision}
+                    transcribe={props.transcribe}
                     {on_agree}
                     {on_cancel}
                 />
@@ -3043,6 +3048,7 @@ mod tests {
             agreed_to_assistant: false,
             family_history: false,
             family_vision: false,
+            transcribe: false,
             revealed: HashSet::new(),
             pinning: false,
             now_minute: (js_sys::Date::now() / 60_000.0) as i64,

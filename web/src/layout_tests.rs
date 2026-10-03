@@ -335,6 +335,7 @@ fn props_with(
         support_contact: None,
         stickers: None,
         agreed_to_assistant: true,
+        transcripts: Default::default(),
         on_action,
         now_ms: 0.0,
     }
@@ -789,6 +790,8 @@ async fn the_assistant_photo_door_is_there_only_when_all_three_allow_it() {
                 vision,
                 images: false,
                 processor: Some("Microsoft — Azure OpenAI".into()),
+                transcribe: false,
+                transcribe_max_bytes: None,
             });
             asked.family = Some(Family {
                 id: 3,
@@ -910,6 +913,8 @@ async fn a_threads_box_says_what_goes_to_the_assistant() {
             mention: Some("@ai".into()),
             draw: Some("/draw".into()),
             vision: true,
+            transcribe: false,
+            transcribe_max_bytes: None,
             images: false,
             processor: Some("Microsoft — Azure OpenAI".into()),
         }),
@@ -928,6 +933,7 @@ async fn a_threads_box_says_what_goes_to_the_assistant() {
         }),
         stickers: None,
         agreed_to_assistant: true,
+        transcripts: Default::default(),
         on_action: Callback::noop(),
     };
     let handle =
@@ -1373,6 +1379,8 @@ fn assistant_answered_by(processor: Option<&str>) -> crate::model::Assistant {
         user_id: 2,
         display_name: "Assistant".into(),
         mention: Some("@ai".into()),
+        transcribe: false,
+        transcribe_max_bytes: None,
         draw: Some("/draw".into()),
         vision: true,
         images: false,

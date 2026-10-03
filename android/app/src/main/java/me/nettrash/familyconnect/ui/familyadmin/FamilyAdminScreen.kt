@@ -752,6 +752,47 @@ fun FamilyAdminScreen(
                 )
                 SectionDivider()
 
+                // -- Whether members may ask for OTHER members' recordings as text --
+                // Its own section after the picture switches, and bound to
+                // none of the others (docs/protocol.md, "Transcripts on
+                // request"). Everybody may ask about their own recordings
+                // without it. Disabled with the reason on a server that
+                // cannot transcribe, like the greeting switch below. Absent
+                // where the server names nobody to send the sound to: this
+                // client offers no assistant there at all, and the footer
+                // could not say where the sound goes.
+                val transcriptsProcessor = state.assistantProcessor?.takeIf { it.isNotBlank() }
+                if (transcriptsProcessor != null) {
+                    val transcriptsEnabled = !state.busy && state.assistantTranscribe
+                    ListItem(
+                        headlineContent = { Text(stringResource(R.string.s_assistant_transcripts)) },
+                        supportingContent = {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    stringResource(
+                                        R.string.s_assistant_transcripts_explanation,
+                                        transcriptsProcessor,
+                                    ),
+                                )
+                                if (!state.assistantTranscribe) {
+                                    Text(stringResource(R.string.s_assistant_transcripts_no_server))
+                                }
+                            }
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = state.aiTranscripts,
+                                onCheckedChange = viewModel::setAiTranscripts,
+                                enabled = transcriptsEnabled,
+                            )
+                        },
+                        modifier = Modifier.clickable(enabled = transcriptsEnabled) {
+                            viewModel.setAiTranscripts(!state.aiTranscripts)
+                        },
+                    )
+                    SectionDivider()
+                }
+
                 // The FOURTH switch, and the only one here that is not about
                 // what leaves the server: whether the assistant SPEAKS when
                 // nobody asked (docs/protocol.md, "The daily greeting").

@@ -58,6 +58,11 @@ import me.nettrash.familyconnect.data.db.MessageDao
 import me.nettrash.familyconnect.data.db.PendingAttachmentDao
 import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.db.PackDao
+import me.nettrash.familyconnect.data.db.TranscriptDao
+import me.nettrash.familyconnect.data.net.DefaultTranscriptApi
+import me.nettrash.familyconnect.data.net.TranscriptApi
+import me.nettrash.familyconnect.data.repo.DeviceTranscriptSound
+import me.nettrash.familyconnect.data.repo.TranscriptSoundSource
 import me.nettrash.familyconnect.data.net.AndroidConnectivityObserver
 import me.nettrash.familyconnect.data.net.ApiClient
 import me.nettrash.familyconnect.data.net.AuthApi
@@ -135,6 +140,12 @@ abstract class AppModule {
 
     @Binds
     abstract fun bindPackApi(impl: DefaultPackApi): PackApi
+
+    @Binds
+    abstract fun bindTranscriptApi(impl: DefaultTranscriptApi): TranscriptApi
+
+    @Binds
+    abstract fun bindTranscriptSound(impl: DeviceTranscriptSound): TranscriptSoundSource
 
     @Binds
     abstract fun bindAvatarSource(impl: ContentResolverAvatarSource): AvatarSource
@@ -246,6 +257,9 @@ abstract class AppModule {
 
         @Provides
         fun providePackDao(db: AppDatabase): PackDao = db.packDao()
+
+        @Provides
+        fun provideTranscriptDao(db: AppDatabase): TranscriptDao = db.transcriptDao()
 
         @Provides
         fun provideChatDao(db: AppDatabase): ChatDao = db.chatDao()

@@ -126,6 +126,14 @@ public sealed partial class ChatsView : UserControl
     private bool movingTrack;
     private bool scrubbingAudio;
 
+    /// <summary>
+    /// The place under each drawn recording where its text goes (docs/protocol.md, "Transcripts on request"), by
+    /// attachment — every one on screen, since the conversation and the thread panel can both draw the same recording —
+    /// and what tells this view that one of them changed. What is SHOWN is the model's, so a redraw draws it again.
+    /// </summary>
+    private readonly Dictionary<long, List<TranscriptHost>> transcriptHosts = [];
+    private readonly Action<long> onTranscript;
+
     /// <summary>A place being shared: the whole flow (one at a time), the part spent looking, and what ends that look.</summary>
     private bool locating;
     private bool finding;
@@ -386,6 +394,15 @@ public sealed partial class ChatsView : UserControl
         connection.Router.PackChanged += onPack;
         onPreviews = QueueRedraw;
         connection.Previews.Landed += onPreviews;
+        // A recording's text changed on its own clock — asked, answered, folded — and only its place under the player redraws.
+        onTranscript = attachmentId => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!gone)
+            {
+                DrawTranscripts(attachmentId);
+            }
+        });
+        connection.Transcripts.Changed += onTranscript;
         LinkPreviewSetting.Changed += onPreviews;
         MapPreviewSetting.Changed += onPreviews;
         connection.Router.Arrived += onArrived;
@@ -434,6 +451,8 @@ public sealed partial class ChatsView : UserControl
         connection.PeerReads.Changed -= onMarks;
         connection.Answers.Changed -= onMarks;
         connection.Previews.Landed -= onPreviews;
+        connection.Transcripts.Changed -= onTranscript;
+        transcriptHosts.Clear();
         LinkPreviewSetting.Changed -= onPreviews;
         MapPreviewSetting.Changed -= onPreviews;
         // A microphone nothing can reach is a microphone left on.
@@ -1109,7 +1128,7 @@ public sealed partial class ChatsView : UserControl
         }
         else if (bubble.Reads && message.Media.Count > 0)
         {
-            stack.Children.Add(MediaElement(message, mine));
+            stack.Children.Add(MediaElement(message, mine, kind));
         }
         var words = new TextBlock
         {
@@ -1927,7 +1946,7 @@ public sealed partial class ChatsView : UserControl
     /// What a message carries: the pictures first — one at its own shape, several as a grid of four with
     /// the rest counted — and then the rows that are read rather than looked at.
     /// </summary>
-    private FrameworkElement MediaElement(MessageDto message, bool mine)
+    private FrameworkElement MediaElement(MessageDto message, bool mine, string? chatKind)
     {
         var panel = new StackPanel { Spacing = 4 };
         var looked = message.Media.Where(attachment => MediaText.IsMedia(attachment.Kind)).ToList();
@@ -1955,12 +1974,34 @@ public sealed partial class ChatsView : UserControl
             }
             panel.Children.Add(grid);
         }
+        // A video's text goes under the pictures, one place per video; where there are several, each says which it is.
+        var videos = looked.Where(attachment => attachment.Kind == "video").ToList();
+        for (var at = 0; at < videos.Count; at++)
+        {
+            var video = videos[at];
+            if (TranscriptPanel(video, mine, message, chatKind) is not { } text)
+            {
+                continue;
+            }
+            if (videos.Count > 1)
+            {
+                var label = $"{services.Say.Get("Video")} {(at + 1).ToString(services.Culture)}";
+                var caption = new TextBlock { Text = label, FontSize = 11, Opacity = 0.75, Margin = new Thickness(4, 2, 4, 0) };
+                if (mine)
+                {
+                    caption.Foreground = Palette.Ink();
+                }
+                AutomationProperties.SetName(text, label);
+                panel.Children.Add(caption);
+            }
+            panel.Children.Add(text);
+        }
         foreach (var attachment in message.Media.Where(attachment => !MediaText.IsMedia(attachment.Kind)))
         {
             panel.Children.Add(attachment.Kind switch
             {
                 "location" => LocationElement(attachment, mine),
-                "audio" => AudioElement(attachment, mine),
+                "audio" => AudioElement(attachment, mine, message, chatKind),
                 _ => FileElement(attachment),
             });
         }
@@ -2943,7 +2984,7 @@ public sealed partial class ChatsView : UserControl
     /// where it is and how long it is under that — deliberately no waveform (docs/protocol.md, "Audio"). Downloaded rather
     /// than streamed: a player here cannot put the session's Authorization on the requests it would make.
     /// </summary>
-    private FrameworkElement AudioElement(AttachmentDto attachment, bool mine)
+    private FrameworkElement AudioElement(AttachmentDto attachment, bool mine, MessageDto message, string? chatKind)
     {
         var say = services.Say;
         var resources = Application.Current.Resources;
@@ -3041,7 +3082,262 @@ public sealed partial class ChatsView : UserControl
             }
         };
         ShowAudio(drawn.Id);
-        return card;
+        return WithTranscript(card, attachment, mine, message, chatKind);
+    }
+
+    /// <summary>
+    /// One recording's place for its text, and what it needs to ask: the chat and the message it is on, and the form the
+    /// rules chose with the ceiling the device's own sound must fit.
+    /// </summary>
+    private sealed record TranscriptHost(
+        StackPanel Panel, long ChatId, long MessageId, AttachmentDto Attachment, bool Mine, TranscriptForm Form, long MaxBytes);
+
+    /// <summary>
+    /// Media Foundation is how this machine takes a sound track out of a file it holds (<see cref="SoundTracks"/>), and
+    /// every Windows this app runs on has it — the player beside "Show text" is Media Foundation too. A file it cannot
+    /// read is "Couldn't read the sound in this file.", and one too long to fit "This recording is too long to turn into
+    /// text.", decided per file once the click lands (<see cref="TranscriptSound"/>).
+    /// </summary>
+    private const bool ExtractsSound = true;
+
+    /// <summary>
+    /// The player with "Show text" under it, where this member may ask (docs/protocol.md, "Transcripts on request").
+    /// </summary>
+    private FrameworkElement WithTranscript(
+        FrameworkElement player, AttachmentDto attachment, bool mine, MessageDto message, string? chatKind)
+    {
+        if (TranscriptPanel(attachment, mine, message, chatKind) is not { } panel)
+        {
+            return player;
+        }
+        var both = new StackPanel { Spacing = 2 };
+        both.Children.Add(player);
+        both.Children.Add(panel);
+        return both;
+    }
+
+    /// <summary>
+    /// The place for one recording's text — a voice note's, an audio file's or a video's — where this member may ask:
+    /// a server that transcribes, the rule for this member and this message, and a form to ask in (the server's stored
+    /// copy, or sound this device makes) — <see cref="TranscriptRules.Offers"/> decides, and text this device already
+    /// holds is always shown. Null where nothing is offered.
+    /// </summary>
+    private StackPanel? TranscriptPanel(AttachmentDto attachment, bool mine, MessageDto message, string? chatKind)
+    {
+        var state = connection.Session.State;
+        if (message.Id <= 0
+            || !TranscriptRules.Offers(
+                state.Assistant, state.Family, chatKind, message.SenderId, Reader, attachment,
+                held: connection.Transcripts.Holds(attachment.Id), extracts: ExtractsSound))
+        {
+            return null;
+        }
+        // Held text with no server to ask any more is still shown; it is then never asked for again.
+        var form = state.Assistant is { } assistant && TranscriptRules.IsAvailable(assistant)
+            ? TranscriptRules.Form(attachment, assistant, ExtractsSound)
+            : TranscriptForm.None;
+        var maxBytes = state.Assistant is { } stated ? TranscriptRules.MaxBytes(stated) : TranscriptRules.CeilingBytes;
+        var panel = new StackPanel { Spacing = 2, Margin = new Thickness(4, 2, 4, 0), MaxWidth = 520, HorizontalAlignment = HorizontalAlignment.Left };
+        var host = new TranscriptHost(panel, message.ChatId, message.Id, attachment, mine, form, maxBytes);
+        // Registered while it is on screen, so a change redraws every copy of this recording that is showing, and none
+        // that a redraw has already thrown away.
+        panel.Loaded += (_, _) =>
+        {
+            if (!transcriptHosts.TryGetValue(attachment.Id, out var hosts))
+            {
+                transcriptHosts[attachment.Id] = hosts = [];
+            }
+            if (!hosts.Contains(host))
+            {
+                hosts.Add(host);
+            }
+            DrawTranscript(host);
+        };
+        panel.Unloaded += (_, _) =>
+        {
+            if (transcriptHosts.TryGetValue(attachment.Id, out var hosts) && hosts.Remove(host) && hosts.Count == 0)
+            {
+                transcriptHosts.Remove(attachment.Id);
+            }
+        };
+        DrawTranscript(host);
+        return panel;
+    }
+
+    private void DrawTranscripts(long attachmentId)
+    {
+        if (transcriptHosts.TryGetValue(attachmentId, out var hosts))
+        {
+            foreach (var host in hosts.ToList())
+            {
+                DrawTranscript(host);
+            }
+        }
+    }
+
+    /// <summary>
+    /// What is under one player: "Show text"; "Getting the text…" while it is asked for; the text itself — selectable, so
+    /// it can be copied — with "Hide text"; "No speech" for silence; or why it could not be had, with "Try Again" only
+    /// where trying again could help.
+    /// </summary>
+    private void DrawTranscript(TranscriptHost host)
+    {
+        var say = services.Say;
+        var resources = Application.Current.Resources;
+        var panel = host.Panel;
+        var id = host.Attachment.Id;
+        // An own balloon is filled with the accent, so nothing in it may be drawn in the accent too.
+        var actionInk = host.Mine ? Palette.Ink() : (Brush)resources["AccentTextFillColorPrimaryBrush"];
+        Brush? quietInk = host.Mine ? Palette.Ink() : null;
+        var look = connection.Transcripts.Look(id);
+        panel.Children.Clear();
+        switch (look.Phase)
+        {
+            case TranscriptPhase.Asking:
+            {
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                row.Children.Add(new ProgressRing { IsActive = true, Width = 14, Height = 14 });
+                var line = new TextBlock { Text = say.Get("Getting the text…"), FontSize = 12, Opacity = 0.75, VerticalAlignment = VerticalAlignment.Center };
+                if (quietInk is not null)
+                {
+                    line.Foreground = quietInk;
+                }
+                row.Children.Add(line);
+                panel.Children.Add(row);
+                break;
+            }
+            case TranscriptPhase.Open:
+            {
+                var words = new TextBlock
+                {
+                    Text = TranscriptRules.Shown(look.Text, say),
+                    TextWrapping = TextWrapping.Wrap,
+                    // The words of a recording, as words: selectable, and so copyable. Silence is a label, not text to copy.
+                    IsTextSelectionEnabled = !look.NoSpeech,
+                    FontStyle = look.NoSpeech ? Windows.UI.Text.FontStyle.Italic : Windows.UI.Text.FontStyle.Normal,
+                };
+                if (quietInk is not null)
+                {
+                    words.Foreground = quietInk;
+                }
+                // A screen reader hears what this block IS, so it is not read as the message itself.
+                AutomationProperties.SetLocalizedControlType(words, say.Get("Text of the recording"));
+                panel.Children.Add(words);
+                panel.Children.Add(TranscriptAction(say.Get("Hide text"), actionInk, () => connection.Transcripts.Hide(id)));
+                break;
+            }
+            case TranscriptPhase.Failed:
+            {
+                var error = look.Error ?? ApiError.Transport("no answer");
+                var line = new TextBlock
+                {
+                    Text = TranscriptRules.FailureSentence(error, say),
+                    FontSize = 12,
+                    TextWrapping = TextWrapping.Wrap,
+                    Opacity = 0.85,
+                };
+                if (quietInk is not null)
+                {
+                    line.Foreground = quietInk;
+                }
+                panel.Children.Add(line);
+                if (TranscriptRules.MayRetry(error))
+                {
+                    panel.Children.Add(TranscriptAction(say.Get("Try Again"), actionInk, () => _ = AskTranscriptAsync(host)));
+                }
+                break;
+            }
+            default:
+                panel.Children.Add(TranscriptAction(say.Get("Show text"), actionInk, () => _ = AskTranscriptAsync(host)));
+                break;
+        }
+    }
+
+    /// <summary>A small text button under the player, in the balloon's own ink.</summary>
+    private static Button TranscriptAction(string label, Brush ink, Action click)
+    {
+        var button = new Button
+        {
+            Content = new TextBlock { Text = label, FontSize = 12, Foreground = ink },
+            Padding = new Thickness(0, 2, 0, 2),
+            MinHeight = 0,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        AutomationProperties.SetName(button, label);
+        button.Click += (_, _) => click();
+        return button;
+    }
+
+    /// <summary>
+    /// "Show text" pressed: the kept text at once, or the question when <c>/me</c> says this member has not agreed, then
+    /// the request — and the question again, once, if the server says agree first (the board backdrop's order). The
+    /// recording's sound is the ASKER's to send, so it is the asker who is asked.
+    /// </summary>
+    private async Task AskTranscriptAsync(TranscriptHost host)
+    {
+        try
+        {
+            var attachment = host.Attachment;
+            // The device's own sound, made only after the consent question — and, for the stored form, only if the server
+            // then says it cannot send its copy.
+            var sound = ExtractsSound
+                ? new SoundSource(
+                    host.MaxBytes,
+                    ct => SoundTracks.MakeAsync(connection.Attachments, attachment, host.MaxBytes, ct),
+                    attachment.DurationMs)
+                : null;
+            await connection.Transcripts.ShowAsync(
+                host.ChatId, host.MessageId, attachment.Id, host.Form, sound,
+                () => BackdropConsent.AsksFirst(
+                    connection.Session.State.Assistant?.Processor, connection.Session.State.AssistantConsentAt),
+                AgreeToTheAssistantAsync);
+        }
+        catch (Exception e)
+        {
+            // The type only: never the text of anybody's recording.
+            Diagnostics.Write($"asking for a recording's text: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// The assistant question, asked for something other than a send — a recording's text — with the same disclosure the
+    /// composer shows, the answer written to the server and <c>/me</c> read again. True only on a yes the server kept.
+    /// </summary>
+    private async Task<bool> AgreeToTheAssistantAsync()
+    {
+        var state = connection.Session.State;
+        if (state.Assistant?.Processor is not { } processor || !AssistantConsent.IsAvailable(processor) || XamlRoot is null)
+        {
+            return false;
+        }
+        bool agreed;
+        try
+        {
+            agreed = await Dialogs.AssistantConsentAsync(
+                XamlRoot, services.Say, processor,
+                state.Family?.AiHistory == true, state.Family?.AiVision == true, state.Assistant?.Transcribe == true);
+        }
+        catch (Exception e)
+        {
+            // Another dialog already open: nothing was asked, so nothing is sent.
+            Diagnostics.Write($"asking about the assistant: {e.GetType().Name}");
+            return false;
+        }
+        if (!agreed)
+        {
+            return false;
+        }
+        var answer = await connection.Api.SetAssistantConsent(true);
+        if (!answer.Ok)
+        {
+            ShowProblem(services.Say.Get("Couldn't save your answer. Try again."));
+            return false;
+        }
+        await connection.Session.RefreshAsync();
+        DrawConsentBar();
+        return true;
     }
 
     private bool AudioRunning => audio.PlaybackSession.PlaybackState is Windows.Media.Playback.MediaPlaybackState.Playing
@@ -5050,7 +5346,7 @@ public sealed partial class ChatsView : UserControl
         }
         var agreed = await Dialogs.AssistantConsentAsync(
             XamlRoot, services.Say, processor,
-            state.Family?.AiHistory == true, state.Family?.AiVision == true);
+            state.Family?.AiHistory == true, state.Family?.AiVision == true, state.Assistant?.Transcribe == true);
         if (!agreed)
         {
             return;

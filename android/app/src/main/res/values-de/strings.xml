@@ -188,8 +188,25 @@
     <string name="s_couldnt_load_statistics">Statistik konnte nicht geladen werden</string>
     <string name="s_check_connection_try_again">Prüfe deine Verbindung und versuche es erneut.</string>
     <string name="s_saved_by_one_copy">%1$s gespart, weil identische Dateien nur einmal gespeichert werden.</string>
-    <string name="s_attachments_and_size">%1$d Anhänge, %2$s</string>
-    <string name="s_questions_to_assistant">%1$d Fragen an den Assistenten</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d Anhang, %2$s</item>
+        <item quantity="other">%1$d Anhänge, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d Frage an den Assistenten</item>
+        <item quantity="other">%1$d Fragen an den Assistenten</item>
+    </plurals>
+    <string name="s_stats_pictures">Bilder</string>
+    <string name="s_stats_recordings_as_text">Aufnahmen als Text</string>
+    <string name="s_stats_recording_time">Aufnahmedauer</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d Bild vom Assistenten</item>
+        <item quantity="other">%1$d Bilder vom Assistenten</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d Aufnahme als Text</item>
+        <item quantity="other">%1$d Aufnahmen als Text</item>
+    </plurals>
     <string name="s_family_language">Sprache der Familie</string>
     <string name="s_family_language_explanation">Die Sprache, in der euer Assistent antwortet, wenn er im Familienchat gefragt wird. Die Sprache dieser App ändert sich dadurch nicht. Ohne Auswahl antwortet er in der Sprache der Frage.</string>
     <string name="s_not_set">Nicht festgelegt</string>
@@ -595,4 +612,21 @@
     <string name="s_sticker_remove_not_allowed">Nur wer einen Sticker hinzugefügt hat oder wem die Familie gehört, kann ihn entfernen.</string>
     <string name="s_sticker_remove_failed">Der Sticker konnte nicht entfernt werden. Versuch es noch einmal.</string>
     <string name="s_sticker_not_available_offline">Dieser Sticker ist noch nicht auf diesem Handy. Versuch es noch einmal, wenn du online bist.</string>
+
+    <!-- Transcripts on request (#62): text under a recording, the owner's switch, the consent line. -->
+    <string name="s_transcript_show">Text anzeigen</string>
+    <string name="s_transcript_hide">Text ausblenden</string>
+    <string name="s_transcript_getting">Text wird erstellt…</string>
+    <string name="s_transcript_no_speech">Nichts gesprochen</string>
+    <string name="s_transcript_failed">Der Text konnte nicht abgerufen werden. Versuche es erneut.</string>
+    <string name="s_transcript_refused">Der Anbieter des Assistenten hat diese Aufnahme abgelehnt.</string>
+    <string name="s_transcript_unavailable">Für diese Nachricht nicht verfügbar.</string>
+    <string name="s_transcript_too_long">Diese Aufnahme ist zu lang, um sie in Text umzuwandeln.</string>
+    <string name="s_transcript_unreadable">Der Ton in dieser Datei konnte nicht gelesen werden.</string>
+    <string name="s_transcript_a11y">Text der Aufnahme</string>
+    <string name="s_assistant_transcripts">Sprachnachrichten und Videos als Text</string>
+    <string name="s_assistant_transcripts_explanation">Wenn das an ist, können Mitglieder im Familienchat den Text der Sprachnachrichten, Audios und Videos anderer Mitglieder abrufen, und der Ton dieser Aufnahme wird dann an %1$s gesendet. Er wird nur gesendet, wenn jemand danach fragt, und nur, wenn das Mitglied, das sie geschickt hat, dem Assistenten zugestimmt hat. Den Text der eigenen Aufnahmen kann jeder auch ohne diese Einstellung abrufen. Es ist aus, solange du es nicht einschaltest.</string>
+    <string name="s_assistant_transcripts_no_server">Hier nicht verfügbar: Dieser Server kann Aufnahmen nicht in Text umwandeln.</string>
+    <string name="s_consent_transcript_sound_sent">Wenn du den Text einer Sprachnachricht, einer Audiodatei oder eines Videos abrufst, wird der Ton an %1$s gesendet.</string>
+    <string name="e_change_assistant_transcripts_failed">Einstellung konnte nicht geändert werden</string>
 </resources>

@@ -22,6 +22,7 @@ import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentResponse
 import java.io.File
 import java.net.URLEncoder
+import java.time.Duration
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -130,7 +131,13 @@ class DefaultAttachmentApi @Inject constructor(
         destination: File,
     ): ApiResult<Unit> {
         val suffix = if (preview) "/preview" else ""
-        return client.rawDownloadToFile("/attachments/$attachmentId$suffix", destination)
+        // A preview is small and keeps the ordinary budget; an original may
+        // be a 100 MB video, which no 20 s wall clock lets through.
+        return client.rawDownloadToFile(
+            "/attachments/$attachmentId$suffix",
+            destination,
+            timeout = if (preview) Duration.ZERO else ApiClient.DOWNLOAD_TIMEOUT,
+        )
     }
 
     override suspend fun streamUrl(attachmentId: Long): Pair<String, Map<String, String>>? =

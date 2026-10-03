@@ -58,6 +58,10 @@
       "one": "%lld question to the assistant",
       "other": "%lld questions to the assistant"
     },
+    "%lld recordings as text": {
+      "one": "%lld recording as text",
+      "other": "%lld recordings as text"
+    },
     "%lld replies": {
       "one": "%lld reply",
       "other": "%lld replies"

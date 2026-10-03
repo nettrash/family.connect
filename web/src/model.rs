@@ -78,6 +78,12 @@ pub struct Family {
     /// Whether a mention may be shown the members' profile pictures.
     #[serde(default)]
     pub ai_faces: bool,
+    /// Whether a member may ask for the text of ANOTHER member's voice note
+    /// in the family chat — their own they may always ask about. False
+    /// unless the owner turned it on, tied to no other switch
+    /// (docs/protocol.md, "Transcripts on request").
+    #[serde(default)]
+    pub ai_transcripts: bool,
 }
 
 fn yes() -> bool {
@@ -214,6 +220,14 @@ pub struct Assistant {
     /// recipient offers no assistant at all.
     #[serde(default)]
     pub processor: Option<String>,
+    /// Whether this SERVER can turn a recording into text — present
+    /// whenever this object is; absent from a server that predates it,
+    /// which cannot.
+    #[serde(default)]
+    pub transcribe: bool,
+    /// The most bytes of sound it sends, present only while `transcribe`.
+    #[serde(default)]
+    pub transcribe_max_bytes: Option<i64>,
 }
 
 /// `GET /families/mine`, trimmed to what this client draws.
@@ -353,6 +367,12 @@ pub struct AiCounts {
     pub completion_tokens: i64,
     #[serde(default)]
     pub images: i64,
+    /// Recordings turned into text, charged to whoever asked, and their
+    /// total length — transcription is billed by length, not tokens.
+    #[serde(default)]
+    pub transcripts: i64,
+    #[serde(default)]
+    pub transcript_duration_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]

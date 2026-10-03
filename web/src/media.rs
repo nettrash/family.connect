@@ -302,6 +302,28 @@ impl MediaLoader {
         })
     }
 
+    /// The bytes themselves, fetched through the same cache when this tab
+    /// has none — a recording whose sound is taken out for its text is the
+    /// file a player already fetched, or the one it would fetch. None when
+    /// they could not be had.
+    pub async fn bytes(&self, id: i64, variant: Variant) -> Option<Blob> {
+        if self.get(id, variant).is_none() {
+            let (sent, heard) = futures::channel::oneshot::channel();
+            let sent = RefCell::new(Some(sent));
+            self.load(
+                id,
+                variant,
+                Callback::from(move |url: Option<String>| {
+                    if let Some(sent) = sent.borrow_mut().take() {
+                        let _ = sent.send(url);
+                    }
+                }),
+            );
+            heard.await.ok()??;
+        }
+        self.held(id, variant)
+    }
+
     /// The URL for these bytes, fetching them if this tab has none; `done`
     /// hears once, with None when they could not be had. Fetches of the
     /// same bytes are shared.

@@ -295,6 +295,17 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     /// write whenever `aiVision` goes off, so a PATCH answer is where this
     /// client learns either.
     let aiFaces: Bool
+    /// Whether a member may ask for the text of ANOTHER member's voice
+    /// note, audio file or video in the family chat (protocol.md,
+    /// "Transcripts on request"). A SIXTH switch, and bound to none of the
+    /// others: it widens nothing the assistant is shown — it sends one
+    /// recording's sound to a speech model when somebody asks, and brings
+    /// text back. A member's OWN recordings need no switch at all.
+    ///
+    /// ALWAYS present on the wire and **false** by default, for every family
+    /// that predates it and for a server that predates the field, where no
+    /// recording can be turned into text at all.
+    let aiTranscripts: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -309,6 +320,7 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         case aiHistoryPhotos = "ai_history_photos"
         case aiGreeting = "ai_greeting"
         case aiFaces = "ai_faces"
+        case aiTranscripts = "ai_transcripts"
     }
 
     init(
@@ -345,6 +357,11 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // rebuild that dropped it would show that off while the server had
         // it on.
         aiFaces: Bool,
+        // And the sixth, undefaulted for the same reason as the rest: it
+        // decides whether another member's VOICE may leave the server, and
+        // a rebuild that dropped it would show it off while the server had
+        // it on.
+        aiTranscripts: Bool,
         maxMembers: Int?
     ) {
         self.id = id
@@ -359,6 +376,7 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         self.aiHistoryPhotos = aiHistoryPhotos
         self.aiGreeting = aiGreeting
         self.aiFaces = aiFaces
+        self.aiTranscripts = aiTranscripts
     }
 
     /// Hand-written for the reason UserDTO's is, and this type had no
@@ -393,6 +411,9 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // FALSE, the protocol's own default: a server that predates the
         // field sends no face, which is exactly what `false` reports.
         aiFaces = try container.decodeIfPresent(Bool.self, forKey: .aiFaces) ?? false
+        // FALSE, the protocol's own default: a server that predates the
+        // field turns no recording into text, which is what `false` reports.
+        aiTranscripts = try container.decodeIfPresent(Bool.self, forKey: .aiTranscripts) ?? false
     }
 }
 
@@ -1347,6 +1368,13 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
     /// name the recipient cannot ask the question honestly, so it offers
     /// no assistant at all there — see `AssistantConsent.isAvailable`.
     let processor: String?
+    /// This SERVER has a transcription deployment (protocol.md,
+    /// "Transcripts on request"). A client offers "Show text" only when it
+    /// is true. Absent — false — on a server that predates it.
+    let transcribe: Bool
+    /// The most bytes of sound one transcript request may send, present
+    /// only when `transcribe` is true: 25 MiB by default and never more.
+    let transcribeMaxBytes: Int64?
 
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
@@ -1356,6 +1384,8 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         case vision
         case images
         case processor
+        case transcribe
+        case transcribeMaxBytes = "transcribe_max_bytes"
     }
 
     init(
@@ -1365,7 +1395,9 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         draw: String? = nil,
         vision: Bool = false,
         images: Bool = false,
-        processor: String? = nil
+        processor: String? = nil,
+        transcribe: Bool = false,
+        transcribeMaxBytes: Int64? = nil
     ) {
         self.userID = userID
         self.displayName = displayName
@@ -1374,6 +1406,8 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         self.vision = vision
         self.images = images
         self.processor = processor
+        self.transcribe = transcribe
+        self.transcribeMaxBytes = transcribeMaxBytes
     }
 
     /// Hand-written for the reason `UserDTO`'s is: a property default is
@@ -1391,6 +1425,10 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         vision = try container.decodeIfPresent(Bool.self, forKey: .vision) ?? false
         images = try container.decodeIfPresent(Bool.self, forKey: .images) ?? false
         processor = try container.decodeIfPresent(String.self, forKey: .processor)
+        // FALSE for a server that predates transcripts, which can turn no
+        // recording into text — the same answer as one with no deployment.
+        transcribe = try container.decodeIfPresent(Bool.self, forKey: .transcribe) ?? false
+        transcribeMaxBytes = try container.decodeIfPresent(Int64.self, forKey: .transcribeMaxBytes)
     }
 }
 
@@ -1957,19 +1995,33 @@ nonisolated struct AiStatsDTO: Codable, Equatable, Sendable {
     /// reason this field is on the wire and the whole reason a client
     /// draws it.
     let images: Int
+    /// Recordings turned into text by a provider call, charged to the
+    /// member who ASKED (protocol.md, "Transcripts on request"). A kept
+    /// answer handed out again counts nothing. Its own number because a
+    /// speech model is billed by audio length, not tokens.
+    let transcripts: Int
+    /// The total length of those recordings, in milliseconds — the bill.
+    let transcriptDurationMS: Int64
 
     enum CodingKeys: String, CodingKey {
         case questions
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
         case images
+        case transcripts
+        case transcriptDurationMS = "transcript_duration_ms"
     }
 
-    init(questions: Int, promptTokens: Int, completionTokens: Int, images: Int = 0) {
+    init(
+        questions: Int, promptTokens: Int, completionTokens: Int, images: Int = 0,
+        transcripts: Int = 0, transcriptDurationMS: Int64 = 0
+    ) {
         self.questions = questions
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
         self.images = images
+        self.transcripts = transcripts
+        self.transcriptDurationMS = transcriptDurationMS
     }
 
     /// Hand-written for the reason `UserDTO`'s is: a property default is
@@ -1982,5 +2034,24 @@ nonisolated struct AiStatsDTO: Codable, Equatable, Sendable {
         promptTokens = try container.decode(Int.self, forKey: .promptTokens)
         completionTokens = try container.decode(Int.self, forKey: .completionTokens)
         images = try container.decodeIfPresent(Int.self, forKey: .images) ?? 0
+        // Zero for a server that predates transcripts, for the reason
+        // `images` is: it has made none and can make none.
+        transcripts = try container.decodeIfPresent(Int.self, forKey: .transcripts) ?? 0
+        transcriptDurationMS = try container.decodeIfPresent(
+            Int64.self, forKey: .transcriptDurationMS) ?? 0
     }
+}
+
+/// The answer to `POST …/attachments/{id}/transcript` (protocol.md,
+/// "Transcripts on request"). `text` is always present, and EMPTY means
+/// the recording had no speech in it — an answer, drawn as "No speech",
+/// never an error. `language` only when the provider named one, spelled
+/// as the provider spells it; shown at most, never depended on.
+nonisolated struct TranscriptDTO: Codable, Equatable, Sendable {
+    let text: String
+    let language: String?
+}
+
+nonisolated struct TranscriptResponse: Codable, Equatable, Sendable {
+    let transcript: TranscriptDTO
 }

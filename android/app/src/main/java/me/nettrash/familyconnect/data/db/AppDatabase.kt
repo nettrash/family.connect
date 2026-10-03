@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 29.
+ * Room database, version 30.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -45,8 +45,9 @@ fun interface LocalDataWiper {
         PendingAttachmentEntity::class,
         PackItemEntity::class,
         GonePackItemEntity::class,
+        TranscriptEntity::class,
     ],
-    version = 29,
+    version = 30,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -59,6 +60,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun memberDao(): MemberDao
     abstract fun noteDao(): NoteDao
     abstract fun packDao(): PackDao
+    abstract fun transcriptDao(): TranscriptDao
 
     /** Logout / removed-from-family: drop every table, keep the schema. */
     suspend fun wipeAll() = withContext(Dispatchers.IO) {
@@ -504,6 +506,28 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v30: the texts of recordings this member asked for
+         * (docs/protocol.md, "Transcripts on request"). A new table only,
+         * arriving empty: nothing held before it was ever asked.
+         */
+        val MIGRATION_29_30: Migration = object : Migration(29, 30) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS transcripts (
+                        attachmentId INTEGER NOT NULL,
+                        text TEXT NOT NULL,
+                        language TEXT,
+                        source TEXT NOT NULL,
+                        hidden INTEGER NOT NULL,
+                        PRIMARY KEY(attachmentId)
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
         val MIGRATION_26_27: Migration = object : Migration(26, 27) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE notes ADD COLUMN mentionsJson TEXT")
@@ -600,6 +624,7 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_26_27,
                 MIGRATION_27_28,
                 MIGRATION_28_29,
+                MIGRATION_29_30,
             )
         }
     }

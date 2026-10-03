@@ -319,6 +319,8 @@ mod tests {
             vision: true,
             images: false,
             processor: processor.map(str::to_string),
+            transcribe: false,
+            transcribe_max_bytes: None,
         }
     }
 
