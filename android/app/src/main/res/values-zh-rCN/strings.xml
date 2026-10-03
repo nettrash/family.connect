@@ -187,13 +187,21 @@
     <string name="s_couldnt_load_statistics">无法加载统计</string>
     <string name="s_check_connection_try_again">请检查网络后重试。</string>
     <string name="s_saved_by_one_copy">相同的文件只保存一份，节省了 %1$s。</string>
-    <string name="s_attachments_and_size">%1$d 个附件，%2$s</string>
-    <string name="s_questions_to_assistant">向助手提问 %1$d 次</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="other">%1$d 个附件，%2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="other">向助手提问 %1$d 次</item>
+    </plurals>
     <string name="s_stats_pictures">图片</string>
     <string name="s_stats_recordings_as_text">录音转文字</string>
     <string name="s_stats_recording_time">录音时长</string>
-    <string name="s_pictures_from_assistant">助手生成的 %1$d 张图片</string>
-    <string name="s_recordings_as_text">录音转文字 %1$d 次</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="other">助手生成的 %1$d 张图片</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="other">录音转文字 %1$d 次</item>
+    </plurals>
     <string name="s_family_language">家庭语言</string>
     <string name="s_family_language_explanation">在家庭对话里向助手提问时，它回答所用的语言。这不会改变这个 app 的界面语言。未选择时，它用提问者的语言回答。</string>
     <string name="s_not_set">未设置</string>

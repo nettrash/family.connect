@@ -16,6 +16,7 @@ package me.nettrash.familyconnect.ui.stats
 
 import android.content.Context
 import android.text.format.Formatter
+import androidx.annotation.PluralsRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -250,30 +251,40 @@ internal object StatisticsLines {
     fun recordingTime(durationMs: Long): String =
         CallRecordWording.duration(((durationMs.coerceAtLeast(0) + 500) / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
 
-    /** One line under a member: what they sent besides words. */
+    /**
+     * One line under a member: what they sent besides words. Every count is
+     * a plural resource — "1 picture", "3 картинки", "5 картинок" — never a
+     * plural noun with any number in front of it.
+     */
     fun summaryFor(member: MemberStatsDto, context: Context): String {
+        val resources = context.resources
         val parts = buildList {
             if (member.attachments.count > 0) {
                 add(
-                    context.getString(
-                        R.string.s_attachments_and_size,
+                    resources.getQuantityString(
+                        R.plurals.s_attachments_and_size,
+                        member.attachments.count,
                         member.attachments.count,
                         formatBytes(context, member.attachments.bytes),
                     ),
                 )
             }
             if (member.ai.questions > 0) {
-                add(context.getString(R.string.s_questions_to_assistant, member.ai.questions))
+                add(count(context, R.plurals.s_questions_to_assistant, member.ai.questions))
             }
             if (member.ai.images > 0) {
-                add(context.getString(R.string.s_pictures_from_assistant, member.ai.images))
+                add(count(context, R.plurals.s_pictures_from_assistant, member.ai.images))
             }
             if (member.ai.transcripts > 0) {
-                add(context.getString(R.string.s_recordings_as_text, member.ai.transcripts))
+                add(count(context, R.plurals.s_recordings_as_text, member.ai.transcripts))
             }
         }
         return if (parts.isEmpty()) context.getString(R.string.s_words_only) else parts.joinToString(" · ")
     }
+
+    /** A count whose only argument is the count itself. */
+    private fun count(context: Context, @PluralsRes id: Int, n: Int): String =
+        context.resources.getQuantityString(id, n, n)
 }
 
 /** `1.2 MB`, in the reader's own units and language. */

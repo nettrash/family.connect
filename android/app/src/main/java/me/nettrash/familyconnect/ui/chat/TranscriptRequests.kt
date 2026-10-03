@@ -116,6 +116,9 @@ class TranscriptRequests(
         when (fetch(ask)) {
             // The text is in the database now; the line draws it from there.
             is TranscriptOutcome.Text -> set(ask, null)
+            // The account that asked signed out while it was out: nothing
+            // was kept, and the line goes back to saying nothing.
+            TranscriptOutcome.Dropped -> set(ask, null)
             TranscriptOutcome.Refused -> set(ask, Status.REFUSED)
             TranscriptOutcome.Unavailable -> set(ask, Status.UNAVAILABLE)
             TranscriptOutcome.Failed -> set(ask, Status.FAILED)

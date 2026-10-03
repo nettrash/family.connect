@@ -190,13 +190,33 @@
     <string name="s_couldnt_load_statistics">Не удалось загрузить статистику</string>
     <string name="s_check_connection_try_again">Проверь соединение и попробуй снова.</string>
     <string name="s_saved_by_one_copy">%1$s сэкономлено: одинаковые файлы хранятся в одном экземпляре.</string>
-    <string name="s_attachments_and_size">вложений: %1$d, %2$s</string>
-    <string name="s_questions_to_assistant">вопросов ассистенту: %1$d</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d вложение, %2$s</item>
+        <item quantity="few">%1$d вложения, %2$s</item>
+        <item quantity="many">%1$d вложений, %2$s</item>
+        <item quantity="other">%1$d вложения, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d вопрос ассистенту</item>
+        <item quantity="few">%1$d вопроса ассистенту</item>
+        <item quantity="many">%1$d вопросов ассистенту</item>
+        <item quantity="other">%1$d вопроса ассистенту</item>
+    </plurals>
     <string name="s_stats_pictures">Картинки</string>
     <string name="s_stats_recordings_as_text">Записи в текст</string>
     <string name="s_stats_recording_time">Длительность записей</string>
-    <string name="s_pictures_from_assistant">%1$d картинок от ассистента</string>
-    <string name="s_recordings_as_text">записей в текст: %1$d</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d картинка от ассистента</item>
+        <item quantity="few">%1$d картинки от ассистента</item>
+        <item quantity="many">%1$d картинок от ассистента</item>
+        <item quantity="other">%1$d картинки от ассистента</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d запись в текст</item>
+        <item quantity="few">%1$d записи в текст</item>
+        <item quantity="many">%1$d записей в текст</item>
+        <item quantity="other">%1$d записи в текст</item>
+    </plurals>
     <string name="s_family_language">Язык семьи</string>
     <string name="s_family_language_explanation">Язык, на котором ассистент отвечает в семейном чате. Язык самого приложения от этого не меняется. Если ничего не выбрано, ответ приходит на языке вопроса.</string>
     <string name="s_not_set">Не задано</string>

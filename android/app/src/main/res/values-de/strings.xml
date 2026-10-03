@@ -188,13 +188,25 @@
     <string name="s_couldnt_load_statistics">Statistik konnte nicht geladen werden</string>
     <string name="s_check_connection_try_again">Prüfe deine Verbindung und versuche es erneut.</string>
     <string name="s_saved_by_one_copy">%1$s gespart, weil identische Dateien nur einmal gespeichert werden.</string>
-    <string name="s_attachments_and_size">%1$d Anhänge, %2$s</string>
-    <string name="s_questions_to_assistant">%1$d Fragen an den Assistenten</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d Anhang, %2$s</item>
+        <item quantity="other">%1$d Anhänge, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d Frage an den Assistenten</item>
+        <item quantity="other">%1$d Fragen an den Assistenten</item>
+    </plurals>
     <string name="s_stats_pictures">Bilder</string>
     <string name="s_stats_recordings_as_text">Aufnahmen als Text</string>
     <string name="s_stats_recording_time">Aufnahmedauer</string>
-    <string name="s_pictures_from_assistant">%1$d Bilder vom Assistenten</string>
-    <string name="s_recordings_as_text">%1$d Aufnahmen als Text</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d Bild vom Assistenten</item>
+        <item quantity="other">%1$d Bilder vom Assistenten</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d Aufnahme als Text</item>
+        <item quantity="other">%1$d Aufnahmen als Text</item>
+    </plurals>
     <string name="s_family_language">Sprache der Familie</string>
     <string name="s_family_language_explanation">Die Sprache, in der euer Assistent antwortet, wenn er im Familienchat gefragt wird. Die Sprache dieser App ändert sich dadurch nicht. Ohne Auswahl antwortet er in der Sprache der Frage.</string>
     <string name="s_not_set">Nicht festgelegt</string>

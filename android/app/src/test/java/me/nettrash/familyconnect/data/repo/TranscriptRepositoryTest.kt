@@ -11,16 +11,26 @@
 package me.nettrash.familyconnect.data.repo
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import me.nettrash.familyconnect.data.db.AppDatabase
+import me.nettrash.familyconnect.data.db.LocalDataWiper
 import me.nettrash.familyconnect.data.db.TranscriptEntity
 import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.net.TranscriptApi
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.TranscriptDto
 import me.nettrash.familyconnect.data.net.dto.TranscriptResponse
+import me.nettrash.familyconnect.testutil.FakeAuthApi
+import me.nettrash.familyconnect.testutil.FakeSettingsRepository
+import me.nettrash.familyconnect.testutil.FakeTokenStore
 import me.nettrash.familyconnect.testutil.FakeTranscriptApi
 import me.nettrash.familyconnect.testutil.FakeTranscriptSound
 import me.nettrash.familyconnect.testutil.createTestDb
@@ -279,6 +289,97 @@ class TranscriptRepositoryTest {
         assertThat(api.supplied).hasSize(1)
         assertThat(sound.asked).hasSize(1)
         assertThat(db.transcriptDao().find(70)?.hidden).isFalse()
+    }
+
+    // -- An answer belongs to the account that asked ------------------------------
+
+    /**
+     * The transcript API, answering only when [release] is completed — the
+     * empty first request too, unless [holdStored] is off.
+     */
+    private class HeldApi(
+        private val inner: FakeTranscriptApi,
+        private val holdStored: Boolean = true,
+    ) : TranscriptApi by inner {
+        val release = CompletableDeferred<Unit>()
+        override suspend fun transcribeStored(chatId: Long, messageId: Long, attachmentId: Long) =
+            inner.transcribeStored(chatId, messageId, attachmentId).also { if (holdStored) release.await() }
+        override suspend fun transcribeSupplied(chatId: Long, messageId: Long, attachmentId: Long, sound: File) =
+            inner.transcribeSupplied(chatId, messageId, attachmentId, sound).also { release.await() }
+    }
+
+    /** The production session over this test's database, wiping it for real. */
+    private fun TestScope.session(epoch: SessionEpoch): SessionRepository {
+        val settings = FakeSettingsRepository()
+        val tokens = FakeTokenStore()
+        tokens.save("tok")
+        return SessionRepository(
+            authApi = FakeAuthApi(),
+            tokenStore = tokens,
+            settings = settings,
+            wiper = LocalDataWiper { db.wipeAll() },
+            unauthorizedEvents = MutableSharedFlow(),
+            scope = backgroundScope,
+            epoch = epoch,
+        )
+    }
+
+    @Test
+    fun `an answer that arrives after sign-out is neither kept nor returned`() = runTest(dispatcher) {
+        val epoch = SessionEpoch()
+        val session = session(epoch)
+        val held = HeldApi(api)
+        api.answers += answer("the previous account's words", "en")
+        val repository = TranscriptRepository(held, db.transcriptDao(), sound, epoch)
+
+        val asking = async { repository.fetchStored(3, 500, 40) }
+        runCurrent()
+        assertThat(api.calls).hasSize(1) // the request is out
+
+        session.clearSession()
+        held.release.complete(Unit)
+
+        assertThat(asking.await()).isEqualTo(TranscriptOutcome.Dropped)
+        assertThat(db.transcriptDao().find(40)).isNull()
+        // And so nothing for the next account's line to draw.
+        assertThat(repository.observe(40).first()).isNull()
+    }
+
+    @Test
+    fun `a supplied answer that arrives after sign-out is neither kept nor returned`() = runTest(dispatcher) {
+        val epoch = SessionEpoch()
+        val session = session(epoch)
+        val held = HeldApi(api, holdStored = false)
+        api.answers += notTranscribable()
+        api.suppliedAnswers += answer("words only the asker may read")
+        val made = soundFile()
+        sound.next = TranscriptSoundPlan.Result.Ready(made, TranscriptSoundPlan.Way.PASSTHROUGH)
+        val repository = TranscriptRepository(held, db.transcriptDao(), sound, epoch)
+
+        val asking = async { repository.fetchSupplied(3, 500, video, MAX) }
+        runCurrent()
+        assertThat(api.supplied).hasSize(1) // the sound is out
+
+        session.clearSession()
+        held.release.complete(Unit)
+
+        assertThat(asking.await()).isEqualTo(TranscriptOutcome.Dropped)
+        assertThat(db.transcriptDao().find(70)).isNull()
+        assertThat(made.exists()).isFalse()
+        assertThat(repository.observe(70).first()).isNull()
+    }
+
+    @Test
+    fun `a request made after sign-out, by the next account, is kept as usual`() = runTest(dispatcher) {
+        val epoch = SessionEpoch()
+        val session = session(epoch)
+        session.clearSession()
+        api.answers += answer("the next account's own words")
+
+        val outcome = TranscriptRepository(api, db.transcriptDao(), sound, epoch).fetchStored(3, 500, 40)
+
+        assertThat(outcome).isEqualTo(TranscriptOutcome.Text("the next account's own words", null))
+        assertThat(db.transcriptDao().find(40)?.text).isEqualTo("the next account's own words")
     }
 
     private companion object {

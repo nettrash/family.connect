@@ -245,6 +245,19 @@ class TranscriptRequestsTest {
     }
 
     @Test
+    fun `an answer dropped after a sign-out leaves the line saying nothing`() = runTest {
+        val world = World().apply { answers += TranscriptOutcome.Dropped }
+        val requests = requests(world)
+
+        requests.request(voiceNote)
+        runCurrent()
+
+        // Not "Couldn't get the text": there is no account left to tell.
+        assertThat(requests.status.value).isEmpty()
+        assertThat(requests.asking.first()).isFalse()
+    }
+
+    @Test
     fun `the gate follows the consent record and the processor`() {
         assertThat(AssistantConsent.transcriptGate("Azure", "2026-10-01T00:00:00Z"))
             .isEqualTo(TranscriptGate.ASK_FOR_TEXT)

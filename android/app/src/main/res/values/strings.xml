@@ -166,13 +166,25 @@
     <string name="s_couldnt_load_statistics">Couldn\'t load statistics</string>
     <string name="s_check_connection_try_again">Check your connection and try again.</string>
     <string name="s_saved_by_one_copy">%1$s saved by storing one copy of identical files.</string>
-    <string name="s_attachments_and_size">%1$d attachments, %2$s</string>
-    <string name="s_questions_to_assistant">%1$d questions to the assistant</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d attachment, %2$s</item>
+        <item quantity="other">%1$d attachments, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d question to the assistant</item>
+        <item quantity="other">%1$d questions to the assistant</item>
+    </plurals>
     <string name="s_stats_pictures">Pictures</string>
     <string name="s_stats_recordings_as_text">Recordings as text</string>
     <string name="s_stats_recording_time">Recording time</string>
-    <string name="s_pictures_from_assistant">%1$d pictures from the assistant</string>
-    <string name="s_recordings_as_text">%1$d recordings as text</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d picture from the assistant</item>
+        <item quantity="other">%1$d pictures from the assistant</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d recording as text</item>
+        <item quantity="other">%1$d recordings as text</item>
+    </plurals>
     <string name="s_record_audio">Record audio</string>
     <string name="s_stop">Stop</string>
     <string name="s_audio">Audio</string>

@@ -18,10 +18,12 @@ import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.Json
 import me.nettrash.familyconnect.data.net.dto.AiStatsDto
+import me.nettrash.familyconnect.data.net.dto.AttachmentStatsDto
 import me.nettrash.familyconnect.data.net.dto.MemberStatsDto
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 class StatisticsLinesTest {
@@ -84,8 +86,40 @@ class StatisticsLinesTest {
             ai = AiStatsDto(questions = 1, images = 2, transcripts = 5),
         )
         assertThat(StatisticsLines.summaryFor(member, context)).isEqualTo(
-            "1 questions to the assistant · 2 pictures from the assistant · 5 recordings as text",
+            "1 question to the assistant · 2 pictures from the assistant · 5 recordings as text",
         )
         assertThat(StatisticsLines.summaryFor(member.copy(ai = AiStatsDto()), context)).isEqualTo("Words only")
+    }
+
+    @Test
+    fun `one of anything is said in the singular, and more in the plural`() {
+        val one = MemberStatsDto(
+            userId = 7, displayName = "Olive",
+            attachments = AttachmentStatsDto(count = 1, bytes = 0),
+            ai = AiStatsDto(questions = 1, images = 1, transcripts = 1),
+        )
+        assertThat(StatisticsLines.summaryFor(one, context)).isEqualTo(
+            "1 attachment, 0 B · 1 question to the assistant · 1 picture from the assistant · 1 recording as text",
+        )
+        val more = one.copy(
+            attachments = AttachmentStatsDto(count = 3, bytes = 0),
+            ai = AiStatsDto(questions = 2, images = 4, transcripts = 6),
+        )
+        assertThat(StatisticsLines.summaryFor(more, context)).isEqualTo(
+            "3 attachments, 0 B · 2 questions to the assistant · 4 pictures from the assistant · 6 recordings as text",
+        )
+    }
+
+    @Test
+    @Config(qualifiers = "ru")
+    fun `Russian counts take all three of its forms`() {
+        fun line(n: Int) = StatisticsLines.summaryFor(
+            MemberStatsDto(userId = 7, displayName = "Olive", ai = AiStatsDto(images = n)),
+            context,
+        )
+        assertThat(line(1)).isEqualTo("1 картинка от ассистента")
+        assertThat(line(3)).isEqualTo("3 картинки от ассистента")
+        assertThat(line(5)).isEqualTo("5 картинок от ассистента")
+        assertThat(line(21)).isEqualTo("21 картинка от ассистента")
     }
 }

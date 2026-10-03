@@ -1,5 +1,6 @@
 using System.Net;
 using FamilyConnect.App.Logic;
+using FamilyConnect.Core;
 using FamilyConnect.Core.Protocol;
 using FamilyConnect.Core.Store;
 
@@ -202,18 +203,39 @@ public sealed class TranscriptModelTests : IDisposable
         Assert.Equal(2, server.Asked.Count);
     }
 
-    /// <summary>A 2xx with no transcript in it is not an answer: not kept, said as "not available".</summary>
-    [Fact]
-    public async Task AnAnswerWithNoTranscriptIsNotKept()
+    /// <summary>
+    /// A 2xx THIS CLIENT CANNOT READ IS NOT AN ANSWER — no transcript, a transcript with no <c>text</c>, a <c>text</c> of
+    /// null or of the wrong type: not kept (the next click asks again), never drawn as "No speech" (that is only ever
+    /// what the provider ANSWERED, as <c>""</c>), and said as the generic "Couldn't get the text. Try again." — the
+    /// sentence the other three clients give an answer they cannot decode.
+    /// </summary>
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("""{"transcript": null}""")]
+    [InlineData("""{"transcript": {}}""")]
+    [InlineData("""{"transcript": {"language": "ru"}}""")]
+    [InlineData("""{"transcript": {"text": null}}""")]
+    [InlineData("""{"transcript": {"text": null, "language": "ru"}}""")]
+    [InlineData("""{"transcript": {"text": 42}}""")]
+    public async Task AnAnswerWithNoTextIsAFailureAndNotKept(string body)
     {
-        var server = new Server().On(Path, "{}");
+        var server = new Server().Then(Path, (HttpStatusCode.OK, body), (HttpStatusCode.OK, Said));
         var model = Model(server);
 
         await ShowAsync(model);
 
-        Assert.Equal(TranscriptPhase.Failed, model.Look(34).Phase);
-        Assert.Equal(ErrorCodes.Validation, model.Look(34).Error!.Code);
+        var look = model.Look(34);
+        Assert.Equal(TranscriptPhase.Failed, look.Phase);
+        Assert.False(look.NoSpeech);
+        Assert.Null(look.Text);
         Assert.Null(store.Find(34));
+        Assert.False(model.Holds(34));
+        Assert.True(TranscriptRules.MayRetry(look.Error!));
+        Assert.Equal("Couldn't get the text. Try again.", TranscriptRules.FailureSentence(look.Error!, EnglishCatalog.Instance));
+        // Not kept, so the next click asks again — and a readable answer then is kept.
+        await ShowAsync(model);
+        Assert.Equal(2, server.Asked.Count);
+        Assert.Equal("Мы будем в шесть", store.Find(34)!.Text);
     }
 
     /// <summary>

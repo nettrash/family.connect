@@ -343,9 +343,8 @@ public sealed class TranscriptModel(ApiClient api, TranscriptStore store, Func<D
             {
                 Set(attachmentId, TranscriptLook.Closed, mine);
             }
-            else if (outcome.Value is { } transcript)
+            else if (outcome.Value is { Text: { } text } transcript)
             {
-                var text = transcript.Text ?? string.Empty;
                 lock (gate)
                 {
                     if (session != mine)
@@ -452,13 +451,27 @@ public sealed class TranscriptModel(ApiClient api, TranscriptStore store, Func<D
             : await api.Transcript(chatId, messageId, attachmentId, sound, ct).ConfigureAwait(false);
         if (!answer.Ok)
         {
-            return (null, answer.Error ?? ApiError.Transport("no answer"));
+            // A 2xx whose body could not be decoded at all (a text of the wrong type, say) is the same unreadable answer
+            // as one decoded with its text missing, and said the same way; a server's own validation refusal is a 4xx.
+            return answer.Error is { Code: ErrorCodes.Validation, Status: >= 200 and < 300 } unread
+                ? (null, Unreadable(unread.Status))
+                : (null, answer.Error ?? ApiError.Transport("no answer"));
         }
-        // A 2xx with no transcript in it is an answer this client cannot read, and terminal like every such answer.
-        return answer.Value?.Transcript is { } transcript
+        // TEXT IS ALWAYS PRESENT, and "" is silence (docs/protocol.md, "Transcripts on request"). The decoder fills a
+        // missing "text" and a "text": null alike with null, so a 2xx with no transcript, or no text in it, is checked
+        // HERE — never turned into "", which would keep a malformed answer for ever and draw it as "No speech".
+        return answer.Value?.Transcript is { Text: not null } transcript
             ? (transcript, null)
-            : (null, new ApiError(ErrorCodes.Validation, "the answer carried no transcript", answer.Status));
+            : (null, Unreadable(answer.Status));
     }
+
+    /// <summary>
+    /// A 2xx this client cannot read: a failure, not an answer — nothing is kept, so the next click asks again — and
+    /// said as the generic "Couldn't get the text. Try again.", as the other three clients say an answer they cannot
+    /// decode. <c>internal</c>, the server's own failure, is what that sentence is for.
+    /// </summary>
+    private static ApiError Unreadable(int status) =>
+        new(ErrorCodes.Internal, "the answer carried no transcript text", status);
 
     private void Set(long attachmentId, TranscriptLook look) => Set(attachmentId, look, null);
 
