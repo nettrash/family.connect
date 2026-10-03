@@ -705,12 +705,19 @@ ring_timeout_secs = 45
 # # "transcript" and the recording's length in Family Statistics, because
 # # transcription is billed by audio length, not tokens.
 # #
-# # The request is Azure's documented one (POST .../audio/transcriptions,
-# # multipart, response_format=json). Like the images contract it has to be
-# # confirmed against your live deployment; a mismatch shows up in this
-# # server's log as a provider failure. A pasted full target URI works here
-# # exactly as it does under [ai].
+# # TWO CONTRACTS, chosen by `api` below. The block below is the OpenAI one
+# # (gpt-4o-transcribe, whisper on Azure OpenAI); Microsoft's own
+# # MAI-Transcribe models answer on Azure Speech instead, and have their own
+# # worked example after it — if that is what you deployed, replace this
+# # block with that one rather than adapting this one.
+# #
+# # The OpenAI request is Azure's documented one (POST
+# # .../audio/transcriptions, multipart, response_format=json). Like the
+# # images contract it has to be confirmed against your live deployment; a
+# # mismatch shows up in this server's log as a provider failure. A pasted
+# # full target URI works here exactly as it does under [ai].
 # [ai.transcribe]
+# api = "openai"
 # deployment = "YOUR-TRANSCRIBE-DEPLOYMENT"
 # model = "gpt-4o-transcribe"
 # # The most bytes of sound one request may send. 25 MiB is both the default
@@ -718,5 +725,77 @@ ring_timeout_secs = 45
 # # server refuses to start configured above it rather than let a family
 # # wait on an upload the provider will throw away. Lower it if you like.
 # max_bytes = 26214400
+# # Whether the family's language goes with the request as a hint. On by
+# # default for this contract (off by default for "speech", below).
+# language_hint = true
 # # endpoint / api_key / api_version / auth may be given here too, when this
 # # model answers somewhere else entirely. Omitted, they come from [ai] above.
+#
+# # ---------------------------------------------------------------------------
+# # MAI-Transcribe-2 on Azure Speech
+# #
+# # A worked [ai.transcribe] for Microsoft's own speech models — replace the
+# # block above with this one when your model is MAI-Transcribe-2 (or 1.5;
+# # MAI-Transcribe-1 is deprecated). They are served by Azure Speech's "Fast
+# # Transcription" / "LLM Speech" API, a different service from Azure OpenAI
+# # that agrees with it on nothing but multipart:
+# #
+# #     [ai.transcribe]
+# #     api = "speech"
+# #     endpoint = "https://YOUR-SPEECH-RESOURCE.cognitiveservices.azure.com"
+# #     api_key = "YOUR-SPEECH-RESOURCE-KEY"
+# #     model = "MAI-Transcribe-2"
+# #     style = "clean"
+# #     language_hint = false
+# #     max_bytes = 26214400
+# #
+# # WHAT IS SENT: POST {endpoint}/speechtotext/transcriptions:transcribe
+# # ?api-version=2025-10-15, the key in an `Ocp-Apim-Subscription-Key`
+# # header, and two multipart parts — `audio`, the recording's sound, and
+# # `definition`, which the server writes and which says only this:
+# #
+# #     {"enhancedMode": {"enabled": true, "model": "MAI-Transcribe-2",
+# #                       "modelOptions": {"transcribeStyle": "clean"}}}
+# #
+# # (plus `"locales": ["ru"]` when `language_hint = true` — see below). Still
+# # only the sound: no text, no names, no chat.
+# #
+# # THE KEYS, and why each is what it is:
+# #
+# # - `endpoint` is REQUIRED and is not inherited from [ai], whose endpoint
+# #   is an Azure OpenAI one. The resource root is enough — the path and
+# #   `api-version=2025-10-15` are appended. A full
+# #   ".../speechtotext/transcriptions:transcribe?api-version=..." URI is
+# #   used exactly as pasted; `api_version` sets the date for a root.
+# # - `api_key` falls back to [ai]'s when omitted — right only when one
+# #   multi-service resource serves both. It always goes in
+# #   Ocp-Apim-Subscription-Key; `auth` is refused here, and so is
+# #   `deployment` (the model is named by `model`, which is REQUIRED).
+# # - `style`: "clean" (the default here) leaves out "um" and false starts;
+# #   "verbatim" (the provider's own default) keeps them. Clean, because the
+# #   text is read by a person in a chat.
+# # - `language_hint`: OFF by default. The provider calls a locale "a very
+# #   strong hint" to give only when you are certain of the language AND its
+# #   own detection fails — and MAI-Transcribe-2 does not list Serbian, so
+# #   an `sr` / `sr-Latn` family's language is never sent even when this is
+# #   on (it would be refused).
+# # - `max_bytes` keeps the 25 MiB ceiling. The provider takes more (under
+# #   250 MB and 2 hours), but the clients size the sound tracks they send to
+# #   this one number, and both contracts share it.
+# #
+# # WHAT A REFUSAL BECOMES: a format or length the provider will not read
+# # (InvalidAudioFormat, UnsupportedMediaType, AudioLengthLimitExceeded) is
+# # `not_transcribable` to the client, which then sends its own sound track;
+# # so is EmptyAudioFile (the server never sends an empty file, so it means
+# # the provider could not read this one) and NoLanguageIdentified (what a
+# # language the model does not know looks like — Serbian — logged
+# # `unheard`). None of them is ever turned into "No speech", none is kept,
+# # and none is counted. Anything else is a transient failure. The log gets
+# # the provider's codes, never its message.
+# #
+# # NOT YET CONFIRMED: the MAI documentation lists WAV, MP3 and FLAC, and
+# # neither it nor the Fast Transcription page names M4A — the format of
+# # every voice note. Try one voice note against your deployment first; if it
+# # comes back `not_transcribable`, this contract cannot read your family's
+# # voice notes yet. This API is in public preview, with no SLA.
+# # ---------------------------------------------------------------------------

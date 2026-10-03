@@ -46,7 +46,11 @@
 //! looking for, plus the family's language as a two-letter hint — no prompt,
 //! no words, no history (protocol.md, "Transcripts on request"). Whose
 //! recording may go, and which bytes, is decided by the caller
-//! (`handlers_transcript`), like every other "may this leave" here.
+//! (`handlers_transcript`), like every other "may this leave" here. It
+//! speaks one of two contracts, as configured: Azure OpenAI's
+//! `audio/transcriptions`, or Azure Speech's `transcriptions:transcribe`
+//! (Microsoft's MAI-Transcribe models), whose `definition` this file writes
+//! and which carries the model's name, the style and at most a locale.
 //!
 //! WHICH DEPLOYMENT a request goes to is not decided here either. It arrives
 //! as a [`ModelRoute`] built by `config.rs`, so "text, vision or images?" is
@@ -64,7 +68,7 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::config::{AiImagesConfig, AuthScheme, ModelRoute};
+use crate::config::{AiImagesConfig, AuthScheme, ModelRoute, TranscribeContract, TranscribeRoute};
 
 /// Put the key on the request, in the header this route's provider reads.
 ///
@@ -72,11 +76,16 @@ use crate::config::{AiImagesConfig, AuthScheme, ModelRoute};
 /// takes `api-key`, and the Foundry model surface takes an `Authorization:
 /// Bearer` — with the SAME key. Which one is CONFIGURED, never sniffed from
 /// the URL (see [`AuthScheme`]), so this function only obeys and there is
-/// exactly one place in the file where a key meets a request.
+/// exactly one place in the file where a key meets a request. A third,
+/// `Ocp-Apim-Subscription-Key`, is the Azure Speech contract's, and is
+/// derived from `[ai.transcribe] api = "speech"` rather than written.
 fn with_key(request: reqwest::RequestBuilder, route: &ModelRoute) -> reqwest::RequestBuilder {
     match route.auth {
         AuthScheme::ApiKey => request.header("api-key", route.api_key.as_str()),
         AuthScheme::Bearer => request.bearer_auth(route.api_key.as_str()),
+        AuthScheme::SubscriptionKey => {
+            request.header("Ocp-Apim-Subscription-Key", route.api_key.as_str())
+        }
     }
 }
 
@@ -501,9 +510,13 @@ pub fn is_refusal(error: &anyhow::Error) -> bool {
 /// `error.code` / `error.type` values that ARE a content refusal. Azure's
 /// chat completions say `content_filter`; its images endpoint says
 /// `content_policy_violation` or, on the newer surfaces,
-/// `content_safety_violation`; OpenAI's image models say `moderation_blocked`.
+/// `content_safety_violation`; OpenAI's image models say `moderation_blocked`,
+/// and the same models served by Azure (`gpt-image-*`, documented 2026) say
+/// `contentFilter` — camel case, which no case-insensitive match against
+/// `content_filter` catches, so it is listed in its own spelling.
 const REFUSAL_CODES: &[&str] = &[
     "content_filter",
+    "contentFilter",
     "content_policy_violation",
     "content_safety_violation",
     "moderation_blocked",
@@ -631,11 +644,13 @@ fn loggable_detail(body: &str) -> String {
         return format!("{bytes}-byte body, not JSON, withheld");
     };
     let error = error_object(&parsed);
-    let inner = if error["innererror"].is_object() {
-        &error["innererror"]
-    } else {
-        &error["inner_error"]
-    };
+    // Azure spells it three ways: `innererror` (OpenAI surfaces),
+    // `inner_error`, and `innerError` (the Speech contract).
+    let inner = ["innererror", "innerError", "inner_error"]
+        .iter()
+        .map(|key| &error[*key])
+        .find(|value| value.is_object())
+        .unwrap_or(&Value::Null);
     let mut parts = Vec::new();
     for (label, value) in [
         ("code", &error["code"]),
@@ -1020,39 +1035,161 @@ pub fn transcription_language(family_language: &str) -> Option<String> {
     shaped.then_some(language)
 }
 
-/// Ask the transcription deployment for the text of ONE recording.
+/// What a provider call came back with: the transcript, and the length of
+/// sound the provider says it heard.
 ///
-/// What leaves, and the whole of it: the recording's bytes as `file`,
-/// `response_format=json`, the `model` field every request here carries (the
-/// DEPLOYMENT name — the v1 surface routes on it, the classic surface
-/// ignores it), and `language` when the caller has a hint. Azure's
+/// Every one is an ANSWER, kept like any other: a provider refusal is never
+/// turned into one, `""` included — see [`Unreadable`] and [`Unheard`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transcription {
+    pub transcript: Transcript,
+    /// The provider's `durationMilliseconds`, when it gave one. The usage
+    /// row prefers it to the attachment's own length.
+    pub audio_ms: Option<i64>,
+}
+
+/// The provider refused the FILE — its format, or its length — rather than
+/// failing to answer: the client is told `not_transcribable` and may send a
+/// sound track of its own. Carried in the error's chain like [`Refused`],
+/// and decided once, from the provider's structured codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unreadable;
+
+impl std::fmt::Display for Unreadable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the provider could not read this recording")
+    }
+}
+
+impl std::error::Error for Unreadable {}
+
+/// Whether this error is the provider refusing the file, anywhere in its
+/// chain.
+pub fn is_unreadable(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<Unreadable>())
+}
+
+/// The provider could not tell which language it heard (the speech
+/// contract's `NoLanguageIdentified`). It is what a language the model does
+/// not know looks like — Serbian on MAI-Transcribe-2 — so it is NOT
+/// silence: answered `""`, it would be drawn as "No speech" and kept, by the
+/// server and by the asker's device, for a recording somebody spoke in.
+/// The client is told `not_transcribable`, like [`Unreadable`], and the log
+/// says `unheard`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unheard;
+
+impl std::fmt::Display for Unheard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the provider could not tell which language this recording is in")
+    }
+}
+
+impl std::error::Error for Unheard {}
+
+/// Whether this error is the provider naming no language, anywhere in its
+/// chain.
+pub fn is_unheard(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<Unheard>())
+}
+
+/// The family languages the speech contract is never sent as a locale, even
+/// with `language_hint` on: MAI-Transcribe-2 does not list them, and a
+/// locale it does not know is refused (`UnsupportedLanguageCode`) rather
+/// than ignored. Compared against the BARE language, so `sr-Latn` is `sr`.
+const SPEECH_LOCALES_NEVER_SENT: &[&str] = &["sr"];
+
+/// The language hint this request may carry, from the family's (already
+/// shaped by [`transcription_language`]): none unless the route allows a
+/// hint, and under the speech contract never one it would refuse.
+fn hint_for(route: &TranscribeRoute, language: Option<&str>) -> Option<String> {
+    if !route.language_hint {
+        return None;
+    }
+    let language = language?;
+    match route.contract {
+        TranscribeContract::OpenAi => Some(language.to_string()),
+        TranscribeContract::Speech { .. } => {
+            let bare = language.split('-').next().unwrap_or_default();
+            (!SPEECH_LOCALES_NEVER_SENT
+                .iter()
+                .any(|never| bare.eq_ignore_ascii_case(never)))
+            .then(|| bare.to_ascii_lowercase())
+        }
+    }
+}
+
+/// The speech contract's `definition` part — the whole of what goes beside
+/// the sound: the model, the style, and at most ONE locale. Its own
+/// function so a test can pin it to the byte.
+fn speech_definition(model: &str, style: &str, locale: Option<&str>) -> Value {
+    let mut definition = json!({
+        "enhancedMode": {
+            "enabled": true,
+            "model": model,
+            "modelOptions": {"transcribeStyle": style},
+        },
+    });
+    if let Some(locale) = locale {
+        definition["locales"] = json!([locale]);
+    }
+    definition
+}
+
+/// Ask the transcription deployment for the text of ONE recording, in the
+/// contract the route names.
+///
+/// **`openai`** — what leaves, and the whole of it: the recording's bytes
+/// as `file`, `response_format=json`, the `model` field every request here
+/// carries (the DEPLOYMENT name — the v1 surface routes on it, the classic
+/// surface ignores it), and `language` when the caller has a hint. Azure's
 /// documented contract (Microsoft Learn, "Speech to text with transcription
 /// models"); like the images surface it is confirmed against a live
-/// endpoint by the operator, not from here.
+/// endpoint by the operator, not from here. A refusal by the provider's
+/// filter comes back as [`Refused`] in the error's chain, decided by
+/// [`refused_by_provider`] exactly as for every other request.
 ///
-/// A refusal by the provider's filter comes back as [`Refused`] in the
-/// error's chain, decided by [`refused_by_provider`] exactly as for every
-/// other request. The error never carries the text: an error body is
-/// logged only through [`loggable_detail`].
+/// **`speech`** — the recording's bytes as `audio` and the
+/// [`speech_definition`], nothing else; the key in
+/// `Ocp-Apim-Subscription-Key`. Its refusals are read by
+/// [`speech_failure`]: a refused FILE is [`Unreadable`], an empty one or an
+/// unidentified language is an answer of silence, and nothing is ever
+/// [`Refused`] — that contract documents no filter.
+///
+/// The error never carries the text: an error body is logged only through
+/// [`loggable_detail`].
 pub async fn transcribe(
     client: &reqwest::Client,
-    route: &ModelRoute,
+    route: &TranscribeRoute,
     recording: Recording,
     language: Option<&str>,
-) -> Result<Transcript> {
+) -> Result<Transcription> {
+    let hint = hint_for(route, language);
+    let model = &route.route;
     let file = reqwest::multipart::Part::bytes(recording.bytes)
         .file_name(recording.filename)
         .mime_str(recording.mime)
         .context("naming the recording's media type")?;
-    let mut form = reqwest::multipart::Form::new()
-        .part("file", file)
-        .text("model", route.model.clone())
-        .text("response_format", "json");
-    if let Some(language) = language {
-        form = form.text("language", language.to_string());
-    }
+    let form = match route.contract {
+        TranscribeContract::OpenAi => {
+            let mut form = reqwest::multipart::Form::new()
+                .part("file", file)
+                .text("model", model.model.clone())
+                .text("response_format", "json");
+            if let Some(language) = hint {
+                form = form.text("language", language);
+            }
+            form
+        }
+        TranscribeContract::Speech { style } => {
+            let definition = speech_definition(&model.model, style.as_str(), hint.as_deref());
+            reqwest::multipart::Form::new()
+                .part("audio", file)
+                .text("definition", definition.to_string())
+        }
+    };
 
-    let response = with_key(client.post(&route.url), route)
+    let response = with_key(client.post(&model.url), model)
         .multipart(form)
         .send()
         .await
@@ -1064,15 +1201,19 @@ pub async fn transcribe(
         // body only through the allow-list, because an error can repeat
         // what it was sent — and what it was sent is somebody's voice.
         let detail = response.text().await.unwrap_or_default();
-        return Err(provider_error(
-            status,
-            format!(
-                "transcription returned {status} for {}: {}",
-                route.url,
-                loggable_detail(&detail)
-            ),
-            &detail,
-        ));
+        let summary = format!(
+            "transcription returned {status} for {}: {}",
+            model.url,
+            loggable_detail(&detail)
+        );
+        return match route.contract {
+            TranscribeContract::OpenAi => Err(provider_error(status, summary, &detail)),
+            TranscribeContract::Speech { .. } => match speech_failure(status, &detail) {
+                SpeechFailure::Unheard => Err(anyhow::Error::new(Unheard).context(summary)),
+                SpeechFailure::Unreadable => Err(anyhow::Error::new(Unreadable).context(summary)),
+                SpeechFailure::Failed => Err(anyhow::anyhow!(summary)),
+            },
+        };
     }
 
     let mut body: Vec<u8> = Vec::new();
@@ -1084,7 +1225,32 @@ pub async fn transcribe(
         }
         body.extend_from_slice(&chunk);
     }
-    parse_transcript(&body)
+    match route.contract {
+        TranscribeContract::OpenAi => Ok(Transcription {
+            transcript: parse_transcript(&body)?,
+            audio_ms: None,
+        }),
+        TranscribeContract::Speech { .. } => {
+            let (transcript, audio_ms) = parse_speech_transcript(&body)?;
+            Ok(Transcription {
+                transcript,
+                audio_ms,
+            })
+        }
+    }
+}
+
+/// A language as a client may be handed it: letters and `-`, at most 32 —
+/// a name (`russian`), a code (`ru`) or a locale (`en-US`). Anything else
+/// is prose, and prose has no business there.
+fn shaped_language(language: &str) -> Option<String> {
+    let language = language.trim();
+    let shaped = !language.is_empty()
+        && language.len() <= 32
+        && language
+            .chars()
+            .all(|c| c.is_ascii_alphabetic() || c == '-');
+    shaped.then(|| language.to_string())
 }
 
 /// The `json` response: `{"text": "…"}`, sometimes with a `language`.
@@ -1098,21 +1264,146 @@ fn parse_transcript(body: &[u8]) -> Result<Transcript> {
     let Some(text) = parsed["text"].as_str() else {
         bail!("transcription response carried no text");
     };
-    let language = parsed["language"]
-        .as_str()
-        .map(str::trim)
-        .filter(|language| {
-            !language.is_empty()
-                && language.len() <= 32
-                && language
-                    .chars()
-                    .all(|c| c.is_ascii_alphabetic() || c == '-')
-        })
-        .map(str::to_string);
+    let language = parsed["language"].as_str().and_then(shaped_language);
     Ok(Transcript {
         text: text.trim().to_string(),
         language,
     })
+}
+
+/// The speech contract's 200: `{"durationMilliseconds", "combinedPhrases":
+/// [{"text", "channel"?}], "phrases": [{"text", "locale", …}]}`.
+///
+/// The text is each `combinedPhrases` entry's, in CHANNEL order (an entry
+/// without one is channel 0, and entries of one channel keep the order
+/// they came in), one line per entry; none, or only empty ones, is `""` —
+/// silence, an answer. The language is the first phrase's `locale`, shaped
+/// as [`shaped_language`] requires. The duration is
+/// `durationMilliseconds`, when it is a non-negative number.
+///
+/// `combinedPhrases` is documented as always there. When it is missing (or
+/// holds no text) while `phrases` holds some, the text is the phrases'
+/// own — joined with a space within a channel, a line between channels —
+/// because what was said must never be read as silence.
+///
+/// A 200 that carries NEITHER list is not silence: it is a URL answering
+/// some other contract, or an answer with its text missing, and kept as
+/// `""` it would tell every later asker that nothing was said. So it is a
+/// failure.
+fn parse_speech_transcript(body: &[u8]) -> Result<(Transcript, Option<i64>)> {
+    let parsed: Value = serde_json::from_slice(body).context("the transcript was not JSON")?;
+    let combined = parsed["combinedPhrases"].as_array();
+    let phrases = parsed["phrases"].as_array();
+    if combined.is_none() && phrases.is_none() {
+        bail!("transcription response is not the speech contract's");
+    }
+    let mut text = combined
+        .map(|entries| channel_text(entries, "\n"))
+        .unwrap_or_default();
+    if text.is_empty() {
+        text = phrases
+            .map(|entries| channel_text(entries, " "))
+            .unwrap_or_default();
+    }
+    let language = phrases
+        .and_then(|phrases| phrases.first())
+        .and_then(|phrase| phrase["locale"].as_str())
+        .and_then(shaped_language);
+    let audio_ms = parsed["durationMilliseconds"]
+        .as_i64()
+        .or_else(|| {
+            parsed["durationMilliseconds"]
+                .as_f64()
+                .filter(|ms| ms.is_finite() && *ms < i64::MAX as f64)
+                .map(|ms| ms.round() as i64)
+        })
+        .filter(|ms| *ms >= 0);
+    Ok((Transcript { text, language }, audio_ms))
+}
+
+/// The non-empty texts of a list of the speech contract's phrases, by
+/// CHANNEL (missing is 0; stable, so one channel keeps its order): the
+/// entries of one channel joined by `within`, channels by a line.
+fn channel_text(entries: &[Value], within: &str) -> String {
+    let mut texts: Vec<(i64, &str)> = entries
+        .iter()
+        .filter_map(|entry| {
+            let text = entry["text"].as_str()?.trim();
+            let channel = entry["channel"].as_i64().unwrap_or(0);
+            (!text.is_empty()).then_some((channel, text))
+        })
+        .collect();
+    texts.sort_by_key(|(channel, _)| *channel);
+    let mut out = String::new();
+    let mut last = None;
+    for (channel, text) in texts {
+        if let Some(previous) = last {
+            out.push_str(if previous == channel { within } else { "\n" });
+        }
+        out.push_str(text);
+        last = Some(channel);
+    }
+    out
+}
+
+/// What a refusal by the speech contract means to a member. None of them
+/// is an answer: a refusal is never turned into `""`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpeechFailure {
+    /// The FILE was refused: format, length, or no audio found in bytes
+    /// this server checked are there — `not_transcribable`.
+    Unreadable,
+    /// No language identified — `not_transcribable` too (see [`Unheard`]).
+    Unheard,
+    /// Anything else — `internal`, transient.
+    Failed,
+}
+
+/// Inner codes that refuse the FILE. `EmptyAudioFile` is one: the server
+/// never sends empty bytes (an upload, and a supplied part, are checked to
+/// be non-empty), so it can only mean the provider found no audio it could
+/// read in a file that has some — a container it does not read, which the
+/// client's own sound track may get round.
+const SPEECH_UNREADABLE_INNER: &[&str] = &[
+    "InvalidAudioFormat",
+    "AudioLengthLimitExceeded",
+    "EmptyAudioFile",
+];
+/// Outer codes that do.
+const SPEECH_UNREADABLE_OUTER: &[&str] = &["UnsupportedMediaType"];
+
+/// Read the speech contract's error answer: `{"code", "message",
+/// "innerError": {"code", "message"}}` — the codes alone decide, never a
+/// message.
+///
+/// Only a 4xx is read: a 5xx is the provider failing to answer, whatever
+/// its body says, and asking again may well work. `TooManyRequests` is a
+/// 429, and lands with every other code nobody listed, in `Failed`.
+fn speech_failure(status: reqwest::StatusCode, body: &str) -> SpeechFailure {
+    if !status.is_client_error() {
+        return SpeechFailure::Failed;
+    }
+    if status == reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE
+        || status == reqwest::StatusCode::PAYLOAD_TOO_LARGE
+    {
+        return SpeechFailure::Unreadable;
+    }
+    let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let error = error_object(&parsed);
+    let inner = ["innerError", "innererror", "inner_error"]
+        .iter()
+        .map(|key| &error[*key]["code"])
+        .find_map(Value::as_str)
+        .unwrap_or_default();
+    let outer = error["code"].as_str().unwrap_or_default();
+    let is = |found: &str, set: &[&str]| set.iter().any(|known| found.eq_ignore_ascii_case(known));
+    if is(inner, SPEECH_UNREADABLE_INNER) || is(outer, SPEECH_UNREADABLE_OUTER) {
+        return SpeechFailure::Unreadable;
+    }
+    if inner.eq_ignore_ascii_case("NoLanguageIdentified") {
+        return SpeechFailure::Unheard;
+    }
+    SpeechFailure::Failed
 }
 
 /// What these bytes actually are, or `None`.
@@ -2070,6 +2361,17 @@ mod tests {
         assert!(refused_by_provider(StatusCode::BAD_REQUEST, body));
     }
 
+    /// Azure's `gpt-image-*` models: `contentFilter`, camel case, with the
+    /// error object beside `created` rather than alone (the body Microsoft
+    /// Learn documents for a refused prompt). Without its own spelling in
+    /// the list it read as "some other error" and was never reworded.
+    #[test]
+    fn a_gpt_image_content_filter_is_a_refusal() {
+        let body = r#"{"created": 1698435368, "error": {"code": "contentFilter",
+            "message": "Your task failed as a result of our safety system."}}"#;
+        assert!(refused_by_provider(StatusCode::BAD_REQUEST, body));
+    }
+
     /// The classic DALL·E surface: `content_policy_violation`, with the RAI
     /// inner error underneath.
     #[test]
@@ -2363,5 +2665,539 @@ mod tests {
             "no text is a failure"
         );
         assert!(parse_transcript(b"not json").is_err());
+    }
+
+    // --- what leaves on the wire ------------------------------------------
+
+    /// Serve ONE HTTP request on a local port, answer it with `status` and
+    /// `answer`, and hand back the raw bytes of what arrived — the request
+    /// line, every header and the whole body, exactly as this file sent
+    /// them. Nothing here reaches a real provider.
+    async fn capture_one(
+        status: &'static str,
+        answer: impl Into<String>,
+    ) -> (String, tokio::task::JoinHandle<Vec<u8>>) {
+        let answer: String = answer.into();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binding a capture port");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("one request");
+            let mut raw: Vec<u8> = Vec::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = socket.read(&mut buf).await.expect("reading the request");
+                assert!(n > 0, "the request ended early");
+                raw.extend_from_slice(&buf[..n]);
+                let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .map(|value| value.trim().parse::<usize>().expect("a length"));
+                let done = match length {
+                    Some(length) => raw.len() >= end + 4 + length,
+                    None => raw.ends_with(b"0\r\n\r\n"),
+                };
+                if done {
+                    break;
+                }
+            }
+            let reply = format!(
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                 connection: close\r\n\r\n{answer}",
+                answer.len()
+            );
+            socket.write_all(reply.as_bytes()).await.expect("answering");
+            raw
+        });
+        (base, task)
+    }
+
+    /// The raw request with the two things that differ per run — the
+    /// multipart boundary and the capture port — replaced by fixed words.
+    fn normalised(raw: &[u8], base: &str) -> String {
+        let text = String::from_utf8_lossy(raw).into_owned();
+        let boundary = text
+            .lines()
+            .find_map(|line| {
+                let lower = line.to_ascii_lowercase();
+                lower
+                    .starts_with("content-type: multipart/form-data")
+                    .then(|| line.split("boundary=").nth(1).map(str::to_string))
+                    .flatten()
+            })
+            .expect("a multipart boundary");
+        let host = base.trim_start_matches("http://");
+        text.replace(&boundary, "BOUNDARY").replace(host, "HOST")
+    }
+
+    /// The OpenAI transcription request, BYTE FOR BYTE — written against
+    /// the server as it was before a second contract existed, and held
+    /// here so `api = "openai"` (the default) keeps sending exactly it.
+    #[tokio::test]
+    async fn the_openai_transcription_request_is_byte_for_byte_what_it_was() {
+        let (base, captured) = capture_one("200 OK", r#"{"text": "hi", "language": "ru"}"#).await;
+        let route = TranscribeRoute {
+            route: ModelRoute {
+                url: format!(
+                    "{base}/openai/deployments/w/audio/transcriptions?api-version=2024-10-21"
+                ),
+                api_key: "the-key".to_string(),
+                auth: AuthScheme::ApiKey,
+                model: "w".to_string(),
+                max_tokens: 1024,
+            },
+            contract: TranscribeContract::OpenAi,
+            // The default for this contract — what it always did.
+            language_hint: true,
+        };
+        let recording = Recording {
+            bytes: b"\x00\x00\x00\x18ftypM4A sound".to_vec(),
+            mime: "audio/mp4",
+            filename: "audio.m4a",
+        };
+        let client = reqwest::Client::new();
+        let answered = transcribe(&client, &route, recording, Some("ru"))
+            .await
+            .expect("answered");
+        assert_eq!(answered.transcript.text, "hi");
+        let raw = captured.await.expect("captured");
+        let got = normalised(&raw, &base);
+        assert_eq!(
+            got,
+            concat!(
+                "POST /openai/deployments/w/audio/transcriptions?api-version=2024-10-21 HTTP/1.1\r\n",
+                "api-key: the-key\r\n",
+                "content-type: multipart/form-data; boundary=BOUNDARY\r\n",
+                "content-length: 640\r\n",
+                "accept: */*\r\n",
+                "host: HOST\r\n",
+                "\r\n",
+                "--BOUNDARY\r\n",
+                "Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n",
+                "Content-Type: audio/mp4\r\n",
+                "\r\n",
+                "\0\0\0\u{18}ftypM4A sound\r\n",
+                "--BOUNDARY\r\n",
+                "Content-Disposition: form-data; name=\"model\"\r\n",
+                "\r\n",
+                "w\r\n",
+                "--BOUNDARY\r\n",
+                "Content-Disposition: form-data; name=\"response_format\"\r\n",
+                "\r\n",
+                "json\r\n",
+                "--BOUNDARY\r\n",
+                "Content-Disposition: form-data; name=\"language\"\r\n",
+                "\r\n",
+                "ru\r\n",
+                "--BOUNDARY--\r\n",
+            )
+        );
+    }
+
+    fn speech_route(base: &str, hint: bool) -> TranscribeRoute {
+        TranscribeRoute {
+            route: ModelRoute {
+                url: format!(
+                    "{base}/speechtotext/transcriptions:transcribe?api-version=2025-10-15"
+                ),
+                api_key: "speech-key".to_string(),
+                auth: AuthScheme::SubscriptionKey,
+                model: "MAI-Transcribe-2".to_string(),
+                max_tokens: 1024,
+            },
+            contract: TranscribeContract::Speech {
+                style: crate::config::TranscribeStyle::Clean,
+            },
+            language_hint: hint,
+        }
+    }
+
+    fn voice() -> Recording {
+        Recording {
+            bytes: b"\x00\x00\x00\x18ftypM4A voice".to_vec(),
+            mime: "audio/mp4",
+            filename: "audio.m4a",
+        }
+    }
+
+    const SPEECH_ANSWER: &str = r#"{"durationMilliseconds": 5300,
+        "combinedPhrases": [{"text": "We will be there at six."}],
+        "phrases": [{"text": "We will be there at six.", "locale": "en-US",
+                     "offsetMilliseconds": 0, "durationMilliseconds": 5300, "confidence": 0.9}]}"#;
+
+    /// THE SPEECH REQUEST, byte for byte: the key in the subscription
+    /// header and in no other, and two parts — the sound as `audio` under
+    /// its stored name and type, and the `definition` naming the model and
+    /// the style. No locale, though the family has a language: the hint is
+    /// off by default for this contract.
+    #[tokio::test]
+    async fn the_speech_request_is_the_sound_and_a_definition_and_nothing_else() {
+        let (base, captured) = capture_one("200 OK", SPEECH_ANSWER).await;
+        let client = reqwest::Client::new();
+        let answered = transcribe(&client, &speech_route(&base, false), voice(), Some("ru"))
+            .await
+            .expect("answered");
+        assert_eq!(
+            answered,
+            Transcription {
+                transcript: Transcript {
+                    text: "We will be there at six.".to_string(),
+                    language: Some("en-US".to_string()),
+                },
+                audio_ms: Some(5300),
+            }
+        );
+        let raw = captured.await.expect("captured");
+        let got = normalised(&raw, &base);
+        let head = got
+            .split("\r\n\r\n")
+            .next()
+            .expect("head")
+            .to_ascii_lowercase();
+        assert!(!head.contains("api-key"), "{got:?}");
+        assert!(!head.contains("authorization"), "{got:?}");
+        let request_line = head.lines().next().unwrap_or_default();
+        assert!(
+            !request_line.contains("speech-key"),
+            "never in the URL: {got:?}"
+        );
+        assert_eq!(
+            got,
+            concat!(
+                "POST /speechtotext/transcriptions:transcribe?api-version=2025-10-15 HTTP/1.1\r\n",
+                "ocp-apim-subscription-key: speech-key\r\n",
+                "content-type: multipart/form-data; boundary=BOUNDARY\r\n",
+                "content-length: 487\r\n",
+                "accept: */*\r\n",
+                "host: HOST\r\n",
+                "\r\n",
+                "--BOUNDARY\r\n",
+                "Content-Disposition: form-data; name=\"audio\"; filename=\"audio.m4a\"\r\n",
+                "Content-Type: audio/mp4\r\n",
+                "\r\n",
+                "\0\0\0\u{18}ftypM4A voice\r\n",
+                "--BOUNDARY\r\n",
+                "Content-Disposition: form-data; name=\"definition\"\r\n",
+                "\r\n",
+                "{\"enhancedMode\":{\"enabled\":true,\"model\":\"MAI-Transcribe-2\",",
+                "\"modelOptions\":{\"transcribeStyle\":\"clean\"}}}\r\n",
+                "--BOUNDARY--\r\n",
+            )
+        );
+    }
+
+    /// The definition, pinned: model, style, and ONE locale only when one
+    /// is given.
+    #[test]
+    fn the_speech_definition_carries_the_model_the_style_and_at_most_one_locale() {
+        assert_eq!(
+            speech_definition("MAI-Transcribe-2", "clean", None).to_string(),
+            r#"{"enhancedMode":{"enabled":true,"model":"MAI-Transcribe-2","modelOptions":{"transcribeStyle":"clean"}}}"#
+        );
+        assert_eq!(
+            speech_definition("MAI-Transcribe-1.5", "verbatim", Some("ru")),
+            json!({"enhancedMode": {"enabled": true, "model": "MAI-Transcribe-1.5",
+                                    "modelOptions": {"transcribeStyle": "verbatim"}},
+                   "locales": ["ru"]})
+        );
+    }
+
+    /// The hint: off by default for speech, on when opted in — and never
+    /// Serbian, in either alphabet, whatever the operator chose. The OpenAI
+    /// contract sends what it always sent, unless turned off.
+    #[test]
+    fn the_speech_contract_sends_a_locale_only_when_opted_in_and_never_serbian() {
+        let off = speech_route("http://x", false);
+        let on = speech_route("http://x", true);
+        assert_eq!(hint_for(&off, Some("ru")), None);
+        assert_eq!(hint_for(&on, Some("ru")).as_deref(), Some("ru"));
+        assert_eq!(hint_for(&on, Some("zh")).as_deref(), Some("zh"));
+        assert_eq!(hint_for(&on, None), None);
+        for serbian in ["sr", "SR", "sr-Latn"] {
+            assert_eq!(hint_for(&on, Some(serbian)), None, "{serbian}");
+        }
+        // What the handler hands over for both Serbian choices is `sr`.
+        assert_eq!(
+            hint_for(&on, transcription_language("sr-Latn").as_deref()),
+            None
+        );
+        let mut openai = on.clone();
+        openai.contract = TranscribeContract::OpenAi;
+        assert_eq!(hint_for(&openai, Some("sr")).as_deref(), Some("sr"));
+        openai.language_hint = false;
+        assert_eq!(hint_for(&openai, Some("sr")), None);
+    }
+
+    /// With the hint on, the locale is IN the request — and a Serbian
+    /// family's is not.
+    #[tokio::test]
+    async fn an_opted_in_locale_reaches_the_definition_and_serbian_never_does() {
+        for (family, expected) in [(Some("de"), Some("de")), (Some("sr"), None)] {
+            let (base, captured) = capture_one("200 OK", SPEECH_ANSWER).await;
+            let client = reqwest::Client::new();
+            transcribe(&client, &speech_route(&base, true), voice(), family)
+                .await
+                .expect("answered");
+            let got = normalised(&captured.await.expect("captured"), &base);
+            let definition = got
+                .split("name=\"definition\"\r\n\r\n")
+                .nth(1)
+                .and_then(|rest| rest.split("\r\n").next())
+                .expect("a definition part");
+            let definition: Value = serde_json::from_str(definition).expect("JSON");
+            match expected {
+                Some(locale) => assert_eq!(definition["locales"], json!([locale]), "{family:?}"),
+                None => assert!(
+                    definition.get("locales").is_none(),
+                    "{family:?}: {definition}"
+                ),
+            }
+        }
+    }
+
+    /// The answer: channels in order, silence as `""`, the first phrase's
+    /// locale, the provider's duration — and a 200 of some other contract is
+    /// a failure, not silence.
+    #[test]
+    fn a_speech_answer_is_read_in_channel_order_with_its_duration() {
+        let (transcript, ms) = parse_speech_transcript(
+            br#"{"durationMilliseconds": 9000,
+                 "combinedPhrases": [{"channel": 1, "text": "second"},
+                                     {"channel": 0, "text": " first "},
+                                     {"channel": 1, "text": "third"},
+                                     {"channel": 0, "text": ""}],
+                 "phrases": [{"text": "first", "locale": "ru-RU"},
+                             {"text": "second", "locale": "en-US"}]}"#,
+        )
+        .expect("parses");
+        assert_eq!(transcript.text, "first\nsecond\nthird");
+        assert_eq!(transcript.language.as_deref(), Some("ru-RU"));
+        assert_eq!(ms, Some(9000));
+
+        // Empty lists: silence.
+        let (silent, ms) = parse_speech_transcript(
+            br#"{"durationMilliseconds": 1200, "combinedPhrases": [], "phrases": []}"#,
+        )
+        .expect("silence");
+        assert_eq!(
+            silent,
+            Transcript {
+                text: String::new(),
+                language: None
+            }
+        );
+        assert_eq!(ms, Some(1200));
+        let (silent, ms) =
+            parse_speech_transcript(br#"{"combinedPhrases": [], "phrases": []}"#).expect("silence");
+        assert_eq!(silent.text, "");
+        assert_eq!(ms, None, "no duration given");
+
+        // A locale that is prose is not handed on; a negative duration is not one.
+        let (odd, ms) = parse_speech_transcript(
+            br#"{"durationMilliseconds": -5, "combinedPhrases": [{"text": "x"}],
+                 "phrases": [{"text": "x", "locale": "not a locale!"}]}"#,
+        )
+        .expect("parses");
+        assert_eq!(odd.language, None);
+        assert_eq!(ms, None);
+
+        assert!(parse_speech_transcript(br#"{"text": "openai shape"}"#).is_err());
+        assert!(parse_speech_transcript(b"{}").is_err());
+        assert!(parse_speech_transcript(b"not json").is_err());
+    }
+
+    /// What was said is never read as silence: with `combinedPhrases`
+    /// missing, not a list, or holding no text, the text is the phrases'
+    /// own — a space within a channel, a line between channels. A 200 with
+    /// NEITHER list (only a duration) is no answer at all.
+    #[test]
+    fn a_speech_answer_without_combined_text_is_read_from_its_phrases() {
+        let phrases = r#""phrases": [{"text": "We will be", "locale": "en-US"},
+                                    {"channel": 1, "text": "Fine."},
+                                    {"text": " there at six. "},
+                                    {"text": ""}]"#;
+        for combined in [
+            "",
+            r#""combinedPhrases": "x","#,
+            r#""combinedPhrases": [{"text": " "}],"#,
+        ] {
+            let body = format!(r#"{{"durationMilliseconds": 10, {combined} {phrases}}}"#);
+            let (transcript, ms) = parse_speech_transcript(body.as_bytes()).expect("parses");
+            assert_eq!(transcript.text, "We will be there at six.\nFine.", "{body}");
+            assert_eq!(transcript.language.as_deref(), Some("en-US"));
+            assert_eq!(ms, Some(10));
+        }
+        // combinedPhrases wins when it has text.
+        let (transcript, _) = parse_speech_transcript(
+            br#"{"combinedPhrases": [{"text": "combined"}], "phrases": [{"text": "phrase"}]}"#,
+        )
+        .expect("parses");
+        assert_eq!(transcript.text, "combined");
+
+        for bare in [
+            r#"{"durationMilliseconds": 1200}"#,
+            r#"{"durationMilliseconds": 1200, "combinedPhrases": null}"#,
+            r#"{"combinedPhrases": {"text": "x"}, "phrases": "x"}"#,
+        ] {
+            assert!(parse_speech_transcript(bare.as_bytes()).is_err(), "{bare}");
+        }
+    }
+
+    fn speech_error(code: &str, inner: &str) -> String {
+        json!({"code": code, "message": format!("about {inner}: We will be there at six"),
+               "innerError": {"code": inner, "message": "We will be there at six"}})
+        .to_string()
+    }
+
+    /// The codes decide, never the message: a refused FILE — its format, its
+    /// length, or no audio found in it — is unreadable, an unidentified
+    /// language is unheard, neither is ever silence, and everything else —
+    /// a 429, a 5xx, a bad locale — is a transient failure. Nothing here is
+    /// ever a content refusal.
+    #[test]
+    fn a_speech_refusal_is_mapped_by_its_codes() {
+        use reqwest::StatusCode as S;
+        let cases = [
+            (
+                S::BAD_REQUEST,
+                speech_error("InvalidRequest", "InvalidAudioFormat"),
+                SpeechFailure::Unreadable,
+            ),
+            (
+                S::BAD_REQUEST,
+                speech_error("InvalidRequest", "AudioLengthLimitExceeded"),
+                SpeechFailure::Unreadable,
+            ),
+            (
+                S::BAD_REQUEST,
+                speech_error("UnsupportedMediaType", "Unknown"),
+                SpeechFailure::Unreadable,
+            ),
+            (
+                S::UNSUPPORTED_MEDIA_TYPE,
+                String::new(),
+                SpeechFailure::Unreadable,
+            ),
+            (
+                S::PAYLOAD_TOO_LARGE,
+                String::new(),
+                SpeechFailure::Unreadable,
+            ),
+            (
+                S::BAD_REQUEST,
+                speech_error("InvalidRequest", "EmptyAudioFile"),
+                SpeechFailure::Unreadable,
+            ),
+            (
+                S::BAD_REQUEST,
+                speech_error("InvalidRequest", "NoLanguageIdentified"),
+                SpeechFailure::Unheard,
+            ),
+            (
+                S::BAD_REQUEST,
+                speech_error("InvalidArgument", "UnsupportedLanguageCode"),
+                SpeechFailure::Failed,
+            ),
+            (
+                S::BAD_REQUEST,
+                speech_error("InvalidArgument", "InvalidLocale"),
+                SpeechFailure::Failed,
+            ),
+            (
+                S::BAD_REQUEST,
+                speech_error("InvalidRequest", "MultipleLanguagesIdentified"),
+                SpeechFailure::Failed,
+            ),
+            (
+                S::TOO_MANY_REQUESTS,
+                speech_error("TooManyRequests", "TooManyRequests"),
+                SpeechFailure::Failed,
+            ),
+            (
+                S::INTERNAL_SERVER_ERROR,
+                speech_error("InternalServerError", "InvalidAudioFormat"),
+                SpeechFailure::Failed,
+            ),
+            (S::SERVICE_UNAVAILABLE, String::new(), SpeechFailure::Failed),
+            // A message naming a code decides nothing.
+            (
+                S::BAD_REQUEST,
+                json!({"code": "InvalidRequest", "message": "InvalidAudioFormat"}).to_string(),
+                SpeechFailure::Failed,
+            ),
+            (
+                S::BAD_REQUEST,
+                "not json".to_string(),
+                SpeechFailure::Failed,
+            ),
+        ];
+        for (status, body, expected) in cases {
+            assert_eq!(speech_failure(status, &body), expected, "{status} {body}");
+        }
+    }
+
+    /// End to end through `transcribe`: a refused format, and an empty
+    /// file, are [`Unreadable`] in the chain and never [`Refused`]; an
+    /// unidentified language is [`Unheard`]; none of them is an answer of
+    /// `""`; a 429 is a plain failure. The error carries the codes and not
+    /// the message.
+    #[tokio::test]
+    async fn a_speech_refusal_reaches_the_caller_as_unreadable_unheard_or_failure() {
+        let client = reqwest::Client::new();
+
+        let body = speech_error("InvalidRequest", "InvalidAudioFormat");
+        let (base, captured) = capture_one("400 Bad Request", body).await;
+        let err = transcribe(&client, &speech_route(&base, false), voice(), None)
+            .await
+            .unwrap_err();
+        captured.await.expect("captured");
+        assert!(is_unreadable(&err), "{err:#}");
+        assert!(!is_refusal(&err), "{err:#}");
+        let text = format!("{err:#}");
+        assert!(text.contains("inner=InvalidAudioFormat"), "{text}");
+        assert!(!text.contains("six"), "the message is withheld: {text}");
+
+        for (inner, unreadable, unheard) in [
+            ("EmptyAudioFile", true, false),
+            ("NoLanguageIdentified", false, true),
+        ] {
+            let body = speech_error("InvalidRequest", inner);
+            let (base, captured) = capture_one("400 Bad Request", body).await;
+            let err = transcribe(&client, &speech_route(&base, false), voice(), None)
+                .await
+                .expect_err("a refusal is never an answer of silence");
+            captured.await.expect("captured");
+            assert_eq!(is_unreadable(&err), unreadable, "{inner}: {err:#}");
+            assert_eq!(is_unheard(&err), unheard, "{inner}: {err:#}");
+            assert!(!is_refusal(&err), "{err:#}");
+            assert!(!format!("{err:#}").contains("six"), "{err:#}");
+        }
+
+        let body = speech_error("TooManyRequests", "TooManyRequests");
+        let (base, captured) = capture_one("429 Too Many Requests", body).await;
+        let err = transcribe(&client, &speech_route(&base, false), voice(), None)
+            .await
+            .unwrap_err();
+        captured.await.expect("captured");
+        assert!(
+            !is_unreadable(&err) && !is_unheard(&err) && !is_refusal(&err),
+            "{err:#}"
+        );
+    }
+
+    /// The speech contract spells its inner error `innerError`; the log's
+    /// allow-list reads it, and still keeps no message.
+    #[test]
+    fn the_log_reads_the_speech_contracts_inner_code_and_withholds_its_message() {
+        let detail = loggable_detail(&speech_error("InvalidRequest", "NoLanguageIdentified"));
+        assert!(detail.contains("code=InvalidRequest"), "{detail}");
+        assert!(detail.contains("inner=NoLanguageIdentified"), "{detail}");
+        assert!(!detail.contains("six"), "{detail}");
     }
 }

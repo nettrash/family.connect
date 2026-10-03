@@ -1739,7 +1739,9 @@ also deliberately not applied to a member's private assistant thread, for the re
 *Amended 2026-10-02:* it has a second use now, and only one: it is sent as a language HINT with a
 request for a transcript (see "Transcripts on request"), as the bare language — `sr-Latn` and `sr`
 both as `sr`, `zh-Hans` as `zh` — because a speech model hears a language and not an alphabet.
-Unset sends no hint and the provider detects the language itself; unset is still not English.
+Unset sends no hint and the provider detects the language itself; unset is still not English. Under
+the speech contract (`[ai.transcribe] api = "speech"`) it is sent only when the operator opted in,
+and `sr` / `sr-Latn` never, because MAI-Transcribe-2 does not list Serbian.
 
 ### Birthdays
 
@@ -3409,7 +3411,7 @@ per request and the family never sees the seam:
 | an `@ai` mention in a family whose owner has turned `ai_history_photos` on, when photos travel (2026-09-03) | `[ai.vision]` | what a mention sends, plus up to four photos under ONE budget — the mention's, then the quote's, then the transcript's newest — each `[photo N]`-numbered where it is written |
 | a question the text model answers by calling `draw_picture` (#56) | `[ai]`, then `[ai.images]` | the usual text request — with one tool declared — and then the tool's `prompt`, and nothing else; only if that `prompt` is REFUSED, the asking message's own words with the `@ai` taken out, as a `/draw` of them would send (2026-10-01) |
 | a description the images deployment REFUSED — from any of the rows above that reach it, or a board backdrop (2026-09-30) | `[ai]`, then `[ai.images]` once more | the refused description under a fixed instruction to reword it, and then the rewrite, and nothing else — on the `draw_picture` row, the member's own words when there are any, never the refused `prompt` as well (2026-10-01) |
-| the text of a voice note, an audio file or a video, asked for by a member (2026-10-02) | `[ai.transcribe]` | that one recording's sound — the stored file, or the sound track the asking device sent — and the family's language as a hint when it has one; no prompt, no words, no history, no picture (see "Transcripts on request") |
+| the text of a voice note, an audio file or a video, asked for by a member (2026-10-02) | `[ai.transcribe]` | that one recording's sound — the stored file, or the sound track the asking device sent — and the family's language as a hint when it has one (under `api = "speech"`, only when the operator opted in, and never `sr`), plus, under `api = "speech"`, the model's name and the transcription style; no prompt, no words, no history, no picture (see "Transcripts on request") |
 
 `[ai]` is the section that already existed and it keeps its meaning exactly: it is the TEXT
 deployment, and a server that configures nothing else behaves precisely as it did before — which is
@@ -3425,7 +3427,10 @@ is described under "Transcripts on request". It is the same shape as the two abo
 naming a deployment, inheriting the endpoint, key, auth and api-version of `[ai]`, off until it is
 named — and `assistant.transcribe` is its answer in the same way. "Three deployments" above means
 the three a question or a picture can reach; the fourth answers only a request for a transcript,
-and nothing in this section ever reaches it.
+and nothing in this section ever reaches it. *Amended again the same day:* the fourth may instead
+speak the Azure Speech contract (`api = "speech"`, for Microsoft's MAI-Transcribe models), and then
+it inherits only the key — its endpoint and api-version are a different service's and must be its
+own, and its key always travels as `Ocp-Apim-Subscription-Key`.
 
 The api-version, the endpoint shape and the deployment names are the operator's business and are not
 on the wire in any form. No client ever learns which model answered, and no client may be told: it is
@@ -3579,10 +3584,12 @@ read a recording would depend on which phone they hold, and two members could re
 texts of the same voice note.
 
 **The deployment.** `[ai.transcribe]`, a fourth deployment beside `[ai.vision]` and `[ai.images]`
-and the same shape: it inherits the endpoint, key, auth and api-version of `[ai]` unless it names its
-own; naming a `deployment` (or an `endpoint` of its own — a pasted full target URI is used verbatim,
-as everywhere else) is what turns it on; and `GET /families/mine` reports it in the `assistant`
-object:
+and, under the default `api = "openai"`, the same shape: it inherits the endpoint, key, auth and
+api-version of `[ai]` unless it names its own; naming a `deployment` (or an `endpoint` of its own —
+a pasted full target URI is used verbatim, as everywhere else) is what turns it on. (Under
+`api = "speech"` — "two provider contracts", below — nothing is inherited but the key: the section
+must name its own `endpoint` AND a `model`, and a `deployment` or `auth` is refused at startup.)
+Either way, `GET /families/mine` reports it in the `assistant` object:
 
 - **`transcribe`** — `true` when this server has a transcription deployment, `false` otherwise.
   Present whenever the `assistant` object is. A client offers "Show text" only when it is true,
@@ -3590,8 +3597,10 @@ object:
   one that is not there. A client that predates it reads an absent key as false.
 - **`transcribe_max_bytes`** — the most bytes of sound one request may send, present only when
   `transcribe` is true. It is `[ai.transcribe] max_bytes`, **25 MiB (26 214 400) by default and
-  never more** — the provider refuses larger files, so the server refuses to be configured above
-  it. A client uses it to decide BEFORE asking whether a stored recording can be sent as it is or
+  never more** — the OpenAI contract refuses larger files, so the server refuses to be configured
+  above it. The speech contract would take more (under 250 MB and two hours), but the ceiling is the
+  same under both: every client sizes the sound track it supplies to this one number, so it has to
+  mean one thing whichever contract the server speaks. A client uses it to decide BEFORE asking whether a stored recording can be sent as it is or
   whether it has to send a sound track of its own (below).
 
 The request the server makes is Azure's documented transcription contract: `POST
@@ -3600,6 +3609,70 @@ with the sound as `file`, `response_format=json`, and `language` when the family
 the images deployment, only the documented shape was read; it has to be confirmed against a live
 endpoint, and an operator whose deployment answers differently will see it in the log as a failure
 of the provider, never as something a family can act on.
+
+*Amended 2026-10-02 — two provider contracts.* The paragraph above describes ONE of two contracts
+the server can speak for transcription, and the operator chooses which, per server, with
+`[ai.transcribe] api`. Nothing on the wire between a client and this server differs between them:
+the same request, the same answer, the same codes. What differs is only what the SERVER sends to
+the provider, and in both cases it is still **only the recording's sound** — never text, never a
+member's name, never the chat, never a prompt.
+
+- **`api = "openai"`** (the default, and every config written before this paragraph) — the
+  Azure OpenAI transcription contract above, unchanged byte for byte: `file`, `model`,
+  `response_format=json`, and `language` when the family has one.
+- **`api = "speech"`** — the Azure Speech "Fast Transcription" / "LLM Speech" contract, which is
+  what serves Microsoft's own speech models (MAI-Transcribe-2, MAI-Transcribe-1.5; 1 is
+  deprecated): `POST {resource}/speechtotext/transcriptions:transcribe?api-version=2025-10-15`
+  as `multipart/form-data` with two parts — `audio`, the sound under its stored type, and
+  `definition`, a small JSON document the SERVER writes, carrying exactly three things: the model's
+  name, the transcription style, and at most one locale. For example
+  `{"enhancedMode": {"enabled": true, "model": "MAI-Transcribe-2", "modelOptions":
+  {"transcribeStyle": "clean"}}}`. The key travels in the `Ocp-Apim-Subscription-Key` header and
+  never in a URL. The style is `clean` by default — the model leaves out "um" and false starts —
+  because the text is read in a chat, by a person, and a verbatim rendering of a voice note is
+  harder to read than what was meant; an operator may choose `verbatim`. **No locale is sent by
+  default**: the provider documents a locale as a very strong hint to be given only when the
+  language is certain and its own detection fails, and two of the family languages, `sr` and
+  `sr-Latn`, are not in MAI-Transcribe-2's list at all and would be refused. An operator may opt in
+  to sending the family's language (`language_hint = true`), and even then a Serbian family's is
+  never sent. This contract is in public preview on the provider's side, with no SLA.
+
+What comes back from the speech contract is read the same way the other is: the text of each
+channel joined in channel order (one channel for every voice note), `""` when it holds none —
+silence, not an error — and `language` from the first phrase's locale (`en-US`, as the provider
+spells it). `combinedPhrases` is documented as always there; should an answer carry text only in
+its `phrases`, that text is read instead, and an answer carrying neither list is a failure of the
+provider (`internal`), never silence. The provider's own measure of the recording's length, when it gives one, is what Family
+statistics counts for that call (see "What it costs, for Family statistics").
+
+**Some provider refusals are answers about the FILE, and reach the client as such.** Under the
+speech contract, a provider that says the audio format is not one it reads (`InvalidAudioFormat`,
+`UnsupportedMediaType`) or that the recording is too long (`AudioLengthLimitExceeded`) is answered
+`not_transcribable`, exactly as the server's own refusal of the same file would be — so a client
+that sent no body falls back to supplying its own sound track, as it already does for an Ogg file.
+So is a provider that finds no audio (`EmptyAudioFile`): the server never sends empty bytes, so that
+can only mean it could not read the audio in a file that has some — a container it does not read —
+and the client's own sound track may get round it. A provider that cannot tell which language it
+hears (`NoLanguageIdentified`) is answered `not_transcribable` too, and NEVER `""`: it is what a
+language the model does not know looks like (Serbian on MAI-Transcribe-2), and an answer of silence
+would be drawn as "No speech" for a recording somebody spoke in — and kept, by the server for every
+later asker and by the asker's own device, which keeps every answer it is given. A client that sent
+no body then sends its own sound track as usual, which costs one more provider call and gets the
+same refusal, shown as "not available"; nothing is kept anywhere, so a later asker, or the same one
+after the operator changes the model, asks the provider afresh. **A provider's refusal is never
+turned into an answer of silence**: `""` is only ever what the provider ANSWERED. None of these
+refusals is counted in Family statistics — nothing was answered. Every other refusal of the speech
+contract — a bad locale, too many requests, the provider's own failure — is `internal`, which is
+transient. The speech contract documents no
+content filter, so it never answers `transcript_refused`; that answer, and the way it is decided,
+belong to the OpenAI contract alone.
+
+Whether the speech contract reads AAC in an MPEG-4 container — every voice note any client records,
+and the one shape a device may supply — is NOT settled by its documentation: the MAI page lists WAV,
+MP3 and FLAC, the Fast Transcription page adds OGG/Opus, WebM, AAC, AMR and more, and neither names
+M4A. Until it is confirmed against a live deployment, an operator who chooses `speech` should
+expect that a voice note may come back `not_transcribable` from both forms. The server will not
+convert it: it decodes no media.
 
 **The request.**
 
@@ -3689,11 +3762,14 @@ you" from "not this file":
    the sender's consent, changes);
 7. the recording can be sent in this form — `not_transcribable` (400; terminal for this form — a
    client that sent no body may send the sound track instead, and every client here does, so that
-   one recording gets one answer whichever device asks);
+   one recording gets one answer whichever device asks). Under `api = "speech"` the PROVIDER can
+   also give this answer, after the checks, when it refuses the file's format or its length, finds
+   no audio in it, or cannot tell its language — see "two provider contracts" above;
 8. the provider transcribed it — `transcript_refused` (400) when the provider's own content filter
    refused, decided exactly as `ai_error`'s `"refused"` is decided (the provider's structured error
    fields, never its wording alone — see "The assistant"); every other failure of the provider,
-   including its timeout, is `internal` (500), which is transient.
+   including its timeout, is `internal` (500), which is transient. (`transcript_refused` belongs to
+   `api = "openai"`: the speech contract documents no content filter.)
 
 **Kept once, and handed to whoever asks next.** An answer made from the server's own stored bytes is
 written down — one row per attachment — and every later request for that attachment that passes
@@ -3736,7 +3812,9 @@ being finished and kept in the meantime.
 **Language.** The family's language goes with the request as a hint when the owner has set one, as
 the bare ISO 639-1 language (`sr-Latn` as `sr`, `zh-Hans` as `zh`); otherwise none goes and the
 provider detects it. A hint names a language and not a script, so a Serbian family may get either
-alphabet back — the hint cannot choose, and the server does not transliterate.
+alphabet back — the hint cannot choose, and the server does not transliterate. *Amended
+2026-10-02:* under `api = "speech"` no hint goes unless the operator set `language_hint = true`,
+and a Serbian family's never goes (see "two provider contracts" above).
 
 **What a client does with what it is given** (2026-10-02). The rest of this section is the
 server's; these are the clients', so that the four of them agree:
@@ -3761,11 +3839,18 @@ server's; these are the clients', so that the four of them agree:
 `transcript` and the recording's `duration_ms` (the attachment's own, `0` when it was uploaded
 without one) against the member who asked — transcription is billed by audio length, not tokens.
 A stored answer handed out again records nothing; a refused or failed call records nothing.
+*Amended 2026-10-02:* when the provider reports the length it heard (the speech contract's
+`durationMilliseconds`), that is the `duration_ms` recorded instead — it is what the provider bills,
+and it is right for supplied sound too, whose length the attachment row does not know. A call the
+provider answered with silence (`""`) records one like any other answer.
 
 **What is never logged**: the text, the language, the sound, or anything the provider said about
 them. The server's log records the outcome as one word — `stored`, `supplied`, `shared`,
-`refused` or `failed` — beside the ids, and a provider's error under the same allow-list every
-provider error gets.
+`refused` or `failed`, and under the speech contract also `unreadable` (the provider refused the
+file) or `unheard` (it named no language) — both answered `not_transcribable`, neither kept —
+beside the ids, and a
+provider's error under the same allow-list every provider error gets: its codes, never its
+message.
 
 **Limits.** At most four transcription calls are in flight on one server at once (fixed); a request
 beyond that waits for a slot, and reads its sound only once it has one, so a queue of uploads
@@ -4848,7 +4933,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `PUT /chats/{id}/messages/{mid}/reaction` | `{emoji}` → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Sets or replaces the caller's reaction on the message — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or remove). One reaction per user per message. Emoji: trimmed, non-empty, ≤ 32 bytes UTF-8. Re-PUT of the current emoji is a no-op: no seq bump, no fan-out. Errors: `invalid_emoji`, `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `DELETE /chats/{id}/messages/{mid}/reaction` | → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Removes the caller's reaction; idempotent (deleting nothing returns the current state unchanged). Same errors minus `invalid_emoji`. |
 | `GET /chats/{id}/reactions` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {message_reactions: [{message_id, reaction_seq, reactions: [Reaction]}]}` ordered by `reaction_seq` ascending — the reaction catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
-| `POST /chats/{id}/messages/{mid}/attachments/{attachment_id}/transcript` | No body, or `multipart/form-data` with one part `audio` → `200 {transcript: {text, language?}}`. The text of a voice note, an audio file or a video's sound, for the CALLER only (see "Transcripts on request"). NO BODY sends the server's stored copy: `kind=audio` stored as `audio/mp4`, `audio/m4a`, `audio/mpeg` or `audio/wav`, at most `assistant.transcribe_max_bytes`; that answer is KEPT and handed to every later caller the rule allows, with no second provider call. A body that is not multipart is ignored and treated as no body. The `audio` PART is sound the caller's device took out of the file itself — AAC in MPEG-4 (`audio/mp4`, an `.m4a`), at most `transcribe_max_bytes` — for `kind=audio` or `kind=video`; that answer is returned and NEVER kept or shared, unless an answer from the stored copy already exists, which is then returned instead. `text` is always present and `""` is silence ("No speech"), never an error; `language` only when the provider names one. ALLOWED: the caller's own message in any chat they are in; another member's only in the family chat (threads included), only with the family's `ai_transcripts` on, and only when that sender has agreed to the assistant; never another member's in a direct chat, never the assistant's. SLOW — a client gives it a timeout of its own, no shorter than 90 s; a no-body request is finished and kept even if the caller stops waiting. Errors, checked in this order: `chat_not_found` (404), `not_chat_member` (403), `blocked` (409), `message_not_found` (404 — not in this chat), `attachment_not_found` (404 — not on this message), `transcripts_unavailable` (403 — no transcription deployment), `assistant_consent_required` (403 — the CALLER has not agreed), `transcript_not_allowed` (403 — the rule above), `not_transcribable` (400 — wrong kind, a stored type the provider does not read, over the ceiling, or a supplied part missing, empty, too large or not MPEG-4), `validation` (400 — a multipart body that cannot be parsed), `transcript_refused` (400 — the provider's own filter refused; terminal); any other provider failure is `internal` (500). |
+| `POST /chats/{id}/messages/{mid}/attachments/{attachment_id}/transcript` | No body, or `multipart/form-data` with one part `audio` → `200 {transcript: {text, language?}}`. The text of a voice note, an audio file or a video's sound, for the CALLER only (see "Transcripts on request"). NO BODY sends the server's stored copy: `kind=audio` stored as `audio/mp4`, `audio/m4a`, `audio/mpeg` or `audio/wav`, at most `assistant.transcribe_max_bytes`; that answer is KEPT and handed to every later caller the rule allows, with no second provider call. A body that is not multipart is ignored and treated as no body. The `audio` PART is sound the caller's device took out of the file itself — AAC in MPEG-4 (`audio/mp4`, an `.m4a`), at most `transcribe_max_bytes` — for `kind=audio` or `kind=video`; that answer is returned and NEVER kept or shared, unless an answer from the stored copy already exists, which is then returned instead. `text` is always present and `""` is silence ("No speech"), never an error; `language` only when the provider names one. ALLOWED: the caller's own message in any chat they are in; another member's only in the family chat (threads included), only with the family's `ai_transcripts` on, and only when that sender has agreed to the assistant; never another member's in a direct chat, never the assistant's. SLOW — a client gives it a timeout of its own, no shorter than 90 s; a no-body request is finished and kept even if the caller stops waiting. Errors, checked in this order: `chat_not_found` (404), `not_chat_member` (403), `blocked` (409), `message_not_found` (404 — not in this chat), `attachment_not_found` (404 — not on this message), `transcripts_unavailable` (403 — no transcription deployment), `assistant_consent_required` (403 — the CALLER has not agreed), `transcript_not_allowed` (403 — the rule above), `not_transcribable` (400 — wrong kind, a stored type the provider does not read, over the ceiling, or a supplied part missing, empty, too large or not MPEG-4; under `api = "speech"` also the provider refusing the file's format or length, finding no audio in it, or identifying no language — never answered as `""`), `validation` (400 — a multipart body that cannot be parsed), `transcript_refused` (400 — the provider's own filter refused; terminal); any other provider failure is `internal` (500). |
 
 ### Devices
 
@@ -5476,7 +5561,7 @@ unregistered deletes the row, as an ordinary push would.
 | A picture prompt the assistant writes for itself (`draw_picture`) | the message-body ceiling, 4000 chars by default; over it is `ai_error`, never cut |
 | Requests per picture asked for | `/draw` and a board backdrop: 2 to the images deployment and 1 rewrite to the text deployment; `draw_picture`: 3 to the images deployment (its prompt, the member's own words, their rewrite) and 1 rewrite (fixed) |
 | Largest photo shown to the assistant | 5 MiB after preferring the preview; a larger one is left out and the assistant is told so (fixed) |
-| Sound sent for one transcript — the stored recording, or the part a device supplies | 25 MiB (`[ai.transcribe] max_bytes`, sent as `assistant.transcribe_max_bytes`; may be lowered, never raised — the provider refuses more) |
+| Sound sent for one transcript — the stored recording, or the part a device supplies | 25 MiB (`[ai.transcribe] max_bytes`, sent as `assistant.transcribe_max_bytes`; may be lowered, never raised — the OpenAI contract refuses more, and both contracts share one ceiling) |
 | Transcription calls in flight on one server | 4; a request beyond that waits for a slot (fixed) |
 | Attachment size | 100 MB (`limits.max_attachment_bytes`; keep nginx in step) |
 | Attachments per message | 10 (`limits.max_attachments_per_message`; the fewest is 1, fixed) |

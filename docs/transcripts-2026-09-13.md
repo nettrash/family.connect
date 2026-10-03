@@ -347,3 +347,64 @@ billed to the family. It is the reach a member always has over what they can see
 playing it into another app); closing it would need the server to decode and fingerprint sound. The
 switch is therefore what the family's own apps promise to do, not a lock, and protocol.md ("What the
 rule can and cannot hold") says so for the owner.
+
+### The operator's models are not served by that contract (2026-10-02)
+
+The operator's transcription deployments are **MAI-Transcribe-2, MAI-Transcribe-1.5 and
+MAI-Transcribe-1** (Microsoft AI). They are not reached through the Azure OpenAI
+`audio/transcriptions` contract this design was written against. Checked on Microsoft Learn the
+same day:
+
+- **Endpoint**: `POST https://{resource}.cognitiveservices.azure.com/speechtotext/transcriptions:transcribe?api-version=2025-10-15`
+  — Azure Speech "Fast Transcription" / "LLM Speech". Public preview, no SLA.
+- **Key**: the `Ocp-Apim-Subscription-Key` header.
+- **Body**: `multipart/form-data` with `audio` (the file) and `definition` (a JSON string). For MAI:
+  `{"enhancedMode": {"enabled": true, "model": "MAI-Transcribe-2", "modelOptions":
+  {"transcribeStyle": "clean" | "verbatim"}}}` — verbatim is the provider's default, clean leaves
+  out fillers. An optional `"locales": ["xx"]` names ONE language and is documented as "a very
+  strong hint … don't specify it unless you're absolutely certain … and the default auto-detection
+  doesn't work".
+- **Languages**: MAI-Transcribe-2 lists 60, including ru, uk, de, es, fr, ja, zh, en, bs and mk —
+  and **not sr**. MAI-Transcribe-1 is deprecated (2026-08-20); 1.5 lists fewer languages.
+- **Answer**: `{"durationMilliseconds", "combinedPhrases": [{"text", "channel"?}], "phrases":
+  [{"text", "locale": "en-US", "offsetMilliseconds", "durationMilliseconds", "confidence", …}]}`.
+- **Errors**: `{"code": InvalidRequest | InvalidArgument | UnsupportedMediaType | TooManyRequests |
+  …, "message", "innerError": {"code": InvalidAudioFormat | EmptyAudioFile |
+  AudioLengthLimitExceeded | NoLanguageIdentified | MultipleLanguagesIdentified |
+  UnsupportedLanguageCode | InvalidLocale | …, "message"}}`. No content-filter code is documented.
+- **Formats**: the MAI page lists WAV, MP3, FLAC; the Fast Transcription page lists WAV, MP3,
+  OPUS/OGG, FLAC, WMA, AAC, ALAW/MULAW in WAV, AMR, WebM, SPEEX. **M4A/MP4 is listed by neither**,
+  and every voice note is AAC in MPEG-4 — unknown until tried against the live deployment.
+- **Limits**: under 2 hours and under 250 MB per file.
+
+**What was built.** `[ai.transcribe]` gained `api = "openai" | "speech"`; the default is the old
+contract, byte for byte (a test holds the raw request). Under `"speech"` the server sends the
+`audio` part and a `definition` it writes itself — the model, the style (`clean` by default, because
+the text is read in a chat) and a locale only when the operator sets `language_hint = true` and the
+family's language is not Serbian. The endpoint must be the section's own (a bare resource root gets
+the path and `api-version=2025-10-15` appended; a pasted full URI is used verbatim); `model` is
+required; `deployment` and `auth` are refused under `"speech"` because they would say something the
+request does not do. `max_bytes` keeps its 25 MiB ceiling: the provider would take more, but the
+clients' own bound on a supplied sound track is 25 MiB, and one ceiling for both contracts keeps
+`assistant.transcribe_max_bytes` meaning one thing.
+
+**Error mapping.** `InvalidAudioFormat`, `UnsupportedMediaType` (or a 415) and
+`AudioLengthLimitExceeded` (or a 413) → `not_transcribable`, so a client falls back to its own
+sound track; `EmptyAudioFile` → `not_transcribable` too (the server never sends empty bytes, so it
+means the provider could not read the file — possibly the M4A question below — and the client's
+fallback should get its chance; answered `""` it would have been kept for good); `NoLanguageIdentified`
+→ `not_transcribable`, logged `unheard`, never `""` (a Serbian voice note on MAI-Transcribe-2 may look
+exactly like this; a first build answered `""` and merely did not keep it on the server, but every
+client keeps every 200 on the device — iOS's `TranscriptStore.ask` → `keep` — so that asker would
+have seen a permanent false "No speech", and every other member a billed call with the same false
+answer). No refusal is ever turned into `""`, and none is counted in Family statistics. A 200 whose
+text is only in `phrases` (Microsoft documents `combinedPhrases` as always present) is read from the
+phrases; one with neither list is `internal`, not silence; everything else, `TooManyRequests` and 5xx included → `internal`. No
+`transcript_refused` from this contract — the refusal classifier stays the OpenAI contract's. What
+is logged is the codes, through the same allow-list, never `message`.
+
+**Still open.** Whether MAI reads M4A. If it does not, every voice note is `not_transcribable` from
+both forms under `"speech"`, because the supplied form is M4A too; fixing that would need clients to
+supply a format MAI lists (MP3/WAV/FLAC — none of which every client can write today) or the
+server to decode, which it does not do. `audio/ogg` stored voice notes are still refused before
+sending under both contracts, though the Fast Transcription page lists OGG/Opus.
