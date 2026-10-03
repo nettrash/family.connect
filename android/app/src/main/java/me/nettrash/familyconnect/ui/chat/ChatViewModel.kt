@@ -48,6 +48,7 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import me.nettrash.familyconnect.data.repo.TranscriptRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import me.nettrash.familyconnect.R
 import android.net.Uri
@@ -153,6 +154,7 @@ class ChatViewModel @Inject constructor(
     private val attachments: AttachmentRepository,
     private val gallerySaver: GallerySaver,
     private val locationProvider: LocationProvider,
+    transcriptRepository: TranscriptRepository,
     @param:AppScope private val appScope: CoroutineScope,
     memberDao: MemberDao,
     connectivity: ConnectivityObserver,
@@ -1156,15 +1158,30 @@ class ChatViewModel @Inject constructor(
                     processor = processor,
                     familyHistory = settingsState.familyAiHistory,
                     familyVision = settingsState.familyAiVision,
+                    transcripts = settingsState.assistantTranscribe,
                 )
             }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * "Show text" under the recordings in this chat, and the consent
+     * question it may raise — drawn as its own dialog by the screen
+     * (docs/protocol.md, "Transcripts on request").
+     */
+    val transcripts = Transcripts(
+        scope = viewModelScope,
+        settings = settings,
+        repository = transcriptRepository,
+        agree = { familyRepository.setAssistantConsent(true) },
+    )
 
     /** What the consent screen is drawn from. */
     data class AssistantConsentAsk(
         val processor: String,
         val familyHistory: Boolean,
         val familyVision: Boolean,
+        /** `assistant.transcribe`: the screen says a recording's sound goes too, when asked. */
+        val transcripts: Boolean = false,
     )
 
     /** Screen calls this from a LifecycleResumeEffect. */

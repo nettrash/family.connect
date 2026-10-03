@@ -106,4 +106,27 @@ public sealed class AssistantConsentTests
         var withPictures = AssistantConsent.Disclosure(Processor, familyHistory: false, familyVision: true, say);
         Assert.Equal(without.Count + 1, withPictures.Count);
     }
+
+    /// <summary>
+    /// A RECORDING'S SOUND is a new kind of thing leaving the server, so it is a line of its own — said only where this
+    /// server can turn recordings into text, naming who receives it (docs/protocol.md, "What a client must say before it
+    /// asks", amended 2026-10-02).
+    /// </summary>
+    [Fact]
+    public void TheSoundOfARecordingIsSaidWhereItCanGo()
+    {
+        var say = EnglishCatalog.Instance;
+        var without = AssistantConsent.Disclosure(Processor, familyHistory: false, familyVision: false, say);
+        var with = AssistantConsent.Disclosure(Processor, familyHistory: false, familyVision: false, say, transcribe: true);
+        Assert.Equal(without.Count + 1, with.Count);
+        Assert.Contains(
+            $"If you ask for the text of a voice note, audio file or video, its sound is sent to {Processor}.", with);
+        Assert.DoesNotContain(without, line => line.Contains("voice note", StringComparison.Ordinal));
+        // Its own line, after what a photo does and before where the answer lands and how to stop.
+        var both = AssistantConsent.Disclosure(Processor, familyHistory: true, familyVision: true, say, transcribe: true);
+        var photo = both.ToList().FindIndex(line => line.StartsWith("A photo", StringComparison.Ordinal));
+        var sound = both.ToList().FindIndex(line => line.Contains("its sound is sent", StringComparison.Ordinal));
+        Assert.Equal(photo + 1, sound);
+        Assert.Equal(both.Count - 3, sound);
+    }
 }

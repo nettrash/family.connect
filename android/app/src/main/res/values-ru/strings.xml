@@ -190,8 +190,33 @@
     <string name="s_couldnt_load_statistics">Не удалось загрузить статистику</string>
     <string name="s_check_connection_try_again">Проверь соединение и попробуй снова.</string>
     <string name="s_saved_by_one_copy">%1$s сэкономлено: одинаковые файлы хранятся в одном экземпляре.</string>
-    <string name="s_attachments_and_size">вложений: %1$d, %2$s</string>
-    <string name="s_questions_to_assistant">вопросов ассистенту: %1$d</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d вложение, %2$s</item>
+        <item quantity="few">%1$d вложения, %2$s</item>
+        <item quantity="many">%1$d вложений, %2$s</item>
+        <item quantity="other">%1$d вложения, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d вопрос ассистенту</item>
+        <item quantity="few">%1$d вопроса ассистенту</item>
+        <item quantity="many">%1$d вопросов ассистенту</item>
+        <item quantity="other">%1$d вопроса ассистенту</item>
+    </plurals>
+    <string name="s_stats_pictures">Картинки</string>
+    <string name="s_stats_recordings_as_text">Записи в текст</string>
+    <string name="s_stats_recording_time">Длительность записей</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d картинка от ассистента</item>
+        <item quantity="few">%1$d картинки от ассистента</item>
+        <item quantity="many">%1$d картинок от ассистента</item>
+        <item quantity="other">%1$d картинки от ассистента</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d запись в текст</item>
+        <item quantity="few">%1$d записи в текст</item>
+        <item quantity="many">%1$d записей в текст</item>
+        <item quantity="other">%1$d записи в текст</item>
+    </plurals>
     <string name="s_family_language">Язык семьи</string>
     <string name="s_family_language_explanation">Язык, на котором ассистент отвечает в семейном чате. Язык самого приложения от этого не меняется. Если ничего не выбрано, ответ приходит на языке вопроса.</string>
     <string name="s_not_set">Не задано</string>
@@ -621,4 +646,21 @@
     <string name="s_sticker_remove_not_allowed">Убрать стикер может только тот, кто его добавил, или владелец семьи.</string>
     <string name="s_sticker_remove_failed">Не удалось убрать стикер. Попробуй ещё раз.</string>
     <string name="s_sticker_not_available_offline">Этого стикера ещё нет на телефоне. Попробуй ещё раз, когда будет сеть.</string>
+
+    <!-- Transcripts on request (#62): text under a recording, the owner's switch, the consent line. -->
+    <string name="s_transcript_show">Показать текст</string>
+    <string name="s_transcript_hide">Скрыть текст</string>
+    <string name="s_transcript_getting">Получаем текст…</string>
+    <string name="s_transcript_no_speech">Без речи</string>
+    <string name="s_transcript_failed">Не удалось получить текст. Попробуй снова.</string>
+    <string name="s_transcript_refused">Сервис ассистента отказался обработать эту запись.</string>
+    <string name="s_transcript_unavailable">Для этого сообщения недоступно.</string>
+    <string name="s_transcript_too_long">Эта запись слишком длинная, чтобы превратить её в текст.</string>
+    <string name="s_transcript_unreadable">Не удалось прочитать звук в этом файле.</string>
+    <string name="s_transcript_a11y">Текст записи</string>
+    <string name="s_assistant_transcripts">Голос и видео текстом</string>
+    <string name="s_assistant_transcripts_explanation">Когда это включено, участники могут попросить текст голосовых сообщений, аудио и видео других участников в семейном чате, и тогда звук этой записи отправляется в %1$s. Он уходит только по чьей-то просьбе и только если отправивший его участник согласился на ассистента. Текст своих записей каждый может получить и без этого. Выключено, пока ты это не включишь.</string>
+    <string name="s_assistant_transcripts_no_server">Здесь недоступно: этот сервер не умеет превращать записи в текст.</string>
+    <string name="s_consent_transcript_sound_sent">Если вы попросите текст голосового сообщения, аудиофайла или видео, его звук будет отправлен в %1$s.</string>
+    <string name="e_change_assistant_transcripts_failed">Не удалось изменить настройку</string>
 </resources>

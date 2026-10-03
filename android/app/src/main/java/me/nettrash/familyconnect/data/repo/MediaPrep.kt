@@ -347,6 +347,46 @@ class MediaPrep @Inject constructor(
         }
 
     /**
+     * The sound of a file this device holds — a video, or a recording the
+     * server will not send from its own copy — as an AAC M4A for a
+     * transcript request (docs/protocol.md, "Transcripts on request";
+     * [TranscriptSoundPlan] decides which [way]). The same export, cache file
+     * and `moov`-first rewrite as every other file this class makes; no
+     * picture is decoded either way.
+     *
+     * Null when the platform could not do it — a codec it cannot decode, a
+     * track it cannot find. Cancellation propagates and takes the partial
+     * output with it. The caller deletes the file once it has been sent.
+     */
+    @OptIn(UnstableApi::class)
+    suspend fun soundTrackOrNull(input: File, way: TranscriptSoundPlan.Way): File? =
+        try {
+            exported("m4a") { listener, path ->
+                val uri = Uri.fromFile(input)
+                when (way) {
+                    TranscriptSoundPlan.Way.PASSTHROUGH ->
+                        TranscodeRecipe.passthroughTransformer(context, listener)
+                            .also { it.start(TranscodeRecipe.soundPassthroughItem(uri), path) }
+                    TranscriptSoundPlan.Way.REENCODE -> {
+                        val settings = TranscodeSettings.forTranscriptSound()
+                        val composition = TranscodeRecipe.composition(
+                            TranscodeRecipe.editedMediaItem(uri, settings),
+                            settings,
+                        )
+                        TranscodeRecipe.transformer(context, settings, listener)
+                            .also { it.start(composition, path) }
+                    }
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // The exception's class only: its message can carry a path.
+            Log.w(TAG, "taking the sound out ($way) failed: ${e.javaClass.simpleName}")
+            null
+        }
+
+    /**
      * 1.1's compress, kept for rule C: re-encode to a short side of 720 with
      * Media3's default settings, then insist the result fits.
      *

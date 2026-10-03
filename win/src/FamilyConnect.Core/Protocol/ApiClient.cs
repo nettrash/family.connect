@@ -42,10 +42,22 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
     public static readonly TimeSpan BackdropTimeout = TimeSpan.FromSeconds(120);
 
     /// <summary>
+    /// <c>POST …/attachments/{id}/transcript</c>'s OWN deadline: one provider call bounded by the server's 180 s, and
+    /// "a timeout of its OWN, no shorter than 90 s, never its ordinary request timeout" (docs/protocol.md, "Transcripts
+    /// on request"). It covers the WHOLE request, so it must also cover a supplied sound of up to 25 MiB going up before
+    /// the provider's own wait begins; the reference proxy waits 300 s on this route, and this waits a little past it,
+    /// as iOS and Android do (310 s) — the server, or the proxy answering for it, ends the wait. Shorter, a supplied
+    /// request that is merely slow fails on every try: the server drops that call with the connection and keeps nothing.
+    /// A request for the stored bytes that runs out is still finished and KEPT on the server, so asking again a little
+    /// later answers at once.
+    /// </summary>
+    public static readonly TimeSpan TranscriptTimeout = TimeSpan.FromSeconds(310);
+
+    /// <summary>
     /// The <see cref="HttpClient"/> an app builds this client over. It has NO timeout of its own, because
     /// <see cref="HttpClient.Timeout"/> caps every request sent through it and would quietly cut the backdrop's
     /// deadline down to the ordinary one; the deadlines are this class's (<see cref="OrdinaryTimeout"/>,
-    /// <see cref="BackdropTimeout"/>).
+    /// <see cref="BackdropTimeout"/>, <see cref="TranscriptTimeout"/>).
     /// </summary>
     public static HttpClient NewHttpClient() => new() { Timeout = Timeout.InfiniteTimeSpan };
 
@@ -54,6 +66,9 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
 
     /// <summary>The deadline this instance gives a backdrop. <see cref="BackdropTimeout"/>; tests shorten it.</summary>
     public TimeSpan BackdropDeadline { get; init; } = BackdropTimeout;
+
+    /// <summary>The deadline this instance gives a transcript. <see cref="TranscriptTimeout"/>; tests shorten it.</summary>
+    public TimeSpan TranscriptDeadline { get; init; } = TranscriptTimeout;
 
     /// <summary>The server this client talks to, as the user gave it.</summary>
     public Uri BaseUrl => baseUrl;
@@ -247,6 +262,43 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         long chatId, long afterSeq, int limit = 50, CancellationToken ct = default) =>
         Send<MessagesResponse>(
             HttpMethod.Get, $"/chats/{chatId}/edits?after_seq={afterSeq}&limit={limit}", ct: ct);
+
+    /// <summary>
+    /// The text of a voice note or an audio file, for the CALLER only (docs/protocol.md, "Transcripts on request").
+    /// NO REQUEST BODY: that is the form that sends the server's STORED copy, whose answer the server keeps and hands to
+    /// whoever the rule lets ask next. The supplied-sound form is the overload that takes the sound.
+    /// </summary>
+    /// <remarks>
+    /// SLOW: it runs under <see cref="TranscriptDeadline"/>, never the ordinary one. A write, so never retried here — a
+    /// transient failure is the member's to retry, and the server will have kept the answer by then.
+    /// </remarks>
+    public Task<ApiResult<TranscriptResponse>> Transcript(
+        long chatId, long messageId, long attachmentId, CancellationToken ct = default) =>
+        Send<TranscriptResponse>(
+            HttpMethod.Post, $"/chats/{chatId}/messages/{messageId}/attachments/{attachmentId}/transcript",
+            deadline: TranscriptDeadline, ct: ct);
+
+    /// <summary>
+    /// The text of a recording from sound THIS DEVICE made — a video's sound track, an Ogg file's, an audio file's over
+    /// the ceiling — sent as <c>multipart/form-data</c> with one part named <c>audio</c>: an M4A of AAC, part type
+    /// <c>audio/mp4</c>, at most <c>transcribe_max_bytes</c> (the caller holds it to that). The server never keeps this
+    /// answer: it is returned to the caller and nowhere else.
+    /// </summary>
+    /// <remarks>
+    /// Under <see cref="TranscriptDeadline"/>, and never retried: unlike the stored form, a supplied request is dropped
+    /// when its connection closes, so asking again is the member's to decide.
+    /// </remarks>
+    public Task<ApiResult<TranscriptResponse>> Transcript(
+        long chatId, long messageId, long attachmentId, ReadOnlyMemory<byte> sound, CancellationToken ct = default)
+    {
+        var part = new ReadOnlyMemoryContent(sound);
+        part.Headers.ContentType = new MediaTypeHeaderValue("audio/mp4");
+        // Disposed with the request it is sent in.
+        var form = new MultipartFormDataContent { { part, "audio", "audio.m4a" } };
+        return Send<TranscriptResponse>(
+            HttpMethod.Post, $"/chats/{chatId}/messages/{messageId}/attachments/{attachmentId}/transcript",
+            content: form, deadline: TranscriptDeadline, ct: ct);
+    }
 
     public Task<ApiResult<Nothing>> MarkRead(
         long chatId, long lastReadMessageId, CancellationToken ct = default) =>
@@ -482,6 +534,7 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
                      ("ai_history_photos", patch.AiHistoryPhotos),
                      ("ai_greeting", patch.AiGreeting),
                      ("ai_faces", patch.AiFaces),
+                     ("ai_transcripts", patch.AiTranscripts),
                  })
         {
             if (value is { } flag)

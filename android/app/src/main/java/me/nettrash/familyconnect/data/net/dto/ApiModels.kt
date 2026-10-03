@@ -210,6 +210,18 @@ data class FamilyDto(
      * same thing here (docs/protocol.md, `PATCH /families/mine`).
      */
     @SerialName("max_members") val maxMembers: Int? = null,
+    /**
+     * Whether a member may ask for the text of ANOTHER member's voice note,
+     * audio or video in the family chat (docs/protocol.md, "Transcripts on
+     * request"). Your own recordings need only your own consent; this is
+     * the owner's switch for everybody else's.
+     *
+     * ALWAYS present on the wire, FALSE by default — for every family that
+     * predates it and for a server that predates the field, which has no
+     * transcripts at all. Bound to no other switch: `ai_vision` going off
+     * never clears it.
+     */
+    @SerialName("ai_transcripts") val aiTranscripts: Boolean = false,
 )
 
 @Serializable
@@ -812,6 +824,7 @@ data class PatchFamilyRequest(
     @SerialName("ai_greeting") val aiGreeting: Boolean? = null,
     @SerialName("ai_faces") val aiFaces: Boolean? = null,
     @SerialName("max_members") val maxMembers: JsonElement? = null,
+    @SerialName("ai_transcripts") val aiTranscripts: Boolean? = null,
 ) {
     companion object {
         fun joinPolicy(policy: String) = PatchFamilyRequest(joinPolicy = policy)
@@ -869,6 +882,14 @@ data class PatchFamilyRequest(
          * "Profile pictures of members").
          */
         fun aiFaces(enabled: Boolean) = PatchFamilyRequest(aiFaces = enabled)
+
+        /**
+         * The transcripts switch: whether members may ask for the text of
+         * OTHER members' recordings in the family chat (docs/protocol.md,
+         * "Transcripts on request"). Bound to nothing, like [aiGreeting]:
+         * no other switch refuses it or clears it.
+         */
+        fun aiTranscripts(enabled: Boolean) = PatchFamilyRequest(aiTranscripts = enabled)
     }
 }
 
@@ -1469,6 +1490,43 @@ data class AssistantDto(
      * no assistant there at all.
      */
     val processor: String? = null,
+    /**
+     * This server can turn a recording into text on request
+     * (docs/protocol.md, "Transcripts on request"). Present whenever this
+     * object is; false on a server that predates it, which is the honest
+     * answer there — "Show text" is not offered.
+     */
+    val transcribe: Boolean = false,
+    /**
+     * The largest stored recording the server will send for transcription,
+     * present only while [transcribe] is true. Absent then means the
+     * protocol's default, [DEFAULT_TRANSCRIBE_MAX_BYTES].
+     */
+    @SerialName("transcribe_max_bytes") val transcribeMaxBytes: Long? = null,
+) {
+    companion object {
+        /** The protocol's default and maximum for `transcribe_max_bytes`: 25 MiB. */
+        const val DEFAULT_TRANSCRIBE_MAX_BYTES: Long = 26_214_400L
+    }
+}
+
+/**
+ * `POST …/attachments/{id}/transcript` → `{"transcript": {...}}`
+ * (docs/protocol.md, "Transcripts on request").
+ */
+@Serializable
+data class TranscriptResponse(val transcript: TranscriptDto)
+
+/**
+ * The text of one recording. [text] is always present, and `""` is an
+ * ANSWER — nothing was said — not a failure. [language] is the provider's
+ * own spelling when it names one (`ru`, or `russian`); shown at most,
+ * never relied on.
+ */
+@Serializable
+data class TranscriptDto(
+    val text: String,
+    val language: String? = null,
 )
 
 /**
@@ -1757,4 +1815,13 @@ data class AiStatsDto(
     val questions: Int = 0,
     @SerialName("prompt_tokens") val promptTokens: Int = 0,
     @SerialName("completion_tokens") val completionTokens: Int = 0,
+    /** Pictures the assistant made. 0 from a server that predates them. */
+    val images: Int = 0,
+    /**
+     * Recordings turned into text — one per provider call — which are NOT
+     * questions (docs/protocol.md, "Family statistics"). 0 from an older server.
+     */
+    val transcripts: Int = 0,
+    /** Their audio length: transcription is billed by length, not tokens. */
+    @SerialName("transcript_duration_ms") val transcriptDurationMs: Long = 0,
 )

@@ -87,6 +87,12 @@ pub struct PatchFamilyRequest {
     /// in the same write (protocol.md, "Profile pictures of members").
     #[serde(default)]
     pub ai_faces: Option<bool>,
+    /// The sixth switch, of `ai_greeting`'s shape: bound to no neighbour,
+    /// set and cleared entirely on its own — whether a member may ask for
+    /// the text of ANOTHER member's recording in the family chat
+    /// (protocol.md, "Transcripts on request").
+    #[serde(default)]
+    pub ai_transcripts: Option<bool>,
 }
 
 /// Deserialize a present key into `Some(...)`, so that `#[serde(default)]`
@@ -149,6 +155,7 @@ struct FamilyRecord {
     ai_history_photos: bool,
     ai_greeting: bool,
     ai_faces: bool,
+    ai_transcripts: bool,
     owner_user_id: i64,
     created_at: OffsetDateTime,
 }
@@ -167,6 +174,7 @@ impl FamilyRecord {
             ai_history_photos: row.get("ai_history_photos"),
             ai_greeting: row.get("ai_greeting"),
             ai_faces: row.get("ai_faces"),
+            ai_transcripts: row.get("ai_transcripts"),
             owner_user_id: row.get("owner_user_id"),
             created_at: row.get("created_at"),
         }
@@ -213,13 +221,18 @@ impl FamilyRecord {
             // decides whether a member's own FACE may leave the server.
             // Every member gets to know that; only the owner can change it.
             ai_faces: self.ai_faces,
+            // Not owner-gated either: it decides whether a member's own
+            // recorded VOICE may be sent to a speech model at somebody
+            // else's request. Every member gets to know that before they
+            // send a voice note; only the owner can change it.
+            ai_transcripts: self.ai_transcripts,
         }
     }
 }
 
 const SELECT_FAMILY: &str = "SELECT id, name, invite_code, join_policy, language, max_members,
                              ai_history, ai_vision, ai_history_photos, ai_greeting, ai_faces,
-                             owner_user_id, created_at
+                             ai_transcripts, owner_user_id, created_at
                              FROM families";
 
 async fn fetch_family(state: &AppState, family_id: i64) -> Result<FamilyRecord, ApiError> {
@@ -481,8 +494,8 @@ pub async fn create_family(
             "INSERT INTO families (name, invite_code, owner_user_id)
              VALUES ($1, $2, $3)
              RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
-                       ai_vision, ai_history_photos, ai_greeting, ai_faces, owner_user_id,
-                       created_at",
+                       ai_vision, ai_history_photos, ai_greeting, ai_faces, ai_transcripts,
+                       owner_user_id, created_at",
         )
         .bind(&name)
         .bind(&invite_code)
@@ -855,7 +868,17 @@ pub async fn my_family(
             "processor": state.cfg.ai.processor,
             "vision": state.cfg.ai.vision_usable(),
             "images": state.cfg.ai.images_usable(),
+            // The fourth deployment, discovered the same way (protocol.md,
+            // "Transcripts on request"): whether this SERVER can turn a
+            // recording into text. Whether a member may ask for a given
+            // recording is decided per request, not here.
+            "transcribe": state.cfg.ai.transcribe_usable(),
         });
+        // The ceiling rides only beside a `true`: a number for a capability
+        // the server does not have would be a promise about nothing.
+        if state.cfg.ai.transcribe_usable() {
+            body["assistant"]["transcribe_max_bytes"] = json!(state.cfg.ai.transcribe.max_bytes);
+        }
     }
     Ok((StatusCode::OK, Json(body)).into_response())
 }
@@ -986,6 +1009,8 @@ pub async fn patch_family(
     // difference is the point: it is bound to none of the other three, so
     // "what was asked, or else what it was" is the whole rule. Nothing here
     // may clear it as a side effect (protocol.md, "The daily greeting").
+    // `ai_transcripts` is the same plain COALESCE, for the same reason
+    // (protocol.md, "Transcripts on request").
     let row = sqlx::query(
         "UPDATE families
          SET join_policy = COALESCE($2, join_policy),
@@ -995,11 +1020,12 @@ pub async fn patch_family(
              ai_history_photos = COALESCE($9, ai_history_photos) AND COALESCE($8, ai_vision),
              ai_greeting = COALESCE($10, ai_greeting),
              ai_faces = COALESCE($11, ai_faces) AND COALESCE($8, ai_vision),
+             ai_transcripts = COALESCE($12, ai_transcripts),
              max_members = CASE WHEN $6 THEN $7 ELSE max_members END
          WHERE id = $1
          RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
-                   ai_vision, ai_history_photos, ai_greeting, ai_faces, owner_user_id,
-                   created_at",
+                   ai_vision, ai_history_photos, ai_greeting, ai_faces, ai_transcripts,
+                   owner_user_id, created_at",
     )
     .bind(family.id)
     .bind(join_policy)
@@ -1012,6 +1038,7 @@ pub async fn patch_family(
     .bind(req.ai_history_photos)
     .bind(req.ai_greeting)
     .bind(req.ai_faces)
+    .bind(req.ai_transcripts)
     .fetch_one(&state.pool)
     .await?;
     let family = FamilyRecord::from_row(&row);

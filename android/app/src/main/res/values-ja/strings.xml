@@ -187,8 +187,21 @@
     <string name="s_couldnt_load_statistics">統計を読み込めませんでした</string>
     <string name="s_check_connection_try_again">接続を確認してもう一度お試しください。</string>
     <string name="s_saved_by_one_copy">同じファイルを1つだけ保存することで %1$s を節約しました。</string>
-    <string name="s_attachments_and_size">添付 %1$d 件、%2$s</string>
-    <string name="s_questions_to_assistant">アシスタントへの質問 %1$d 件</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="other">添付 %1$d 件、%2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="other">アシスタントへの質問 %1$d 件</item>
+    </plurals>
+    <string name="s_stats_pictures">画像</string>
+    <string name="s_stats_recordings_as_text">テキストにした録音</string>
+    <string name="s_stats_recording_time">録音の長さ</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="other">アシスタントの画像 %1$d 枚</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="other">テキストにした録音 %1$d 件</item>
+    </plurals>
     <string name="s_family_language">ファミリーの言語</string>
     <string name="s_family_language_explanation">ファミリーチャットで質問したとき、アシスタントが答える言語です。このアプリの表示言語は変わりません。選ばなければ、質問した人の言語で答えます。</string>
     <string name="s_not_set">未設定</string>
@@ -582,4 +595,21 @@
     <string name="s_sticker_remove_not_allowed">スタンプを削除できるのは、追加した人か家族のオーナーだけです。</string>
     <string name="s_sticker_remove_failed">スタンプを削除できませんでした。もう一度お試しください。</string>
     <string name="s_sticker_not_available_offline">このスタンプはまだこの端末にありません。オンラインのときにもう一度お試しください。</string>
+
+    <!-- Transcripts on request (#62): text under a recording, the owner's switch, the consent line. -->
+    <string name="s_transcript_show">テキストを表示</string>
+    <string name="s_transcript_hide">テキストを隠す</string>
+    <string name="s_transcript_getting">テキストを取得中…</string>
+    <string name="s_transcript_no_speech">話し声なし</string>
+    <string name="s_transcript_failed">テキストを取得できませんでした。もう一度お試しください。</string>
+    <string name="s_transcript_refused">アシスタントの提供元にこの録音を断られました。</string>
+    <string name="s_transcript_unavailable">このメッセージでは使えません。</string>
+    <string name="s_transcript_too_long">この録音は長すぎてテキストにできません。</string>
+    <string name="s_transcript_unreadable">このファイルの音声を読み取れませんでした。</string>
+    <string name="s_transcript_a11y">録音のテキスト</string>
+    <string name="s_assistant_transcripts">音声とビデオをテキストに</string>
+    <string name="s_assistant_transcripts_explanation">これをオンにすると、家族のチャットでメンバーがほかのメンバーのボイスメッセージ、オーディオ、ビデオのテキストを求められるようになり、そのときその録音の音声が %1$s に送られます。送られるのは誰かが求めたときだけで、送ったメンバー本人がアシスタントに同意している場合に限ります。自分の録音のテキストは、これがなくても誰でも見られます。オンにしない限りオフのままです。</string>
+    <string name="s_assistant_transcripts_no_server">ここでは使えません。このサーバーは録音をテキストにできません。</string>
+    <string name="s_consent_transcript_sound_sent">ボイスメッセージ、オーディオファイル、ビデオのテキストを求めると、その音声が %1$s に送られます。</string>
+    <string name="e_change_assistant_transcripts_failed">設定を変更できませんでした</string>
 </resources>

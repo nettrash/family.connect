@@ -118,6 +118,31 @@ object AssistantConsent {
     fun offersBackdrop(serverCanDraw: Boolean, processor: String?): Boolean =
         serverCanDraw && isAvailable(processor)
 
+    /** What becomes of "Show text" under a recording. */
+    enum class TranscriptGate {
+        /** It is asked for. */
+        ASK_FOR_TEXT,
+
+        /** The sound would go to `processor` and this member has not agreed: ask first, send nothing. */
+        ASK_CONSENT,
+
+        /** The server will not name who would receive it: it goes nowhere, and is not offered. */
+        WITHHELD,
+    }
+
+    /**
+     * The member who asks for the text of a recording is the member sending
+     * its sound to `processor`, so their OWN consent is required — the same
+     * consent a `/draw` needs (docs/protocol.md, "Transcripts on request").
+     * Asked before the request when this device knows the answer is no,
+     * and again on the server's `assistant_consent_required`.
+     */
+    fun transcriptGate(processor: String?, agreedAt: String?): TranscriptGate = when {
+        !isAvailable(processor) -> TranscriptGate.WITHHELD
+        agreedAt.isNullOrBlank() -> TranscriptGate.ASK_CONSENT
+        else -> TranscriptGate.ASK_FOR_TEXT
+    }
+
     /**
      * Would this message reach a model whose owner the server will not
      * name, so this client must hold it back entirely?

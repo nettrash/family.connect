@@ -55,6 +55,18 @@ data class AttachmentAlbum(
         fun media(attachments: List<AttachmentDto>): List<AttachmentDto> =
             attachments.filter { !it.isFile && !it.isAudio && !it.isLocation }
 
+        /**
+         * The videos of a pile that each get a "Show text" line under it
+         * (docs/protocol.md, "Transcripts on request"), in order — with
+         * their number among the pile's videos when there is more than
+         * one, so each line can say which it is the text of; null for a
+         * pile's only video. iOS, the web and Windows offer the same.
+         */
+        fun transcriptVideos(media: List<AttachmentDto>): List<Pair<AttachmentDto, Int?>> {
+            val videos = media.filter { it.isVideo }
+            return videos.mapIndexed { at, video -> video to if (videos.size > 1) at + 1 else null }
+        }
+
         /** Everything else — what the bubble draws as rows, order kept. */
         fun rows(attachments: List<AttachmentDto>): List<AttachmentDto> =
             attachments.filter { it.isFile || it.isAudio || it.isLocation }

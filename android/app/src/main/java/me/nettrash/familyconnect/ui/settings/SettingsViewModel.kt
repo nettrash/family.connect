@@ -118,6 +118,8 @@ class SettingsViewModel @Inject constructor(
         /** The family's switches, which decide what the screen promises. */
         val familyAiHistory: Boolean = true,
         val familyAiVision: Boolean = false,
+        /** `assistant.transcribe`: the consent screen also names a recording's sound. */
+        val assistantTranscribe: Boolean = false,
         /** The consent screen is up. */
         val reviewingAssistant: Boolean = false,
     )
@@ -152,6 +154,7 @@ class SettingsViewModel @Inject constructor(
                         assistantConsentAt = stored.assistantConsentAt,
                         familyAiHistory = stored.familyAiHistory,
                         familyAiVision = stored.familyAiVision,
+                        assistantTranscribe = stored.assistantTranscribe,
                     )
                 }
             }

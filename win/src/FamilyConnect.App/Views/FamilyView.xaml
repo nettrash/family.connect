@@ -240,6 +240,23 @@
                                 </Grid>
                             </StackPanel>
                         </Border>
+                        <!--
+                            Other members' recordings as text (docs/protocol.md, "Transcripts on request"): a switch of its own,
+                            tied to no other, in a card of its own the way "Sees recent history" sits in the language card.
+                        -->
+                        <Border x:Name="TranscriptsCard" Style="{StaticResource Card}">
+                            <Grid Style="{StaticResource SwitchRow}" Padding="20,16,20,18">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="4">
+                                    <TextBlock x:Name="TranscriptsTitle" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="TranscriptsFootnote" Style="{StaticResource Footnote}" />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="TranscriptsSwitch" Grid.Column="1" MinWidth="0" VerticalAlignment="Top" />
+                            </Grid>
+                        </Border>
                         <Border Style="{StaticResource Card}">
                             <StackPanel Padding="0,0,0,8">
                                 <StackPanel Style="{StaticResource CardHeader}">

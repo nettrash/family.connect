@@ -166,8 +166,25 @@
     <string name="s_couldnt_load_statistics">Couldn\'t load statistics</string>
     <string name="s_check_connection_try_again">Check your connection and try again.</string>
     <string name="s_saved_by_one_copy">%1$s saved by storing one copy of identical files.</string>
-    <string name="s_attachments_and_size">%1$d attachments, %2$s</string>
-    <string name="s_questions_to_assistant">%1$d questions to the assistant</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d attachment, %2$s</item>
+        <item quantity="other">%1$d attachments, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d question to the assistant</item>
+        <item quantity="other">%1$d questions to the assistant</item>
+    </plurals>
+    <string name="s_stats_pictures">Pictures</string>
+    <string name="s_stats_recordings_as_text">Recordings as text</string>
+    <string name="s_stats_recording_time">Recording time</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d picture from the assistant</item>
+        <item quantity="other">%1$d pictures from the assistant</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d recording as text</item>
+        <item quantity="other">%1$d recordings as text</item>
+    </plurals>
     <string name="s_record_audio">Record audio</string>
     <string name="s_stop">Stop</string>
     <string name="s_audio">Audio</string>
@@ -649,4 +666,21 @@
     <string name="s_sticker_remove_not_allowed">Only whoever added a sticker, or the family owner, can remove it.</string>
     <string name="s_sticker_remove_failed">Couldn\'t remove the sticker. Try again.</string>
     <string name="s_sticker_not_available_offline">That sticker isn\'t on this phone yet. Try again when you\'re online.</string>
+
+    <!-- Transcripts on request (#62): text under a recording, the owner's switch, the consent line. -->
+    <string name="s_transcript_show">Show text</string>
+    <string name="s_transcript_hide">Hide text</string>
+    <string name="s_transcript_getting">Getting the text…</string>
+    <string name="s_transcript_no_speech">No speech</string>
+    <string name="s_transcript_failed">Couldn\'t get the text. Try again.</string>
+    <string name="s_transcript_refused">The assistant\'s provider refused this recording.</string>
+    <string name="s_transcript_unavailable">Not available for this message.</string>
+    <string name="s_transcript_too_long">This recording is too long to turn into text.</string>
+    <string name="s_transcript_unreadable">Couldn\'t read the sound in this file.</string>
+    <string name="s_transcript_a11y">Text of the recording</string>
+    <string name="s_assistant_transcripts">Voice and video as text</string>
+    <string name="s_assistant_transcripts_explanation">With this on, members can ask for the text of other members\' voice notes, audio and videos in the family chat, and that recording\'s sound is then sent to %1$s. It is sent only when someone asks, and only if the member who sent it has agreed to the assistant. Everyone can get the text of their own recordings without this. It is off unless you turn it on.</string>
+    <string name="s_assistant_transcripts_no_server">Not available here: this server can\'t turn recordings into text.</string>
+    <string name="s_consent_transcript_sound_sent">If you ask for the text of a voice note, audio file or video, its sound is sent to %1$s.</string>
+    <string name="e_change_assistant_transcripts_failed">Couldn\'t change that setting</string>
 </resources>
