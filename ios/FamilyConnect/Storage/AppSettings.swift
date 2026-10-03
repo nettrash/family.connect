@@ -101,6 +101,10 @@ nonisolated enum AppSettings {
         /// round, like `assistantVision`: a missing key reads as "cannot".
         static let assistantTranscribe = "v1.assistant.transcribe"
         static let assistantTranscribeMaxBytes = "v1.assistant.transcribeMaxBytes"
+        /// The providers this SERVER's assistant may look things up in, by
+        /// name, as `GET /families/mine` last reported them (protocol.md,
+        /// "Looking things up"). A missing key reads as "no source".
+        static let assistantLookups = "v1.assistant.lookups"
         /// Pre-push installs stored a "registered once, token null"
         /// boolean under this key; superseded by the pair above and only
         /// referenced by wipe() so upgraded installs shed it.
@@ -454,6 +458,24 @@ nonisolated enum AppSettings {
         }
     }
 
+    /// `assistant.lookups`, or nil when the server has no lookup source.
+    /// Never an empty list: nil is the one spelling of "nothing to name",
+    /// and every lookup surface — the owner's switch, the consent lines, the
+    /// member's Settings section — is ABSENT then rather than disabled.
+    static var assistantLookups: [String]? {
+        get {
+            let names = defaults.stringArray(forKey: Key.assistantLookups) ?? []
+            return names.isEmpty ? nil : names
+        }
+        set {
+            if let newValue, !newValue.isEmpty {
+                defaults.set(newValue, forKey: Key.assistantLookups)
+            } else {
+                defaults.removeObject(forKey: Key.assistantLookups)
+            }
+        }
+    }
+
     /// The picture token the server named, or nil when it named none.
     static var assistantDraw: String? {
         get { defaults.string(forKey: Key.assistantDraw) }
@@ -490,6 +512,7 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.assistantDraw)
         defaults.removeObject(forKey: Key.assistantTranscribe)
         defaults.removeObject(forKey: Key.assistantTranscribeMaxBytes)
+        defaults.removeObject(forKey: Key.assistantLookups)
         // The operator's half of the daily greeting is a fact about THIS
         // server, like the three above; a different server must not inherit it.
         defaults.removeObject(forKey: Key.greetingsEnabled)

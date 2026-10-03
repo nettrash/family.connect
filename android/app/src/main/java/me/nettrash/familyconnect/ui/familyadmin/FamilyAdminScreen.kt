@@ -99,6 +99,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import me.nettrash.familyconnect.ui.chat.AssistantLookups
+import me.nettrash.familyconnect.ui.components.lookupProvidersPhrase
 import me.nettrash.familyconnect.ui.stickers.FamilyStickersSection
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
@@ -788,6 +790,39 @@ fun FamilyAdminScreen(
                         },
                         modifier = Modifier.clickable(enabled = transcriptsEnabled) {
                             viewModel.setAiTranscripts(!state.aiTranscripts)
+                        },
+                    )
+                    SectionDivider()
+                }
+
+                // -- Whether the assistant may LOOK THINGS UP ---------------------------
+                // Its own section, bound to none of the others
+                // (docs/protocol.md, "Looking things up"). HIDDEN where the
+                // server has no source: the switch would do nothing, and its
+                // footnote could name nobody. The footnote names every
+                // provider a query would reach.
+                if (AssistantLookups.showsOwnerSwitch(state.assistantLookups)) {
+                    val lookupsEnabled = !state.busy
+                    ListItem(
+                        overlineContent = { Text(stringResource(R.string.s_looking_things_up)) },
+                        headlineContent = { Text(stringResource(R.string.s_assistant_lookups)) },
+                        supportingContent = {
+                            Text(
+                                stringResource(
+                                    R.string.s_assistant_lookups_explanation,
+                                    lookupProvidersPhrase(state.assistantLookups),
+                                ),
+                            )
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = state.aiLookups,
+                                onCheckedChange = viewModel::setAiLookups,
+                                enabled = lookupsEnabled,
+                            )
+                        },
+                        modifier = Modifier.clickable(enabled = lookupsEnabled) {
+                            viewModel.setAiLookups(!state.aiLookups)
                         },
                     )
                     SectionDivider()

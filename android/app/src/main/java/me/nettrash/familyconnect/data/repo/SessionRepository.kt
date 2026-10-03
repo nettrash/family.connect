@@ -315,6 +315,10 @@ class SessionRepository @Inject constructor(
                 // withdrawal from another device arrives exactly here
                 // (protocol.md, "Consenting to the assistant").
                 settings.setAssistantConsentAt(me.assistantConsentAt)
+                // …and the lookup consent beside it, by the same rule
+                // (protocol.md, "Consenting to the assistant", amended
+                // 2026-10-03). Absent from an older server, so null.
+                settings.setAssistantLookupConsentAt(me.assistantLookupConsentAt)
                 // The AUTHORITATIVE apply. `/me` is step 1 of the resync,
                 // it is the only one on the login path, and it is the only
                 // one a caller with NO family reaches at all — a block is a

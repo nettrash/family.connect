@@ -958,6 +958,10 @@ pub fn overlay(family: &Family, patch: Option<&FamilyPatch>) -> Family {
     if let Some(on) = patch.ai_transcripts {
         shown.ai_transcripts = on;
     }
+    // Tied to no other switch either.
+    if let Some(on) = patch.ai_lookups {
+        shown.ai_lookups = on;
+    }
     shown
 }
 
@@ -1119,6 +1123,13 @@ fn assistant_settings(props: &AssistantProps) -> Html {
                     .unwrap_or_else(|| props.assistant.display_name.clone())}
                 on_change={switch(|on| FamilyPatch { ai_transcripts: Some(on), ..FamilyPatch::default() })}
             />
+            if fc_text::lookups::offered(&props.assistant.lookups) {
+                <LookupsSwitch
+                    on={family.ai_lookups}
+                    lookups={props.assistant.lookups.clone()}
+                    on_change={switch(|on| FamilyPatch { ai_lookups: Some(on), ..FamilyPatch::default() })}
+                />
+            }
             <section class="group" aria-labelledby="assistant-greeting">
                 <h3 id="assistant-greeting">{ t("Daily greeting") }</h3>
                 <label class="setting-row toggle">
@@ -1172,6 +1183,38 @@ pub fn transcripts_switch(props: &TranscriptsSwitchProps) -> Html {
                     { " " }{ t("Not available here: this server can't turn recordings into text.") }
                 }
             </p>
+        </section>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct LookupsSwitchProps {
+    /// The family's `ai_lookups`, as a change on its way leaves it.
+    pub on: bool,
+    /// `assistant.lookups` — who the queries go to. The switch is drawn
+    /// only where there is somebody to name.
+    pub lookups: Vec<String>,
+    pub on_change: Callback<Event>,
+}
+
+/// The owner's `ai_lookups` (docs/protocol.md, "Looking things up"):
+/// whether the assistant may look things up for this family at all. A
+/// section of its own, offered only on a server with a lookup source — off
+/// one, it would be a switch that does nothing — with a footnote naming the
+/// providers, the way the consent screen names `processor`.
+#[function_component(LookupsSwitch)]
+pub fn lookups_switch(props: &LookupsSwitchProps) -> Html {
+    let named = fc_text::lookups::names(&fc_text::lookups::providers(&props.lookups));
+    html! {
+        <section class="group" aria-labelledby="assistant-lookups">
+            <h3 id="assistant-lookups">{ fc_text::lookups::heading() }</h3>
+            <label class="setting-row toggle">
+                <span>{ t("Can look things up") }</span>
+                <input type="checkbox" role="switch" class="lookups-switch"
+                    checked={props.on}
+                    onchange={props.on_change.clone()} />
+            </label>
+            <p class="footnote">{ fc_text::lookups::switch_footnote(&named) }</p>
         </section>
     }
 }
@@ -1469,6 +1512,7 @@ mod tests {
             processor: Some("Microsoft — Azure OpenAI".into()),
             transcribe,
             transcribe_max_bytes: transcribe.then_some(26_214_400),
+            lookups: Vec::new(),
         };
         let props = AssistantProps {
             family: Family::default(),
@@ -1523,5 +1567,118 @@ mod tests {
             .unwrap_or_default()
             .contains("Not available here: this server can't turn recordings into text."));
         root.remove();
+    }
+
+    /// The lookups switch rides on nothing: vision or transcripts going
+    /// off leave it as it was, and its own patch is one key.
+    #[wasm_bindgen_test]
+    fn the_lookups_switch_is_tied_to_no_other() {
+        let family = Family {
+            ai_vision: true,
+            ai_transcripts: true,
+            ai_lookups: true,
+            ..Default::default()
+        };
+        for other in [
+            FamilyPatch {
+                ai_vision: Some(false),
+                ..FamilyPatch::default()
+            },
+            FamilyPatch {
+                ai_transcripts: Some(false),
+                ..FamilyPatch::default()
+            },
+            FamilyPatch {
+                ai_history: Some(false),
+                ..FamilyPatch::default()
+            },
+        ] {
+            assert!(overlay(&family, Some(&other)).ai_lookups, "{other:?}");
+        }
+        let off = FamilyPatch {
+            ai_lookups: Some(false),
+            ..FamilyPatch::default()
+        };
+        let shown = overlay(&family, Some(&off));
+        assert!(!shown.ai_lookups && shown.ai_vision && shown.ai_transcripts);
+    }
+
+    /// THE OWNER'S LOOKUPS SWITCH, drawn and pressed: present only where
+    /// the server names providers, off unless turned on, its footnote
+    /// naming them, and one write of exactly its own key.
+    #[wasm_bindgen_test]
+    async fn the_owners_lookups_switch_names_the_providers_and_writes_its_own_key() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let into = sent.clone();
+        let on_action = Callback::from(move |action: Action| {
+            if let Action::ChangeFamily { patch, done } = action {
+                into.borrow_mut().push(patch);
+                done.emit(None);
+            }
+        });
+        let assistant = |lookups: &[&str]| Assistant {
+            user_id: 2,
+            display_name: "Assistant".into(),
+            mention: Some("@ai".into()),
+            draw: None,
+            vision: false,
+            images: false,
+            processor: Some("Microsoft — Azure OpenAI".into()),
+            transcribe: false,
+            transcribe_max_bytes: None,
+            lookups: lookups.iter().map(|name| name.to_string()).collect(),
+        };
+        let draw = |assistant: Assistant| {
+            let root = document.create_element("div").unwrap();
+            document.body().unwrap().append_child(&root).unwrap();
+            let props = AssistantProps {
+                family: Family::default(),
+                assistant,
+                greetings: false,
+                on_action: on_action.clone(),
+            };
+            yew::Renderer::<AssistantSettings>::with_root_and_props(root.clone(), props).render();
+            root
+        };
+
+        let root = draw(assistant(&["Brave Search", "Open-Meteo", "Wikipedia"]));
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        let switch: web_sys::HtmlInputElement = root
+            .query_selector(".lookups-switch")
+            .unwrap()
+            .expect("the switch")
+            .dyn_into()
+            .unwrap();
+        assert!(!switch.checked(), "off unless the owner turns it on");
+        let text = root.text_content().unwrap_or_default();
+        assert!(text.contains("Looking things up"));
+        assert!(text.contains("Can look things up"));
+        assert!(
+            text.contains("in Brave Search, Open-Meteo and Wikipedia. Only a short search query"),
+            "{text}"
+        );
+        switch.click();
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        assert_eq!(
+            *sent.borrow(),
+            vec![FamilyPatch {
+                ai_lookups: Some(true),
+                ..FamilyPatch::default()
+            }]
+        );
+        root.remove();
+
+        // No source on this server — absent and `[]` alike: no switch.
+        for nobody in [&[][..], &["  "][..]] {
+            let root = draw(assistant(nobody));
+            gloo_timers::future::TimeoutFuture::new(30).await;
+            assert!(root.query_selector(".lookups-switch").unwrap().is_none());
+            assert!(!root
+                .text_content()
+                .unwrap_or_default()
+                .contains("Can look things up"));
+            root.remove();
+        }
     }
 }

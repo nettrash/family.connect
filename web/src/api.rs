@@ -175,6 +175,8 @@ pub struct FamilyPatch {
     pub ai_faces: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_transcripts: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_lookups: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1594,6 +1596,36 @@ struct AssistantConsentResponse {
     assistant_consent_at: Option<String>,
 }
 
+/// `POST /me/assistant-lookup-consent` — this member's own agreement that
+/// the assistant may send a query or a place name it writes from their
+/// words to the providers `assistant.lookups` names (docs/protocol.md,
+/// "Consenting to the assistant", amended 2026-10-03).
+///
+/// The same shape as the first: the stamp the server now holds comes back,
+/// a date when granted and none when withdrawn, and granting twice keeps
+/// the first date. It may only be GRANTED on top of the assistant consent —
+/// `assistant_consent_required` (403) otherwise — and a server with no
+/// lookup source answers 404.
+pub async fn set_assistant_lookup_consent(
+    token: &str,
+    granted: bool,
+) -> Result<Option<String>, ApiError> {
+    let body = AssistantConsentRequest { granted };
+    let answer: AssistantLookupConsentResponse = with_body(
+        Request::post(&path("/me/assistant-lookup-consent")),
+        token,
+        &body,
+    )
+    .await?;
+    Ok(answer.assistant_lookup_consent_at)
+}
+
+#[derive(Debug, Deserialize)]
+struct AssistantLookupConsentResponse {
+    #[serde(default)]
+    assistant_lookup_consent_at: Option<String>,
+}
+
 /// `PUT` / `DELETE /families/members/{id}/block`.
 pub async fn set_blocked(token: &str, user_id: i64, blocked: bool) -> Result<(), ApiError> {
     let url = path(&format!("/families/members/{user_id}/block"));
@@ -2199,6 +2231,79 @@ mod tests {
         assert_eq!(
             fc_text::transcript::after_refusal(gave_up.unwrap_err().code()),
             fc_text::transcript::Next::Fail(fc_text::transcript::Failure::TryAgain)
+        );
+    }
+
+    /// THE LOOKUP CONSENT, against a stand-in server: one POST to its own
+    /// route with exactly `{"granted": …}`, the server's stamp handed back
+    /// (a date granted, none withdrawn), and each refusal the protocol names
+    /// kept as its code — the first consent's route is never touched.
+    #[wasm_bindgen_test]
+    async fn the_lookup_consent_is_its_own_request() {
+        use crate::fake_server::{Answer, FakeServer};
+        const ROUTE: &str = "/me/assistant-lookup-consent";
+        let answer = std::rc::Rc::new(std::cell::RefCell::new(Answer::Nothing));
+        let server = {
+            let answer = answer.clone();
+            FakeServer::answering(move |asked| {
+                if asked.path == ROUTE {
+                    std::mem::replace(&mut *answer.borrow_mut(), Answer::Nothing)
+                } else {
+                    Answer::refusal(404, "not_found")
+                }
+            })
+        };
+        *answer.borrow_mut() = Answer::Json(
+            200,
+            serde_json::json!({"assistant_lookup_consent_at": "2026-10-03T09:30:00Z"}),
+        );
+        assert_eq!(
+            set_assistant_lookup_consent("t", true).await,
+            Ok(Some("2026-10-03T09:30:00Z".to_string()))
+        );
+        *answer.borrow_mut() = Answer::Json(
+            200,
+            serde_json::json!({"assistant_lookup_consent_at": null}),
+        );
+        assert_eq!(set_assistant_lookup_consent("t", false).await, Ok(None));
+        let asked = server.asked(&[ROUTE, "/me/assistant-consent"]);
+        assert_eq!(asked.len(), 2);
+        assert!(asked.iter().all(|asked| asked.path == ROUTE));
+        assert!(asked.iter().all(|asked| asked.method == "POST"));
+        assert_eq!(asked[0].json(), serde_json::json!({"granted": true}));
+        assert_eq!(asked[1].json(), serde_json::json!({"granted": false}));
+
+        for (status, code) in [
+            (403, "assistant_consent_required"),
+            (404, "not_found"),
+            (400, "validation"),
+        ] {
+            *answer.borrow_mut() = Answer::refusal(status, code);
+            assert_eq!(
+                set_assistant_lookup_consent("t", true)
+                    .await
+                    .unwrap_err()
+                    .code(),
+                Some(code)
+            );
+        }
+    }
+
+    /// The owner's switch goes as its one key, and only when it changed.
+    #[wasm_bindgen_test]
+    fn the_lookups_switch_is_one_key_of_the_patch() {
+        let patch = FamilyPatch {
+            ai_lookups: Some(true),
+            ..FamilyPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&patch).unwrap(),
+            serde_json::json!({"ai_lookups": true})
+        );
+        assert_eq!(
+            serde_json::to_value(FamilyPatch::default()).unwrap(),
+            serde_json::json!({}),
+            "absent, never false, when the owner did not touch it"
         );
     }
 }

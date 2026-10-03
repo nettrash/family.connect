@@ -16,6 +16,7 @@ package me.nettrash.familyconnect.ui.familyadmin
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import me.nettrash.familyconnect.ui.chat.AssistantLookups
 import me.nettrash.familyconnect.R
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -160,6 +161,18 @@ class FamilyAdminViewModel @Inject constructor(
         val assistantTranscribe: Boolean = false,
         /** Who the sound would go to (`assistant.processor`), named in the switch's footer. */
         val assistantProcessor: String? = null,
+        /**
+         * Whether the assistant may look things up for this family
+         * (`ai_lookups`, docs/protocol.md, "Looking things up"). FALSE by
+         * default and bound to no other switch.
+         */
+        val aiLookups: Boolean = false,
+        /**
+         * Who a lookup would reach (`assistant.lookups`). The switch above
+         * is HIDDEN when this is empty — it does nothing on a server with no
+         * source — and its footnote names these when it is drawn.
+         */
+        val assistantLookups: List<String> = emptyList(),
         /** The owner's own cap, or null for none of their own. */
         val maxMembers: Int? = null,
         /** The operator's ceiling; null on a server too old to say. */
@@ -256,6 +269,8 @@ class FamilyAdminViewModel @Inject constructor(
                         aiTranscripts = mine.family.aiTranscripts,
                         assistantTranscribe = mine.assistant?.transcribe == true,
                         assistantProcessor = mine.assistant?.processor,
+                        aiLookups = mine.family.aiLookups,
+                        assistantLookups = AssistantLookups.providers(mine.assistant?.lookups),
                         greetingsEnabled = settings.state.first().greetingsEnabled,
                         maxMembers = mine.family.maxMembers,
                         memberCount = mine.members.size,
@@ -576,6 +591,33 @@ class FamilyAdminViewModel @Inject constructor(
                             busy = false,
                             error = result.message
                                 ?: appContext.getString(R.string.e_change_assistant_transcripts_failed),
+                        )
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /**
+     * Owner-only: the lookups switch (docs/protocol.md, "Looking things
+     * up"). Bound to no other switch; the switch stays where the server
+     * says it is.
+     */
+    fun setAiLookups(enabled: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setAiLookups(enabled)) {
+                is ApiResult.Ok ->
+                    _state.update {
+                        it.copy(busy = false, aiLookups = result.value.family.aiLookups)
+                    }
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = result.message
+                                ?: appContext.getString(R.string.e_change_assistant_lookups_failed),
                         )
                     }
                 is ApiResult.NetworkError ->

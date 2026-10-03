@@ -72,6 +72,56 @@ class StatisticsLinesTest {
     }
 
     @Test
+    fun `web searches are read, and zero from an older server`() {
+        val read = json.decodeFromString<AiStatsDto>(
+            """{"questions": 4, "prompt_tokens": 10, "completion_tokens": 5, "searches": 3}""",
+        )
+        assertThat(read.searches).isEqualTo(3)
+        val older = json.decodeFromString<AiStatsDto>("""{"questions": 1, "prompt_tokens": 0, "completion_tokens": 0}""")
+        assertThat(older.searches).isEqualTo(0)
+    }
+
+    @Test
+    fun `web searches get their own row, after pictures, and none when there were none`() {
+        val rows = StatisticsLines.assistantRows(
+            AiStatsDto(questions = 4, promptTokens = 7, completionTokens = 2, images = 1, searches = 3),
+            context,
+        )
+        assertThat(rows).containsExactly(
+            "Questions" to "4",
+            "Tokens" to "9",
+            "Pictures" to "1",
+            "Web searches" to "3",
+        ).inOrder()
+        assertThat(StatisticsLines.assistantRows(AiStatsDto(questions = 4), context).map { it.first })
+            .doesNotContain("Web searches")
+    }
+
+    @Test
+    fun `a member's web searches are a counted plural`() {
+        fun line(searches: Int) = StatisticsLines.summaryFor(
+            MemberStatsDto(userId = 7, displayName = "Anna", ai = AiStatsDto(questions = 2, searches = searches)),
+            context,
+        )
+        assertThat(line(1)).isEqualTo("2 questions to the assistant · 1 web search")
+        assertThat(line(3)).isEqualTo("2 questions to the assistant · 3 web searches")
+        assertThat(line(0)).isEqualTo("2 questions to the assistant")
+    }
+
+    @Test
+    @Config(qualifiers = "ru")
+    fun `in Russian the count takes its own form`() {
+        fun line(searches: Int) = StatisticsLines.summaryFor(
+            MemberStatsDto(userId = 7, displayName = "Анна", ai = AiStatsDto(searches = searches)),
+            ApplicationProvider.getApplicationContext(),
+        )
+        assertThat(line(1)).isEqualTo("1 поиск в интернете")
+        assertThat(line(3)).isEqualTo("3 поиска в интернете")
+        assertThat(line(5)).isEqualTo("5 поисков в интернете")
+        assertThat(line(21)).isEqualTo("21 поиск в интернете")
+    }
+
+    @Test
     fun `recording time is a duration, past an hour too`() {
         assertThat(StatisticsLines.recordingTime(0)).isEqualTo("0:00")
         assertThat(StatisticsLines.recordingTime(-5)).isEqualTo("0:00")

@@ -49,6 +49,7 @@ public sealed partial class SettingsView : UserControl
     private bool leaving;
     private bool drawingSwitch;
     private bool consentBusy;
+    private bool lookupsBusy;
     private StartupState? startupState;
     private string pictureShown = string.Empty;
 
@@ -115,6 +116,7 @@ public sealed partial class SettingsView : UserControl
         LeaveButton.Click += (_, _) => _ = LeaveAsync();
         StatisticsButton.Click += (_, _) => _ = StatisticsAsync();
         AssistantConsentButton.Click += (_, _) => _ = AssistantConsentAsync();
+        LookupsButton.Click += (_, _) => _ = LookupsAsync();
         NotifySwitch.Toggled += (_, _) =>
         {
             if (!drawingSwitch && Toasts.Available)
@@ -198,6 +200,7 @@ public sealed partial class SettingsView : UserControl
             : say.Get("Windows is not showing notifications for Family Connect. Allow them in Windows Settings, under Notifications.");
 
         DrawAssistantConsent(state);
+        DrawLookups(state);
         DrawStartup();
 
         Picture.DisplayName = me.DisplayName;
@@ -321,22 +324,88 @@ public sealed partial class SettingsView : UserControl
             return;
         }
         var agreed = !string.IsNullOrWhiteSpace(state.AssistantConsentAt);
-        if (!agreed && !await Dialogs.AssistantConsentAsync(
-            XamlRoot, services.Say, processor,
-            state.Family?.AiHistory == true, state.Family?.AiVision == true, state.Assistant?.Transcribe == true))
+        var answer = ConsentAnswer.NotNow;
+        if (!agreed)
         {
-            return;
+            answer = await Dialogs.AssistantConsentAsync(
+                XamlRoot, services.Say, processor,
+                state.Family?.AiHistory == true, state.Family?.AiVision == true, state.Assistant?.Transcribe == true,
+                Lookups.Offered(state.Assistant) ? Lookups.Providers(state.Assistant) : null);
+            if (answer == ConsentAnswer.NotNow)
+            {
+                return;
+            }
         }
         consentBusy = true;
         Draw();
-        var answer = await connection.Api.SetAssistantConsent(!agreed);
+        // Agreeing is one or two writes (the lookups ride on the assistant); stopping is one, and the server withdraws the
+        // lookup consent with it.
+        var error = agreed
+            ? (await connection.Api.SetAssistantConsent(false)).Error
+            : await Lookups.RecordAsync(connection.Api, answer, assistantAgreed: false);
         consentBusy = false;
-        if (answer.Ok)
-        {
-            await connection.Session.RefreshAsync();
-        }
+        // Re-read either way: a first write that landed before a second failed is the truth.
+        await connection.Session.RefreshAsync();
         Draw();
-        if (!answer.Ok)
+        if (error is not null)
+        {
+            await Dialogs.ConfirmAsync(
+                XamlRoot, services.Say, services.Say.Get("Couldn't save your answer. Try again."),
+                null, services.Say.Get("OK"));
+        }
+    }
+
+    /// <summary>
+    /// The member's lookup agreement, as this screen shows it (docs/protocol.md, "Consenting to the assistant", amended
+    /// 2026-10-03): the providers named, and the way in or out. COLLAPSED unless <see cref="Lookups.InSettings"/> — a server
+    /// that names its providers and a member who has agreed to the assistant, which the lookup consent stands on.
+    /// </summary>
+    private void DrawLookups(SessionState state)
+    {
+        var say = services.Say;
+        if (!Lookups.InSettings(state) || Lookups.Providers(state.Assistant) is not { } names)
+        {
+            LookupsHeading.Visibility = Visibility.Collapsed;
+            LookupsPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+        LookupsHeading.Text = say.Get("Looking things up");
+        LookupsHeading.Visibility = Visibility.Visible;
+        LookupsPanel.Visibility = Visibility.Visible;
+        var allowed = Lookups.Allowed(state);
+        LookupsTitle.Text = say.Get("Agreed");
+        LookupsTitle.Visibility = allowed ? Visibility.Visible : Visibility.Collapsed;
+        LookupsFootnote.Text = Lookups.SettingsFootnote(names, allowed, say);
+        LookupsAction.Text = allowed ? say.Get("Stop Lookups") : say.Get("Review and Allow Lookups…");
+        AutomationProperties.SetName(LookupsButton, LookupsAction.Text);
+        LookupsButton.IsEnabled = !lookupsBusy;
+    }
+
+    /// <summary>
+    /// Allow lookups — after reading the line that names the providers — or stop them, which is one press: what it
+    /// cannot undo the footnote already says. The write is followed by a <c>GET /me</c>, and the screen redraws from it.
+    /// </summary>
+    private async Task LookupsAsync()
+    {
+        var state = connection.Session.State;
+        if (!Lookups.InSettings(state) || Lookups.Providers(state.Assistant) is not { } names)
+        {
+            return;
+        }
+        var allowed = Lookups.Allowed(state);
+        if (!allowed && !await Dialogs.LookupConsentAsync(XamlRoot, services.Say, names, state.Family?.AiHistory == true))
+        {
+            return;
+        }
+        lookupsBusy = true;
+        Draw();
+        var error = allowed
+            ? (await connection.Api.SetAssistantLookupConsent(false)).Error
+            : await Lookups.RecordAsync(connection.Api, ConsentAnswer.AgreeWithLookups, assistantAgreed: true);
+        lookupsBusy = false;
+        await connection.Session.RefreshAsync();
+        Draw();
+        if (error is not null)
         {
             await Dialogs.ConfirmAsync(
                 XamlRoot, services.Say, services.Say.Get("Couldn't save your answer. Try again."),
@@ -651,7 +720,7 @@ public sealed partial class SettingsView : UserControl
         }
         body.Children.Add(Group(say.Get("Attachments"), [.. rows]));
 
-        if (totals.Ai is { } ai && (ai.Questions > 0 || ai.Images > 0 || ai.Transcripts > 0))
+        if (totals.Ai is { } ai && SettingsText.AssistantUsed(ai))
         {
             var assistant = new List<UIElement>
             {
@@ -667,6 +736,12 @@ public sealed partial class SettingsView : UserControl
                 // Billed by the length of the sound, not by tokens: the count and the time, both.
                 assistant.Add(Row(say.Get("Recordings as text"), Number(ai.Transcripts)));
                 assistant.Add(Row(say.Get("Recording time"), CallRecordText.Duration(Math.Max(0, ai.TranscriptDurationMs) / 1000)));
+            }
+            if (ai.Searches > 0)
+            {
+                // The paid web searches, the number that maps to the operator's per-search bill (docs/protocol.md,
+                // "Family statistics", amended 2026-10-03). Absent on an older server, which reads as none.
+                assistant.Add(Row(say.Get("Web searches"), Number(ai.Searches)));
             }
             body.Children.Add(Group(say.Get("Assistant"), [.. assistant]));
         }

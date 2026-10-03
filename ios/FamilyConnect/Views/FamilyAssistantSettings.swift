@@ -8,7 +8,7 @@
 //  at all, and — the third switch — whether a mention may also be shown
 //  the chat's most recent photographs; and, not about the assistant's
 //  answers at all, whether members may ask for the text of each other's
-//  recordings.
+//  recordings; and whether the assistant may look things up.
 //
 //  Written once and dropped into both rosters — the phone's
 //  FamilyManageView and the Mac's MacFamilyView — because they are the
@@ -142,6 +142,29 @@ struct FamilyAssistantSettings: View {
             caption(transcriptsExplanation)
         } footer: {
             footer(transcriptsExplanation)
+        }
+
+        // The SEVENTH switch: whether the assistant may look things up —
+        // send a short query or place name it wrote to the providers the
+        // server names (protocol.md, "Looking things up"). With the
+        // disclosure switches because it is one: it decides whether words
+        // drawn from the family's questions reach a party that is not the
+        // processor. Bound to none of the others.
+        //
+        // ABSENT, not disabled, on a server with no lookup source, like
+        // "Can be shown photos": the footnote has to NAME who receives the
+        // query, and a switch that names nobody could only promise
+        // something the server cannot do.
+        if let providers = lookupProviders {
+            Section {
+                Toggle("Can look things up", isOn: lookupsBinding)
+                    .disabled(isSaving)
+                caption(lookupsExplanation(providers))
+            } header: {
+                Text("Looking things up")
+            } footer: {
+                footer(lookupsExplanation(providers))
+            }
         }
 
         // The FOURTH switch, and the only one on this screen that is not
@@ -292,6 +315,23 @@ struct FamilyAssistantSettings: View {
         return text
     }
 
+    /// The providers, joined for a sentence, when this server may look
+    /// things up at all — the same rule as every other lookup surface
+    /// (`AssistantConsent.offersLookups`).
+    private var lookupProviders: String? {
+        guard AssistantConsent.offersLookups(
+            processor: AppSettings.assistantProcessor, lookups: AppSettings.assistantLookups)
+        else { return nil }
+        return AssistantConsent.providerList(AppSettings.assistantLookups ?? [])
+    }
+
+    /// What may leave, to whom by name, what never does, whose agreement it
+    /// also needs, and that it is off by default — the facts "Looking
+    /// things up" asks the switch's footnote to carry.
+    private func lookupsExplanation(_ providers: String) -> String {
+        String(localized: "With this on, the assistant can look things up when a question needs it — the weather, the news, a fact it isn't sure of — in \(providers). Only a short search query or place name the assistant writes from the question is sent to them, never the conversation itself, and only when the member asking has agreed to it. Answers then list their sources. It is off unless you turn it on.")
+    }
+
     /// What leaves, why, and whose never — the facts "Profile pictures of
     /// members" requires every client to carry; then the reason the switch is
     /// withheld, or that it is inert while the history switch is off. A face
@@ -401,6 +441,15 @@ struct FamilyAssistantSettings: View {
             })
     }
 
+    private var lookupsBinding: Binding<Bool> {
+        Binding(
+            get: { family.aiLookups },
+            set: { enabled in
+                guard enabled != family.aiLookups else { return }
+                save { try await coordinator.api.setAILookups(enabled) }
+            })
+    }
+
     private func save(_ work: @escaping () async throws -> FamilyDTO) {
         isSaving = true
         errorText = nil
@@ -438,6 +487,8 @@ struct FamilyAssistantSettings: View {
                     // because what the server answered is what this family
                     // now is.
                     aiTranscripts: updated.aiTranscripts,
+                    // And the seventh, which nothing else moves either.
+                    aiLookups: updated.aiLookups,
                     maxMembers: updated.maxMembers))
             } catch APIError.forbidden {
                 errorText = String(localized: "Only the family owner can change this.")

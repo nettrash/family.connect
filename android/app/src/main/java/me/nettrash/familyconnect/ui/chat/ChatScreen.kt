@@ -1231,6 +1231,8 @@ fun ChatScreen(
                                     item = item,
                                     chat = chat,
                                     isMine = item.entity.senderId == myUserId,
+                                    fromAssistant = assistantUserId != null &&
+                                        item.entity.senderId == assistantUserId,
                                     // Asked of the ROW, not only of the
                                     // live set: a picture answer produces
                                     // no deltas to put an id in it, and a
@@ -1684,8 +1686,10 @@ fun ChatScreen(
             familyHistory = ask.familyHistory,
             familyVision = ask.familyVision,
             transcripts = ask.transcripts,
-            onAgree = viewModel::agreeToTheAssistant,
+            onAgree = { viewModel.agreeToTheAssistant(withLookups = false) },
             onDismiss = viewModel::dismissAssistantConsent,
+            lookupProviders = ask.lookupProviders,
+            onAgreeWithLookups = { viewModel.agreeToTheAssistant(withLookups = true) },
         )
     }
 
@@ -2508,6 +2512,12 @@ internal fun MessageBubble(
     onOpenThread: (Long) -> Unit = {},
     /** A tap on a member the message names (docs/protocol.md, "Mentioning a member"). */
     onTapMention: (Long) -> Unit = {},
+    /**
+     * The assistant wrote this row. Decides only whether the link-preview
+     * card is drawn ([LookupFooter.suppressesPreview]): an answer's
+     * sources, and words it is still writing, are never fetched.
+     */
+    fromAssistant: Boolean = false,
 ) {
     val entity = item.entity
     // 18dp corners, tightened to 4dp where a bubble meets a same-sender
@@ -2759,6 +2769,7 @@ internal fun MessageBubble(
                 modifier = bubbleModifier,
             ) {
                 BubbleContent(
+                    fromAssistant = fromAssistant,
                     entity = entity,
                     item = item,
                     isHidden = isHidden,
@@ -3748,6 +3759,8 @@ private fun BubbleContent(
     onOpenThread: (Long) -> Unit = {},
     /** A tap on a member the message names (docs/protocol.md, "Mentioning a member"). */
     onTapMention: (Long) -> Unit = {},
+    /** The assistant wrote this row — see [MessageBubble]. */
+    fromAssistant: Boolean = false,
 ) {
     // Everything that is CONTENT shares one left edge, whichever side the
     // balloon is on — the quote, the attachment, the body and the link
@@ -3797,8 +3810,14 @@ private fun BubbleContent(
             // depth rather than the oracle itself. `previewsEnabled` still
             // decides it — the setting "decides the fetch for every row
             // alike and is never evaluated per sender".
-            val hiddenPreviewUrl = remember(blocks) {
-                MessageLinks.firstDrawnWebLinkUrl(blocks.map { it.block })
+            val hiddenSuppressed = LookupFooter.suppressesPreview(
+                fromAssistant = fromAssistant,
+                body = entity.body,
+                isStreaming = isStreaming,
+                failed = answerFailure != null,
+            )
+            val hiddenPreviewUrl = remember(blocks, hiddenSuppressed) {
+                if (hiddenSuppressed) null else MessageLinks.firstDrawnWebLinkUrl(blocks.map { it.block })
             }
             if (hiddenPreviewUrl != null && previewsEnabled) {
                 LaunchedEffect(hiddenPreviewUrl) { onRequestPreview(hiddenPreviewUrl) }
@@ -4067,8 +4086,19 @@ private fun BubbleContent(
         // URL from the spans alone left a URL typed into a cell with no
         // card and no other way in — the cell is not tappable either.
         // See MessageLinks.firstDrawnWebLinkUrl.
-        val previewUrl = remember(blocks) {
-            MessageLinks.firstDrawnWebLinkUrl(blocks.map { it.block })
+        //
+        // NOT for an assistant answer's sources, nor for words it is still
+        // writing or stopped writing (docs/protocol.md, "Looking things
+        // up"; LookupFooter says why each): those links stay tappable in
+        // the text and this device never fetches them unasked.
+        val previewSuppressed = LookupFooter.suppressesPreview(
+            fromAssistant = fromAssistant,
+            body = entity.body,
+            isStreaming = isStreaming,
+            failed = answerFailure != null,
+        )
+        val previewUrl = remember(blocks, previewSuppressed) {
+            if (previewSuppressed) null else MessageLinks.firstDrawnWebLinkUrl(blocks.map { it.block })
         }
         if (previewUrl != null && previewsEnabled) {
             LaunchedEffect(previewUrl) { onRequestPreview(previewUrl) }

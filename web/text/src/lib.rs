@@ -51,6 +51,9 @@
 //! - [`transcript_sound`] — the sound a device sends for that text when the
 //!   server's stored copy will not do (a video, Ogg, an oversized file):
 //!   AAC copied where it fits, re-encoded to 64 kbit/s mono where not.
+//! - [`lookups`] — the assistant looking things up (#72): which providers a
+//!   client names and how, what the consent screen asks, and where the
+//!   server's sources footer starts under an answer.
 
 pub mod account;
 pub mod assistant;
@@ -65,6 +68,7 @@ pub mod emoji;
 pub mod excerpt;
 pub mod i18n;
 pub mod links;
+pub mod lookups;
 pub mod markdown;
 pub mod media;
 pub mod media_plan;

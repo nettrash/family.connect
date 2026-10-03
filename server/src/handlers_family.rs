@@ -93,6 +93,11 @@ pub struct PatchFamilyRequest {
     /// (protocol.md, "Transcripts on request").
     #[serde(default)]
     pub ai_transcripts: Option<bool>,
+    /// The seventh switch, of `ai_greeting`'s shape again: bound to no
+    /// neighbour — whether the assistant may look things up for this family
+    /// (protocol.md, "Looking things up").
+    #[serde(default)]
+    pub ai_lookups: Option<bool>,
 }
 
 /// Deserialize a present key into `Some(...)`, so that `#[serde(default)]`
@@ -156,6 +161,7 @@ struct FamilyRecord {
     ai_greeting: bool,
     ai_faces: bool,
     ai_transcripts: bool,
+    ai_lookups: bool,
     owner_user_id: i64,
     created_at: OffsetDateTime,
 }
@@ -175,6 +181,7 @@ impl FamilyRecord {
             ai_greeting: row.get("ai_greeting"),
             ai_faces: row.get("ai_faces"),
             ai_transcripts: row.get("ai_transcripts"),
+            ai_lookups: row.get("ai_lookups"),
             owner_user_id: row.get("owner_user_id"),
             created_at: row.get("created_at"),
         }
@@ -226,13 +233,18 @@ impl FamilyRecord {
             // else's request. Every member gets to know that before they
             // send a voice note; only the owner can change it.
             ai_transcripts: self.ai_transcripts,
+            // Not owner-gated either: it decides whether a query written
+            // from a member's words may reach a party that is not
+            // `processor`. Every member gets to know that; only the owner
+            // can change it.
+            ai_lookups: self.ai_lookups,
         }
     }
 }
 
 const SELECT_FAMILY: &str = "SELECT id, name, invite_code, join_policy, language, max_members,
                              ai_history, ai_vision, ai_history_photos, ai_greeting, ai_faces,
-                             ai_transcripts, owner_user_id, created_at
+                             ai_transcripts, ai_lookups, owner_user_id, created_at
                              FROM families";
 
 async fn fetch_family(state: &AppState, family_id: i64) -> Result<FamilyRecord, ApiError> {
@@ -495,7 +507,7 @@ pub async fn create_family(
              VALUES ($1, $2, $3)
              RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
                        ai_vision, ai_history_photos, ai_greeting, ai_faces, ai_transcripts,
-                       owner_user_id, created_at",
+                       ai_lookups, owner_user_id, created_at",
         )
         .bind(&name)
         .bind(&invite_code)
@@ -874,6 +886,13 @@ pub async fn my_family(
             // recording is decided per request, not here.
             "transcribe": state.cfg.ai.transcribe_usable(),
         });
+        // The sources the assistant may look things up in, by the names a
+        // client shows on the consent screen (protocol.md, "Looking things
+        // up"). ABSENT when there are none, never `[]`: absence is the
+        // capability check, as it is for the whole object.
+        if state.cfg.ai.lookups_usable() {
+            body["assistant"]["lookups"] = json!(state.cfg.ai.lookups.source_names());
+        }
         // The ceiling rides only beside a `true`: a number for a capability
         // the server does not have would be a promise about nothing.
         if state.cfg.ai.transcribe_usable() {
@@ -1010,7 +1029,8 @@ pub async fn patch_family(
     // "what was asked, or else what it was" is the whole rule. Nothing here
     // may clear it as a side effect (protocol.md, "The daily greeting").
     // `ai_transcripts` is the same plain COALESCE, for the same reason
-    // (protocol.md, "Transcripts on request").
+    // (protocol.md, "Transcripts on request"), and so is `ai_lookups`
+    // (protocol.md, "Looking things up").
     let row = sqlx::query(
         "UPDATE families
          SET join_policy = COALESCE($2, join_policy),
@@ -1021,11 +1041,12 @@ pub async fn patch_family(
              ai_greeting = COALESCE($10, ai_greeting),
              ai_faces = COALESCE($11, ai_faces) AND COALESCE($8, ai_vision),
              ai_transcripts = COALESCE($12, ai_transcripts),
+             ai_lookups = COALESCE($13, ai_lookups),
              max_members = CASE WHEN $6 THEN $7 ELSE max_members END
          WHERE id = $1
          RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
                    ai_vision, ai_history_photos, ai_greeting, ai_faces, ai_transcripts,
-                   owner_user_id, created_at",
+                   ai_lookups, owner_user_id, created_at",
     )
     .bind(family.id)
     .bind(join_policy)
@@ -1039,6 +1060,7 @@ pub async fn patch_family(
     .bind(req.ai_greeting)
     .bind(req.ai_faces)
     .bind(req.ai_transcripts)
+    .bind(req.ai_lookups)
     .fetch_one(&state.pool)
     .await?;
     let family = FamilyRecord::from_row(&row);

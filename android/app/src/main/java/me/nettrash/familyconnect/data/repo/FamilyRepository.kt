@@ -214,10 +214,51 @@ class FamilyRepository @Inject constructor(
         when (val result = authApi.setAssistantConsent(granted)) {
             is ApiResult.Ok -> {
                 settings.setAssistantConsentAt(result.value.assistantConsentAt)
+                // Withdrawing the assistant consent withdraws the lookup
+                // consent with it, on the server, in the same write
+                // (docs/protocol.md, "Consenting to the assistant", amended
+                // 2026-10-03). The answer names only the first stamp, so
+                // the second is cleared here rather than left showing
+                // "Agreed" until the next `/me`.
+                if (result.value.assistantConsentAt == null) settings.setAssistantLookupConsentAt(null)
                 true
             }
             else -> false
         }
+
+    /**
+     * This member's own answer to the LOOKUP question — whether the
+     * assistant may send a short query it wrote from their words to the
+     * providers `assistant.lookups` names (docs/protocol.md, "Consenting to
+     * the assistant", amended 2026-10-03). Never sent on anybody's behalf
+     * and never inferred from [setAssistantConsent].
+     *
+     * Answers whether it was recorded. False leaves the lookup consent
+     * where it was: for a grant that means no lookups, the safe direction;
+     * for a withdrawal the caller has to say it failed.
+     */
+    suspend fun setAssistantLookupConsent(granted: Boolean): Boolean =
+        when (val result = authApi.setAssistantLookupConsent(granted)) {
+            is ApiResult.Ok -> {
+                settings.setAssistantLookupConsentAt(result.value.assistantLookupConsentAt)
+                true
+            }
+            else -> false
+        }
+
+    /**
+     * "Agree With Lookups" / "Agree Without Lookups": the assistant consent,
+     * and — only when asked for, and only once that one is recorded, since
+     * the server refuses a lookup grant without it — the lookup consent.
+     */
+    suspend fun agreeToAssistant(withLookups: Boolean): AgreeOutcome {
+        if (!setAssistantConsent(true)) return AgreeOutcome(assistant = false, lookups = false)
+        val lookups = withLookups && setAssistantLookupConsent(true)
+        return AgreeOutcome(assistant = true, lookups = lookups)
+    }
+
+    /** What [agreeToAssistant] managed to record. */
+    data class AgreeOutcome(val assistant: Boolean, val lookups: Boolean)
 
     suspend fun unblock(userId: Long): ApiResult<Unit> =
         familyApi.unblockMember(userId).also {
@@ -321,6 +362,10 @@ class FamilyRepository @Inject constructor(
                 // (docs/protocol.md, "Transcripts on request").
                 transcribe = result.value.assistant?.transcribe == true,
                 transcribeMaxBytes = result.value.assistant?.transcribeMaxBytes,
+                // Who a lookup would go to, for the consent screen and the
+                // owner's switch to name (docs/protocol.md, "Looking
+                // things up"). Absent when the server has no source.
+                lookups = result.value.assistant?.lookups,
             )
             // …and what this FAMILY allows, which is a different question
             // with a different answer and its own owner-only switch —
@@ -334,6 +379,9 @@ class FamilyRepository @Inject constructor(
             // The owner's transcripts switch, for the bubbles: whether
             // another member's recording may be offered "Show text".
             settings.setFamilyAiTranscripts(result.value.family.aiTranscripts)
+            // The owner's lookups switch, for the settings screen to say
+            // whether lookups are on in this family.
+            settings.setFamilyAiLookups(result.value.family.aiLookups)
             // The second apply of the same complete state-set. Idempotent
             // and last-writer-wins, which is why the fixed resync order
             // (/me, then /families/mine) needs no coordination — and why
@@ -457,6 +505,19 @@ class FamilyRepository @Inject constructor(
         val result = familyApi.setAiTranscripts(enabled)
         if (result is ApiResult.Ok) {
             settings.setFamilyAiTranscripts(result.value.family.aiTranscripts)
+        }
+        return result
+    }
+
+    /**
+     * Owner-only: the lookups switch (docs/protocol.md, "Looking things
+     * up"). Mirrored like the others so the owner's own device agrees with
+     * the server at once.
+     */
+    suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse> {
+        val result = familyApi.setAiLookups(enabled)
+        if (result is ApiResult.Ok) {
+            settings.setFamilyAiLookups(result.value.family.aiLookups)
         }
         return result
     }

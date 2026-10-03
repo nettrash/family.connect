@@ -3716,6 +3716,11 @@ final class ChatSyncCoordinator {
             // that answers `transcripts_unavailable`.
             AppSettings.assistantTranscribe = mine.assistant?.transcribe ?? false
             AppSettings.assistantTranscribeMaxBytes = mine.assistant?.transcribeMaxBytes
+            // Which providers the assistant may look things up in, for the
+            // consent line, the owner's switch and its footnote to name
+            // (protocol.md, "Looking things up"). Nil when the object or
+            // the key is absent, which takes every lookup surface away.
+            AppSettings.assistantLookups = mine.assistant?.lookups
             // The pack's two limits, which double as the capability check:
             // a server that predates the pack sends neither, and nil here
             // is what takes the sticker button and the Family screen's pack

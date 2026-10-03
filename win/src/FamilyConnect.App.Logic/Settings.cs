@@ -165,8 +165,21 @@ public static class SettingsText
             // Charged to the member who ASKED, whoever's voice it was (docs/protocol.md, "Family statistics").
             parts.Add(say.Plural("%lld recordings as text", heard.Transcripts, heard.Transcripts));
         }
+        if (member.Ai is { Searches: > 0 } looked)
+        {
+            // The PAID web searches made for their questions, charged to whoever asked; weather and Wikipedia are free
+            // and not counted (docs/protocol.md, "Family statistics", amended 2026-10-03).
+            parts.Add(say.Plural("%lld web searches", looked.Searches, looked.Searches));
+        }
         return parts.Count == 0 ? say.Get("Words only") : string.Join(" · ", parts);
     }
+
+    /// <summary>
+    /// Whether the family's totals have an Assistant group to show: anything the assistant was asked for, drew, heard or
+    /// looked up. A family that never used it has no group, rather than a group of zeros.
+    /// </summary>
+    public static bool AssistantUsed(StatsAiDto? ai) =>
+        ai is not null && (ai.Questions > 0 || ai.Images > 0 || ai.Transcripts > 0 || ai.Searches > 0);
 
     /// <summary>
     /// What storing one copy of identical files saved, or null when it saved nothing — the family's

@@ -28,6 +28,7 @@ import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.dto.ApproveResponse
 import me.nettrash.familyconnect.data.net.dto.AssistantDto
 import me.nettrash.familyconnect.data.net.dto.AssistantConsentResponse
+import me.nettrash.familyconnect.data.net.dto.AssistantLookupConsentResponse
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentResponse
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
@@ -220,8 +221,14 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         processor: String?,
         transcribe: Boolean,
         transcribeMaxBytes: Long?,
+        lookups: List<String>?,
     ) {
         _state.value = _state.value.copy(
+            assistantLookups = if (userId != null) {
+                lookups.orEmpty().map { it.trim() }.filter { it.isNotEmpty() }
+            } else {
+                emptyList()
+            },
             assistantUserId = userId,
             assistantName = displayName,
             // Cleared with the assistant, like the real one: an absent
@@ -242,6 +249,10 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(assistantConsentAt = at?.ifBlank { null })
     }
 
+    override suspend fun setAssistantLookupConsentAt(at: String?) {
+        _state.value = _state.value.copy(assistantLookupConsentAt = at?.ifBlank { null })
+    }
+
     override suspend fun setFamilyAiVision(enabled: Boolean) {
         _state.value = _state.value.copy(familyAiVision = enabled)
     }
@@ -260,6 +271,10 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
 
     override suspend fun setFamilyAiTranscripts(enabled: Boolean) {
         _state.value = _state.value.copy(familyAiTranscripts = enabled)
+    }
+
+    override suspend fun setFamilyAiLookups(enabled: Boolean) {
+        _state.value = _state.value.copy(familyAiLookups = enabled)
     }
 
     override suspend fun setGreetingsEnabled(enabled: Boolean) {
@@ -407,7 +422,24 @@ class FakeAuthApi : AuthApi {
         granted: Boolean,
     ): ApiResult<AssistantConsentResponse> {
         assistantConsentAnswers += granted
+        consentCalls += "assistant:$granted"
         return assistantConsentResult
+    }
+
+    /** Every answer handed to POST /me/assistant-lookup-consent, in call order. */
+    val lookupConsentAnswers = mutableListOf<Boolean>()
+
+    /** Both consent endpoints, interleaved in call order — "assistant:true", "lookups:true". */
+    val consentCalls = mutableListOf<String>()
+    var lookupConsentResult: ApiResult<AssistantLookupConsentResponse> =
+        ApiResult.Ok(AssistantLookupConsentResponse(assistantLookupConsentAt = "2026-10-03T09:00:00Z"))
+
+    override suspend fun setAssistantLookupConsent(
+        granted: Boolean,
+    ): ApiResult<AssistantLookupConsentResponse> {
+        lookupConsentAnswers += granted
+        consentCalls += "lookups:$granted"
+        return lookupConsentResult
     }
 
     override suspend fun deleteAccount(password: String): ApiResult<Unit> {
@@ -787,6 +819,14 @@ class FakeFamilyApi : FamilyApi {
 
     override suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse> {
         aiTranscriptsSet += enabled
+        return createResult
+    }
+
+    /** Every ai_lookups PATCH, in order. */
+    val aiLookupsSet = mutableListOf<Boolean>()
+
+    override suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse> {
+        aiLookupsSet += enabled
         return createResult
     }
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> = joinRequestsResult

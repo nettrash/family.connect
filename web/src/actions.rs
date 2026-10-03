@@ -103,6 +103,19 @@ pub enum Action {
     SetAssistantConsent {
         granted: bool,
     },
+    /// This member's own answer to the LOOKUP question — whether the
+    /// assistant may send a query it writes from their words to the
+    /// providers `assistant.lookups` names (docs/protocol.md, "Consenting
+    /// to the assistant", amended 2026-10-03). Never assumed: only a press
+    /// of "Agree With Lookups" or the Settings screen's own "I Agree" sends
+    /// `true`.
+    SetAssistantLookupConsent {
+        granted: bool,
+    },
+    /// "Agree With Lookups": the assistant consent, THEN the lookup consent
+    /// — in that order and never at once, because the server refuses the
+    /// second without the first (`assistant_consent_required`).
+    AgreeWithLookups,
     Block {
         user_id: i64,
         blocked: bool,
@@ -356,6 +369,18 @@ pub enum Action {
     ToggleCamera,
 }
 
+impl Action {
+    /// What the consent screen's answer sends: the assistant alone, or the
+    /// assistant and then lookups ("Agree With Lookups").
+    pub fn agreement(with_lookups: bool) -> Action {
+        if with_lookups {
+            Action::AgreeWithLookups
+        } else {
+            Action::SetAssistantConsent { granted: true }
+        }
+    }
+}
+
 /// How an account or family change came back to the dialog that asked:
 /// None when it went in, the refusal otherwise — worded by the dialog, which
 /// knows what it was asking. A 401 never gets here: that is the sign-out.
@@ -585,6 +610,19 @@ impl Actions {
         };
         self.live
             .update(session, |state| state.failure = Some(text));
+    }
+
+    /// The lookup answer did not save. `assistant_consent_required` is the
+    /// server saying this member has no assistant consent to stand it on —
+    /// withdrawn on another device since the last `/me` — so this tab stops
+    /// believing it has one too, and the screen that asks for both is what
+    /// the member meets next.
+    fn lookup_consent_failed(&self, session: u64, error: &ApiError) {
+        if error.code() == Some("assistant_consent_required") {
+            self.live
+                .update(session, |state| state.store.set_assistant_consent(None));
+        }
+        self.fail_saying(session, error, t("Couldn't save your answer. Try again."));
     }
 
     fn notice(&self, session: u64, text: &str) {
@@ -919,6 +957,42 @@ impl Actions {
                             &error,
                             t("Couldn't save your answer. Try again."),
                         ),
+                    }
+                });
+            }
+            Action::SetAssistantLookupConsent { granted } => {
+                spawn_local(async move {
+                    match api::set_assistant_lookup_consent(&token, granted).await {
+                        Ok(at) => {
+                            live.update(session, move |state| {
+                                state.store.set_assistant_lookup_consent(at)
+                            });
+                        }
+                        Err(error) => this.lookup_consent_failed(session, &error),
+                    }
+                });
+            }
+            Action::AgreeWithLookups => {
+                spawn_local(async move {
+                    let agreed = match api::set_assistant_consent(&token, true).await {
+                        Ok(at) => at,
+                        Err(error) => {
+                            this.fail_saying(
+                                session,
+                                &error,
+                                t("Couldn't save your answer. Try again."),
+                            );
+                            return;
+                        }
+                    };
+                    live.update(session, |state| state.store.set_assistant_consent(agreed));
+                    match api::set_assistant_lookup_consent(&token, true).await {
+                        Ok(at) => {
+                            live.update(session, move |state| {
+                                state.store.set_assistant_lookup_consent(at)
+                            });
+                        }
+                        Err(error) => this.lookup_consent_failed(session, &error),
                     }
                 });
             }
@@ -2508,6 +2582,7 @@ mod tests {
                 processor: Some("Microsoft — Azure OpenAI".into()),
                 transcribe: false,
                 transcribe_max_bytes: None,
+                lookups: Vec::new(),
             });
         });
         let draw = |actions: &Actions| {
@@ -2620,6 +2695,7 @@ mod tests {
                 processor: Some("Microsoft — Azure OpenAI".into()),
                 transcribe: true,
                 transcribe_max_bytes: Some(26_214_400),
+                lookups: Vec::new(),
             });
         });
         let asked_consent = Rc::new(RefCell::new(0));
@@ -2781,6 +2857,7 @@ mod tests {
                 processor: Some("Microsoft — Azure OpenAI".into()),
                 transcribe: true,
                 transcribe_max_bytes: Some(26_214_400),
+                lookups: Vec::new(),
             });
             state
                 .store
@@ -2925,6 +3002,7 @@ mod tests {
                 processor: Some("Microsoft — Azure OpenAI".into()),
                 transcribe: true,
                 transcribe_max_bytes: Some(26_214_400),
+                lookups: Vec::new(),
             });
             state
                 .store
@@ -3785,6 +3863,7 @@ mod tests {
             vision: true,
             transcribe: false,
             transcribe_max_bytes: None,
+            lookups: Vec::new(),
             images: false,
             processor: processor.map(str::to_string),
         };
@@ -3850,5 +3929,128 @@ mod tests {
         actions.handle(Action::OpenSticker(picture));
         actions.live.now(sync::put_away_panes);
         assert!(actions.live.read(|state| state.sticker_open.is_none()));
+    }
+
+    /// THE LOOKUP CONSENT, end to end against a stand-in server
+    /// (docs/protocol.md, "Consenting to the assistant", amended
+    /// 2026-10-03): "Agree With Lookups" asks for the assistant consent
+    /// FIRST and the lookup consent only once that is held, each stamp the
+    /// server's own; stopping lookups withdraws only them; a failed first
+    /// consent sends no second; and `assistant_consent_required` on the
+    /// second is taken at its word — this tab stops believing in the first.
+    #[wasm_bindgen_test]
+    async fn agreeing_with_lookups_asks_for_the_assistant_first() {
+        use crate::fake_server::{Answer, FakeServer};
+        const FIRST: &str = "/me/assistant-consent";
+        const SECOND: &str = "/me/assistant-lookup-consent";
+        let first_answers = Rc::new(RefCell::new(true));
+        let second_refuses = Rc::new(RefCell::new(false));
+        let server = {
+            let first_answers = first_answers.clone();
+            let second_refuses = second_refuses.clone();
+            FakeServer::answering(move |asked| {
+                let granted = asked.json()["granted"].as_bool() == Some(true);
+                if asked.path == FIRST {
+                    if !*first_answers.borrow() {
+                        return Answer::refusal(500, "internal");
+                    }
+                    let at = granted.then_some("2026-10-03T09:00:00Z");
+                    Answer::Json(200, serde_json::json!({"assistant_consent_at": at}))
+                } else if asked.path == SECOND {
+                    if *second_refuses.borrow() {
+                        return Answer::refusal(403, "assistant_consent_required");
+                    }
+                    let at = granted.then_some("2026-10-03T09:30:00Z");
+                    Answer::Json(200, serde_json::json!({"assistant_lookup_consent_at": at}))
+                } else {
+                    Answer::refusal(404, "not_found")
+                }
+            })
+        };
+        let actions = actions();
+        actions.live.now(|state| {
+            state.store.account = Some(crate::model::Me::default());
+        });
+        let held = |actions: &Actions| {
+            actions.live.read(|state| {
+                (
+                    state.store.assistant_consent_at().map(str::to_owned),
+                    state.store.assistant_lookup_consent_at().map(str::to_owned),
+                )
+            })
+        };
+        let settle = |count: usize| {
+            let server = &server;
+            async move {
+                for _ in 0..40 {
+                    if server.asked(&[FIRST, SECOND]).len() >= count {
+                        break;
+                    }
+                    gloo_timers::future::TimeoutFuture::new(25).await;
+                }
+                gloo_timers::future::TimeoutFuture::new(50).await;
+            }
+        };
+
+        actions.handle(Action::AgreeWithLookups);
+        settle(2).await;
+        assert_eq!(
+            server.lines(&[FIRST, SECOND]),
+            vec![format!("POST {FIRST}"), format!("POST {SECOND}")],
+            "the assistant first, then the lookups"
+        );
+        assert_eq!(
+            held(&actions),
+            (
+                Some("2026-10-03T09:00:00Z".into()),
+                Some("2026-10-03T09:30:00Z".into())
+            ),
+            "the server's stamps, both"
+        );
+
+        // Stopping lookups: only them.
+        actions.handle(Action::SetAssistantLookupConsent { granted: false });
+        settle(3).await;
+        assert_eq!(
+            server.asked(&[SECOND]).last().unwrap().json(),
+            serde_json::json!({"granted": false})
+        );
+        assert_eq!(held(&actions), (Some("2026-10-03T09:00:00Z".into()), None));
+
+        // The first consent fails: no second request, nothing believed.
+        actions
+            .live
+            .now(|state| state.store.set_assistant_consent(None));
+        *first_answers.borrow_mut() = false;
+        actions.handle(Action::AgreeWithLookups);
+        settle(4).await;
+        assert_eq!(server.asked(&[FIRST, SECOND]).len(), 4);
+        assert_eq!(
+            server.asked(&[SECOND]).len(),
+            2,
+            "no lookup consent without the first"
+        );
+        assert_eq!(held(&actions), (None, None));
+        assert_eq!(
+            actions.live.read(|state| state.failure.clone()).as_deref(),
+            Some("Couldn't save your answer. Try again.")
+        );
+
+        // Withdrawn elsewhere: the server's word on the second wins.
+        actions.live.now(|state| {
+            state.failure = None;
+            state
+                .store
+                .set_assistant_consent(Some("2026-10-03T09:00:00Z".into()));
+        });
+        *second_refuses.borrow_mut() = true;
+        actions.handle(Action::SetAssistantLookupConsent { granted: true });
+        settle(5).await;
+        assert_eq!(
+            held(&actions),
+            (None, None),
+            "this tab no longer believes it agreed"
+        );
+        assert!(actions.live.read(|state| state.failure.is_some()));
     }
 }

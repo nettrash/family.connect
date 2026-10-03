@@ -64,7 +64,8 @@ pub async fn family_stats(
                 COALESCE(ai.completion_tokens, 0) AS ai_completion_tokens,
                 COALESCE(ai.images, 0)          AS ai_images,
                 COALESCE(ai.transcripts, 0)     AS ai_transcripts,
-                COALESCE(ai.audio_ms, 0)        AS ai_audio_ms
+                COALESCE(ai.audio_ms, 0)        AS ai_audio_ms,
+                COALESCE(ai.searches, 0)        AS ai_searches
          FROM users u
          LEFT JOIN (
              SELECT msg.sender_id, COUNT(*) AS count
@@ -98,7 +99,8 @@ pub async fn family_stats(
                     SUM(completion_tokens)::BIGINT AS completion_tokens,
                     SUM(images)::BIGINT AS images,
                     SUM(transcripts)::BIGINT AS transcripts,
-                    SUM(audio_ms)::BIGINT AS audio_ms
+                    SUM(audio_ms)::BIGINT AS audio_ms,
+                    SUM(searches)::BIGINT AS searches
              FROM ai_usage
              WHERE family_id = $1
              GROUP BY user_id
@@ -149,6 +151,7 @@ pub async fn family_stats(
                     "images": row.get::<i64, _>("ai_images"),
                     "transcripts": row.get::<i64, _>("ai_transcripts"),
                     "transcript_duration_ms": row.get::<i64, _>("ai_audio_ms"),
+                    "searches": row.get::<i64, _>("ai_searches"),
                 },
             })
         })
@@ -220,7 +223,12 @@ pub async fn family_stats(
             (SELECT COALESCE(SUM(transcripts), 0)::BIGINT FROM ai_usage WHERE family_id = $1)
                 AS ai_transcripts,
             (SELECT COALESCE(SUM(audio_ms), 0)::BIGINT FROM ai_usage WHERE family_id = $1)
-                AS ai_audio_ms",
+                AS ai_audio_ms,
+            -- The PAID web searches, per call, for the reason `images` is its
+            -- own number (protocol.md, Family statistics, and Looking things
+            -- up). Weather and Wikipedia are free and are not counted.
+            (SELECT COALESCE(SUM(searches), 0)::BIGINT FROM ai_usage WHERE family_id = $1)
+                AS ai_searches",
     )
     .bind(family_id)
     .fetch_one(&state.pool)
@@ -253,6 +261,7 @@ pub async fn family_stats(
                 "images": totals.get::<i64, _>("ai_images"),
                 "transcripts": totals.get::<i64, _>("ai_transcripts"),
                 "transcript_duration_ms": totals.get::<i64, _>("ai_audio_ms"),
+                "searches": totals.get::<i64, _>("ai_searches"),
             },
         },
         "members": member_rows,

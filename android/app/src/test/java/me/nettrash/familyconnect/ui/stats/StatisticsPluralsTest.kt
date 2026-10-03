@@ -38,6 +38,7 @@ class StatisticsPluralsTest {
         "s_questions_to_assistant" to listOf("%1\$d"),
         "s_pictures_from_assistant" to listOf("%1\$d"),
         "s_recordings_as_text" to listOf("%1\$d"),
+        "s_web_searches" to listOf("%1\$d"),
     )
 
     private val placeholder = Regex("""%(\d+\$)?[a-z]""")

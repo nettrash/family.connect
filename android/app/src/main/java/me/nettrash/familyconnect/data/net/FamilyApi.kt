@@ -113,6 +113,14 @@ interface FamilyApi {
      * request"). Family-wide, OFF by default, bound to no other switch.
      */
     suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: whether the assistant may look things up for this family
+     * (docs/protocol.md, "Looking things up"). Family-wide, OFF by default,
+     * bound to no other switch, and inert on a server whose
+     * `assistant.lookups` is absent.
+     */
+    suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse>
     suspend fun joinRequests(): ApiResult<JoinRequestsResponse>
     suspend fun approve(requestId: Long): ApiResult<ApproveResponse>
     suspend fun reject(requestId: Long): ApiResult<Unit>
@@ -240,6 +248,9 @@ class DefaultFamilyApi @Inject constructor(
 
     override suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse> =
         client.patch("/families/mine", PatchFamilyRequest.aiTranscripts(enabled))
+
+    override suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.aiLookups(enabled))
 
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> =
         client.get("/families/join-requests")

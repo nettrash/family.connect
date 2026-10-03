@@ -296,6 +296,17 @@ translations identical to the English.
 window draws in whatever the device is set to, because a family setting that silently re-languaged
 somebody's computer would be a surprise nobody asked for.
 
+**Looking things up is three keys, and this client holds none of them** (docs/protocol.md, "Looking things up";
+issue #72; `Lookups`). The server must name its providers (`assistant.lookups`, absent on a server without one), the
+owner must turn on `ai_lookups` (the family screen's "Looking things up" card, drawn only where providers are named),
+and the asking member must have given a SECOND consent on top of the assistant's — asked on the same consent screen,
+whose yes splits into "Agree With Lookups" and "Agree Without Lookups", and changeable in Settings. The answer comes
+back as an ordinary message with a sources footer the SERVER writes; it is plain markdown, so its links open like any
+other. What this client adds is that **a lookup answer draws no preview card** (design decision 7): its links are its
+sources and its providers' credits, so a card would have every device showing it contact a cited page. The same goes
+for **an assistant answer still being written**: the server filters links out of the finished body, not out of the
+stream, so the card waits for the finished row. `SourcesFooter` recognises the footer by its shape and its fixed words.
+
 **A notification is never the message.** The body is the one a server with
 `include_message_body = false` would send, and the block reaches one step further than the sender:
 the assistant's answer to a blocked member's question raises nothing either, because it would light
