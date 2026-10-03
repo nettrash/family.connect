@@ -189,13 +189,29 @@
     <string name="s_couldnt_load_statistics">Impossible de charger les statistiques</string>
     <string name="s_check_connection_try_again">Vérifie ta connexion et réessaie.</string>
     <string name="s_saved_by_one_copy">%1$s économisés en ne gardant qu\'une copie des fichiers identiques.</string>
-    <string name="s_attachments_and_size">%1$d pièces jointes, %2$s</string>
-    <string name="s_questions_to_assistant">%1$d questions à l\'assistant</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d pièce jointe, %2$s</item>
+        <item quantity="many">%1$d pièces jointes, %2$s</item>
+        <item quantity="other">%1$d pièces jointes, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d question à l\'assistant</item>
+        <item quantity="many">%1$d questions à l\'assistant</item>
+        <item quantity="other">%1$d questions à l\'assistant</item>
+    </plurals>
     <string name="s_stats_pictures">Images</string>
     <string name="s_stats_recordings_as_text">Enregistrements transcrits</string>
     <string name="s_stats_recording_time">Durée des enregistrements</string>
-    <string name="s_pictures_from_assistant">%1$d images de l’assistant</string>
-    <string name="s_recordings_as_text">%1$d enregistrements transcrits</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d image de l’assistant</item>
+        <item quantity="many">%1$d images de l’assistant</item>
+        <item quantity="other">%1$d images de l’assistant</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d enregistrement transcrit</item>
+        <item quantity="many">%1$d enregistrements transcrits</item>
+        <item quantity="other">%1$d enregistrements transcrits</item>
+    </plurals>
     <string name="s_family_language">Langue de la famille</string>
     <string name="s_family_language_explanation">La langue dans laquelle l’assistant répond quand on l’interroge dans la conversation familiale. Cela ne change pas la langue de cette app. Sans choix, il répond dans la langue de la question.</string>
     <string name="s_not_set">Non défini</string>

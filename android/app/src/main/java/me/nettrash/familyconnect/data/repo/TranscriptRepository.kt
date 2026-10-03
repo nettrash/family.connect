@@ -26,6 +26,9 @@ class TranscriptRepository @Inject constructor(
     private val api: TranscriptApi,
     private val dao: TranscriptDao,
     private val sound: TranscriptSoundSource,
+    // Kotlin default for the tests that never end a session; Dagger ignores
+    // it and injects the singleton SessionRepository advances.
+    private val epoch: SessionEpoch = SessionEpoch(),
 ) {
 
     /** What this device holds for one attachment, live. */
@@ -39,12 +42,13 @@ class TranscriptRepository @Inject constructor(
      * copy); an answer is written down, unfolded, before it is returned.
      */
     suspend fun fetchStored(chatId: Long, messageId: Long, attachmentId: Long): TranscriptOutcome {
+        val startedAt = epoch.current()
         dao.find(attachmentId)?.let { held ->
             if (held.hidden) dao.setHidden(attachmentId, false)
             return TranscriptOutcome.Text(held.text, held.language)
         }
         return when (val result = api.transcribeStored(chatId, messageId, attachmentId)) {
-            is ApiResult.Ok -> keep(attachmentId, result.value.transcript, TranscriptEntity.SOURCE_STORED)
+            is ApiResult.Ok -> keep(startedAt, attachmentId, result.value.transcript, TranscriptEntity.SOURCE_STORED)
             else -> TranscriptOutcome.ofFailure(result)
         }
     }
@@ -78,12 +82,13 @@ class TranscriptRepository @Inject constructor(
         maxBytes: Long,
     ): TranscriptOutcome {
         val attachmentId = attachment.id
+        val startedAt = epoch.current()
         dao.find(attachmentId)?.let { held ->
             if (held.hidden) dao.setHidden(attachmentId, false)
             return TranscriptOutcome.Text(held.text, held.language)
         }
         when (val first = api.transcribeStored(chatId, messageId, attachmentId)) {
-            is ApiResult.Ok -> return keep(attachmentId, first.value.transcript, TranscriptEntity.SOURCE_STORED)
+            is ApiResult.Ok -> return keep(startedAt, attachmentId, first.value.transcript, TranscriptEntity.SOURCE_STORED)
             is ApiResult.HttpError ->
                 if (first.code != TranscriptOutcome.NOT_TRANSCRIBABLE) return TranscriptOutcome.ofFailure(first)
             is ApiResult.NetworkError -> return TranscriptOutcome.Failed
@@ -97,7 +102,7 @@ class TranscriptRepository @Inject constructor(
             TranscriptSoundPlan.Result.Unreadable -> TranscriptOutcome.Unreadable
             is TranscriptSoundPlan.Result.Ready -> try {
                 when (val result = api.transcribeSupplied(chatId, messageId, attachmentId, made.file)) {
-                    is ApiResult.Ok -> keep(attachmentId, result.value.transcript, TranscriptEntity.SOURCE_SUPPLIED)
+                    is ApiResult.Ok -> keep(startedAt, attachmentId, result.value.transcript, TranscriptEntity.SOURCE_SUPPLIED)
                     else -> TranscriptOutcome.ofFailure(result)
                 }
             } finally {
@@ -108,8 +113,20 @@ class TranscriptRepository @Inject constructor(
         }
     }
 
-    /** An answer written down, unfolded, then returned. */
-    private suspend fun keep(attachmentId: Long, answer: TranscriptDto, source: String): TranscriptOutcome {
+    /**
+     * An answer written down, unfolded, then returned — only while the
+     * session that asked ([startedAt]) is still this device's. One that
+     * comes back after a sign-out is [TranscriptOutcome.Dropped]: written
+     * after the wipe it would be the next account's to read (docs/protocol.md,
+     * "An answer belongs to the account that asked"), and the line draws
+     * from what is written, so not writing it is also not drawing it.
+     */
+    private suspend fun keep(
+        startedAt: Long,
+        attachmentId: Long,
+        answer: TranscriptDto,
+        source: String,
+    ): TranscriptOutcome = epoch.whileCurrent(startedAt) {
         dao.upsert(
             TranscriptEntity(
                 attachmentId = attachmentId,
@@ -119,8 +136,8 @@ class TranscriptRepository @Inject constructor(
                 hidden = false,
             ),
         )
-        return TranscriptOutcome.Text(answer.text, answer.language)
-    }
+        TranscriptOutcome.Text(answer.text, answer.language)
+    } ?: TranscriptOutcome.Dropped
 
     /** "Hide text" / "Show text" on a text already held: folds it, keeps it. */
     suspend fun setHidden(attachmentId: Long, hidden: Boolean) = dao.setHidden(attachmentId, hidden)

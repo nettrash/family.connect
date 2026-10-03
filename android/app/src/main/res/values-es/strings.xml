@@ -189,13 +189,29 @@
     <string name="s_couldnt_load_statistics">No se pudieron cargar las estadísticas</string>
     <string name="s_check_connection_try_again">Comprueba tu conexión e inténtalo de nuevo.</string>
     <string name="s_saved_by_one_copy">%1$s ahorrados al guardar una sola copia de los archivos idénticos.</string>
-    <string name="s_attachments_and_size">%1$d adjuntos, %2$s</string>
-    <string name="s_questions_to_assistant">%1$d preguntas al asistente</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d adjunto, %2$s</item>
+        <item quantity="many">%1$d adjuntos, %2$s</item>
+        <item quantity="other">%1$d adjuntos, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d pregunta al asistente</item>
+        <item quantity="many">%1$d preguntas al asistente</item>
+        <item quantity="other">%1$d preguntas al asistente</item>
+    </plurals>
     <string name="s_stats_pictures">Imágenes</string>
     <string name="s_stats_recordings_as_text">Grabaciones a texto</string>
     <string name="s_stats_recording_time">Duración de las grabaciones</string>
-    <string name="s_pictures_from_assistant">%1$d imágenes del asistente</string>
-    <string name="s_recordings_as_text">%1$d grabaciones a texto</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d imagen del asistente</item>
+        <item quantity="many">%1$d imágenes del asistente</item>
+        <item quantity="other">%1$d imágenes del asistente</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d grabación a texto</item>
+        <item quantity="many">%1$d grabaciones a texto</item>
+        <item quantity="other">%1$d grabaciones a texto</item>
+    </plurals>
     <string name="s_family_language">Idioma de la familia</string>
     <string name="s_family_language_explanation">El idioma en el que el asistente responde cuando se le pregunta en el chat familiar. No cambia el idioma en el que se muestra esta app. Sin ninguno elegido, responde en el idioma de quien pregunte.</string>
     <string name="s_not_set">Sin definir</string>

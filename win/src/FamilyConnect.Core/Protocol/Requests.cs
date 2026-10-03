@@ -510,6 +510,12 @@ public sealed record StatsAiDto(
 /// request"). <c>text</c> is always present and <c>""</c> is SILENCE — an answer, drawn as "No speech", never an error;
 /// <c>language</c> only when the provider named one, spelled as the provider spells it.
 /// </summary>
+/// <remarks>
+/// <c>Text</c> is nullable because the DECODER can produce null — <see cref="Wire.Options"/> fills a missing key and a
+/// <c>"text": null</c> alike with null, and does not respect nullable annotations — not because the protocol allows it.
+/// The one reader (<c>TranscriptModel</c>) refuses such an answer as a failure; it is never read as <c>""</c>, which
+/// would keep a malformed answer on this device for ever and draw it as "No speech".
+/// </remarks>
 public sealed record TranscriptDto(string? Text = null, string? Language = null);
 
 public sealed record TranscriptResponse(TranscriptDto? Transcript = null);

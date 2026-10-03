@@ -96,13 +96,29 @@
     <string name="s_couldnt_load_statistics">Statistika nije učitana</string>
     <string name="s_check_connection_try_again">Proveri vezu i pokušaj ponovo.</string>
     <string name="s_saved_by_one_copy">%1$s ušteđeno — iste datoteke se čuvaju u jednom primerku.</string>
-    <string name="s_attachments_and_size">priloga: %1$d, %2$s</string>
-    <string name="s_questions_to_assistant">pitanja asistentu: %1$d</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d prilog, %2$s</item>
+        <item quantity="few">%1$d priloga, %2$s</item>
+        <item quantity="other">%1$d priloga, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d pitanje asistentu</item>
+        <item quantity="few">%1$d pitanja asistentu</item>
+        <item quantity="other">%1$d pitanja asistentu</item>
+    </plurals>
     <string name="s_stats_pictures">Slike</string>
     <string name="s_stats_recordings_as_text">Snimci u tekst</string>
     <string name="s_stats_recording_time">Trajanje snimaka</string>
-    <string name="s_pictures_from_assistant">%1$d slika od asistenta</string>
-    <string name="s_recordings_as_text">snimaka u tekst: %1$d</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d slika od asistenta</item>
+        <item quantity="few">%1$d slike od asistenta</item>
+        <item quantity="other">%1$d slika od asistenta</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d snimak u tekst</item>
+        <item quantity="few">%1$d snimka u tekst</item>
+        <item quantity="other">%1$d snimaka u tekst</item>
+    </plurals>
     <string name="s_record_audio">Snimi audio</string>
     <string name="s_stop">Zaustavi</string>
     <string name="s_audio">Audio</string>

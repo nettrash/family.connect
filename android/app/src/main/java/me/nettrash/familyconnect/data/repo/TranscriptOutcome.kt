@@ -54,6 +54,13 @@ sealed interface TranscriptOutcome {
      */
     data object ConsentRequired : TranscriptOutcome
 
+    /**
+     * An answer that came back after the session that asked had ended
+     * ([SessionEpoch]): not kept and not drawn — it belongs to an account
+     * that is no longer here. There is nothing to say about it either.
+     */
+    data object Dropped : TranscriptOutcome
+
     companion object {
         const val TRANSCRIPT_REFUSED = "transcript_refused"
         const val NOT_TRANSCRIBABLE = "not_transcribable"
