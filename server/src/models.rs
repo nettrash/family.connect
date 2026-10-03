@@ -293,6 +293,19 @@ pub struct Family {
     /// lookup consent. A client that never heard of it reads an absent key
     /// as false, which is the truth for every family that predates it.
     pub ai_lookups: bool,
+
+    /// The places, at most three, whose forecast for the day the daily
+    /// greeting mentions (protocol.md, "Today's weather, for places the
+    /// owner chose"), as the owner typed them and the server kept them.
+    /// Owner-set, `[]` by default for every family (migration 0051).
+    ///
+    /// ALWAYS serialized, `[]` when empty, and not an `Option`: the list has
+    /// no "unset" for an absent key to mean, and an empty one already says
+    /// "no weather". Every member reads it, because these names are what
+    /// leaves the server for the weather provider. `default` on the way in,
+    /// so an object written before it existed still reads.
+    #[serde(default)]
+    pub greeting_places: Vec<String>,
 }
 
 /// What a member says the ASSISTANT got wrong (docs/protocol.md, "Reporting
@@ -1404,6 +1417,7 @@ mod tests {
             ai_faces: false,
             ai_transcripts: false,
             ai_lookups: false,
+            greeting_places: Vec::new(),
         };
         let json = serde_json::to_value(&family).expect("serialize");
         assert!(
@@ -1432,6 +1446,7 @@ mod tests {
             ai_faces: false,
             ai_transcripts: false,
             ai_lookups: false,
+            greeting_places: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1440,7 +1455,8 @@ mod tests {
                 "created_at": "2026-08-19T17:03:12Z", "ai_history": true,
                 "ai_vision": false, "ai_history_photos": false,
                 "ai_greeting": false, "ai_faces": false,
-                "ai_transcripts": false, "ai_lookups": false
+                "ai_transcripts": false, "ai_lookups": false,
+                "greeting_places": []
             })
         );
     }
@@ -1462,6 +1478,7 @@ mod tests {
             ai_faces: false,
             ai_transcripts: false,
             ai_lookups: false,
+            greeting_places: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1471,7 +1488,8 @@ mod tests {
                 "invite_code": "ABCD2345", "language": "ru", "ai_history": true,
                 "ai_vision": false, "ai_history_photos": false,
                 "ai_greeting": false, "ai_faces": false,
-                "ai_transcripts": false, "ai_lookups": false
+                "ai_transcripts": false, "ai_lookups": false,
+                "greeting_places": []
             })
         );
     }
@@ -1496,6 +1514,7 @@ mod tests {
             ai_faces: false,
             ai_transcripts: false,
             ai_lookups: false,
+            greeting_places: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1504,7 +1523,8 @@ mod tests {
                 "created_at": "2026-08-19T17:03:12Z",
                 "max_members": 12, "ai_history": true, "ai_vision": false,
                 "ai_history_photos": false, "ai_greeting": false, "ai_faces": false,
-                "ai_transcripts": false, "ai_lookups": false
+                "ai_transcripts": false, "ai_lookups": false,
+                "greeting_places": []
             })
         );
     }

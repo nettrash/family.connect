@@ -98,6 +98,70 @@ pub struct PatchFamilyRequest {
     /// (protocol.md, "Looking things up").
     #[serde(default)]
     pub ai_lookups: Option<bool>,
+    /// The places whose forecast the daily greeting mentions (protocol.md,
+    /// "Today's weather, for places the owner chose"). A LIST, and it
+    /// replaces the stored one: absent leaves it alone, `[]` clears it — and
+    /// `null` is refused, which is why this is a double option like the
+    /// language: the outer layer is "was the key sent", and a sent `null`
+    /// must be told apart from an absent key to be refused at all. There is
+    /// no "unset" for a null to mean; a client clears with `[]`.
+    #[serde(default, deserialize_with = "present_option")]
+    pub greeting_places: Option<Option<Vec<String>>>,
+}
+
+/// The most places a family's greeting mentions the weather for.
+pub const MAX_GREETING_PLACES: usize = 3;
+/// The longest place name, in characters, once whitespace is folded.
+pub const MAX_GREETING_PLACE_CHARS: usize = 80;
+
+/// The owner's place list, as the server will keep it — or `validation`.
+///
+/// Each name is trimmed with every inner run of whitespace folded to one
+/// space (a line break in a settings field is never meant, and the name
+/// travels as a URL parameter), must not be empty after that, must hold no
+/// control character, and must be at most [`MAX_GREETING_PLACE_CHARS`]. A
+/// name equal to an EARLIER one once both are lower-cased is dropped in
+/// silence, keeping the first spelling — "Moscow" and "moscow" are one place
+/// to the geocoder, and refusing the request over it would be a nuisance
+/// rather than a protection. The limit is counted after that.
+///
+/// The messages name the POSITION of a bad name, never the name: a place
+/// name is the owner's words and the one thing this list sends somewhere, so
+/// it is kept out of every error and every log.
+pub(crate) fn validate_greeting_places(requested: &[String]) -> Result<Vec<String>, ApiError> {
+    let mut kept: Vec<String> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for (index, raw) in requested.iter().enumerate() {
+        let position = index + 1;
+        let name = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if name.is_empty() {
+            return Err(ApiError::validation(format!(
+                "greeting place {position} is empty"
+            )));
+        }
+        if name.chars().any(char::is_control) {
+            return Err(ApiError::validation(format!(
+                "greeting place {position} contains a control character"
+            )));
+        }
+        if name.chars().count() > MAX_GREETING_PLACE_CHARS {
+            return Err(ApiError::validation(format!(
+                "greeting place {position} is longer than {MAX_GREETING_PLACE_CHARS} characters"
+            )));
+        }
+        let folded = name.to_lowercase();
+        if seen.contains(&folded) {
+            continue;
+        }
+        seen.push(folded);
+        kept.push(name);
+    }
+    if kept.len() > MAX_GREETING_PLACES {
+        return Err(ApiError::validation(format!(
+            "greeting_places may name at most {MAX_GREETING_PLACES} places"
+        )));
+    }
+    Ok(kept)
 }
 
 /// Deserialize a present key into `Some(...)`, so that `#[serde(default)]`
@@ -162,6 +226,7 @@ struct FamilyRecord {
     ai_faces: bool,
     ai_transcripts: bool,
     ai_lookups: bool,
+    greeting_places: Vec<String>,
     owner_user_id: i64,
     created_at: OffsetDateTime,
 }
@@ -182,6 +247,7 @@ impl FamilyRecord {
             ai_faces: row.get("ai_faces"),
             ai_transcripts: row.get("ai_transcripts"),
             ai_lookups: row.get("ai_lookups"),
+            greeting_places: row.get("greeting_places"),
             owner_user_id: row.get("owner_user_id"),
             created_at: row.get("created_at"),
         }
@@ -238,13 +304,18 @@ impl FamilyRecord {
             // `processor`. Every member gets to know that; only the owner
             // can change it.
             ai_lookups: self.ai_lookups,
+            // Not owner-gated either: these names are what the greeting
+            // sends to the weather provider. Every member gets to know what
+            // leaves; only the owner can change it.
+            greeting_places: self.greeting_places.clone(),
         }
     }
 }
 
 const SELECT_FAMILY: &str = "SELECT id, name, invite_code, join_policy, language, max_members,
                              ai_history, ai_vision, ai_history_photos, ai_greeting, ai_faces,
-                             ai_transcripts, ai_lookups, owner_user_id, created_at
+                             ai_transcripts, ai_lookups, greeting_places, owner_user_id,
+                             created_at
                              FROM families";
 
 async fn fetch_family(state: &AppState, family_id: i64) -> Result<FamilyRecord, ApiError> {
@@ -507,7 +578,7 @@ pub async fn create_family(
              VALUES ($1, $2, $3)
              RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
                        ai_vision, ai_history_photos, ai_greeting, ai_faces, ai_transcripts,
-                       ai_lookups, owner_user_id, created_at",
+                       ai_lookups, greeting_places, owner_user_id, created_at",
         )
         .bind(&name)
         .bind(&invite_code)
@@ -893,6 +964,14 @@ pub async fn my_family(
         if state.cfg.ai.lookups_usable() {
             body["assistant"]["lookups"] = json!(state.cfg.ai.lookups.source_names());
         }
+        // Whether the daily greeting can carry the weather for the family's
+        // `greeting_places` (protocol.md, "Today's weather, for places the
+        // owner chose"). ALWAYS present beside `vision` and `transcribe`, a
+        // boolean rather than an absence: a client draws the places field
+        // beside the greeting switch only when it is true, and a family's
+        // list on a server where it is false is kept and does nothing.
+        body["assistant"]["greeting_weather"] =
+            json!(crate::greetings::weather_available(&state.cfg));
         // The ceiling rides only beside a `true`: a number for a capability
         // the server does not have would be a promise about nothing.
         if state.cfg.ai.transcribe_usable() {
@@ -991,6 +1070,18 @@ pub async fn patch_family(
         }
     };
 
+    // The place list: `null` is refused rather than read as "leave it", and
+    // a list is checked whole before anything is written.
+    let greeting_places = match &req.greeting_places {
+        None => None,
+        Some(None) => {
+            return Err(ApiError::validation(
+                "greeting_places must be an array; send [] to clear it",
+            ));
+        }
+        Some(Some(requested)) => Some(validate_greeting_places(requested)?),
+    };
+
     let family = require_owner(&state, &auth).await?;
     // The third switch may only be on while `ai_vision` is, judged against
     // what `ai_vision` WILL be once this same request has applied: turning
@@ -1030,7 +1121,9 @@ pub async fn patch_family(
     // may clear it as a side effect (protocol.md, "The daily greeting").
     // `ai_transcripts` is the same plain COALESCE, for the same reason
     // (protocol.md, "Transcripts on request"), and so is `ai_lookups`
-    // (protocol.md, "Looking things up").
+    // (protocol.md, "Looking things up"). `greeting_places` is a COALESCE
+    // too, over an already-validated list: absent binds NULL and keeps the
+    // stored list, and `[]` is a value, which clears it.
     let row = sqlx::query(
         "UPDATE families
          SET join_policy = COALESCE($2, join_policy),
@@ -1042,11 +1135,12 @@ pub async fn patch_family(
              ai_faces = COALESCE($11, ai_faces) AND COALESCE($8, ai_vision),
              ai_transcripts = COALESCE($12, ai_transcripts),
              ai_lookups = COALESCE($13, ai_lookups),
+             greeting_places = COALESCE($14, greeting_places),
              max_members = CASE WHEN $6 THEN $7 ELSE max_members END
          WHERE id = $1
          RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
                    ai_vision, ai_history_photos, ai_greeting, ai_faces, ai_transcripts,
-                   ai_lookups, owner_user_id, created_at",
+                   ai_lookups, greeting_places, owner_user_id, created_at",
     )
     .bind(family.id)
     .bind(join_policy)
@@ -1061,6 +1155,7 @@ pub async fn patch_family(
     .bind(req.ai_faces)
     .bind(req.ai_transcripts)
     .bind(req.ai_lookups)
+    .bind(greeting_places)
     .fetch_one(&state.pool)
     .await?;
     let family = FamilyRecord::from_row(&row);
@@ -1909,5 +2004,76 @@ mod tests {
         let set: PatchFamilyRequest =
             serde_json::from_str(r#"{"max_members": 12}"#).expect("parses");
         assert_eq!(set.max_members, Some(Some(12)), "a number: set it");
+    }
+
+    /// The place list's states: absent leaves it alone, a list replaces it,
+    /// and `null` arrives as its own state so the handler can refuse it.
+    #[test]
+    fn the_place_list_parses_as_three_distinct_states() {
+        let absent: PatchFamilyRequest = serde_json::from_str("{}").expect("parses");
+        assert_eq!(absent.greeting_places, None);
+        let null: PatchFamilyRequest =
+            serde_json::from_str(r#"{"greeting_places": null}"#).expect("parses");
+        assert_eq!(null.greeting_places, Some(None));
+        let cleared: PatchFamilyRequest =
+            serde_json::from_str(r#"{"greeting_places": []}"#).expect("parses");
+        assert_eq!(cleared.greeting_places, Some(Some(Vec::new())));
+    }
+
+    fn places(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    /// Kept as the server will keep them: trimmed, whitespace folded, the
+    /// first spelling of a case-insensitive repeat, and the three counted
+    /// after the repeats are gone.
+    #[test]
+    fn place_names_are_trimmed_folded_and_deduplicated() {
+        assert_eq!(
+            validate_greeting_places(&places(&[
+                "  Moscow ",
+                "Novi\t\n  Sad",
+                "MOSCOW",
+                "Belgrade"
+            ]))
+            .expect("valid"),
+            places(&["Moscow", "Novi Sad", "Belgrade"])
+        );
+        // Unicode lower-casing, not ASCII: "МОСКВА" and "Москва" are one name.
+        assert_eq!(
+            validate_greeting_places(&places(&["Москва", "МОСКВА"])).expect("valid"),
+            places(&["Москва"])
+        );
+        assert_eq!(
+            validate_greeting_places(&[]).expect("valid"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_bad_place_list_is_refused_and_the_message_never_names_a_place() {
+        let refused = |names: &[&str]| {
+            let error = validate_greeting_places(&places(names)).expect_err("refused");
+            let text = format!("{error:?}");
+            for name in names {
+                let name = name.trim();
+                if name.len() > 2 {
+                    assert!(!text.contains(name), "{text} names a place");
+                }
+            }
+            text
+        };
+        assert!(refused(&["Moscow", "Belgrade", "Paris", "Tokyo"]).contains("at most 3"));
+        assert!(refused(&["Moscow", "   "]).contains("place 2 is empty"));
+        assert!(refused(&[""]).contains("place 1 is empty"));
+        let long = "x".repeat(MAX_GREETING_PLACE_CHARS + 1);
+        assert!(refused(&[long.as_str()]).contains("longer than 80"));
+        assert!(refused(&["Bel\u{0}grade"]).contains("control character"));
+        // 80 characters exactly is fine, counted in characters, not bytes.
+        let exact = "ж".repeat(MAX_GREETING_PLACE_CHARS);
+        assert_eq!(
+            validate_greeting_places(&places(&[exact.as_str()])).expect("valid"),
+            places(&[exact.as_str()])
+        );
     }
 }
