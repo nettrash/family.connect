@@ -84,6 +84,13 @@ pub struct Family {
     /// (docs/protocol.md, "Transcripts on request").
     #[serde(default)]
     pub ai_transcripts: bool,
+    /// Whether the assistant may look things up for this family — send a
+    /// query or a place name it wrote to the providers `assistant.lookups`
+    /// names. False unless the owner turned it on, tied to no other switch,
+    /// and absent (so false) from a server that predates it
+    /// (docs/protocol.md, "Looking things up").
+    #[serde(default)]
+    pub ai_lookups: bool,
 }
 
 fn yes() -> bool {
@@ -161,6 +168,13 @@ pub struct Me {
     /// drawn.
     #[serde(default)]
     pub assistant_consent_at: Option<String>,
+    /// When this member agreed that the assistant may send a query it wrote
+    /// from their words to the lookup providers — none if they have not, on
+    /// a server with no lookup source, and on one that predates it. It only
+    /// ever stands on `assistant_consent_at` (docs/protocol.md,
+    /// "Consenting to the assistant", amended 2026-10-03).
+    #[serde(default)]
+    pub assistant_lookup_consent_at: Option<String>,
 }
 
 impl Me {
@@ -228,6 +242,31 @@ pub struct Assistant {
     /// The most bytes of sound it sends, present only while `transcribe`.
     #[serde(default)]
     pub transcribe_max_bytes: Option<i64>,
+    /// The providers the assistant may look things up in, by name —
+    /// `"Brave Search"` or `"SearXNG"`, `"Open-Meteo"`, `"Wikipedia"`, in
+    /// that order. ABSENT when the server has none, which reads here as
+    /// empty, and so does `[]` (fc_text::lookups::offered). A `null`, or
+    /// anything else that is not a list of names, reads as none too: a
+    /// client that cannot name the providers does not ask.
+    #[serde(default, deserialize_with = "names_or_none")]
+    pub lookups: Vec<String>,
+}
+
+/// A list of names, or nothing at all — never a failed read of the whole
+/// roster because one optional key came in a shape this client did not
+/// expect. Entries that are not strings are dropped.
+fn names_or_none<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 /// `GET /families/mine`, trimmed to what this client draws.
@@ -373,6 +412,12 @@ pub struct AiCounts {
     pub transcripts: i64,
     #[serde(default)]
     pub transcript_duration_ms: i64,
+    /// The PAID web searches the assistant made answering this member (or
+    /// the family) — Brave or SearXNG calls that came back with an answer;
+    /// weather and Wikipedia are free and not counted. Absent, so 0, from a
+    /// server that predates lookups (docs/protocol.md, "Family statistics").
+    #[serde(default)]
+    pub searches: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -1273,5 +1318,70 @@ mod tests {
         let me: Me = serde_json::from_str(json).expect("reads");
         assert_eq!(me.blocked_user_ids, vec![9, 11]);
         assert_eq!(me.support_contact.as_deref(), Some("ops@example.com"));
+    }
+
+    /// LOOKUPS, read tolerantly (docs/protocol.md, "Looking things up"):
+    /// a server that has them says so in four places, and a server that
+    /// predates them says nothing in any — which reads as no switch, no
+    /// consent, no providers and no searches, never as a failed read.
+    #[wasm_bindgen_test]
+    fn lookups_are_read_where_they_are_sent_and_nothing_where_they_are_not() {
+        let me: Me = serde_json::from_str(
+            r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                "family": {"id": 3, "name": "The Smiths", "ai_lookups": true},
+                "assistant_consent_at": "2026-10-03T09:00:00Z",
+                "assistant_lookup_consent_at": "2026-10-03T09:30:00Z"}"#,
+        )
+        .expect("reads");
+        assert!(me.family.as_ref().is_some_and(|family| family.ai_lookups));
+        assert_eq!(
+            me.assistant_lookup_consent_at.as_deref(),
+            Some("2026-10-03T09:30:00Z")
+        );
+        let old: Me = serde_json::from_str(
+            r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                "family": {"id": 3, "name": "The Smiths"}}"#,
+        )
+        .expect("reads");
+        assert!(!old.family.as_ref().unwrap().ai_lookups, "absent is off");
+        assert_eq!(old.assistant_lookup_consent_at, None);
+
+        let assistant = |lookups: &str| -> Assistant {
+            let json = format!(
+                r#"{{"user_id": 1, "display_name": "Assistant", "processor": "Azure"{lookups}}}"#
+            );
+            serde_json::from_str(&json).expect("the roster still reads")
+        };
+        assert_eq!(
+            assistant(r#", "lookups": ["Brave Search", "Open-Meteo", "Wikipedia"]"#).lookups,
+            vec!["Brave Search", "Open-Meteo", "Wikipedia"]
+        );
+        assert_eq!(
+            assistant(r#", "lookups": ["SearXNG"]"#).lookups,
+            vec!["SearXNG"]
+        );
+        for nobody in [
+            "",
+            r#", "lookups": []"#,
+            r#", "lookups": null"#,
+            r#", "lookups": "Brave""#,
+        ] {
+            assert!(assistant(nobody).lookups.is_empty(), "{nobody:?}");
+        }
+        assert_eq!(
+            assistant(r#", "lookups": ["Wikipedia", 3, null]"#).lookups,
+            vec!["Wikipedia"],
+            "what is not a name is dropped, the rest kept"
+        );
+
+        let stats: Stats = serde_json::from_str(
+            r#"{"totals": {"ai": {"questions": 4, "searches": 9}},
+                "members": [{"user_id": 7, "display_name": "Anna", "ai": {"searches": 4}},
+                            {"user_id": 9, "display_name": "Bob", "ai": {"questions": 1}}]}"#,
+        )
+        .expect("reads");
+        assert_eq!(stats.totals.ai.searches, 9);
+        assert_eq!(stats.members[0].ai.searches, 4);
+        assert_eq!(stats.members[1].ai.searches, 0, "absent is none");
     }
 }

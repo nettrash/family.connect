@@ -149,12 +149,25 @@ nonisolated enum MessageLinks {
     /// Memoized like everything else here, and now more than before: a
     /// bubble asks for this on every body evaluation and the answer costs a
     /// whole decoration pass rather than one detector sweep.
+    ///
+    /// NIL for a body ending in the server's sources footer — see
+    /// `AssistantSources`: source links are never previewed.
     static func firstWebLinkAsDrawn(in text: String) -> URL? {
         let key = ("drawn|" + text) as NSString
         if let boxed = firstLinkCache.object(forKey: key) {
             return boxed.value
         }
         var found: URL?
+        // An assistant answer that looked something up previews NOTHING:
+        // every link the server left in it is a cited source or a
+        // provider's credit, and a card would make every device showing it
+        // contact the cited site unasked (AssistantSources, and decision 7
+        // of docs/information-streams-2026-10-03.md). The links stay
+        // tappable; only the card goes.
+        if AssistantSources.hasFooter(text) {
+            firstLinkCache.setObject(URLBox(nil), forKey: key)
+            return nil
+        }
         for run in decorated(MessageMarkdown.render(text), isMine: false).runs {
             guard let url = run.link, url.scheme?.lowercased() == "https" else { continue }
             found = url

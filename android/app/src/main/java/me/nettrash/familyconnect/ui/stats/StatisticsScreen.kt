@@ -234,11 +234,16 @@ internal object StatisticsLines {
      * what they cost read as free.
      */
     fun assistantRows(ai: AiStatsDto, context: Context): List<Pair<String, String>> {
-        if (ai.questions <= 0 && ai.images <= 0 && ai.transcripts <= 0) return emptyList()
+        if (ai.questions <= 0 && ai.images <= 0 && ai.transcripts <= 0 && ai.searches <= 0) return emptyList()
         return buildList {
             add(context.getString(R.string.s_questions) to "${ai.questions}")
             add(context.getString(R.string.s_tokens) to "${ai.promptTokens + ai.completionTokens}")
             if (ai.images > 0) add(context.getString(R.string.s_stats_pictures) to "${ai.images}")
+            // Paid web searches — the number that maps to a per-search bill,
+            // as pictures map to a per-picture one (docs/protocol.md,
+            // "Family statistics"). Absent from an older server, so 0, so
+            // no row.
+            if (ai.searches > 0) add(context.getString(R.string.s_stats_web_searches) to "${ai.searches}")
             // Billed by length, not tokens — so the length is shown.
             if (ai.transcripts > 0) {
                 add(context.getString(R.string.s_stats_recordings_as_text) to "${ai.transcripts}")
@@ -277,6 +282,9 @@ internal object StatisticsLines {
             }
             if (member.ai.transcripts > 0) {
                 add(count(context, R.plurals.s_recordings_as_text, member.ai.transcripts))
+            }
+            if (member.ai.searches > 0) {
+                add(count(context, R.plurals.s_web_searches, member.ai.searches))
             }
         }
         return if (parts.isEmpty()) context.getString(R.string.s_words_only) else parts.joinToString(" · ")

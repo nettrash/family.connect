@@ -45,6 +45,13 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/me/assistant-consent",
             post(handlers_auth::set_assistant_consent),
         )
+        .route(
+            // The member's own permission for queries written from their
+            // words to reach the lookup providers — a second consent, on
+            // top of the first (docs/protocol.md, "Looking things up").
+            "/api/v1/me/assistant-lookup-consent",
+            post(handlers_auth::set_assistant_lookup_consent),
+        )
         .route("/api/v1/me/password", post(handlers_auth::change_password))
         // A POST rather than a DELETE /me: the request carries a body, and
         // RFC 9110 gives content on a DELETE no defined semantics

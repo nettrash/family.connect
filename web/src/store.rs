@@ -487,9 +487,34 @@ impl Store {
 
     /// Record the answer the server just gave, so the composer stops
     /// asking — or starts again — without waiting for the next `/me`.
+    ///
+    /// Withdrawing it withdraws the lookup consent with it, as the server
+    /// does in the same write: that one may only stand on this one
+    /// (docs/protocol.md, `POST /me/assistant-consent`).
     pub fn set_assistant_consent(&mut self, at: Option<String>) {
         if let Some(account) = self.account.as_mut() {
+            if at.is_none() {
+                account.assistant_lookup_consent_at = None;
+            }
             account.assistant_consent_at = at;
+        }
+    }
+
+    /// When this member agreed that the assistant may send queries it
+    /// writes from their words to the lookup providers, or none
+    /// (docs/protocol.md, "Looking things up"). The views read it off the
+    /// account they are handed; this is the tests' window on it.
+    #[cfg(test)]
+    pub fn assistant_lookup_consent_at(&self) -> Option<&str> {
+        self.account
+            .as_ref()
+            .and_then(|me| me.assistant_lookup_consent_at.as_deref())
+    }
+
+    /// Record the lookup answer the server just gave.
+    pub fn set_assistant_lookup_consent(&mut self, at: Option<String>) {
+        if let Some(account) = self.account.as_mut() {
+            account.assistant_lookup_consent_at = at;
         }
     }
 
@@ -3503,5 +3528,32 @@ mod tests {
             !store.pack.is_offered(),
             "until the new family's roster says"
         );
+    }
+
+    /// The lookup consent stands only on the assistant consent: granting
+    /// that one again leaves it alone, withdrawing it takes this one with
+    /// it — as the server does in the same write — and the lookup answer
+    /// on its own touches nothing else.
+    #[wasm_bindgen_test]
+    fn withdrawing_the_assistant_withdraws_the_lookups() {
+        let mut store = Store {
+            account: Some(Me::default()),
+            ..Store::default()
+        };
+        store.set_assistant_consent(Some("2026-10-03T09:00:00Z".into()));
+        store.set_assistant_lookup_consent(Some("2026-10-03T09:30:00Z".into()));
+        assert_eq!(
+            store.assistant_lookup_consent_at(),
+            Some("2026-10-03T09:30:00Z")
+        );
+        store.set_assistant_consent(Some("2026-10-03T09:00:00Z".into()));
+        assert!(store.assistant_lookup_consent_at().is_some());
+        store.set_assistant_lookup_consent(None);
+        assert!(store.assistant_lookup_consent_at().is_none());
+        assert!(store.assistant_consent_at().is_some(), "only its own");
+        store.set_assistant_lookup_consent(Some("2026-10-03T09:40:00Z".into()));
+        store.set_assistant_consent(None);
+        assert!(store.assistant_consent_at().is_none());
+        assert!(store.assistant_lookup_consent_at().is_none());
     }
 }

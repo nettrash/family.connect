@@ -12,6 +12,7 @@ use sqlx::PgPool;
 use crate::calls::CallRegistry;
 use crate::config::Config;
 use crate::handlers_transcript::Transcriptions;
+use crate::lookups::WeatherCache;
 use crate::push::PushSender;
 use crate::registry::Registry;
 use crate::storage::Storage;
@@ -41,6 +42,10 @@ pub struct AppState {
     /// request"). In memory only: a restart loses at most the calls in
     /// flight, whose askers see them fail and ask again.
     pub transcriptions: Arc<Transcriptions>,
+    /// Forecasts the assistant looked up, kept half an hour by rounded
+    /// coordinates for Open-Meteo's courtesy (docs/protocol.md, "Looking
+    /// things up"). Never search results, and never a place name.
+    pub lookup_cache: Arc<WeatherCache>,
 }
 
 impl AppState {
@@ -67,6 +72,7 @@ impl AppState {
             http,
             storage,
             transcriptions: Arc::new(Transcriptions::default()),
+            lookup_cache: Arc::new(WeatherCache::default()),
         }
     }
 }

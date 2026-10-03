@@ -210,6 +210,22 @@ data class SettingsState(
      */
     val assistantConsentAt: String? = null,
     /**
+     * The providers the assistant may look things up in, as the server
+     * named them (`assistant.lookups`, docs/protocol.md, "Looking things
+     * up"), in the server's order. EMPTY when this server has no source —
+     * and then no lookup line, switch or consent is offered anywhere.
+     * Cleared with the assistant, like the capabilities above.
+     */
+    val assistantLookups: List<String> = emptyList(),
+    /**
+     * When this member agreed that the assistant may send a query it wrote
+     * from their words to [assistantLookups] (`GET /me` →
+     * `assistant_lookup_consent_at`), or null until they have. The
+     * SERVER's answer, for [assistantConsentAt]'s reasons, and never
+     * inferred from it.
+     */
+    val assistantLookupConsentAt: String? = null,
+    /**
      * Whether the family's OWNER has allowed a photograph a member points
      * the assistant at to be shown to the model (`Family.ai_vision`) — in
      * their own assistant chat, and since #56 on an `@ai` message in the
@@ -255,6 +271,12 @@ data class SettingsState(
      * decide whether to offer "Show text" without a round trip.
      */
     val familyAiTranscripts: Boolean = false,
+    /**
+     * The owner's lookups switch (`Family.ai_lookups`): whether the
+     * assistant may look things up for this family (docs/protocol.md,
+     * "Looking things up"). FALSE by default and bound to no other switch.
+     */
+    val familyAiLookups: Boolean = false,
     /**
      * Whether the SERVER posts daily greetings at all (`GET /me` →
      * greetings_enabled). Account-scoped like the assistant's own
@@ -367,6 +389,8 @@ interface SettingsRepository {
         transcribe: Boolean = false,
         /** `assistant.transcribe_max_bytes`, present only while [transcribe] is. */
         transcribeMaxBytes: Long? = null,
+        /** `assistant.lookups`: the providers named; empty or null when there are none. */
+        lookups: List<String>? = null,
     )
 
     /**
@@ -376,6 +400,14 @@ interface SettingsRepository {
      * another device has to reach this one.
      */
     suspend fun setAssistantConsentAt(at: String?)
+
+    /**
+     * Record what `GET /me` — or this member's own answer — said about the
+     * lookup question (docs/protocol.md, "Consenting to the assistant",
+     * amended 2026-10-03). Unconditional, null included, for
+     * [setAssistantConsentAt]'s reason.
+     */
+    suspend fun setAssistantLookupConsentAt(at: String?)
 
     /**
      * Record the family's own picture switch, from `GET /families/mine`
@@ -413,6 +445,13 @@ interface SettingsRepository {
      * members' recordings the server will refuse.
      */
     suspend fun setFamilyAiTranscripts(enabled: Boolean)
+
+    /**
+     * Record the family's lookups switch (`ai_lookups`), from
+     * `GET /families/mine` or the owner's own PATCH. Unconditional, `false`
+     * included.
+     */
+    suspend fun setFamilyAiLookups(enabled: Boolean)
 
     /** Record what `GET /me` said about daily greetings on this server. */
     suspend fun setGreetingsEnabled(enabled: Boolean)
@@ -502,6 +541,10 @@ class DataStoreSettingsRepository @Inject constructor(
         val ASSISTANT_TRANSCRIBE = booleanPreferencesKey("assistant_transcribe")
         val ASSISTANT_TRANSCRIBE_MAX_BYTES = longPreferencesKey("assistant_transcribe_max_bytes")
         val ASSISTANT_CONSENT_AT = stringPreferencesKey("assistant_consent_at")
+        // One newline-joined string rather than a string SET: the order is
+        // the server's (web search, weather, Wikipedia) and a set has none.
+        val ASSISTANT_LOOKUPS = stringPreferencesKey("assistant_lookups")
+        val ASSISTANT_LOOKUP_CONSENT_AT = stringPreferencesKey("assistant_lookup_consent_at")
         // Stored PLAIN, not inverted like the two preview keys above: this
         // one's default is already `false`, so a missing key and an
         // explicit `false` say the same thing and neither can be read as
@@ -519,6 +562,9 @@ class DataStoreSettingsRepository @Inject constructor(
         // Plain, for FAMILY_AI_VISION's reason: missing and `false` both
         // mean nobody else's recording is offered.
         val FAMILY_AI_TRANSCRIPTS = booleanPreferencesKey("family_ai_transcripts")
+        // Plain, for FAMILY_AI_VISION's reason: missing and `false` both
+        // mean nothing is looked up.
+        val FAMILY_AI_LOOKUPS = booleanPreferencesKey("family_ai_lookups")
         val GREETINGS_ENABLED = booleanPreferencesKey("greetings_enabled")
         val CALLS_ENABLED = booleanPreferencesKey("calls_enabled")
         val VIDEO_CALLS_ENABLED = booleanPreferencesKey("video_calls_enabled")
@@ -569,11 +615,17 @@ class DataStoreSettingsRepository @Inject constructor(
             assistantTranscribe = prefs[Keys.ASSISTANT_TRANSCRIBE] == true,
             assistantTranscribeMaxBytes = prefs[Keys.ASSISTANT_TRANSCRIBE_MAX_BYTES] ?: 0L,
             assistantConsentAt = prefs[Keys.ASSISTANT_CONSENT_AT],
+            assistantLookups = prefs[Keys.ASSISTANT_LOOKUPS]
+                ?.split('\n')
+                ?.filter { it.isNotBlank() }
+                .orEmpty(),
+            assistantLookupConsentAt = prefs[Keys.ASSISTANT_LOOKUP_CONSENT_AT],
             familyAiVision = prefs[Keys.FAMILY_AI_VISION] == true,
             familyAiHistory = prefs[Keys.FAMILY_AI_HISTORY] ?: true,
             familyAiHistoryPhotos = prefs[Keys.FAMILY_AI_HISTORY_PHOTOS] == true,
             familyAiGreeting = prefs[Keys.FAMILY_AI_GREETING] == true,
             familyAiTranscripts = prefs[Keys.FAMILY_AI_TRANSCRIPTS] == true,
+            familyAiLookups = prefs[Keys.FAMILY_AI_LOOKUPS] == true,
             greetingsEnabled = prefs[Keys.GREETINGS_ENABLED] == true,
             callsEnabled = prefs[Keys.CALLS_ENABLED] == true,
             videoCallsEnabled = prefs[Keys.VIDEO_CALLS_ENABLED] == true,
@@ -677,6 +729,7 @@ class DataStoreSettingsRepository @Inject constructor(
         processor: String?,
         transcribe: Boolean,
         transcribeMaxBytes: Long?,
+        lookups: List<String>?,
     ) {
         dataStore.edit { prefs ->
             if (userId != null && displayName != null) {
@@ -701,6 +754,13 @@ class DataStoreSettingsRepository @Inject constructor(
                 } else {
                     prefs.remove(Keys.ASSISTANT_TRANSCRIBE_MAX_BYTES)
                 }
+                // Absent and empty are the same answer: nobody to name.
+                val named = lookups.orEmpty().map { it.trim() }.filter { it.isNotEmpty() }
+                if (named.isEmpty()) {
+                    prefs.remove(Keys.ASSISTANT_LOOKUPS)
+                } else {
+                    prefs[Keys.ASSISTANT_LOOKUPS] = named.joinToString("\n")
+                }
             } else {
                 // Cleared rather than left stale: a server that turned the
                 // assistant off must stop offering `@ai` on the next resync.
@@ -714,6 +774,7 @@ class DataStoreSettingsRepository @Inject constructor(
                 prefs.remove(Keys.ASSISTANT_PROCESSOR)
                 prefs.remove(Keys.ASSISTANT_TRANSCRIBE)
                 prefs.remove(Keys.ASSISTANT_TRANSCRIBE_MAX_BYTES)
+                prefs.remove(Keys.ASSISTANT_LOOKUPS)
             }
         }
     }
@@ -724,6 +785,16 @@ class DataStoreSettingsRepository @Inject constructor(
                 prefs.remove(Keys.ASSISTANT_CONSENT_AT)
             } else {
                 prefs[Keys.ASSISTANT_CONSENT_AT] = at
+            }
+        }
+    }
+
+    override suspend fun setAssistantLookupConsentAt(at: String?) {
+        dataStore.edit { prefs ->
+            if (at.isNullOrBlank()) {
+                prefs.remove(Keys.ASSISTANT_LOOKUP_CONSENT_AT)
+            } else {
+                prefs[Keys.ASSISTANT_LOOKUP_CONSENT_AT] = at
             }
         }
     }
@@ -749,6 +820,11 @@ class DataStoreSettingsRepository @Inject constructor(
     override suspend fun setFamilyAiTranscripts(enabled: Boolean) {
         // Unconditional, false included. See the interface.
         dataStore.edit { it[Keys.FAMILY_AI_TRANSCRIPTS] = enabled }
+    }
+
+    override suspend fun setFamilyAiLookups(enabled: Boolean) {
+        // Unconditional, false included. See the interface.
+        dataStore.edit { it[Keys.FAMILY_AI_LOOKUPS] = enabled }
     }
 
     override suspend fun setGreetingsEnabled(enabled: Boolean) {

@@ -52,6 +52,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.TravelExplore
 import androidx.compose.material.icons.outlined.AddAPhoto
 import androidx.compose.material.icons.outlined.ManageAccounts
 import androidx.compose.material.icons.outlined.PersonRemove
@@ -105,6 +106,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.BuildConfig
 import me.nettrash.familyconnect.ui.components.AssistantConsentDialog
+import me.nettrash.familyconnect.ui.components.lookupProvidersPhrase
+import me.nettrash.familyconnect.ui.chat.AssistantLookups
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.DestructiveTextButton
 import me.nettrash.familyconnect.ui.components.ErrorCard
@@ -547,6 +550,61 @@ fun SettingsScreen(
                         },
                     )
                 }
+                // The SECOND question — whether the assistant may send a
+                // short query it writes from this member's words to the
+                // lookup providers (docs/protocol.md, "Consenting to the
+                // assistant", amended 2026-10-03). Only where this server
+                // has a source; never assumed from the answer above.
+                val lookupProviders = AssistantLookups.providers(state.assistantLookups)
+                when (state.lookupRow) {
+                    AssistantLookups.SettingsRow.HIDDEN -> Unit
+                    AssistantLookups.SettingsRow.ALLOW -> ListItem(
+                        overlineContent = { Text(stringResource(R.string.s_looking_things_up)) },
+                        headlineContent = { Text(stringResource(R.string.s_review_and_allow_lookups)) },
+                        supportingContent = {
+                            Text(
+                                stringResource(
+                                    R.string.s_lookups_until_you_allow,
+                                    lookupProvidersPhrase(lookupProviders),
+                                ),
+                            )
+                        },
+                        leadingContent = {
+                            Icon(Icons.Outlined.TravelExplore, contentDescription = null)
+                        },
+                        modifier = Modifier.clickable(enabled = !state.busy) {
+                            viewModel.reviewAssistant()
+                        },
+                    )
+                    AssistantLookups.SettingsRow.AGREED -> {
+                        ListItem(
+                            overlineContent = { Text(stringResource(R.string.s_looking_things_up)) },
+                            headlineContent = { Text(stringResource(R.string.s_agreed)) },
+                            supportingContent = {
+                                Text(
+                                    stringResource(
+                                        R.string.s_lookups_stopping_takes_effect,
+                                        lookupProvidersPhrase(lookupProviders),
+                                    ),
+                                )
+                            },
+                            leadingContent = {
+                                Icon(Icons.Outlined.TravelExplore, contentDescription = null)
+                            },
+                        )
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    text = stringResource(R.string.s_stop_lookups),
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            },
+                            modifier = Modifier.clickable(enabled = !state.busy) {
+                                viewModel.stopLookups()
+                            },
+                        )
+                    }
+                }
             }
 
             // Play's Data safety form takes the policy URL, but the policy
@@ -663,6 +721,16 @@ fun SettingsScreen(
                 transcripts = state.assistantTranscribe,
                 onAgree = { viewModel.setAssistantConsent(true) },
                 onDismiss = viewModel::dismissAssistantReview,
+                // Asked here too, from either row: "Review and agree" asks
+                // both questions, "Review and Allow Lookups…" for a member
+                // who already agreed asks only the second.
+                lookupProviders = if (state.lookupRow == AssistantLookups.SettingsRow.ALLOW) {
+                    AssistantLookups.providers(state.assistantLookups)
+                } else {
+                    emptyList()
+                },
+                onAgreeWithLookups = viewModel::agreeWithLookups,
+                assistantAgreed = state.assistantConsentAt != null,
             )
         }
     }

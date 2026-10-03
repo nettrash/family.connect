@@ -792,6 +792,7 @@ async fn the_assistant_photo_door_is_there_only_when_all_three_allow_it() {
                 processor: Some("Microsoft — Azure OpenAI".into()),
                 transcribe: false,
                 transcribe_max_bytes: None,
+                lookups: Vec::new(),
             });
             asked.family = Some(Family {
                 id: 3,
@@ -915,6 +916,7 @@ async fn a_threads_box_says_what_goes_to_the_assistant() {
             vision: true,
             transcribe: false,
             transcribe_max_bytes: None,
+            lookups: Vec::new(),
             images: false,
             processor: Some("Microsoft — Azure OpenAI".into()),
         }),
@@ -1381,6 +1383,7 @@ fn assistant_answered_by(processor: Option<&str>) -> crate::model::Assistant {
         mention: Some("@ai".into()),
         transcribe: false,
         transcribe_max_bytes: None,
+        lookups: Vec::new(),
         draw: Some("/draw".into()),
         vision: true,
         images: false,
@@ -1407,6 +1410,122 @@ fn loader_holding(count: i64) -> crate::media::MediaLoader {
         );
     }
     loader
+}
+
+/// WHERE THE SERVER CAN LOOK THINGS UP, THE CHAT'S CONSENT SCREEN OFFERS
+/// LOOKUPS BESIDE THE ASSISTANT, never folded into it (docs/protocol.md,
+/// "Consenting to the assistant", amended 2026-10-03): the providers are
+/// named in one more line before anything is agreed; "Agree With Lookups"
+/// asks for both, "Agree Without Lookups" for the assistant alone, and
+/// "Not Now" for neither. On a server with no source the screen is the one
+/// it always was.
+#[wasm_bindgen_test]
+async fn the_consent_screen_offers_lookups_beside_the_assistant_and_never_assumes_them() {
+    let mount = |lookups: Vec<String>, on_action: Callback<Action>| async move {
+        let root = pane_of(600.0);
+        let mut props = props_with(vec![message(1)], None, on_action);
+        props.item.chat.kind = "ai".into();
+        let mut assistant = assistant_answered_by(Some("Microsoft — Azure OpenAI"));
+        assistant.lookups = lookups;
+        props.assistant = Some(assistant);
+        props.agreed_to_assistant = false;
+        props.stickers = Some(pack_of(3));
+        let children = yew::html! { <Conversation ..props /> };
+        let handle = yew::Renderer::<WithMedia>::with_root_and_props(
+            root.clone().into(),
+            WithMediaProps {
+                loader: loader_holding(3),
+                children,
+            },
+        )
+        .render();
+        TimeoutFuture::new(50).await;
+        (root, handle)
+    };
+    let sources = || {
+        ["Brave Search", "Open-Meteo", "Wikipedia"]
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>()
+    };
+    let buttons = |root: &Element| -> Vec<String> {
+        let found = root
+            .query_selector_all(".dialog-actions button")
+            .expect("a valid selector");
+        (0..found.length())
+            .map(|index| {
+                found
+                    .item(index)
+                    .and_then(|button| button.text_content())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string()
+            })
+            .collect()
+    };
+
+    for (pressed, expected) in [
+        ("Agree With Lookups", Some(Action::AgreeWithLookups)),
+        (
+            "Agree Without Lookups",
+            Some(Action::SetAssistantConsent { granted: true }),
+        ),
+        ("Not Now", None),
+    ] {
+        let (log, on_action) = recorder();
+        let (root, handle) = mount(sources(), on_action).await;
+        pick_a_sticker(&root, ".composer").await;
+        let said = root.text_content().unwrap_or_default();
+        assert!(said.contains("Before the assistant answers"), "{said}");
+        assert!(
+            said.contains("If your family's owner turns on lookups")
+                && said.contains("to Brave Search, Open-Meteo and Wikipedia, and its answer then lists its sources."),
+            "the providers are named before anything is agreed: {said}"
+        );
+        assert_eq!(
+            buttons(&root),
+            ["Not Now", "Agree Without Lookups", "Agree With Lookups"]
+        );
+        click_labelled(&root, ".dialog-actions button", pressed);
+        TimeoutFuture::new(50).await;
+        let consents: Vec<String> = log
+            .borrow()
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action,
+                    Action::AgreeWithLookups
+                        | Action::SetAssistantConsent { .. }
+                        | Action::SetAssistantLookupConsent { .. }
+                )
+            })
+            .map(|action| format!("{action:?}"))
+            .collect();
+        assert_eq!(
+            consents,
+            expected
+                .iter()
+                .map(|action| format!("{action:?}"))
+                .collect::<Vec<_>>(),
+            "{pressed}"
+        );
+        assert_eq!(
+            stickers_sent(&log),
+            0,
+            "agreeing still sends nothing by itself"
+        );
+        handle.destroy();
+        root.remove();
+    }
+
+    // No source on this server: the screen it always was.
+    let (_log, on_action) = recorder();
+    let (root, handle) = mount(Vec::new(), on_action).await;
+    pick_a_sticker(&root, ".composer").await;
+    assert!(!root.text_content().unwrap_or_default().contains("lookups"));
+    assert_eq!(buttons(&root), ["Not Now", "I Agree"]);
+    handle.destroy();
+    root.remove();
 }
 
 /// Open the sticker panel under `composer` and click its first sticker.

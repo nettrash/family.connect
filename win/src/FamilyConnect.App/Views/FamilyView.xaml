@@ -276,6 +276,30 @@
                                 </Grid>
                             </StackPanel>
                         </Border>
+                        <!--
+                            Looking things up (docs/protocol.md, "Looking things up"): the owner's half of three keys, tied to no
+                            other switch. Drawn only where the server names its lookup providers (FamilyView.DrawAssistant), and the
+                            footnote names them.
+                        -->
+                        <Border x:Name="LookupsCard" Style="{StaticResource Card}" Visibility="Collapsed">
+                            <StackPanel Padding="0,0,0,8">
+                                <StackPanel Style="{StaticResource CardHeader}">
+                                    <FontIcon Style="{StaticResource CardIcon}" Glyph="&#xE721;" />
+                                    <TextBlock x:Name="LookupsHeading" Style="{StaticResource CardTitle}" />
+                                </StackPanel>
+                                <Grid Style="{StaticResource SwitchRow}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="4">
+                                        <TextBlock x:Name="LookupsTitle" TextWrapping="Wrap" />
+                                        <TextBlock x:Name="LookupsFootnote" Style="{StaticResource Footnote}" />
+                                    </StackPanel>
+                                    <ToggleSwitch x:Name="LookupsSwitch" Grid.Column="1" MinWidth="0" VerticalAlignment="Top" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
                         <TextBlock x:Name="AssistantError" Margin="2,10,0,0" Style="{StaticResource Problem}" Visibility="Collapsed" />
                     </StackPanel>
                 </StackPanel>

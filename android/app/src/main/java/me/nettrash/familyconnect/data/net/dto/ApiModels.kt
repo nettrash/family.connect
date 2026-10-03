@@ -222,6 +222,19 @@ data class FamilyDto(
      * never clears it.
      */
     @SerialName("ai_transcripts") val aiTranscripts: Boolean = false,
+    /**
+     * Whether the assistant may LOOK THINGS UP for this family — send a
+     * short query or a place name it wrote from a question to the
+     * providers `assistant.lookups` names (docs/protocol.md, "Looking
+     * things up"). The OWNER's key of three: the server must have a source
+     * and each asking member must have given the lookup consent
+     * (`MeResponse.assistantLookupConsentAt`).
+     *
+     * ALWAYS present on a current server, FALSE by default — for every
+     * family that predates it and for a server that predates the field,
+     * which looks nothing up at all. Bound to no other switch.
+     */
+    @SerialName("ai_lookups") val aiLookups: Boolean = false,
 )
 
 @Serializable
@@ -825,6 +838,7 @@ data class PatchFamilyRequest(
     @SerialName("ai_faces") val aiFaces: Boolean? = null,
     @SerialName("max_members") val maxMembers: JsonElement? = null,
     @SerialName("ai_transcripts") val aiTranscripts: Boolean? = null,
+    @SerialName("ai_lookups") val aiLookups: Boolean? = null,
 ) {
     companion object {
         fun joinPolicy(policy: String) = PatchFamilyRequest(joinPolicy = policy)
@@ -890,6 +904,13 @@ data class PatchFamilyRequest(
          * no other switch refuses it or clears it.
          */
         fun aiTranscripts(enabled: Boolean) = PatchFamilyRequest(aiTranscripts = enabled)
+
+        /**
+         * The lookups switch: whether the assistant may look things up for
+         * this family (docs/protocol.md, "Looking things up"). Bound to
+         * nothing, like [aiTranscripts].
+         */
+        fun aiLookups(enabled: Boolean) = PatchFamilyRequest(aiLookups = enabled)
     }
 }
 
@@ -1340,6 +1361,18 @@ data class MeResponse(
      * than a send.
      */
     @SerialName("assistant_consent_at") val assistantConsentAt: String? = null,
+    /**
+     * When this caller agreed that the assistant may send a query it wrote
+     * from their words to the lookup providers, or null — null both when
+     * they have not and when this server has no lookup source
+     * (docs/protocol.md, "Consenting to the assistant", amended
+     * 2026-10-03). ALWAYS present on a current server; absent from an
+     * older one, which looks nothing up, so null is the truth there too.
+     *
+     * Never assumed from [assistantConsentAt]: the first consent names
+     * `processor` and nobody else.
+     */
+    @SerialName("assistant_lookup_consent_at") val assistantLookupConsentAt: String? = null,
 )
 
 @Serializable
@@ -1503,6 +1536,18 @@ data class AssistantDto(
      * protocol's default, [DEFAULT_TRANSCRIBE_MAX_BYTES].
      */
     @SerialName("transcribe_max_bytes") val transcribeMaxBytes: Long? = null,
+    /**
+     * The providers the assistant may look things up in, as the server
+     * names them — `["Brave Search", "Open-Meteo", "Wikipedia"]` or
+     * `["SearXNG"]` — web search first, then weather, then Wikipedia
+     * (docs/protocol.md, "Looking things up").
+     *
+     * ABSENT, never `[]`, when the server has no source, and absent on a
+     * server that predates the field; null here for both. An empty list is
+     * read the same way, since there would be nobody to name. Shown on the
+     * consent screen and under the owner's switch, the way [processor] is.
+     */
+    val lookups: List<String>? = null,
 ) {
     companion object {
         /** The protocol's default and maximum for `transcribe_max_bytes`: 25 MiB. */
@@ -1541,6 +1586,18 @@ data class AssistantConsentRequest(val granted: Boolean)
 @Serializable
 data class AssistantConsentResponse(
     @SerialName("assistant_consent_at") val assistantConsentAt: String? = null,
+)
+
+/**
+ * `POST /me/assistant-lookup-consent` answers with the lookup stamp the
+ * server now holds — a date when granted (the FIRST one, if granted twice),
+ * null when withdrawn (docs/protocol.md, "Consenting to the assistant",
+ * amended 2026-10-03). The request is [AssistantConsentRequest]: the same
+ * `{"granted": bool}`.
+ */
+@Serializable
+data class AssistantLookupConsentResponse(
+    @SerialName("assistant_lookup_consent_at") val assistantLookupConsentAt: String? = null,
 )
 
 @Serializable
@@ -1824,4 +1881,10 @@ data class AiStatsDto(
     val transcripts: Int = 0,
     /** Their audio length: transcription is billed by length, not tokens. */
     @SerialName("transcript_duration_ms") val transcriptDurationMs: Long = 0,
+    /**
+     * Paid web searches that came back with an answer, against the member
+     * who asked (docs/protocol.md, "Family statistics"). Weather and
+     * Wikipedia are free and not counted. 0 from an older server.
+     */
+    val searches: Int = 0,
 )

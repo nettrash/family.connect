@@ -1175,7 +1175,7 @@ public sealed partial class ChatsView : UserControl
         // exactly what a visible one would and draws none of it (docs/protocol.md, "A hidden row still fetches") — and drawn
         // once its fetch has landed, never as a placeholder that would grow the bubble twice.
         if (!awaited && message.Call is null
-            && BubbleBody.PreviewLink(body, emojiOnly: emojiSize is not null) is { } previewLink
+            && PreviewLinkOf(message, body, emojiOnly: emojiSize is not null) is { } previewLink
             && connection.Previews.State(previewLink) is { Status: PreviewStatus.Loaded, Preview: { } preview }
             && bubble.Reads)
         {
@@ -3312,12 +3312,13 @@ public sealed partial class ChatsView : UserControl
         {
             return false;
         }
-        bool agreed;
+        ConsentAnswer agreed;
         try
         {
             agreed = await Dialogs.AssistantConsentAsync(
                 XamlRoot, services.Say, processor,
-                state.Family?.AiHistory == true, state.Family?.AiVision == true, state.Assistant?.Transcribe == true);
+                state.Family?.AiHistory == true, state.Family?.AiVision == true, state.Assistant?.Transcribe == true,
+                Lookups.Offered(state.Assistant) ? Lookups.Providers(state.Assistant) : null);
         }
         catch (Exception e)
         {
@@ -3325,19 +3326,19 @@ public sealed partial class ChatsView : UserControl
             Diagnostics.Write($"asking about the assistant: {e.GetType().Name}");
             return false;
         }
-        if (!agreed)
+        if (agreed == ConsentAnswer.NotNow)
         {
             return false;
         }
-        var answer = await connection.Api.SetAssistantConsent(true);
-        if (!answer.Ok)
-        {
-            ShowProblem(services.Say.Get("Couldn't save your answer. Try again."));
-            return false;
-        }
+        var error = await Lookups.RecordAsync(connection.Api, agreed, assistantAgreed: false);
         await connection.Session.RefreshAsync();
         DrawConsentBar();
-        return true;
+        if (error is not null)
+        {
+            ShowProblem(services.Say.Get("Couldn't save your answer. Try again."));
+        }
+        // What was asked for is the recording's text, which needs the assistant's consent and nothing more.
+        return !string.IsNullOrWhiteSpace(connection.Session.State.AssistantConsentAt);
     }
 
     private bool AudioRunning => audio.PlaybackSession.PlaybackState is Windows.Media.Playback.MediaPlaybackState.Playing
@@ -4230,6 +4231,21 @@ public sealed partial class ChatsView : UserControl
         return card;
     }
 
+    /// <summary>
+    /// The link a bubble's card would describe, or null where it draws none: the first https link its body draws, except
+    /// under an assistant answer still being written or one carrying the server's sources footer, whose links stay out of
+    /// preview cards (<see cref="Lookups.MayPreview"/>; design decision 7 of docs/information-streams-2026-10-03.md). The
+    /// one place both the drawing and its signature ask, so the two cannot disagree.
+    /// </summary>
+    private string? PreviewLinkOf(MessageDto message, string body, bool emojiOnly)
+    {
+        var assistantChat = connection.Chats.Chat(message.ChatId)?.Chat.Kind == "ai";
+        return Lookups.MayPreview(
+            message, body, Reader, assistantChat, connection.Session.State.Assistant?.UserId, connection.Answers.IsWriting(message))
+            ? BubbleBody.PreviewLink(body, emojiOnly)
+            : null;
+    }
+
     /// <summary>Card pictures that turned out not to decode: a redraw draws those cards without one.</summary>
     private int previewPicturesRefused;
 
@@ -4245,7 +4261,7 @@ public sealed partial class ChatsView : UserControl
         }
         var marks = bubbles.Select(bubble =>
             bubble.Message.Call is null
-            && BubbleBody.PreviewLink(connection.Answers.BodyOf(bubble.Message), emojiOnly: false) is { } link
+            && PreviewLinkOf(bubble.Message, connection.Answers.BodyOf(bubble.Message), emojiOnly: false) is { } link
             && connection.Previews.State(link) is { } state
                 ? (int)state.Status
                 : -1);
@@ -5346,18 +5362,20 @@ public sealed partial class ChatsView : UserControl
         }
         var agreed = await Dialogs.AssistantConsentAsync(
             XamlRoot, services.Say, processor,
-            state.Family?.AiHistory == true, state.Family?.AiVision == true, state.Assistant?.Transcribe == true);
-        if (!agreed)
+            state.Family?.AiHistory == true, state.Family?.AiVision == true, state.Assistant?.Transcribe == true,
+            Lookups.Offered(state.Assistant) ? Lookups.Providers(state.Assistant) : null);
+        if (agreed == ConsentAnswer.NotNow)
         {
             return;
         }
-        var answer = await connection.Api.SetAssistantConsent(true);
-        if (answer.Ok)
+        var error = await Lookups.RecordAsync(connection.Api, agreed, assistantAgreed: false);
+        // The session is the state: `/me` is what the composer reads, so it is re-read rather
+        // than patched here, and the strip and the send follow from what the server says — also
+        // after a failed lookup write, when the assistant's own consent may already have landed.
+        await connection.Session.RefreshAsync();
+        DrawConsentBar();
+        if (error is null)
         {
-            // The session is the state: `/me` is what the composer reads, so it is re-read rather
-            // than patched here, and the strip and the send follow from what the server says.
-            await connection.Session.RefreshAsync();
-            DrawConsentBar();
             then();
         }
         else

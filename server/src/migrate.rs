@@ -268,6 +268,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "transcripts",
         sql: include_str!("../migrations/0049_transcripts.sql"),
     },
+    Migration {
+        version: 50,
+        name: "lookups",
+        sql: include_str!("../migrations/0050_lookups.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

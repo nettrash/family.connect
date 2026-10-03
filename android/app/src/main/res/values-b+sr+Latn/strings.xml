@@ -639,4 +639,25 @@
     <string name="s_assistant_transcripts_no_server">Ovde nije dostupno: ovaj server ne može da pretvori snimke u tekst.</string>
     <string name="s_consent_transcript_sound_sent">Ako zatražiš tekst glasovne poruke, audio datoteke ili videa, zvuk se šalje ka %1$s.</string>
     <string name="e_change_assistant_transcripts_failed">Nije uspela promena podešavanja</string>
+    <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
+    <string name="s_looking_things_up">Traženje podataka</string>
+    <string name="s_assistant_lookups">Može da traži podatke</string>
+    <string name="s_assistant_lookups_explanation">Kada je ovo uključeno, asistent može da potraži podatke kada pitanje to zahteva — vremensku prognozu, vesti, činjenicu u koju nije siguran — u %1$s. Tamo se šalje samo kratak upit za pretragu ili naziv mesta koji asistent sastavi iz pitanja, nikada sam razgovor, i samo ako je član koji pita to prihvatio. Odgovori tada navode svoje izvore. Isključeno je dok ga ne uključiš.</string>
+    <string name="s_consent_lookups_with_history">Ako vlasnik porodice uključi traženje podataka, asistent može da pošalje ka %1$s kratak upit za pretragu ili naziv mesta koji sastavi iz tvog pitanja — u porodičnom razgovoru možda i iz nedavnih poruka — a njegov odgovor onda navodi izvore.</string>
+    <string name="s_consent_lookups_alone">Ako vlasnik porodice uključi traženje podataka, asistent može da pošalje ka %1$s kratak upit za pretragu ili naziv mesta koji sastavi iz tvog pitanja, a njegov odgovor onda navodi izvore.</string>
+    <string name="s_agree_with_lookups">Prihvati i traženje</string>
+    <string name="s_agree_without_lookups">Prihvati bez traženja</string>
+    <string name="s_review_and_allow_lookups">Pročitaj i dozvoli traženje…</string>
+    <string name="s_stop_lookups">Zaustavi traženje</string>
+    <string name="s_lookups_until_you_allow">Dok ne dozvoliš traženje, asistent ti odgovara onim što već zna i ništa iz tvojih pitanja ne ide ka %1$s.</string>
+    <string name="s_lookups_stopping_takes_effect">Asistent može da pošalje ka %1$s kratak upit za pretragu ili naziv mesta koji sastavi iz tvojih pitanja. Zaustavljanje važi odmah; ono što je već poslato ne može da se vrati.</string>
+    <string name="s_list_two">%1$s i %2$s</string>
+    <string name="s_list_three">%1$s, %2$s i %3$s</string>
+    <string name="s_stats_web_searches">Pretrage na vebu</string>
+    <string name="e_change_assistant_lookups_failed">Nije uspela promena podešavanja</string>
+    <plurals name="s_web_searches">
+        <item quantity="one">%1$d pretraga na vebu</item>
+        <item quantity="few">%1$d pretrage na vebu</item>
+        <item quantity="other">%1$d pretraga na vebu</item>
+    </plurals>
 </resources>

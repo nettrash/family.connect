@@ -233,6 +233,32 @@ actor APIClient {
         let granted: Bool
     }
 
+    /// `POST /me/assistant-lookup-consent` — this member's own permission
+    /// for the assistant to send a short query or place name it wrote from
+    /// their question to the providers `assistant.lookups` names
+    /// (protocol.md, "Consenting to the assistant", amended 2026-10-03).
+    /// Of exactly the first consent's shape, and answers with the stamp the
+    /// server now holds.
+    ///
+    /// Granting twice keeps the FIRST date; withdrawing clears it and
+    /// deletes nothing. It may only be granted on top of the assistant
+    /// consent — 403 `assistant_consent_required` otherwise — and a server
+    /// with no assistant or no lookup source answers 404 `not_found`.
+    func setAssistantLookupConsent(_ granted: Bool) async throws -> Date? {
+        let response: AssistantLookupConsentResponse = try await request(
+            "POST", "/me/assistant-lookup-consent",
+            body: AssistantConsentRequest(granted: granted))
+        return response.assistantLookupConsentAt
+    }
+
+    private struct AssistantLookupConsentResponse: Decodable {
+        let assistantLookupConsentAt: Date?
+
+        enum CodingKeys: String, CodingKey {
+            case assistantLookupConsentAt = "assistant_lookup_consent_at"
+        }
+    }
+
     private struct AssistantConsentResponse: Decodable {
         let assistantConsentAt: Date?
 
@@ -341,6 +367,10 @@ actor APIClient {
         /// member's recording in the family chat. Changing `ai_vision` never
         /// clears it.
         var aiTranscripts: Bool?
+        /// The seventh boolean, bound to nothing (protocol.md, "Looking
+        /// things up"): whether the assistant may look things up for this
+        /// family. No other switch refuses it or clears it.
+        var aiLookups: Bool?
         /// The same double Optional the language uses, and for the same
         /// reason: the outer is "was this field touched", the inner is the
         /// value, and a real JSON `null` CLEARS the cap. These are the two
@@ -357,6 +387,7 @@ actor APIClient {
             case aiGreeting = "ai_greeting"
             case aiFaces = "ai_faces"
             case aiTranscripts = "ai_transcripts"
+            case aiLookups = "ai_lookups"
             case maxMembers = "max_members"
         }
 
@@ -379,6 +410,7 @@ actor APIClient {
             try container.encodeIfPresent(aiGreeting, forKey: .aiGreeting)
             try container.encodeIfPresent(aiFaces, forKey: .aiFaces)
             try container.encodeIfPresent(aiTranscripts, forKey: .aiTranscripts)
+            try container.encodeIfPresent(aiLookups, forKey: .aiLookups)
             if let maxMembers {
                 if let cap = maxMembers {
                     try container.encode(cap, forKey: .maxMembers)
@@ -566,6 +598,16 @@ actor APIClient {
     func setAITranscripts(_ enabled: Bool) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
             "PATCH", "/families/mine", body: FamilyPatchRequest(aiTranscripts: enabled))
+        return response.family
+    }
+
+    /// Turn the seventh switch on or off — whether the assistant may look
+    /// things up for this family (protocol.md, "Looking things up"). Sends
+    /// this one key and nothing else; owner-only (`not_family_owner`, 403),
+    /// and bound to no other switch.
+    func setAILookups(_ enabled: Bool) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(aiLookups: enabled))
         return response.family
     }
 

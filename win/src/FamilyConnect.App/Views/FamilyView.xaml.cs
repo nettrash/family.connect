@@ -120,12 +120,14 @@ public sealed partial class FamilyView : UserControl
         GreetingHeading.Text = say.Get("Daily greeting");
         GreetingTitle.Text = say.Get("Good morning message");
         TranscriptsTitle.Text = say.Get("Voice and video as text");
+        LookupsHeading.Text = say.Get("Looking things up");
+        LookupsTitle.Text = say.Get("Can look things up");
         // A switch drawn beside its words rather than under a header: the words are still its name to a screen reader.
         foreach (var (toggle, title) in new (ToggleSwitch, TextBlock)[]
         {
             (LimitSwitch, LimitTitle), (HistorySwitch, HistoryTitle), (VisionSwitch, VisionTitle),
             (RecentPhotosSwitch, RecentPhotosTitle), (FacesSwitch, FacesTitle), (GreetingSwitch, GreetingTitle),
-            (TranscriptsSwitch, TranscriptsTitle),
+            (TranscriptsSwitch, TranscriptsTitle), (LookupsSwitch, LookupsTitle),
         })
         {
             AutomationProperties.SetName(toggle, title.Text);
@@ -185,6 +187,7 @@ public sealed partial class FamilyView : UserControl
         FacesSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiFaces = FacesSwitch.IsOn });
         GreetingSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiGreeting = GreetingSwitch.IsOn });
         TranscriptsSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiTranscripts = TranscriptsSwitch.IsOn });
+        LookupsSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiLookups = LookupsSwitch.IsOn });
 
         onRoster = QueueRedraw;
         onBlock = (_, _) => QueueRedraw();
@@ -1032,6 +1035,15 @@ public sealed partial class FamilyView : UserControl
                 "With this on, members can ask for the text of other members' voice notes, audio and videos in the family chat, and that recording's sound is then sent to %@. It is sent only when someone asks, and only if the member who sent it has agreed to the assistant. Everyone can get the text of their own recordings without this. It is off unless you turn it on.",
                 assistant.Processor ?? string.Empty),
             assistant.Transcribe ? null : say.Get("Not available here: this server can't turn recordings into text."));
+
+        // Looking things up: offered only where the server names its providers — the array is absent on a server with no
+        // source and on one that predates it — and the footnote names who would receive a query (docs/protocol.md,
+        // "Looking things up").
+        var lookups = Lookups.Offered(assistant) ? Lookups.Providers(assistant) : null;
+        LookupsCard.Visibility = lookups is null ? Visibility.Collapsed : Visibility.Visible;
+        LookupsSwitch.IsOn = shown.AiLookups;
+        LookupsSwitch.IsEnabled = idle && lookups is not null;
+        LookupsFootnote.Text = lookups is null ? string.Empty : Lookups.SwitchFootnote(lookups, say);
     }
 
     private static string WithNote(string sentence, string? note) => note is null ? sentence : $"{sentence} {note}";

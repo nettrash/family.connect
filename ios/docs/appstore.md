@@ -173,6 +173,18 @@ instead of the content these notes promised. master's block now says what each a
 which one meets the consent screen, and that the one-to-one chat is where calls are placed.
 `server/scripts/seed-review-family.py` is what puts a live family into that state.*
 
+*Before a build with assistant lookups (#72, 1.2) is filed, the AI ASSISTANT paragraph above stops
+being true as written wherever the review server has `[ai.lookups]` configured: "the only feature
+sending anything to a third party: [AI_PROCESSOR]" must then also name the lookup providers
+(`assistant.lookups` on `GET /families/mine` — Brave Search or SearXNG, Open-Meteo, Wikipedia),
+what they receive (only the short query or place name the assistant wrote, 200 characters by
+default, never the conversation, a name, a photo or a location), and the three locks (the
+operator's config, the owner's `ai_lookups` switch, the member's second consent on the same
+screen). The paragraph is at 3977 of 4000 characters, so that sentence has to be paid for
+elsewhere in the field; the macOS paragraph below needs the same change. Re-check the App Privacy
+answers at the same time: a lookup adds a recipient (docs/information-streams-2026-10-03.md,
+"Phases").*
+
 ## Reviewer walkthrough (supporting detail — not pasted into App Store Connect)
 
 These notes are for the reviewer's own use and for the developer's records. Do not paste this

@@ -8,8 +8,8 @@
 //! disagreement there is either a message refused after it was typed or
 //! one sent having asked nothing.
 
-use crate::assistant;
 use crate::i18n::{t, t1};
+use crate::{assistant, lookups};
 
 /// Would a message with this body, in this chat, be sent to the model?
 ///
@@ -80,12 +80,18 @@ pub fn is_withheld_from_an_unnamed_assistant(
 /// would be worse than saying neither. `transcribe` is the server's
 /// `assistant.transcribe`: where a recording's text can be asked for, the
 /// person is told its sound goes too (docs/protocol.md, "Transcripts on
-/// request").
+/// request"). `lookups` is the server's `assistant.lookups`: where the
+/// assistant may look things up, the person is told which providers a query
+/// it writes may go to — with the same `ai_history` split as the family
+/// lines — before either agree button (docs/protocol.md, "Consenting to
+/// the assistant", amended 2026-10-03). Nobody named, no line: a client
+/// that cannot name the providers does not ask.
 pub fn disclosure(
     processor: &str,
     family_history: bool,
     family_vision: bool,
     transcribe: bool,
+    lookups: &[String],
 ) -> Vec<String> {
     let mut lines = vec![t1(
         "What you write to the assistant leaves this family's server and is sent to %@.",
@@ -112,6 +118,13 @@ pub fn disclosure(
         lines.push(t1(
             "If you ask for the text of a voice note, audio file or video, its sound is sent to %@.",
             processor,
+        ));
+    }
+    let providers = lookups::providers(lookups);
+    if !providers.is_empty() {
+        lines.push(lookups::disclosure_line(
+            &lookups::names(&providers),
+            family_history,
         ));
     }
     lines.push(
@@ -246,7 +259,7 @@ mod tests {
 
     #[test]
     fn the_disclosure_names_the_processor_and_follows_the_switches() {
-        let with_history = disclosure("Azure OpenAI", true, true, false);
+        let with_history = disclosure("Azure OpenAI", true, true, false, &[]);
         assert!(with_history
             .iter()
             .any(|line| line.contains("Azure OpenAI")));
@@ -254,7 +267,7 @@ mod tests {
             .iter()
             .any(|line| line.contains("30") && line.contains("200")));
 
-        let without = disclosure("Azure OpenAI", false, false, false);
+        let without = disclosure("Azure OpenAI", false, false, false, &[]);
         assert!(
             !without
                 .iter()
@@ -262,7 +275,7 @@ mod tests {
             "with history off a mention takes nothing but itself: {without:?}"
         );
         assert_eq!(
-            disclosure("Azure OpenAI", false, true, false).len(),
+            disclosure("Azure OpenAI", false, true, false, &[]).len(),
             without.len() + 1,
             "photos are mentioned only where a photo could go"
         );
@@ -274,10 +287,50 @@ mod tests {
     #[test]
     fn the_disclosure_names_recordings_only_where_they_can_go() {
         let line = "If you ask for the text of a voice note, audio file or video, its sound is sent to Azure OpenAI.";
-        let with = disclosure("Azure OpenAI", true, false, true);
+        let with = disclosure("Azure OpenAI", true, false, true, &[]);
         assert!(with.iter().any(|said| said == line), "{with:?}");
-        let without = disclosure("Azure OpenAI", true, false, false);
+        let without = disclosure("Azure OpenAI", true, false, false, &[]);
         assert!(!without.iter().any(|said| said.contains("voice note")));
         assert_eq!(with.len(), without.len() + 1);
+    }
+
+    /// Where the server can look things up, the person is told which
+    /// providers a query may go to, in the line that matches the family's
+    /// history switch, before the answer line and the "stop" line; where it
+    /// cannot, nothing is said about lookups at all.
+    #[test]
+    fn the_disclosure_names_the_lookup_providers_only_where_there_are_some() {
+        let sources: Vec<String> = ["Brave Search", "Open-Meteo", "Wikipedia"]
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let with = disclosure("Azure OpenAI", true, false, false, &sources);
+        let without = disclosure("Azure OpenAI", true, false, false, &[]);
+        assert_eq!(with.len(), without.len() + 1);
+        let line = with
+            .iter()
+            .position(|said| said.contains("Brave Search, Open-Meteo and Wikipedia"))
+            .expect("the providers are named");
+        assert!(with[line].contains("possibly from recent messages too"));
+        assert_eq!(
+            line,
+            with.len() - 3,
+            "before the answer line and the stop line: {with:?}"
+        );
+        assert!(!without.iter().any(|said| said.contains("lookups")));
+        let quiet = disclosure("Azure OpenAI", false, false, false, &sources);
+        assert!(quiet
+            .iter()
+            .any(|said| said
+                .contains("from your question to Brave Search, Open-Meteo and Wikipedia,")));
+        assert!(!quiet
+            .iter()
+            .any(|said| said.contains("recent messages too")));
+        // Blank names are nobody.
+        let blank = vec!["  ".to_string()];
+        assert_eq!(
+            disclosure("Azure OpenAI", true, false, false, &blank),
+            without
+        );
     }
 }

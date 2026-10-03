@@ -112,6 +112,8 @@ public sealed class FamilyModel(ApiClient api, ChatStore chats)
             // Tied to no other switch: turning vision off leaves it exactly where it was (docs/protocol.md,
             // "Transcripts on request").
             AiTranscripts = patch.AiTranscripts ?? family.AiTranscripts,
+            // Tied to no other switch either (docs/protocol.md, "Looking things up").
+            AiLookups = patch.AiLookups ?? family.AiLookups,
         };
     }
 

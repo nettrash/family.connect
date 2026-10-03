@@ -280,6 +280,19 @@ pub struct Family {
     /// all. A client that never heard of it reads an absent key as false,
     /// which is the truth for every family that predates it.
     pub ai_transcripts: bool,
+
+    /// Whether the assistant may LOOK THINGS UP for this family — send a
+    /// query it wrote to the web search, weather and Wikipedia providers the
+    /// operator configured (protocol.md, "Looking things up"). A SEVENTH
+    /// switch, owner-set, **false** by default for every family before and
+    /// after it (migration 0050).
+    ///
+    /// Always serialized, like its neighbours. Bound to none of them, and
+    /// only one of three keys: the server must have a source
+    /// (`assistant.lookups`), and each asking member must have given the
+    /// lookup consent. A client that never heard of it reads an absent key
+    /// as false, which is the truth for every family that predates it.
+    pub ai_lookups: bool,
 }
 
 /// What a member says the ASSISTANT got wrong (docs/protocol.md, "Reporting
@@ -1390,6 +1403,7 @@ mod tests {
             ai_greeting: false,
             ai_faces: false,
             ai_transcripts: false,
+            ai_lookups: false,
         };
         let json = serde_json::to_value(&family).expect("serialize");
         assert!(
@@ -1417,6 +1431,7 @@ mod tests {
             ai_greeting: false,
             ai_faces: false,
             ai_transcripts: false,
+            ai_lookups: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1425,7 +1440,7 @@ mod tests {
                 "created_at": "2026-08-19T17:03:12Z", "ai_history": true,
                 "ai_vision": false, "ai_history_photos": false,
                 "ai_greeting": false, "ai_faces": false,
-                "ai_transcripts": false
+                "ai_transcripts": false, "ai_lookups": false
             })
         );
     }
@@ -1446,6 +1461,7 @@ mod tests {
             ai_greeting: false,
             ai_faces: false,
             ai_transcripts: false,
+            ai_lookups: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1455,7 +1471,7 @@ mod tests {
                 "invite_code": "ABCD2345", "language": "ru", "ai_history": true,
                 "ai_vision": false, "ai_history_photos": false,
                 "ai_greeting": false, "ai_faces": false,
-                "ai_transcripts": false
+                "ai_transcripts": false, "ai_lookups": false
             })
         );
     }
@@ -1479,6 +1495,7 @@ mod tests {
             ai_greeting: false,
             ai_faces: false,
             ai_transcripts: false,
+            ai_lookups: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1487,7 +1504,7 @@ mod tests {
                 "created_at": "2026-08-19T17:03:12Z",
                 "max_members": 12, "ai_history": true, "ai_vision": false,
                 "ai_history_photos": false, "ai_greeting": false, "ai_faces": false,
-                "ai_transcripts": false
+                "ai_transcripts": false, "ai_lookups": false
             })
         );
     }

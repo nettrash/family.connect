@@ -1140,9 +1140,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
             let on_agree = {
                 let on_action = props.on_action.clone();
                 let consent_open = consent_open.clone();
-                Callback::from(move |_: ()| {
+                Callback::from(move |with_lookups: bool| {
                     consent_open.set(false);
-                    on_action.emit(Action::SetAssistantConsent { granted: true });
+                    on_action.emit(Action::agreement(with_lookups));
                 })
             };
             let on_cancel = {
@@ -1156,6 +1156,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                     family_history={family.is_some_and(|family| family.ai_history)}
                     family_vision={family.is_some_and(|family| family.ai_vision)}
                     transcribe={props.assistant.as_ref().is_some_and(|assistant| assistant.transcribe)}
+                    lookups={props.assistant.as_ref().map(|assistant| assistant.lookups.clone()).unwrap_or_default()}
                     {on_agree}
                     {on_cancel}
                 />

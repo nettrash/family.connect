@@ -22,7 +22,7 @@ struct SessionLogicTests {
     private static let user = UserDTO(id: 7, username: "anna", displayName: "Anna", createdAt: nil)
     private static let family = FamilyDTO(
         id: 3, name: "The Smiths", joinPolicy: "open", createdAt: nil, inviteCode: nil,
-        aiVision: false, aiHistoryPhotos: false, aiGreeting: false, aiFaces: false, aiTranscripts: false,
+        aiVision: false, aiHistoryPhotos: false, aiGreeting: false, aiFaces: false, aiTranscripts: false, aiLookups: false,
         maxMembers: nil)
     private static let pending = PendingJoinRequestDTO(familyID: 3, familyName: "The Smiths", createdAt: nil)
 
@@ -97,7 +97,7 @@ struct AppSessionTransitionTests {
     private static let user = UserDTO(id: 7, username: "anna", displayName: "Anna", createdAt: nil)
     private static let family = FamilyDTO(
         id: 3, name: "The Smiths", joinPolicy: "open", createdAt: nil, inviteCode: nil,
-        aiVision: false, aiHistoryPhotos: false, aiGreeting: false, aiFaces: false, aiTranscripts: false,
+        aiVision: false, aiHistoryPhotos: false, aiGreeting: false, aiFaces: false, aiTranscripts: false, aiLookups: false,
         maxMembers: nil)
 
     /// Spy-instrumented session against a never-hit API client.

@@ -306,6 +306,18 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     /// that predates it and for a server that predates the field, where no
     /// recording can be turned into text at all.
     let aiTranscripts: Bool
+    /// Whether the assistant may LOOK THINGS UP for this family — send a
+    /// short query or place name it wrote from a question to the providers
+    /// `assistant.lookups` names (protocol.md, "Looking things up"). A
+    /// SEVENTH switch, bound to none of the others, and only the owner's
+    /// half of three keys: the server must have a source, and each asking
+    /// member must have given the lookup consent
+    /// (`MeResponse.assistantLookupConsentAt`).
+    ///
+    /// ALWAYS present on the wire and **false** by default, for every family
+    /// that predates it and for a server that predates the field, where
+    /// nothing is ever looked up.
+    let aiLookups: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -321,6 +333,7 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         case aiGreeting = "ai_greeting"
         case aiFaces = "ai_faces"
         case aiTranscripts = "ai_transcripts"
+        case aiLookups = "ai_lookups"
     }
 
     init(
@@ -362,6 +375,11 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // a rebuild that dropped it would show it off while the server had
         // it on.
         aiTranscripts: Bool,
+        // And the seventh, undefaulted for the same reason: it decides
+        // whether words the assistant writes from a member's question may
+        // reach a party that is NOT the processor, and a rebuild that
+        // dropped it would show it off while the server had it on.
+        aiLookups: Bool,
         maxMembers: Int?
     ) {
         self.id = id
@@ -377,6 +395,7 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         self.aiGreeting = aiGreeting
         self.aiFaces = aiFaces
         self.aiTranscripts = aiTranscripts
+        self.aiLookups = aiLookups
     }
 
     /// Hand-written for the reason UserDTO's is, and this type had no
@@ -414,6 +433,9 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // FALSE, the protocol's own default: a server that predates the
         // field turns no recording into text, which is what `false` reports.
         aiTranscripts = try container.decodeIfPresent(Bool.self, forKey: .aiTranscripts) ?? false
+        // FALSE, the protocol's own default: a server that predates the
+        // field looks nothing up, which is what `false` reports.
+        aiLookups = try container.decodeIfPresent(Bool.self, forKey: .aiLookups) ?? false
     }
 }
 
@@ -1227,6 +1249,12 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
     /// `ai` chat (protocol.md, "Consenting to the assistant"). Read at
     /// step 1 of the resync, so the composer knows before it is drawn.
     var assistantConsentAt: Date?
+    /// When this caller agreed that the assistant may send a query or place
+    /// name it wrote from their question to the lookup providers, or nil
+    /// (protocol.md, "Consenting to the assistant", amended 2026-10-03).
+    /// Null both when they have not agreed and when the server has no
+    /// lookup source; absent — nil — on a server that predates it.
+    var assistantLookupConsentAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case user
@@ -1242,6 +1270,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         case familylessAccountTTLDays = "familyless_account_ttl_days"
         case greetingsEnabled = "greetings_enabled"
         case assistantConsentAt = "assistant_consent_at"
+        case assistantLookupConsentAt = "assistant_lookup_consent_at"
     }
 
     init(
@@ -1257,7 +1286,8 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         familyRegistrationEnabled: Bool = true,
         familylessAccountTTLDays: Int = 0,
         greetingsEnabled: Bool = false,
-        assistantConsentAt: Date? = nil
+        assistantConsentAt: Date? = nil,
+        assistantLookupConsentAt: Date? = nil
     ) {
         self.user = user
         self.family = family
@@ -1272,6 +1302,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         self.familylessAccountTTLDays = familylessAccountTTLDays
         self.greetingsEnabled = greetingsEnabled
         self.assistantConsentAt = assistantConsentAt
+        self.assistantLookupConsentAt = assistantLookupConsentAt
     }
 
     /// Hand-written for the reason every other defaulted field on this
@@ -1298,6 +1329,10 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         // and null for anybody who has not answered — both of which mean
         // "has not agreed", which is what nil says here.
         assistantConsentAt = try container.decodeIfPresent(Date.self, forKey: .assistantConsentAt)
+        // Absent on a server from before lookups, which looks nothing up —
+        // the same answer as null.
+        assistantLookupConsentAt = try container.decodeIfPresent(
+            Date.self, forKey: .assistantLookupConsentAt)
     }
 }
 
@@ -1375,6 +1410,13 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
     /// The most bytes of sound one transcript request may send, present
     /// only when `transcribe` is true: 25 MiB by default and never more.
     let transcribeMaxBytes: Int64?
+    /// The providers the assistant may look things up in, by name, in the
+    /// server's order — web search, then "Open-Meteo", then "Wikipedia"
+    /// (protocol.md, "Looking things up"). Named on the consent screen and
+    /// under the owner's switch, the way `processor` is. ABSENT — nil —
+    /// when the server has no source, and on a server that predates it;
+    /// the server never sends `[]`, and this client reads one as absent.
+    let lookups: [String]?
 
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
@@ -1386,6 +1428,7 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         case processor
         case transcribe
         case transcribeMaxBytes = "transcribe_max_bytes"
+        case lookups
     }
 
     init(
@@ -1397,7 +1440,8 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         images: Bool = false,
         processor: String? = nil,
         transcribe: Bool = false,
-        transcribeMaxBytes: Int64? = nil
+        transcribeMaxBytes: Int64? = nil,
+        lookups: [String]? = nil
     ) {
         self.userID = userID
         self.displayName = displayName
@@ -1408,6 +1452,7 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         self.processor = processor
         self.transcribe = transcribe
         self.transcribeMaxBytes = transcribeMaxBytes
+        self.lookups = lookups
     }
 
     /// Hand-written for the reason `UserDTO`'s is: a property default is
@@ -1429,6 +1474,14 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         // recording into text — the same answer as one with no deployment.
         transcribe = try container.decodeIfPresent(Bool.self, forKey: .transcribe) ?? false
         transcribeMaxBytes = try container.decodeIfPresent(Int64.self, forKey: .transcribeMaxBytes)
+        // Tolerant: anything that is not a list of names reads as "no
+        // source" rather than failing the whole roster, and so do blank
+        // names and an empty list — a footnote naming nobody is the hole
+        // the consent screen exists to avoid.
+        let names = ((try? container.decodeIfPresent([String].self, forKey: .lookups)) ?? nil)?
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        lookups = (names?.isEmpty ?? true) ? nil : names
     }
 }
 
@@ -2002,6 +2055,11 @@ nonisolated struct AiStatsDTO: Codable, Equatable, Sendable {
     let transcripts: Int
     /// The total length of those recordings, in milliseconds — the bill.
     let transcriptDurationMS: Int64
+    /// Paid WEB SEARCHES that came back with an answer, charged to the
+    /// member who asked (protocol.md, "Family statistics"). Weather and
+    /// Wikipedia are free and not counted. Its own number for the reason
+    /// `images` is: it maps to a per-search bill no token count shows.
+    let searches: Int
 
     enum CodingKeys: String, CodingKey {
         case questions
@@ -2010,11 +2068,12 @@ nonisolated struct AiStatsDTO: Codable, Equatable, Sendable {
         case images
         case transcripts
         case transcriptDurationMS = "transcript_duration_ms"
+        case searches
     }
 
     init(
         questions: Int, promptTokens: Int, completionTokens: Int, images: Int = 0,
-        transcripts: Int = 0, transcriptDurationMS: Int64 = 0
+        transcripts: Int = 0, transcriptDurationMS: Int64 = 0, searches: Int = 0
     ) {
         self.questions = questions
         self.promptTokens = promptTokens
@@ -2022,6 +2081,7 @@ nonisolated struct AiStatsDTO: Codable, Equatable, Sendable {
         self.images = images
         self.transcripts = transcripts
         self.transcriptDurationMS = transcriptDurationMS
+        self.searches = searches
     }
 
     /// Hand-written for the reason `UserDTO`'s is: a property default is
@@ -2039,6 +2099,8 @@ nonisolated struct AiStatsDTO: Codable, Equatable, Sendable {
         transcripts = try container.decodeIfPresent(Int.self, forKey: .transcripts) ?? 0
         transcriptDurationMS = try container.decodeIfPresent(
             Int64.self, forKey: .transcriptDurationMS) ?? 0
+        // Zero for a server that predates lookups: it has searched nothing.
+        searches = try container.decodeIfPresent(Int.self, forKey: .searches) ?? 0
     }
 }
 

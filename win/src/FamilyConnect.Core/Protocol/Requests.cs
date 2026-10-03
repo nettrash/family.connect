@@ -201,7 +201,13 @@ public sealed record MeResponse(
     /// Read at step 1 of the resync, so the composer knows before it is drawn whether the next
     /// thing to show is the consent screen rather than a send.
     /// </remarks>
-    [property: JsonPropertyName("assistant_consent_at")] string? AssistantConsentAt = null)
+    [property: JsonPropertyName("assistant_consent_at")] string? AssistantConsentAt = null,
+    /// <summary>
+    /// When this caller agreed that the assistant may send a query or place name it writes from their words to the
+    /// lookup providers, or null until they have — and null on a server with no lookup source (docs/protocol.md,
+    /// "Consenting to the assistant", amended 2026-10-03). Absent on an older server, which reads as null: no lookups.
+    /// </summary>
+    [property: JsonPropertyName("assistant_lookup_consent_at")] string? AssistantLookupConsentAt = null)
 {
     public bool IsOwner => Role == "owner";
 }
@@ -234,7 +240,14 @@ public sealed record FamilyDto(
     /// member may ask for the text of somebody else's voice note or audio in the family chat. Off by default, tied to no
     /// other switch, and never needed for a member's OWN recordings.
     /// </summary>
-    [property: JsonPropertyName("ai_transcripts")] bool AiTranscripts = false);
+    [property: JsonPropertyName("ai_transcripts")] bool AiTranscripts = false,
+    /// <summary>
+    /// The owner's switch for looking things up (docs/protocol.md, "Looking things up"): with it on — and only where the
+    /// server has a source and the asking member has given the lookup consent — the assistant may send a query or place
+    /// name it wrote to the providers <c>assistant.lookups</c> names. Off by default, tied to no other switch; an older
+    /// server omits it, which reads as false.
+    /// </summary>
+    [property: JsonPropertyName("ai_lookups")] bool AiLookups = false);
 
 /// <summary>
 /// The family as the family screen needs it, with the assistant's capabilities.
@@ -308,7 +321,15 @@ public sealed record AssistantDto(
     /// The most bytes of sound one transcript request may send; present only while <see cref="Transcribe"/> is true.
     /// 25 MiB by default and never more.
     /// </summary>
-    [property: JsonPropertyName("transcribe_max_bytes")] long? TranscribeMaxBytes = null);
+    [property: JsonPropertyName("transcribe_max_bytes")] long? TranscribeMaxBytes = null,
+    /// <summary>
+    /// The providers the assistant may look things up in, by NAME, in the server's order (web search, then
+    /// <c>"Open-Meteo"</c>, then <c>"Wikipedia"</c>) — named on the consent screen and beside the owner's
+    /// <c>ai_lookups</c> switch. ABSENT, never <c>[]</c>, on a server with no source, and on one that predates it
+    /// (docs/protocol.md, "Looking things up"); read through <c>Lookups.Providers</c>, which treats an empty or blank
+    /// list as absent too.
+    /// </summary>
+    string[]? Lookups = null);
 
 /// <summary>
 /// <c>POST /me/assistant-consent</c> — this member's own answer to the assistant question, and
@@ -320,6 +341,13 @@ public sealed record AssistantConsentRequest(bool Granted);
 /// <summary>What the server now holds: a stamp when granted, null when withdrawn.</summary>
 public sealed record AssistantConsentResponse(
     [property: JsonPropertyName("assistant_consent_at")] string? AssistantConsentAt = null);
+
+/// <summary>
+/// <c>POST /me/assistant-lookup-consent</c>'s answer: the lookup stamp the server now holds, null when withdrawn
+/// (docs/protocol.md, "Consenting to the assistant", amended 2026-10-03).
+/// </summary>
+public sealed record AssistantLookupConsentResponse(
+    [property: JsonPropertyName("assistant_lookup_consent_at")] string? AssistantLookupConsentAt = null);
 
 // ---- the family's own console --------------------------------------------
 
@@ -362,6 +390,9 @@ public sealed record FamilyPatch
 
     [JsonPropertyName("ai_transcripts")]
     public bool? AiTranscripts { get; init; }
+
+    [JsonPropertyName("ai_lookups")]
+    public bool? AiLookups { get; init; }
 
     /// <summary>Send <c>"max_members": null</c> — clear the cap, rather than leave it alone.</summary>
     [JsonIgnore]
@@ -496,6 +527,11 @@ public sealed record StatsMediaDto(
 /// <remarks>
 /// <c>transcripts</c> and <c>transcript_duration_ms</c> are the recordings turned into text and their length: billed by
 /// audio length, not tokens, and charged to the member who ASKED. A kept answer handed out again counts nothing.
+/// <para>
+/// <c>searches</c> counts the PAID web searches the assistant made that came back with an answer, charged to the member
+/// who asked (docs/protocol.md, "Family statistics", amended 2026-10-03). Weather and Wikipedia are free and not counted;
+/// an older server omits it, which reads as 0.
+/// </para>
 /// </remarks>
 public sealed record StatsAiDto(
     int Questions,
@@ -503,7 +539,8 @@ public sealed record StatsAiDto(
     [property: JsonPropertyName("completion_tokens")] long CompletionTokens = 0,
     int Images = 0,
     int Transcripts = 0,
-    [property: JsonPropertyName("transcript_duration_ms")] long TranscriptDurationMs = 0);
+    [property: JsonPropertyName("transcript_duration_ms")] long TranscriptDurationMs = 0,
+    int Searches = 0);
 
 /// <summary>
 /// <c>POST /chats/{id}/messages/{mid}/attachments/{aid}/transcript</c>'s answer (docs/protocol.md, "Transcripts on

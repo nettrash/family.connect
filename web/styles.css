@@ -926,6 +926,7 @@ button.pack-cell:disabled { cursor: default; }
 .option-row { display: flex; gap: 6px; align-items: center; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .dialog-actions .secondary { background: transparent; color: var(--tint); }
+.dialog-actions.consent-choice { flex-wrap: wrap; }
 
 .emoji-picker { width: min(420px, 100%); }
 .emoji-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
