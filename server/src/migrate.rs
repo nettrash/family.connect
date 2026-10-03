@@ -263,6 +263,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "sticker_pack",
         sql: include_str!("../migrations/0048_sticker_pack.sql"),
     },
+    Migration {
+        version: 49,
+        name: "transcripts",
+        sql: include_str!("../migrations/0049_transcripts.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

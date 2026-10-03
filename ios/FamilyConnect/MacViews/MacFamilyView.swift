@@ -309,6 +309,7 @@ struct MacFamilyView: View {
             aiHistoryPhotos: updated.aiHistoryPhotos,
             aiGreeting: updated.aiGreeting,
             aiFaces: updated.aiFaces,
+            aiTranscripts: updated.aiTranscripts,
             maxMembers: updated.maxMembers)
     }
 

@@ -370,6 +370,7 @@ class BoardViewModel @Inject constructor(
                     processor = processor,
                     familyHistory = settingsState.familyAiHistory,
                     familyVision = settingsState.familyAiVision,
+                    transcripts = settingsState.assistantTranscribe,
                 )
             }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)

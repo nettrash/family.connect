@@ -365,6 +365,13 @@ pub struct Store {
     /// Assistant answers that stopped early (`ai_error`), each with what it
     /// says about it — remembered for exactly as long as the failure is.
     pub ai_failed: HashMap<i64, AiFailure>,
+    /// The text of recordings this member asked for, by attachment id
+    /// (docs/protocol.md, "Transcripts on request") — kept for the life of
+    /// the tab, so reopening a chat shows them without asking again, and
+    /// NEVER written to storage: they are words somebody said, and this
+    /// client keeps nobody's words past the tab ("A browser is a client
+    /// too"). A sign-out takes them with the rest of the store.
+    pub transcripts: fc_text::transcript::Transcripts,
     /// What was being typed in a chat the reader left.
     pub drafts: HashMap<i64, String>,
     pub thread_view: Option<ThreadView>,

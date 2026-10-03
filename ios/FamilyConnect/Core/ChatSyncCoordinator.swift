@@ -3709,6 +3709,13 @@ final class ChatSyncCoordinator {
             // that cannot say where the words go cannot ask the question
             // (protocol.md, "Consenting to the assistant").
             AppSettings.assistantProcessor = mine.assistant?.processor
+            // Whether "Show text" exists at all, and how big a stored
+            // recording may be to be sent as it is (protocol.md,
+            // "Transcripts on request"). False/nil when the object is
+            // absent, which takes the action away rather than leaving one
+            // that answers `transcripts_unavailable`.
+            AppSettings.assistantTranscribe = mine.assistant?.transcribe ?? false
+            AppSettings.assistantTranscribeMaxBytes = mine.assistant?.transcribeMaxBytes
             // The pack's two limits, which double as the capability check:
             // a server that predates the pack sends neither, and nil here
             // is what takes the sticker button and the Family screen's pack
@@ -4663,6 +4670,14 @@ final class ChatSyncCoordinator {
     }
 
     // MARK: - Fetch helpers
+
+    /// The kind of a chat this device holds — `"family"`, `"direct"` or
+    /// `"ai"` — or nil when it holds no such chat. For the one rule that
+    /// needs it from inside a bubble, which knows its chat only by id:
+    /// whether "Show text" is offered under a recording (`TranscriptDoor`).
+    func chatKind(of chatID: Int64) -> String? {
+        fetchChat(chatID)?.kind
+    }
 
     private func fetchChat(_ chatID: Int64) -> ChatEntity? {
         var descriptor = FetchDescriptor<ChatEntity>(predicate: #Predicate { $0.chatID == chatID })

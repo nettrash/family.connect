@@ -7,7 +7,7 @@
 //! value surface later as a confusing runtime error (e.g. an idle timeout
 //! shorter than the ping interval would silently kill every socket).
 //!
-//! Unknown keys are IGNORED everywhere except under `[ai]` and its two
+//! Unknown keys are IGNORED everywhere except under `[ai]` and its three
 //! sub-tables, where they fail the load by name (see
 //! [`reject_unknown_ai_keys`]). The asymmetry is deliberate: a mistyped
 //! `[limits]` key costs a default, while a mistyped — or misplaced — key
@@ -376,6 +376,13 @@ pub struct AiConfig {
     /// offer the affordance.
     #[serde(default)]
     pub images: AiImagesConfig,
+
+    /// `[ai.transcribe]` — the deployment that turns a recording into text,
+    /// reached only by a member asking for a transcript (protocol.md,
+    /// "Transcripts on request"). Absent means no recording ever leaves for
+    /// a speech model and clients are told not to offer "Show text".
+    #[serde(default)]
+    pub transcribe: AiTranscribeConfig,
 }
 
 /// How the key is presented to the provider.
@@ -399,6 +406,13 @@ pub enum AuthScheme {
     ApiKey,
     /// `Authorization: Bearer <key>`.
     Bearer,
+    /// `Ocp-Apim-Subscription-Key: <key>` — the Azure Speech contract's
+    /// header (`[ai.transcribe] api = "speech"`). NOT a value a config may
+    /// write: it is DERIVED from `api`, because that contract takes a key
+    /// in no other header, and an `auth` under a speech section is refused
+    /// at startup rather than obeyed or ignored.
+    #[serde(skip)]
+    SubscriptionKey,
 }
 
 /// A second deployment on the same provider: only what DIFFERS from `[ai]`.
@@ -504,6 +518,191 @@ pub struct AiImagesConfig {
     pub contextual: bool,
 }
 
+/// `[ai.transcribe]` — a deployment plus the knobs a transcription endpoint
+/// has that the others do not: how much sound one request may carry, and
+/// which of two contracts the provider speaks.
+///
+/// The same flattened [`AiDeployment`] the images section uses. Under
+/// `api = "openai"` (the default) it inherits the endpoint, key, auth and
+/// api-version of `[ai]` and is turned on by naming a deployment — the
+/// fourth deployment on what is, in practice, one resource. Under
+/// `api = "speech"` (Azure Speech, Microsoft's MAI-Transcribe models) it
+/// inherits only the key: the endpoint and `model` are required, the
+/// api-version defaults to [`SPEECH_API_VERSION`], and `deployment` and
+/// `auth` are refused — see [`AiTranscribeConfig::validate`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct AiTranscribeConfig {
+    #[serde(flatten)]
+    pub deployment: AiDeployment,
+
+    /// The most bytes of sound one transcript request may send — the stored
+    /// recording, or the sound track a device supplies. Sent to clients as
+    /// `assistant.transcribe_max_bytes` so they can choose BEFORE asking.
+    ///
+    /// 25 MiB by default and never more, under either contract (the speech
+    /// contract takes up to 250 MB, but the clients size the sound tracks
+    /// they supply to this one number, and it means one thing on the
+    /// wire). Azure OpenAI's transcription contract
+    /// refuses files over 25 MB, so a larger ceiling would only move the
+    /// refusal from this server, where a client is told
+    /// `not_transcribable`, to the provider, where it is an opaque failure
+    /// and a wasted upload. `validate` refuses a value above
+    /// [`TRANSCRIBE_MAX_BYTES_CEILING`] rather than clamping it, because a
+    /// config that says one thing and a server that does another is the
+    /// failure this file exists to prevent.
+    #[serde(default = "default_ai_transcribe_max_bytes")]
+    pub max_bytes: usize,
+
+    /// WHICH CONTRACT the provider speaks — see [`TranscribeApi`].
+    /// `"openai"` by default, so every config written before this key
+    /// existed sends the byte-identical request it always did.
+    #[serde(default)]
+    pub api: TranscribeApi,
+
+    /// `"clean"` or `"verbatim"`: the speech contract's
+    /// `modelOptions.transcribeStyle`. Read only under `api = "speech"`
+    /// (refused under `"openai"`, which has no such option), and `"clean"`
+    /// when absent — the provider's own default is verbatim, but this text
+    /// is read by a person in a chat, where "um, so, I — we'll be there at
+    /// six" is harder to read than what was meant.
+    #[serde(default)]
+    pub style: Option<TranscribeStyle>,
+
+    /// Whether the family's language goes with the request as a hint.
+    /// Absent means the contract's own default: ON for `"openai"` (what it
+    /// always did) and OFF for `"speech"`, whose provider documents a
+    /// locale as a very strong hint to give only when the language is
+    /// certain and its own detection fails. Even when on, the speech
+    /// contract never sends `sr` (`sr-Latn` included): MAI-Transcribe-2
+    /// does not list Serbian, so the hint would only buy a refusal.
+    #[serde(default)]
+    pub language_hint: Option<bool>,
+}
+
+/// The contract a transcription provider speaks.
+///
+/// Two, because the operator's two families of speech model are served by
+/// two different Azure services that agree on nothing but multipart: the
+/// Azure OpenAI `audio/transcriptions` surface (gpt-4o-transcribe,
+/// whisper), and Azure Speech's "Fast Transcription" / "LLM Speech" API,
+/// which is the only place Microsoft's own MAI-Transcribe models answer.
+/// CONFIGURED, never sniffed from the URL — for the reason [`AuthScheme`]
+/// gives.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscribeApi {
+    /// `POST …/audio/transcriptions` with `file`, `model`,
+    /// `response_format=json` and `language`. THE DEFAULT.
+    #[default]
+    OpenAi,
+    /// `POST …/speechtotext/transcriptions:transcribe?api-version=2025-10-15`
+    /// with `audio` and a `definition` naming the model.
+    Speech,
+}
+
+/// `modelOptions.transcribeStyle` on the speech contract.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscribeStyle {
+    /// Fillers and false starts left out. The default HERE.
+    #[default]
+    Clean,
+    /// Every "um", as said.
+    Verbatim,
+}
+
+impl TranscribeStyle {
+    /// The provider's spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Clean => "clean",
+            Self::Verbatim => "verbatim",
+        }
+    }
+}
+
+/// The dated api-version of the speech contract, used when `[ai.transcribe]`
+/// names none of its own. NOT inherited from `[ai]`: that date is Azure
+/// OpenAI's, a different service, and its value would be refused here.
+pub const SPEECH_API_VERSION: &str = "2025-10-15";
+
+/// The path the speech contract answers on, appended to a bare resource
+/// root.
+const SPEECH_PATH: &str = "/speechtotext/transcriptions:transcribe";
+
+/// Azure's own ceiling on one transcription file — "25 MB or smaller" —
+/// read as the binary unit the rest of this file uses. A deployment that
+/// meant decimal megabytes would refuse the last 1.2 MB of this; nobody's
+/// voice note is that close to the line, and a device sending its own
+/// sound track re-encodes far below it.
+pub const TRANSCRIBE_MAX_BYTES_CEILING: usize = 25 * 1024 * 1024;
+
+fn default_ai_transcribe_max_bytes() -> usize {
+    TRANSCRIBE_MAX_BYTES_CEILING
+}
+
+impl Default for AiTranscribeConfig {
+    fn default() -> Self {
+        Self {
+            deployment: AiDeployment::default(),
+            max_bytes: default_ai_transcribe_max_bytes(),
+            api: TranscribeApi::default(),
+            style: None,
+            language_hint: None,
+        }
+    }
+}
+
+impl AiTranscribeConfig {
+    /// What each contract requires and what it would only misread —
+    /// refused at startup by name, whether or not the assistant is on,
+    /// because a section that is wrong is wrong before somebody flips the
+    /// switch.
+    fn validate(&self) -> Result<()> {
+        match self.api {
+            TranscribeApi::OpenAi => {
+                if self.style.is_some() {
+                    anyhow::bail!(
+                        "ai.transcribe.style is read only with api = \"speech\" — the OpenAI \
+                         transcription contract has no style; remove it, or set api = \"speech\""
+                    );
+                }
+            }
+            TranscribeApi::Speech => {
+                if self.deployment.endpoint.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.transcribe.endpoint is required with api = \"speech\": paste the \
+                         resource's Speech endpoint — https://YOUR-RESOURCE.cognitiveservices.azure.com, \
+                         or the full …/speechtotext/transcriptions:transcribe?api-version={SPEECH_API_VERSION} \
+                         URI. It is not inherited from [ai], whose endpoint is an Azure OpenAI one."
+                    );
+                }
+                if self.deployment.model.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.transcribe.model is required with api = \"speech\": it is the model \
+                         the provider runs (for example \"MAI-Transcribe-2\") and is sent in the \
+                         request's definition"
+                    );
+                }
+                if !self.deployment.deployment.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.transcribe.deployment means nothing with api = \"speech\" — that \
+                         contract names its model in `model`; remove `deployment`"
+                    );
+                }
+                if self.deployment.auth.is_some() {
+                    anyhow::bail!(
+                        "ai.transcribe.auth is not read with api = \"speech\" — that contract \
+                         takes the key in the Ocp-Apim-Subscription-Key header and no other; \
+                         remove `auth`"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One resolved provider call: where to POST it, which key opens it, what to
 /// name in the body, and the cap the server owns.
 ///
@@ -523,6 +722,28 @@ pub struct ModelRoute {
     /// ignores.
     pub model: String,
     pub max_tokens: u32,
+}
+
+/// The transcription deployment, resolved: the route, plus what only a
+/// transcription request needs to know — which contract to speak, and
+/// whether the family's language may go with it.
+#[derive(Debug, Clone)]
+pub struct TranscribeRoute {
+    pub route: ModelRoute,
+    pub contract: TranscribeContract,
+    /// Resolved from [`AiTranscribeConfig::language_hint`] and the
+    /// contract's default. `ai.rs` still refuses to send `sr` to the speech
+    /// contract whatever this says.
+    pub language_hint: bool,
+}
+
+/// [`TranscribeApi`], with what each contract carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscribeContract {
+    /// `route.model` is the `model` form field (the DEPLOYMENT name).
+    OpenAi,
+    /// `route.model` is `enhancedMode.model` — the provider's model name.
+    Speech { style: TranscribeStyle },
 }
 
 /// Hand-written rather than derived, so `AiConfig::default()` agrees with
@@ -552,6 +773,7 @@ impl Default for AiConfig {
             title: default_ai_title(),
             vision: AiDeployment::default(),
             images: AiImagesConfig::default(),
+            transcribe: AiTranscribeConfig::default(),
         }
     }
 }
@@ -785,6 +1007,86 @@ impl AiConfig {
     pub fn images_usable(&self) -> bool {
         self.images_route().is_some()
     }
+
+    /// The deployment that turns a recording into text, or `None`.
+    ///
+    /// `max_tokens` means nothing to a transcription endpoint and is carried
+    /// for the reason [`AiConfig::images_route`] carries it; the cap that
+    /// binds here is [`AiTranscribeConfig::max_bytes`], on what is SENT.
+    /// The URL is built by the same [`azure_url`] as the other three, so a
+    /// pasted target URI, the `/openai/v1` surface and the classic shape
+    /// all behave exactly as they do for chat and pictures.
+    pub fn transcribe_route(&self) -> Option<TranscribeRoute> {
+        let transcribe = &self.transcribe;
+        if !self.is_usable() {
+            return None;
+        }
+        match transcribe.api {
+            TranscribeApi::OpenAi => {
+                if !transcribe.deployment.is_configured() {
+                    return None;
+                }
+                Some(TranscribeRoute {
+                    route: ModelRoute {
+                        url: azure_url(
+                            transcribe.deployment.endpoint_or(&self.endpoint),
+                            transcribe.deployment.deployment_or(&self.deployment),
+                            transcribe.deployment.api_version_or(&self.api_version),
+                            "audio/transcriptions",
+                        ),
+                        api_key: transcribe
+                            .deployment
+                            .api_key_or(&self.api_key)
+                            .trim()
+                            .to_string(),
+                        auth: transcribe.deployment.auth_or(self.auth),
+                        model: transcribe
+                            .deployment
+                            .request_model_or(&self.deployment)
+                            .to_string(),
+                        max_tokens: self.max_tokens,
+                    },
+                    contract: TranscribeContract::OpenAi,
+                    language_hint: transcribe.language_hint.unwrap_or(true),
+                })
+            }
+            // The section's OWN endpoint and model, or nothing: `validate`
+            // refuses a speech section without them, and this answers
+            // `None` for one that reached here some other way (a test's
+            // hand-built config) rather than send a request with no model.
+            TranscribeApi::Speech => {
+                let endpoint = transcribe.deployment.endpoint.trim();
+                let model = transcribe.deployment.model.trim();
+                if endpoint.is_empty() || model.is_empty() {
+                    return None;
+                }
+                let api_version = pick(&transcribe.deployment.api_version, SPEECH_API_VERSION);
+                Some(TranscribeRoute {
+                    route: ModelRoute {
+                        url: speech_url(endpoint, api_version.trim()),
+                        api_key: transcribe
+                            .deployment
+                            .api_key_or(&self.api_key)
+                            .trim()
+                            .to_string(),
+                        auth: AuthScheme::SubscriptionKey,
+                        model: model.to_string(),
+                        max_tokens: self.max_tokens,
+                    },
+                    contract: TranscribeContract::Speech {
+                        style: transcribe.style.unwrap_or_default(),
+                    },
+                    language_hint: transcribe.language_hint.unwrap_or(false),
+                })
+            }
+        }
+    }
+
+    /// Whether this server can transcribe at all — sent as
+    /// `assistant.transcribe`.
+    pub fn transcribe_usable(&self) -> bool {
+        self.transcribe_route().is_some()
+    }
 }
 
 impl AiDeployment {
@@ -884,6 +1186,30 @@ fn azure_url(endpoint: &str, deployment: &str, api_version: &str, path: &str) ->
     }
 
     format!("{base}/openai/deployments/{deployment}/{path}?api-version={api_version}")
+}
+
+/// The speech contract's URL, from what an operator pasted.
+///
+/// Three shapes, decided in this order:
+///
+/// - a URL that CARRIES ITS OWN QUERY is a finished target URI — the
+///   portal's `…/speechtotext/transcriptions:transcribe?api-version=…` —
+///   and is used exactly as pasted, as [`azure_url`] does;
+/// - one that already names the operation gets the api-version appended;
+/// - anything else is the resource ROOT
+///   (`https://YOUR-RESOURCE.cognitiveservices.azure.com`), and gets the
+///   path and the api-version both.
+///
+/// The key is never put in it: it travels in a header.
+fn speech_url(endpoint: &str, api_version: &str) -> String {
+    let base = endpoint.trim().trim_end_matches('/');
+    if base.contains('?') {
+        return base.to_string();
+    }
+    if base.ends_with(SPEECH_PATH) {
+        return format!("{base}?api-version={api_version}");
+    }
+    format!("{base}{SPEECH_PATH}?api-version={api_version}")
 }
 
 /// `[storage]` — where attachment bytes live.
@@ -1370,7 +1696,7 @@ impl Default for PushConfig {
 }
 
 /// The keys `[ai]` itself takes — the fields of [`AiConfig`], by their
-/// TOML names, plus the two sub-tables. Held beside the struct rather than
+/// TOML names, plus the three sub-tables. Held beside the struct rather than
 /// derived from it because serde offers no way to list a struct's fields,
 /// and `deny_unknown_fields` cannot be used on [`AiImagesConfig`] (serde
 /// refuses it beside `flatten`). The tests hold each list to its struct:
@@ -1392,6 +1718,7 @@ const AI_KEYS: &[&str] = &[
     "title",
     "vision",
     "images",
+    "transcribe",
 ];
 
 /// The fields of [`AiDeployment`] — what `[ai.vision]` takes, and what
@@ -1414,6 +1741,9 @@ const AI_IMAGES_OWN_KEYS: &[&str] = &[
     "max_bytes",
     "contextual",
 ];
+
+/// The fields [`AiTranscribeConfig`] adds beside its flattened deployment.
+const AI_TRANSCRIBE_OWN_KEYS: &[&str] = &["max_bytes", "api", "style", "language_hint"];
 
 /// Refuse a key the `[ai]` tables do not know, by name and by table.
 ///
@@ -1439,7 +1769,12 @@ fn reject_unknown_ai_keys(raw: &str) -> Result<()> {
         .chain(AI_IMAGES_OWN_KEYS)
         .copied()
         .collect();
-    let tables: [(&str, Option<&toml::Table>, &[&str]); 3] = [
+    let transcribe_keys: Vec<&str> = AI_DEPLOYMENT_KEYS
+        .iter()
+        .chain(AI_TRANSCRIBE_OWN_KEYS)
+        .copied()
+        .collect();
+    let tables: [(&str, Option<&toml::Table>, &[&str]); 4] = [
         ("[ai]", Some(ai), AI_KEYS),
         (
             "[ai.vision]",
@@ -1450,6 +1785,11 @@ fn reject_unknown_ai_keys(raw: &str) -> Result<()> {
             "[ai.images]",
             ai.get("images").and_then(toml::Value::as_table),
             &images_keys,
+        ),
+        (
+            "[ai.transcribe]",
+            ai.get("transcribe").and_then(toml::Value::as_table),
+            &transcribe_keys,
         ),
     ];
     for (name, table, known) in &tables {
@@ -1674,6 +2014,21 @@ impl Config {
                  and `[ai] enabled = false` is the honest way to switch the assistant off"
             );
         }
+        // Refused rather than clamped, either way. Zero would make every
+        // recording `not_transcribable` — an off switch that does not say
+        // so — and above the provider's own ceiling the refusal only moves
+        // to where nobody can explain it (see `AiTranscribeConfig`).
+        if self.ai.transcribe.max_bytes == 0
+            || self.ai.transcribe.max_bytes > TRANSCRIBE_MAX_BYTES_CEILING
+        {
+            anyhow::bail!(
+                "ai.transcribe.max_bytes must be between 1 and {TRANSCRIBE_MAX_BYTES_CEILING} \
+                 (25 MiB, the OpenAI contract's ceiling on one file, which both contracts \
+                 share), got {}",
+                self.ai.transcribe.max_bytes
+            );
+        }
+        self.ai.transcribe.validate()?;
         if self.calls.ring_timeout_secs < 5 {
             anyhow::bail!(
                 "calls.ring_timeout_secs must be at least 5 — a phone cannot be picked up faster"
@@ -2026,6 +2381,23 @@ mod tests {
         );
         assert!(opted_out.ai.contextual_images_route().is_none());
         assert!(opted_out.ai.images_usable(), "`/draw` is untouched by it");
+
+        // The fourth deployment is documented, and documented working: its
+        // own table, its default ceiling, inheriting the rest from [ai].
+        assert!(
+            out.contains("\n[ai.transcribe]\n"),
+            "the example documents [ai.transcribe]: {out}"
+        );
+        assert!(cfg.ai.transcribe_usable(), "a named deployment is on");
+        assert_eq!(cfg.ai.transcribe.max_bytes, TRANSCRIBE_MAX_BYTES_CEILING);
+        let transcribe = cfg.ai.transcribe_route().expect("transcribe route").route;
+        assert!(
+            transcribe
+                .url
+                .ends_with("/audio/transcriptions?api-version=2024-10-21"),
+            "{}",
+            transcribe.url
+        );
     }
 
     /// THE SILENT OPT-OUT. `contextual = false` under `[ai.vision]` used to
@@ -2090,7 +2462,7 @@ deployment = "draws"
         let mut raw = String::from("[ai]\n");
         for key in AI_KEYS {
             let value = match *key {
-                "vision" | "images" => continue,
+                "vision" | "images" | "transcribe" => continue,
                 "enabled" => "true".to_string(),
                 "auth" => "\"bearer\"".to_string(),
                 "max_tokens" | "history_messages" => "7".to_string(),
@@ -2119,8 +2491,27 @@ deployment = "draws"
             };
             raw.push_str(&format!("{key} = {value}\n"));
         }
+        raw.push_str("\n[ai.transcribe]\n");
+        for key in AI_DEPLOYMENT_KEYS.iter().chain(AI_TRANSCRIBE_OWN_KEYS) {
+            let value = match *key {
+                "auth" => "\"bearer\"".to_string(),
+                "max_bytes" => "2048".to_string(),
+                "api" => "\"openai\"".to_string(),
+                "language_hint" => "false".to_string(),
+                // Read only by the speech contract, and refused under this
+                // one: swept by the speech test below instead.
+                "style" => continue,
+                _ => format!("\"{key}\""),
+            };
+            raw.push_str(&format!("{key} = {value}\n"));
+        }
         let cfg = Config::from_toml_str(&raw).unwrap_or_else(|err| panic!("{err:#}\n{raw}"));
         // And they were READ, not merely tolerated.
+        assert_eq!(cfg.ai.transcribe.max_bytes, 2048);
+        assert_eq!(cfg.ai.transcribe.deployment.model, "model");
+        assert_eq!(cfg.ai.transcribe.deployment.auth, Some(AuthScheme::Bearer));
+        assert_eq!(cfg.ai.transcribe.api, TranscribeApi::OpenAi);
+        assert_eq!(cfg.ai.transcribe.language_hint, Some(false));
         assert_eq!(cfg.ai.title, "title");
         assert_eq!(cfg.ai.history_messages, 7);
         assert_eq!(cfg.ai.vision.api_version, "api_version");
@@ -2242,6 +2633,304 @@ size = "1024x1024"
         assert_eq!(images.api_key, "secret");
         assert_eq!(vision.model, "nettrash-gpt-4o", "the DEPLOYMENT routes");
         assert_eq!(images.model, "nettrash-FLUX.2-pro");
+    }
+
+    /// The fourth deployment, as an operator writes it: three lines under
+    /// its own header, everything else inherited from `[ai]` — and OFF until
+    /// it is named, like the other two.
+    #[test]
+    fn the_transcription_deployment_inherits_and_is_off_until_named() {
+        let base = r#"
+[ai]
+enabled = true
+endpoint = "https://nettrash.openai.azure.com"
+deployment = "nettrash-gpt-oss-120b"
+api_key = "secret"
+processor = "Microsoft - Azure OpenAI"
+api_version = "2024-10-21"
+"#;
+        let off = Config::from_toml_str(base).expect("valid");
+        assert!(!off.ai.transcribe_usable(), "unnamed is off");
+        assert!(off.ai.transcribe_route().is_none());
+        assert_eq!(off.ai.transcribe.max_bytes, 25 * 1024 * 1024);
+
+        let on = Config::from_toml_str(&format!(
+            "{base}\n[ai.transcribe]\ndeployment = \"nettrash-whisper\"\nmodel = \"whisper\"\n"
+        ))
+        .expect("valid");
+        let route = on.ai.transcribe_route().expect("route").route;
+        assert_eq!(
+            route.url,
+            "https://nettrash.openai.azure.com/openai/deployments/nettrash-whisper\
+             /audio/transcriptions?api-version=2024-10-21"
+        );
+        assert_eq!(route.api_key, "secret", "inherited, not retyped");
+        assert_eq!(route.auth, AuthScheme::ApiKey);
+        assert_eq!(route.model, "nettrash-whisper", "the DEPLOYMENT routes");
+
+        // A pasted target URI is used verbatim, as everywhere else.
+        let pasted = Config::from_toml_str(&format!(
+            "{base}\n[ai.transcribe]\nendpoint = \"https://x.openai.azure.com/openai/deployments/w/audio/transcriptions?api-version=2025-03-01-preview\"\n"
+        ))
+        .expect("valid");
+        assert_eq!(
+            pasted.ai.transcribe_route().expect("route").route.url,
+            "https://x.openai.azure.com/openai/deployments/w/audio/transcriptions\
+             ?api-version=2025-03-01-preview"
+        );
+
+        // And nothing without the assistant itself.
+        let mut disabled = on.ai.clone();
+        disabled.enabled = false;
+        assert!(!disabled.transcribe_usable());
+    }
+
+    const SPEECH_BASE: &str = r#"
+[ai]
+enabled = true
+endpoint = "https://nettrash.openai.azure.com"
+deployment = "nettrash-gpt-oss-120b"
+api_key = "secret"
+processor = "Microsoft - Azure OpenAI"
+api_version = "2024-10-21"
+"#;
+
+    /// The second contract, as an operator writes it for MAI-Transcribe-2:
+    /// its OWN endpoint (a root gets the path and the speech api-version,
+    /// never `[ai]`'s date), the key in the subscription header, the model
+    /// as written, `clean` and no hint by default.
+    #[test]
+    fn a_speech_section_resolves_to_its_own_endpoint_model_and_header() {
+        let on = Config::from_toml_str(&format!(
+            "{SPEECH_BASE}\n[ai.transcribe]\napi = \"speech\"\n\
+             endpoint = \"https://fc-speech.cognitiveservices.azure.com/\"\n\
+             model = \"MAI-Transcribe-2\"\n"
+        ))
+        .expect("valid");
+        let resolved = on.ai.transcribe_route().expect("route");
+        assert_eq!(
+            resolved.route.url,
+            "https://fc-speech.cognitiveservices.azure.com/speechtotext/transcriptions:transcribe\
+             ?api-version=2025-10-15"
+        );
+        assert_eq!(resolved.route.api_key, "secret", "inherited from [ai]");
+        assert_eq!(resolved.route.auth, AuthScheme::SubscriptionKey);
+        assert_eq!(resolved.route.model, "MAI-Transcribe-2");
+        assert_eq!(
+            resolved.contract,
+            TranscribeContract::Speech {
+                style: TranscribeStyle::Clean
+            }
+        );
+        assert!(!resolved.language_hint, "no hint unless opted in");
+        assert!(on.ai.transcribe_usable());
+
+        // Every key it takes, set: its own key, date, style and the hint.
+        let all = Config::from_toml_str(&format!(
+            "{SPEECH_BASE}\n[ai.transcribe]\napi = \"speech\"\n\
+             endpoint = \"https://fc-speech.cognitiveservices.azure.com\"\n\
+             model = \"MAI-Transcribe-1.5\"\napi_key = \"speech-key\"\n\
+             api_version = \"2026-01-01\"\nstyle = \"verbatim\"\nlanguage_hint = true\n\
+             max_bytes = 1048576\n"
+        ))
+        .expect("valid");
+        let resolved = all.ai.transcribe_route().expect("route");
+        assert!(
+            resolved.route.url.ends_with("?api-version=2026-01-01"),
+            "{}",
+            resolved.route.url
+        );
+        assert_eq!(resolved.route.api_key, "speech-key");
+        assert_eq!(
+            resolved.contract,
+            TranscribeContract::Speech {
+                style: TranscribeStyle::Verbatim
+            }
+        );
+        assert!(resolved.language_hint);
+        assert_eq!(all.ai.transcribe.max_bytes, 1_048_576);
+
+        // A pasted full URI is used verbatim; a path without a query gets
+        // the date.
+        let pasted = "https://x.cognitiveservices.azure.com/speechtotext/transcriptions:transcribe\
+                      ?api-version=2025-10-15";
+        assert_eq!(speech_url(pasted, "ignored"), pasted);
+        assert_eq!(
+            speech_url(
+                "https://x.cognitiveservices.azure.com/speechtotext/transcriptions:transcribe",
+                SPEECH_API_VERSION
+            ),
+            pasted
+        );
+
+        // The OpenAI contract keeps its hint by default — what it always did
+        // — and may turn it off.
+        let openai = Config::from_toml_str(&format!(
+            "{SPEECH_BASE}\n[ai.transcribe]\ndeployment = \"w\"\n"
+        ))
+        .expect("valid");
+        let resolved = openai.ai.transcribe_route().expect("route");
+        assert_eq!(resolved.contract, TranscribeContract::OpenAi);
+        assert!(resolved.language_hint);
+        let quiet = Config::from_toml_str(&format!(
+            "{SPEECH_BASE}\n[ai.transcribe]\ndeployment = \"w\"\nlanguage_hint = false\n"
+        ))
+        .expect("valid");
+        assert!(!quiet.ai.transcribe_route().expect("route").language_hint);
+
+        // And nothing without the assistant itself.
+        let mut disabled = on.ai.clone();
+        disabled.enabled = false;
+        assert!(disabled.transcribe_route().is_none());
+        // Nor for a hand-built section with no model.
+        let mut nameless = on.ai.clone();
+        nameless.transcribe.deployment.model = String::new();
+        assert!(nameless.transcribe_route().is_none());
+    }
+
+    /// What each contract requires and what it would misread, refused at
+    /// startup by name.
+    #[test]
+    fn a_speech_section_missing_or_misreading_a_key_is_refused_by_name() {
+        let speech = |extra: &str| {
+            Config::from_toml_str(&format!(
+                "{SPEECH_BASE}\n[ai.transcribe]\napi = \"speech\"\n{extra}"
+            ))
+            .map(|_| ())
+            .map_err(|err| format!("{err:#}"))
+        };
+        let endpoint = "endpoint = \"https://x.cognitiveservices.azure.com\"\n";
+        let model = "model = \"MAI-Transcribe-2\"\n";
+        assert!(speech(&format!("{endpoint}{model}")).is_ok());
+
+        let err = speech(model).unwrap_err();
+        assert!(err.contains("ai.transcribe.endpoint is required"), "{err}");
+        assert!(err.contains("not inherited from [ai]"), "{err}");
+        let err = speech(endpoint).unwrap_err();
+        assert!(err.contains("ai.transcribe.model is required"), "{err}");
+        let err = speech(&format!("{endpoint}{model}deployment = \"w\"\n")).unwrap_err();
+        assert!(err.contains("ai.transcribe.deployment"), "{err}");
+        let err = speech(&format!("{endpoint}{model}auth = \"bearer\"\n")).unwrap_err();
+        assert!(err.contains("Ocp-Apim-Subscription-Key"), "{err}");
+        let err = speech(&format!("{endpoint}{model}style = \"tidy\"\n")).unwrap_err();
+        assert!(err.contains("tidy"), "{err}");
+
+        // A style under the OpenAI contract would set nothing.
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.transcribe]\ndeployment = \"w\"\nstyle = \"clean\"\n")
+                .unwrap_err()
+        );
+        assert!(err.contains("ai.transcribe.style"), "{err}");
+        // An api nobody speaks, and the derived header written by hand.
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.transcribe]\napi = \"whisper\"\n").unwrap_err()
+        );
+        assert!(err.contains("whisper"), "{err}");
+        for table in ["[ai]", "[ai.transcribe]"] {
+            assert!(
+                Config::from_toml_str(&format!("{table}\nauth = \"subscription-key\"\n")).is_err(),
+                "{table}: the subscription header is derived, never written"
+            );
+        }
+        // And the strict-key check knows the new keys by table.
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.images]\ndeployment = \"d\"\nlanguage_hint = true\n")
+                .unwrap_err()
+        );
+        assert!(err.contains("belongs under [ai.transcribe]"), "{err}");
+    }
+
+    /// The example's worked MAI-Transcribe-2 block, put where it says to
+    /// go — in place of the OpenAI one — is a working speech section.
+    #[test]
+    fn the_examples_mai_block_is_a_working_speech_section() {
+        let example = include_str!("../config.example.toml");
+        let mut block = String::new();
+        let mut inside = false;
+        for line in example.lines() {
+            if line.trim() == "# # MAI-Transcribe-2 on Azure Speech" {
+                inside = true;
+                continue;
+            }
+            if !inside {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("# #     ") {
+                block.push_str(rest);
+                block.push('\n');
+            } else if !block.is_empty() {
+                break;
+            }
+        }
+        assert!(block.starts_with("[ai.transcribe]\n"), "{block}");
+        assert!(
+            block.contains("YOUR-SPEECH-RESOURCE"),
+            "placeholders only: {block}"
+        );
+        let cfg = Config::from_toml_str(&format!("{SPEECH_BASE}\n{block}"))
+            .unwrap_or_else(|err| panic!("{err:#}\n{block}"));
+        let resolved = cfg.ai.transcribe_route().expect("route");
+        assert_eq!(resolved.route.model, "MAI-Transcribe-2");
+        assert_eq!(
+            resolved.route.url,
+            "https://YOUR-SPEECH-RESOURCE.cognitiveservices.azure.com/speechtotext\
+             /transcriptions:transcribe?api-version=2025-10-15"
+        );
+        assert_eq!(resolved.route.api_key, "YOUR-SPEECH-RESOURCE-KEY");
+        assert_eq!(resolved.route.auth, AuthScheme::SubscriptionKey);
+        assert!(!resolved.language_hint);
+        assert_eq!(cfg.ai.transcribe.max_bytes, TRANSCRIBE_MAX_BYTES_CEILING);
+    }
+
+    /// The ceiling is the provider's, and a config above it — or at zero —
+    /// is refused at startup by name rather than clamped in silence.
+    #[test]
+    fn validate_holds_the_transcription_ceiling_to_the_providers() {
+        let ok = Config::from_toml_str("[ai.transcribe]\nmax_bytes = 1048576\n").expect("valid");
+        assert_eq!(ok.ai.transcribe.max_bytes, 1_048_576);
+        for bad in ["0", "26214401"] {
+            let err = format!(
+                "{:#}",
+                Config::from_toml_str(&format!("[ai.transcribe]\nmax_bytes = {bad}\n"))
+                    .unwrap_err()
+            );
+            assert!(err.contains("ai.transcribe.max_bytes"), "{err}");
+        }
+        assert!(Config::from_toml_str("[ai.transcribe]\nmax_bytes = 26214400\n").is_ok());
+    }
+
+    /// The strict-key check reads the fourth table too, and names a key from
+    /// a sibling table as such.
+    #[test]
+    fn a_misplaced_key_under_ai_transcribe_fails_the_load_by_name() {
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.transcribe]\ndeployment = \"w\"\nsize = \"1x1\"\n")
+                .unwrap_err()
+        );
+        assert!(err.contains("`size`"), "{err}");
+        assert!(err.contains("[ai.transcribe]"), "{err}");
+        assert!(err.contains("belongs under [ai.images]"), "{err}");
+
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.transcribe]\nmax_byte = 1\n").unwrap_err()
+        );
+        assert!(err.contains("`max_byte`"), "{err}");
+        assert!(err.contains("max_bytes"), "the keys it takes: {err}");
+
+        // `max_bytes` under [ai.vision] belongs under either sibling.
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.vision]\nmax_bytes = 1\n").unwrap_err()
+        );
+        assert!(
+            err.contains("belongs under [ai.images] or [ai.transcribe]"),
+            "{err}"
+        );
     }
 
     /// The default, and the one that matters most: a server that configured

@@ -926,7 +926,8 @@ internal sealed class NoteSheet
             return false;
         }
         var agreed = await AssistantConsentOverAsync(
-            anchor, say, processor, state.Family?.AiHistory == true, state.Family?.AiVision == true);
+            anchor, say, processor, state.Family?.AiHistory == true, state.Family?.AiVision == true,
+            state.Assistant?.Transcribe == true);
         if (!agreed)
         {
             return false;

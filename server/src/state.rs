@@ -11,6 +11,7 @@ use sqlx::PgPool;
 
 use crate::calls::CallRegistry;
 use crate::config::Config;
+use crate::handlers_transcript::Transcriptions;
 use crate::push::PushSender;
 use crate::registry::Registry;
 use crate::storage::Storage;
@@ -35,6 +36,11 @@ pub struct AppState {
     /// than one-per-request, so the connection pool and the TLS session
     /// cache are actually reused.
     pub http: reqwest::Client,
+    /// The transcription calls in flight, one per attachment, and the slots
+    /// that bound how many run at once (docs/protocol.md, "Transcripts on
+    /// request"). In memory only: a restart loses at most the calls in
+    /// flight, whose askers see them fail and ask again.
+    pub transcriptions: Arc<Transcriptions>,
 }
 
 impl AppState {
@@ -60,6 +66,7 @@ impl AppState {
             cfg,
             http,
             storage,
+            transcriptions: Arc::new(Transcriptions::default()),
         }
     }
 }

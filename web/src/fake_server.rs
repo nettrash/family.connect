@@ -48,6 +48,9 @@ pub enum Answer {
     Bytes(u16, Vec<u8>, &'static str),
     /// No answer at all: the request fails as a dropped network does.
     Nothing,
+    /// No answer EVER: the request waits as one on a server that is still
+    /// working does — what a client's own deadline is for.
+    Hang,
 }
 
 impl Answer {
@@ -107,6 +110,7 @@ impl FakeServer {
                             js_sys::Uint8Array::from(bytes.as_slice()).into(),
                         ),
                         Answer::Nothing => return JsValue::NULL,
+                        Answer::Hang => return JsValue::UNDEFINED,
                     };
                     js_sys::Array::of3(&JsValue::from(status), &JsValue::from_str(kind), &payload)
                         .into()
@@ -122,6 +126,7 @@ impl FakeServer {
                  const type = input.headers.get('Content-Type') || '';
                  const answer = route(input.method, input.url, type, body);
                  if (answer === null) { throw new TypeError('Failed to fetch'); }
+                 if (answer === undefined) { return await new Promise(() => {}); }
                  const bare = answer[0] === 204 || answer[0] === 304;
                  return new Response(bare ? null : answer[2],
                      { status: answer[0], headers: { 'Content-Type': answer[1] } });

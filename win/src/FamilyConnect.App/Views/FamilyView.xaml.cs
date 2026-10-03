@@ -119,11 +119,13 @@ public sealed partial class FamilyView : UserControl
         FacesTitle.Text = say.Get("Member faces");
         GreetingHeading.Text = say.Get("Daily greeting");
         GreetingTitle.Text = say.Get("Good morning message");
+        TranscriptsTitle.Text = say.Get("Voice and video as text");
         // A switch drawn beside its words rather than under a header: the words are still its name to a screen reader.
         foreach (var (toggle, title) in new (ToggleSwitch, TextBlock)[]
         {
             (LimitSwitch, LimitTitle), (HistorySwitch, HistoryTitle), (VisionSwitch, VisionTitle),
             (RecentPhotosSwitch, RecentPhotosTitle), (FacesSwitch, FacesTitle), (GreetingSwitch, GreetingTitle),
+            (TranscriptsSwitch, TranscriptsTitle),
         })
         {
             AutomationProperties.SetName(toggle, title.Text);
@@ -182,6 +184,7 @@ public sealed partial class FamilyView : UserControl
         RecentPhotosSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiHistoryPhotos = RecentPhotosSwitch.IsOn });
         FacesSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiFaces = FacesSwitch.IsOn });
         GreetingSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiGreeting = GreetingSwitch.IsOn });
+        TranscriptsSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiTranscripts = TranscriptsSwitch.IsOn });
 
         onRoster = QueueRedraw;
         onBlock = (_, _) => QueueRedraw();
@@ -1018,6 +1021,17 @@ public sealed partial class FamilyView : UserControl
         GreetingFootnote.Text = WithNote(
             say.Get("With this on, the assistant posts one short good-morning message into the family chat each day, mentioning the star signs of the birthdays your family has set. It never sends anyone's name or birth date, only the signs; it makes no claims about the date; and it never sounds a notification — it is simply there when you next open the chat."),
             state.GreetingsEnabled ? null : say.Get("Not available here: this server doesn't post daily greetings."));
+
+        // Other members' recordings as text: the owner's own switch, tied to no other. It names who receives the sound,
+        // so it is drawn only where the server names a processor — a server that names none offers no assistant at all.
+        TranscriptsCard.Visibility = AssistantConsent.IsAvailable(assistant.Processor) ? Visibility.Visible : Visibility.Collapsed;
+        TranscriptsSwitch.IsOn = shown.AiTranscripts;
+        TranscriptsSwitch.IsEnabled = idle && assistant.Transcribe;
+        TranscriptsFootnote.Text = WithNote(
+            say.Format(
+                "With this on, members can ask for the text of other members' voice notes, audio and videos in the family chat, and that recording's sound is then sent to %@. It is sent only when someone asks, and only if the member who sent it has agreed to the assistant. Everyone can get the text of their own recordings without this. It is off unless you turn it on.",
+                assistant.Processor ?? string.Empty),
+            assistant.Transcribe ? null : say.Get("Not available here: this server can't turn recordings into text."));
     }
 
     private static string WithNote(string sentence, string? note) => note is null ? sentence : $"{sentence} {note}";

@@ -17,6 +17,8 @@
 
 package me.nettrash.familyconnect.ui.thread
 
+import me.nettrash.familyconnect.ui.chat.Transcripts
+import me.nettrash.familyconnect.data.repo.TranscriptRepository
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -76,6 +78,7 @@ class ThreadViewModel @Inject constructor(
     private val familyRepository: FamilyRepository,
     private val settings: SettingsRepository,
     private val clock: Clock,
+    transcriptRepository: TranscriptRepository,
 ) : ViewModel() {
 
     data class State(
@@ -243,6 +246,17 @@ class ThreadViewModel @Inject constructor(
         }
     }
 
+    /**
+     * "Show text" under the recordings in this chain — the chat's own rule
+     * and dialog (docs/protocol.md, "Transcripts on request").
+     */
+    val transcripts = Transcripts(
+        scope = viewModelScope,
+        settings = settings,
+        repository = transcriptRepository,
+        agree = { familyRepository.setAssistantConsent(true) },
+    )
+
     /** Whether the consent screen is up, because a sticker would have reached the model. */
     private val _assistantConsentAsked = MutableStateFlow(false)
 
@@ -257,6 +271,7 @@ class ThreadViewModel @Inject constructor(
                     processor = processor,
                     familyHistory = settingsState.familyAiHistory,
                     familyVision = settingsState.familyAiVision,
+                    transcripts = settingsState.assistantTranscribe,
                 )
             }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)

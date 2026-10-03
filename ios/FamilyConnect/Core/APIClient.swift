@@ -12,8 +12,9 @@
 //      nothing and gets `.shared`, tests pass a session backed by
 //      StubURLProtocol.
 //    - 15 s per-request timeout — generous for a LAN box, short enough
-//      that a dead server doesn't hang a UI await. Uploads and an event's
-//      backdrop, which waits on the model, get longer budgets of their own.
+//      that a dead server doesn't hang a UI await. Uploads, an event's
+//      backdrop and a recording's text, which wait on the model, get
+//      longer budgets of their own.
 //    - ONE retry, on GETs only, for transient statuses (429 / 5xx),
 //      honouring `Retry-After` (delta-seconds, capped). POSTs are never
 //      auto-retried here: message sending has its own idempotent retry
@@ -106,6 +107,17 @@ actor APIClient {
     /// is safe: the server stops drawing when the connection closes
     /// (docs/protocol.md, "Board" — "It is SLOW").
     private let backdropTimeout: TimeInterval = 120
+    /// The text of a recording gets one of its own as well (protocol.md,
+    /// "Transcripts on request" — "give this request its own timeout of at
+    /// least 90 s, never your ordinary request timeout"). A speech model
+    /// works through the whole recording before it answers, up to 25 MiB of
+    /// it, and the reference proxy waits 300 s on this one route — so this
+    /// waits a little past that, and it is the server (or the proxy
+    /// answering for it) that ends the wait, as with the backdrop. Giving
+    /// up is safe the other way round from the backdrop: a request for the
+    /// stored copy is FINISHED and kept even when nobody is waiting, so
+    /// asking again a little later returns it at once.
+    static let transcriptTimeout: TimeInterval = 310
 
     /// `session` is the only test seam — see file header.
     init(serverURL: URL?, session: URLSession = .shared) {
@@ -324,6 +336,11 @@ actor APIClient {
         /// "Profile pictures of members"): the server refuses `true` while
         /// `ai_vision` is off, and turns it off whenever `ai_vision` goes off.
         var aiFaces: Bool?
+        /// The sixth boolean, bound to nothing (protocol.md, "Transcripts on
+        /// request"): whether a member may ask for the text of another
+        /// member's recording in the family chat. Changing `ai_vision` never
+        /// clears it.
+        var aiTranscripts: Bool?
         /// The same double Optional the language uses, and for the same
         /// reason: the outer is "was this field touched", the inner is the
         /// value, and a real JSON `null` CLEARS the cap. These are the two
@@ -339,6 +356,7 @@ actor APIClient {
             case aiHistoryPhotos = "ai_history_photos"
             case aiGreeting = "ai_greeting"
             case aiFaces = "ai_faces"
+            case aiTranscripts = "ai_transcripts"
             case maxMembers = "max_members"
         }
 
@@ -360,6 +378,7 @@ actor APIClient {
             try container.encodeIfPresent(aiHistoryPhotos, forKey: .aiHistoryPhotos)
             try container.encodeIfPresent(aiGreeting, forKey: .aiGreeting)
             try container.encodeIfPresent(aiFaces, forKey: .aiFaces)
+            try container.encodeIfPresent(aiTranscripts, forKey: .aiTranscripts)
             if let maxMembers {
                 if let cap = maxMembers {
                     try container.encode(cap, forKey: .maxMembers)
@@ -537,6 +556,16 @@ actor APIClient {
     func setAIFaces(_ enabled: Bool) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
             "PATCH", "/families/mine", body: FamilyPatchRequest(aiFaces: enabled))
+        return response.family
+    }
+
+    /// Turn the sixth switch on or off — whether members may ask for the
+    /// text of OTHER members' recordings in the family chat (protocol.md,
+    /// "Transcripts on request"). Sends this one key and nothing else. Bound
+    /// to no other switch, so no state of them can refuse it.
+    func setAITranscripts(_ enabled: Bool) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(aiTranscripts: enabled))
         return response.family
     }
 
@@ -884,6 +913,45 @@ actor APIClient {
         }
     }
 
+    /// The bytes of an attachment, written to `destination` rather than
+    /// held in memory — a video may be 100 MB. For the one caller that
+    /// needs a whole streamed file on this device: the sound a transcript
+    /// request supplies (`TranscriptSound`). On `uploadTimeout`, the budget
+    /// a file that size already gets on the way up; a GET, but not retried
+    /// here — the caller says "Try again" and the person decides.
+    func downloadAttachment(id: Int64, to destination: URL) async throws {
+        guard let serverURL,
+              let url = Self.endpointURL(base: serverURL, path: "/attachments/\(id)")
+        else { throw APIError.notConfigured }
+        var request = URLRequest(url: url, timeoutInterval: uploadTimeout)
+        request.httpMethod = "GET"
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let downloaded: URL
+        let response: URLResponse
+        do {
+            (downloaded, response) = try await session.download(for: request)
+        } catch let error as URLError {
+            throw APIError.transport(error)
+        }
+        // Moved (or removed) before anything else can suspend: the system
+        // owns the temporary file and may clean it up.
+        defer { try? FileManager.default.removeItem(at: downloaded) }
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.transport(URLError(.badServerResponse))
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let body = (try? Data(contentsOf: downloaded)) ?? Data()
+            throw Self.mapError(
+                status: http.statusCode, data: body, retryAfter: Self.retryAfterSeconds(http))
+        }
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: downloaded, to: destination)
+    }
+
     /// A URL an AVPlayer can stream from directly, with the session token
     /// attached — the player fetches bytes itself rather than waiting for
     /// the whole video to download.
@@ -1127,6 +1195,95 @@ actor APIClient {
             query: [], bodyData: nil, timeout: backdropTimeout)
         let response: NoteResponse = try decodeResponse(data)
         return response.note
+    }
+
+    /// `POST /chats/{c}/messages/{m}/attachments/{a}/transcript` — the text
+    /// of one recording, from the server's STORED copy (protocol.md,
+    /// "Transcripts on request").
+    ///
+    /// NO BODY and no `Content-Type`, which is the stored-bytes form: the
+    /// server sends the file it already holds and keeps the answer, so the
+    /// next member who asks gets it without a second provider call. The
+    /// other form — sound this device supplies, as multipart — is for a
+    /// video, an Ogg file or an oversized one: `transcript(…suppliedSound:)`.
+    ///
+    /// On `transcriptTimeout`, never the ordinary one. The refusals keep
+    /// their codes (`TranscriptOutcome` sorts them): 403
+    /// `assistant_consent_required` / `transcript_not_allowed` /
+    /// `transcripts_unavailable`, 400 `not_transcribable` /
+    /// `transcript_refused`, 500 `internal`.
+    func transcript(chatID: Int64, messageID: Int64, attachmentID: Int64) async throws -> TranscriptDTO {
+        let (data, _) = try await perform(
+            "POST",
+            "/chats/\(chatID)/messages/\(messageID)/attachments/\(attachmentID)/transcript",
+            query: [], bodyData: nil, timeout: Self.transcriptTimeout)
+        let response: TranscriptResponse = try decodeResponse(data)
+        return response.transcript
+    }
+
+    /// The same request in its OTHER form: `multipart/form-data` with one
+    /// part, `audio`, carrying sound this device took out of the file
+    /// itself (`TranscriptSound`) — an M4A of AAC, `Content-Type:
+    /// audio/mp4`, at most `transcribe_max_bytes`. For a video, an Ogg
+    /// file, a type outside the provider's list or a recording over the
+    /// ceiling. The server returns the answer and keeps NOTHING
+    /// (protocol.md, "Transcripts on request"), so the caller keeps it.
+    ///
+    /// The form is written to a file beside the sound and streamed from
+    /// there, as every upload is, and removed afterwards. Same timeout,
+    /// same refusals, never retried.
+    func transcript(
+        chatID: Int64, messageID: Int64, attachmentID: Int64, suppliedSound sound: URL
+    ) async throws -> TranscriptDTO {
+        guard let serverURL,
+              let url = Self.endpointURL(
+                base: serverURL,
+                path: "/chats/\(chatID)/messages/\(messageID)/attachments/\(attachmentID)/transcript")
+        else { throw APIError.notConfigured }
+        let boundary = "fc-\(UUID().uuidString)"
+        let form = sound.deletingLastPathComponent()
+            .appendingPathComponent("form-\(UUID().uuidString)").appendingPathExtension("body")
+        defer { try? FileManager.default.removeItem(at: form) }
+        try Self.writeTranscriptForm(sound: sound, boundary: boundary, to: form)
+
+        var request = URLRequest(url: url, timeoutInterval: Self.transcriptTimeout)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(
+            "multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, response) = try await uploadFromFile(request, fileURL: form)
+        guard (200..<300).contains(response.statusCode) else {
+            throw Self.mapError(
+                status: response.statusCode, data: data, retryAfter: Self.retryAfterSeconds(response))
+        }
+        let decoded: TranscriptResponse = try decodeResponse(data)
+        return decoded.transcript
+    }
+
+    /// The multipart body of a supplied-sound transcript request, written
+    /// to `destination`: one part named `audio`, file name `sound.m4a`,
+    /// `Content-Type: audio/mp4`, the sound's bytes copied in chunks (never
+    /// the whole file in memory), and the closing boundary.
+    static func writeTranscriptForm(sound: URL, boundary: String, to destination: URL) throws {
+        try? FileManager.default.removeItem(at: destination)
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let out = try FileHandle(forWritingTo: destination)
+        defer { try? out.close() }
+        let input = try FileHandle(forReadingFrom: sound)
+        defer { try? input.close() }
+        out.write(Data((
+            "--\(boundary)\r\n"
+            + "Content-Disposition: form-data; name=\"audio\"; filename=\"sound.m4a\"\r\n"
+            + "Content-Type: audio/mp4\r\n\r\n").utf8))
+        while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
+            out.write(chunk)
+        }
+        out.write(Data("\r\n--\(boundary)--\r\n".utf8))
     }
 
     func deleteNote(id: Int64) async throws {
@@ -1437,7 +1594,7 @@ actor APIClient {
         }
 
         // The ordinary budget unless the one call asking said otherwise
-        // (`backdropTimeout`).
+        // (`backdropTimeout`, `transcriptTimeout`).
         var request = URLRequest(url: url, timeoutInterval: requestTimeout ?? timeout)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")

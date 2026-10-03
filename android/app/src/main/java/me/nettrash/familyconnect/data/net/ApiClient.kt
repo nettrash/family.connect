@@ -127,7 +127,8 @@ class ApiClient @Inject constructor(
      * POST with an empty body (approve / reject / rotate / leave / logout).
      *
      * [timeout] is the upload's lever, for the one empty POST that waits on
-     * a model — an event's backdrop ([BACKDROP_TIMEOUT]). ZERO, the default,
+     * a model — an event's backdrop ([BACKDROP_TIMEOUT]), a transcript
+     * ([TRANSCRIPT_TIMEOUT]). ZERO, the default,
      * keeps the shared client's ordinary budget.
      */
     suspend inline fun <reified T> postEmpty(
@@ -208,6 +209,19 @@ class ApiClient @Inject constructor(
             it.body.string()
         }
 
+    /**
+     * Send a body built elsewhere — the transcript request's multipart
+     * sound (TranscriptApi) — with its own [timeout]. The response is JSON,
+     * so it comes back as text for `decode`.
+     */
+    suspend fun rawBody(
+        method: String,
+        path: String,
+        body: RequestBody,
+        timeout: Duration,
+    ): ApiResult<String> =
+        send(method, path, body, auth = true, overrideBase = null, timeout = timeout) { it.body.string() }
+
     /** Fetch a binary response body (profile pictures, previews). */
     suspend fun rawDownload(path: String): ApiResult<ByteArray> =
         send("GET", path, null, auth = true, overrideBase = null) { it.body.bytes() }
@@ -242,8 +256,13 @@ class ApiClient @Inject constructor(
      * off half-way can never be mistaken for a cached photo — the same
      * trick the server uses on the way in (server/src/storage.rs).
      */
-    suspend fun rawDownloadToFile(path: String, destination: File): ApiResult<Unit> =
-        send("GET", path, null, auth = true, overrideBase = null) { response ->
+    suspend fun rawDownloadToFile(
+        path: String,
+        destination: File,
+        /** ZERO keeps the shared client's budget; see [send] and [DOWNLOAD_TIMEOUT]. */
+        timeout: Duration = Duration.ZERO,
+    ): ApiResult<Unit> =
+        send("GET", path, null, auth = true, overrideBase = null, timeout = timeout) { response ->
             val part = File(destination.parentFile, destination.name + ".part")
             part.parentFile?.mkdirs()
             try {
@@ -405,6 +424,27 @@ class ApiClient @Inject constructor(
          * connection closes first draws nothing (docs/protocol.md, "Board").
          */
         val BACKDROP_TIMEOUT: Duration = Duration.ofSeconds(120)
+
+        /**
+         * An attachment's ORIGINAL bytes coming down — a video of up to
+         * 100 MB for "Save", "Open" or the sound of a transcript request.
+         * The shared client's 20 s wall clock cut such a download off however
+         * well it was going; this gives up only when no byte has moved for a
+         * minute, as the upload's budget does.
+         */
+        val DOWNLOAD_TIMEOUT: Duration = Duration.ofSeconds(60)
+
+        /**
+         * A recording turned into text (docs/protocol.md, "Transcripts on
+         * request"): the answer waits on the provider listening to up to
+         * 25 MB of sound, so it gets a budget of its own, never the
+         * ordinary 20 s. The protocol's floor is 90 s; the reference proxy
+         * waits 300 s on this route, and waiting a little past it lets the
+         * proxy's own answer arrive rather than racing it. Giving up early
+         * costs nothing on the server — a request for the stored copy is
+         * finished and kept anyway, so asking again returns it at once.
+         */
+        val TRANSCRIPT_TIMEOUT: Duration = Duration.ofSeconds(310)
     }
     /**
      * The app's own resolved locale as an IETF tag, e.g. `ru-RU`.

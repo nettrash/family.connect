@@ -45,6 +45,7 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import androidx.compose.runtime.CompositionLocalProvider
 import android.content.ClipData
 import android.content.Intent
 import android.os.Build
@@ -1041,6 +1042,10 @@ fun ChatScreen(
         label = "chatBarLift",
     )
 
+    // "Show text" under every recording here reaches the screen's own
+    // Transcripts through this, rather than through every bubble's
+    // parameters (docs/protocol.md, "Transcripts on request").
+    CompositionLocalProvider(LocalTranscripts provides viewModel.transcripts) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -1461,6 +1466,7 @@ fun ChatScreen(
             )
         }
     }
+    }
 
     if (stickerPanelOpen) {
         StickerPanelSheet(
@@ -1677,8 +1683,24 @@ fun ChatScreen(
             processor = ask.processor,
             familyHistory = ask.familyHistory,
             familyVision = ask.familyVision,
+            transcripts = ask.transcripts,
             onAgree = viewModel::agreeToTheAssistant,
             onDismiss = viewModel::dismissAssistantConsent,
+        )
+    }
+
+    // The consent screen, raised by "Show text": the asker is the one
+    // sending the recording's sound to the provider (docs/protocol.md,
+    // "Transcripts on request"). Agreeing asks for the text again.
+    val transcriptConsentAsk by viewModel.transcripts.consentAsk.collectAsStateWithLifecycle()
+    transcriptConsentAsk?.let { ask ->
+        AssistantConsentDialog(
+            processor = ask.processor,
+            familyHistory = ask.familyHistory,
+            familyVision = ask.familyVision,
+            transcripts = ask.transcripts,
+            onAgree = viewModel.transcripts::agreed,
+            onDismiss = viewModel.transcripts::dismissed,
         )
     }
 
@@ -3908,6 +3930,19 @@ private fun BubbleContent(
                 onLongPress = onTextLongPress,
                 onDoubleTap = onDoubleTap,
                 onBalloon = !mediaOnly,
+                // "Show text" under a voice note, an audio file or a video,
+                // when this member may ask (docs/protocol.md, "Transcripts on
+                // request").
+                recordingFooter = { attachment, videoNumber ->
+                    TranscriptLine(
+                        attachment = attachment,
+                        chatKind = chat?.kind,
+                        chatId = entity.chatId,
+                        messageServerId = entity.serverId,
+                        senderId = entity.senderId,
+                        videoNumber = videoNumber,
+                    )
+                },
             )
             if (entity.body.isNotEmpty()) Spacer(Modifier.height(6.dp))
         }

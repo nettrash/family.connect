@@ -106,6 +106,13 @@ interface FamilyApi {
      * [setAiHistoryPhotos] is.
      */
     suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: whether members may ask for the text of OTHER members'
+     * recordings in the family chat (docs/protocol.md, "Transcripts on
+     * request"). Family-wide, OFF by default, bound to no other switch.
+     */
+    suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse>
     suspend fun joinRequests(): ApiResult<JoinRequestsResponse>
     suspend fun approve(requestId: Long): ApiResult<ApproveResponse>
     suspend fun reject(requestId: Long): ApiResult<Unit>
@@ -230,6 +237,9 @@ class DefaultFamilyApi @Inject constructor(
 
     override suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> =
         client.patch("/families/mine", PatchFamilyRequest.aiFaces(enabled))
+
+    override suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.aiTranscripts(enabled))
 
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> =
         client.get("/families/join-requests")

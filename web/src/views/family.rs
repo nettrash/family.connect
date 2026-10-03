@@ -954,6 +954,10 @@ pub fn overlay(family: &Family, patch: Option<&FamilyPatch>) -> Family {
     if let Some(on) = patch.ai_greeting {
         shown.ai_greeting = on;
     }
+    // Tied to no other switch: vision going off leaves it as it was.
+    if let Some(on) = patch.ai_transcripts {
+        shown.ai_transcripts = on;
+    }
     shown
 }
 
@@ -1104,6 +1108,17 @@ fn assistant_settings(props: &AssistantProps) -> Html {
                     }
                 </p>
             </section>
+            <TranscriptsSwitch
+                on={family.ai_transcripts}
+                transcribe={props.assistant.transcribe}
+                processor={props
+                    .assistant
+                    .processor
+                    .clone()
+                    .filter(|processor| !processor.trim().is_empty())
+                    .unwrap_or_else(|| props.assistant.display_name.clone())}
+                on_change={switch(|on| FamilyPatch { ai_transcripts: Some(on), ..FamilyPatch::default() })}
+            />
             <section class="group" aria-labelledby="assistant-greeting">
                 <h3 id="assistant-greeting">{ t("Daily greeting") }</h3>
                 <label class="setting-row toggle">
@@ -1122,6 +1137,42 @@ fn assistant_settings(props: &AssistantProps) -> Html {
                 <p class="error" role="alert">{ message }</p>
             }
         </>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct TranscriptsSwitchProps {
+    /// The family's `ai_transcripts`, as a change on its way leaves it.
+    pub on: bool,
+    /// Whether this SERVER can turn a recording into text at all.
+    pub transcribe: bool,
+    /// Who the sound goes to — `assistant.processor`, verbatim.
+    pub processor: String,
+    pub on_change: Callback<Event>,
+}
+
+/// The owner's `ai_transcripts` (docs/protocol.md, "Transcripts on
+/// request"): whether members may ask for the text of OTHER members'
+/// recordings in the family chat. A section of its own, beside the
+/// pictures; inert-but-explained on a server that cannot transcribe, as the
+/// greeting is on one that posts none.
+#[function_component(TranscriptsSwitch)]
+pub fn transcripts_switch(props: &TranscriptsSwitchProps) -> Html {
+    html! {
+        <section class="group" aria-label={t("Voice and video as text")}>
+            <label class="setting-row toggle">
+                <span>{ t("Voice and video as text") }</span>
+                <input type="checkbox" role="switch" class="transcripts-switch"
+                    disabled={!props.transcribe} checked={props.on}
+                    onchange={props.on_change.clone()} />
+            </label>
+            <p class="footnote">
+                { t1("With this on, members can ask for the text of other members' voice notes, audio and videos in the family chat, and that recording's sound is then sent to %@. It is sent only when someone asks, and only if the member who sent it has agreed to the assistant. Everyone can get the text of their own recordings without this. It is off unless you turn it on.", &props.processor) }
+                if !props.transcribe {
+                    { " " }{ t("Not available here: this server can't turn recordings into text.") }
+                }
+            </p>
+        </section>
     }
 }
 
@@ -1363,5 +1414,114 @@ mod tests {
         );
         assert!(policy_caption("closed").starts_with("The invite code stops working"));
         assert!(policy_caption("approval").starts_with("With approval"));
+    }
+
+    /// The transcripts switch rides on nothing: vision going off leaves it
+    /// as it was, and its own patch is the only thing that moves it.
+    #[wasm_bindgen_test]
+    fn the_transcripts_switch_is_tied_to_no_other() {
+        let family = Family {
+            ai_vision: true,
+            ai_transcripts: true,
+            ..Default::default()
+        };
+        let vision_off = FamilyPatch {
+            ai_vision: Some(false),
+            ..FamilyPatch::default()
+        };
+        assert!(overlay(&family, Some(&vision_off)).ai_transcripts);
+        let off = FamilyPatch {
+            ai_transcripts: Some(false),
+            ..FamilyPatch::default()
+        };
+        let shown = overlay(&family, Some(&off));
+        assert!(!shown.ai_transcripts && shown.ai_vision);
+        assert_eq!(
+            serde_json::to_value(&off).unwrap(),
+            serde_json::json!({"ai_transcripts": false}),
+            "the one key that changed"
+        );
+    }
+
+    /// THE OWNER'S SWITCH, drawn and pressed: one write of exactly its own
+    /// key; the footer names who the sound goes to; and on a server that
+    /// cannot transcribe it is drawn inert, with the reason.
+    #[wasm_bindgen_test]
+    async fn the_owners_transcripts_switch_writes_its_own_key() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root = document.create_element("div").unwrap();
+        document.body().unwrap().append_child(&root).unwrap();
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let into = sent.clone();
+        let on_action = Callback::from(move |action: Action| {
+            if let Action::ChangeFamily { patch, done } = action {
+                into.borrow_mut().push(patch);
+                done.emit(None);
+            }
+        });
+        let assistant = |transcribe: bool| Assistant {
+            user_id: 2,
+            display_name: "Assistant".into(),
+            mention: Some("@ai".into()),
+            draw: None,
+            vision: true,
+            images: false,
+            processor: Some("Microsoft — Azure OpenAI".into()),
+            transcribe,
+            transcribe_max_bytes: transcribe.then_some(26_214_400),
+        };
+        let props = AssistantProps {
+            family: Family::default(),
+            assistant: assistant(true),
+            greetings: false,
+            on_action: on_action.clone(),
+        };
+        yew::Renderer::<AssistantSettings>::with_root_and_props(root.clone(), props).render();
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        let switch: web_sys::HtmlInputElement = root
+            .query_selector(".transcripts-switch")
+            .unwrap()
+            .expect("the switch")
+            .dyn_into()
+            .unwrap();
+        assert!(!switch.checked(), "off unless the owner turns it on");
+        assert!(!switch.disabled());
+        let text = root.text_content().unwrap_or_default();
+        assert!(text.contains("Voice and video as text"));
+        assert!(text.contains("that recording's sound is then sent to Microsoft — Azure OpenAI."));
+        assert!(!text.contains("Not available here: this server can't turn recordings into text."));
+        switch.click();
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        assert_eq!(
+            *sent.borrow(),
+            vec![FamilyPatch {
+                ai_transcripts: Some(true),
+                ..FamilyPatch::default()
+            }]
+        );
+        root.remove();
+
+        let root = document.create_element("div").unwrap();
+        document.body().unwrap().append_child(&root).unwrap();
+        let props = AssistantProps {
+            family: Family::default(),
+            assistant: assistant(false),
+            greetings: false,
+            on_action,
+        };
+        yew::Renderer::<AssistantSettings>::with_root_and_props(root.clone(), props).render();
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        let switch: web_sys::HtmlInputElement = root
+            .query_selector(".transcripts-switch")
+            .unwrap()
+            .expect("the switch")
+            .dyn_into()
+            .unwrap();
+        assert!(switch.disabled(), "inert where the server cannot");
+        assert!(root
+            .text_content()
+            .unwrap_or_default()
+            .contains("Not available here: this server can't turn recordings into text."));
+        root.remove();
     }
 }

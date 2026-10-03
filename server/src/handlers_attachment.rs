@@ -58,7 +58,7 @@ const ATTACHMENT_COLS: &str = "id, kind, mime, size_bytes, width, height, durati
 /// The declared type must match the bytes. Same rule as avatars: a magic
 /// number is the whole check, because deciding otherwise would mean an
 /// image and video codec in the server.
-fn matches_magic(mime: &str, head: &[u8]) -> bool {
+pub(crate) fn matches_magic(mime: &str, head: &[u8]) -> bool {
     match mime {
         "image/jpeg" => head.starts_with(&[0xFF, 0xD8, 0xFF]),
         "image/png" => head.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),

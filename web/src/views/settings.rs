@@ -366,6 +366,7 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
                     {processor}
                     family_history={props.family.as_ref().is_some_and(|family| family.ai_history)}
                     family_vision={props.family.as_ref().is_some_and(|family| family.ai_vision)}
+                    transcribe={props.assistant.as_ref().is_some_and(|assistant| assistant.transcribe)}
                     {on_agree}
                     on_cancel={close_open.clone()}
                 />
@@ -773,13 +774,18 @@ fn statistics(stats: &Stats) -> Html {
                     <p class="footnote">{ t1("%@ saved by storing one copy of identical files.", &display_size(saved)) }</p>
                 }
             </section>
-            if ai.questions > 0 || ai.images > 0 {
+            if ai.questions > 0 || ai.images > 0 || ai.transcripts > 0 {
                 <section class="group">
                     <h3>{ t("Assistant") }</h3>
                     { number_row(t("Questions"), ai.questions.to_string()) }
                     { number_row(t("Tokens"), (ai.prompt_tokens + ai.completion_tokens).to_string()) }
                     if ai.images > 0 {
                         { number_row(t("Pictures"), ai.images.to_string()) }
+                    }
+                    // Billed by length, not tokens — so the length is shown.
+                    if ai.transcripts > 0 {
+                        { number_row(t("Recordings as text"), ai.transcripts.to_string()) }
+                        { number_row(t("Recording time"), recording_time(ai.transcript_duration_ms)) }
                     }
                 </section>
             }
@@ -797,6 +803,12 @@ fn statistics(stats: &Stats) -> Html {
             </section>
         </>
     }
+}
+
+/// The total length of the recordings sent for their text, as a duration
+/// — `3:42`, or `1:03:42` past an hour — rounded to the nearest second.
+pub fn recording_time(duration_ms: i64) -> String {
+    fc_text::call_record::duration((duration_ms.max(0) + 500) / 1000)
 }
 
 /// What one member sends, besides words (ios StatisticsView).
@@ -820,6 +832,9 @@ pub fn member_line(member: &MemberStats) -> String {
     }
     if member.ai.images > 0 {
         parts.push(tn("%lld pictures from the assistant", member.ai.images));
+    }
+    if member.ai.transcripts > 0 {
+        parts.push(tn("%lld recordings as text", member.ai.transcripts));
     }
     if parts.is_empty() {
         t("Words only").to_string()
@@ -869,6 +884,16 @@ mod tests {
             member_line(&member),
             "1 attachment, 1.2 MB · 2 questions to the assistant · 1 picture from the assistant"
         );
+        member.ai.transcripts = 3;
+        assert!(member_line(&member).ends_with(" · 3 recordings as text"));
+    }
+
+    #[wasm_bindgen_test]
+    fn recording_time_is_a_duration() {
+        assert_eq!(recording_time(0), "0:00");
+        assert_eq!(recording_time(-5), "0:00");
+        assert_eq!(recording_time(222_400), "3:42");
+        assert_eq!(recording_time(3_822_000), "1:03:42");
     }
 
     #[wasm_bindgen_test]

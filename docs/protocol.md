@@ -206,7 +206,8 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `invalid_note_font`, `invalid_note_kind`, `invalid_rsvp`, `invalid_task`, `invalid_language`,
 `board_full`, `pack_full`, `pack_item_too_large`, `pack_item_not_found`, `not_pack_item_author`,
 `invalid_pagination`, `device_not_found`, `invalid_poll`, `poll_closed`,
-`pictures_unavailable`, `picture_refused`,
+`assistant_consent_required`, `pictures_unavailable`, `picture_refused`,
+`transcripts_unavailable`, `transcript_not_allowed`, `not_transcribable`, `transcript_refused`,
 `calls_disabled`, `video_calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`,
 `peer_busy`, `peer_unreachable`, `avatar_too_large`, `invalid_image`, `attachment_too_large`,
 `invalid_attachment`, `attachment_not_found`, `attachment_expired`, `attachment_already_used`,
@@ -231,6 +232,11 @@ the wait at something sane. A `429` is never a failed message.
 `owner_cannot_leave` is RETIRED: no endpoint raises it any more (see `POST /families/leave`). It
 stays listed because clients that predate the hand-off still branch on it, and a code that vanishes
 from this document is a code somebody deletes from a client that is still talking to an old server.
+
+`assistant_consent_required` was MISSING from the list above until 2026-10-02, although the server
+has answered it (403) on every path that calls the model since "Consenting to the assistant" was
+written. It is listed now because the transcript endpoint answers it too, and a code a client learns
+only from prose is a code one client branches on and the next does not. Nothing about it changed.
 
 ## Objects
 
@@ -259,7 +265,8 @@ Member    {"id": 7, "username": "anna", "display_name": "Anna", "role": "owner|m
             name is the client's job, and may not be possible (see "Blocking a member")
 Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval|closed",
            "created_at": "…", "ai_history": true, "ai_vision": false,
-           "ai_history_photos": false, "ai_greeting": false, "ai_faces": false}
+           "ai_history_photos": false, "ai_greeting": false, "ai_faces": false,
+           "ai_transcripts": false}
           — plus "invite_code": "ABCD2345" when (and only when) the caller is the owner
           — plus "max_members": 8 when (and only when) the owner has set a cap. ABSENT means
             the family has no cap of its own and only the operator's ceiling binds — absent is
@@ -307,6 +314,16 @@ Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval|closed",
             travels only for a name the model has been told. A client that never heard of it
             reads an absent key as false, which is the truth for every family that predates it —
             see "Profile pictures of members"
+          — "ai_transcripts" is ALWAYS present too, and defaults to FALSE (added 2026-10-02). A
+            SIXTH switch: whether a member may ask for the text of ANOTHER member's voice note,
+            audio file or video in the family chat — which sends that member's recorded voice to
+            `assistant.processor`. A member's OWN recordings need no switch, only their own
+            consent. It is INDEPENDENT of the five above, neither reading them nor read by them:
+            it is not about what a mention is shown, and the assistant is never shown a
+            transcript at any setting. It does nothing unless the server has a transcription
+            deployment (`assistant.transcribe`). A client that never heard of it reads an absent
+            key as false, which is the truth for every family that predates it — see
+            "Transcripts on request"
 JoinRequest {"id": 12, "user": {User}, "created_at": "…"}
 Report    {"id": 4, "reporter": {User}, "reported": {User},
            "reason": "spam|harassment|inappropriate|other", "created_at": "…"}
@@ -1719,6 +1736,13 @@ whatever it asks for (see "A browser is a client too"), and a family setting tha
 re-languaged somebody's phone would be a surprise nobody asked for. It is
 also deliberately not applied to a member's private assistant thread, for the reason given there.
 
+*Amended 2026-10-02:* it has a second use now, and only one: it is sent as a language HINT with a
+request for a transcript (see "Transcripts on request"), as the bare language — `sr-Latn` and `sr`
+both as `sr`, `zh-Hans` as `zh` — because a speech model hears a language and not an alphabet.
+Unset sends no hint and the provider detects the language itself; unset is still not English. Under
+the speech contract (`[ai.transcribe] api = "speech"`) it is sent only when the operator opted in,
+and `sr` / `sr-Latn` never, because MAI-Transcribe-2 does not list Serbian.
+
 ### Birthdays
 
 A member may have a birthday, and it is **a day and a month, with no year**. Nobody should have to
@@ -1905,11 +1929,14 @@ assistant outright when the server has one:
 ```json
 "assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai",
               "draw": "/draw", "vision": true, "images": true,
+              "transcribe": true, "transcribe_max_bytes": 26214400,
               "processor": "Microsoft — Azure OpenAI (Sweden Central)"}
 ```
 
-`draw`, `vision` and `images` are about pictures and are described under "Pictures" below; the
-first three keys are the whole of what the family chat needs to name the assistant and offer `@ai`.
+`draw`, `vision` and `images` are about pictures and are described under "Pictures" below;
+`transcribe` and `transcribe_max_bytes` are about the text of recordings and are described under
+"Transcripts on request"; the first three keys are the whole of what the family chat needs to name
+the assistant and offer `@ai`.
 
 **`processor` names who actually answers**, in the operator's own words, and a client must show it
 before anybody's words leave the family — see "Consenting to the assistant" below. It is
@@ -1992,6 +2019,22 @@ the same provider's TEXT model to be reworded, as the amendment above says of a 
 the member's words, going to the provider they agreed to, in the shape they could have sent them
 themselves; this widens no consent either.
 
+*Amended 2026-10-02:* a member may now send one more thing to `processor`, and it is not words they
+typed: the recorded SOUND of a voice note, an audio file or a video's audio, when they ask for its
+text (see "Transcripts on request"). It goes to the same provider and to nobody else, it goes only
+when the member asks, one recording at a time, and it is the ASKER's consent that is asked —
+exactly as a `/draw` asks the drawer's — and refused the same way, `assistant_consent_required`.
+A recording somebody ELSE sent goes only under two more keys: the family owner's `ai_transcripts`,
+and that SENDER's own consent. The second is the rule two paragraphs down about history, applied
+to a voice instead of a line of text: declining protects a member's words wherever they are, and
+not only when they are the one asking — a switch the owner flips cannot speak for them, and neither
+can the member who wants to read what they said. Because this is a new KIND of thing leaving the
+server rather than more of the same, a client says it on the consent screen in a line of its own —
+that asking for the text of a recording sends that recording's sound to `processor` — and must not
+say anything that contradicts it. A member who agreed before the line existed agreed to their
+messages going to `processor`; a voice note is one of their messages, so their consent stands, and
+a client that has not yet added the line is incomplete rather than untrue.
+
 **Recorded on the server, not on the device.** `GET /me` carries `assistant_consent_at`, a
 timestamp or null, and `POST /me/assistant-consent` sets it. Server-side for three reasons: the
 SERVER is what calls the model, so it is the only place a refusal cannot be bypassed by a client
@@ -2006,7 +2049,7 @@ to lose would be its own surprise — and consenting again resumes from there.
 
 **Without consent the server refuses**, and refuses the same way everywhere it would otherwise
 call the model: a message to an `ai` chat, an `@ai` mention in the family chat, a picture for it to
-look at, a `/draw`, an event's backdrop on the board. The answer is `assistant_consent_required`
+look at, a `/draw`, an event's backdrop on the board, a transcript of a recording (2026-10-02). The answer is `assistant_consent_required`
 (403). It is a REFUSAL and not a silent drop, because a message that vanishes is a bug report; the
 client shows the consent screen and offers to send again.
 
@@ -3368,6 +3411,7 @@ per request and the family never sees the seam:
 | an `@ai` mention in a family whose owner has turned `ai_history_photos` on, when photos travel (2026-09-03) | `[ai.vision]` | what a mention sends, plus up to four photos under ONE budget — the mention's, then the quote's, then the transcript's newest — each `[photo N]`-numbered where it is written |
 | a question the text model answers by calling `draw_picture` (#56) | `[ai]`, then `[ai.images]` | the usual text request — with one tool declared — and then the tool's `prompt`, and nothing else; only if that `prompt` is REFUSED, the asking message's own words with the `@ai` taken out, as a `/draw` of them would send (2026-10-01) |
 | a description the images deployment REFUSED — from any of the rows above that reach it, or a board backdrop (2026-09-30) | `[ai]`, then `[ai.images]` once more | the refused description under a fixed instruction to reword it, and then the rewrite, and nothing else — on the `draw_picture` row, the member's own words when there are any, never the refused `prompt` as well (2026-10-01) |
+| the text of a voice note, an audio file or a video, asked for by a member (2026-10-02) | `[ai.transcribe]` | that one recording's sound — the stored file, or the sound track the asking device sent — and the family's language as a hint when it has one (under `api = "speech"`, only when the operator opted in, and never `sr`), plus, under `api = "speech"`, the model's name and the transcription style; no prompt, no words, no history, no picture (see "Transcripts on request") |
 
 `[ai]` is the section that already existed and it keeps its meaning exactly: it is the TEXT
 deployment, and a server that configures nothing else behaves precisely as it did before — which is
@@ -3377,6 +3421,16 @@ api-version of `[ai]` when it does not give one, because in practice all three a
 one resource. Configure neither and the assistant has no eyes and no hands; configure one and only
 that half of this section is reachable. `assistant.vision` and `assistant.images` on
 `GET /families/mine` are exactly these two answers, which is how a client knows what to offer.
+
+*Amended 2026-10-02:* there is a FOURTH, `[ai.transcribe]`, which is not about pictures at all and
+is described under "Transcripts on request". It is the same shape as the two above — a sub-section
+naming a deployment, inheriting the endpoint, key, auth and api-version of `[ai]`, off until it is
+named — and `assistant.transcribe` is its answer in the same way. "Three deployments" above means
+the three a question or a picture can reach; the fourth answers only a request for a transcript,
+and nothing in this section ever reaches it. *Amended again the same day:* the fourth may instead
+speak the Azure Speech contract (`api = "speech"`, for Microsoft's MAI-Transcribe models), and then
+it inherits only the key — its endpoint and api-version are a different service's and must be its
+own, and its key always travels as `Ocp-Apim-Subscription-Key`.
 
 The api-version, the endpoint shape and the deployment names are the operator's business and are not
 on the wire in any form. No client ever learns which model answered, and no client may be told: it is
@@ -3394,6 +3448,12 @@ rule above unchanged, because an image to be edited is a photograph reaching a m
 locks, the same deliberate attach, the same four-and-5-MiB bounds.
 
 **Video, in either direction**, is not here and is not planned. The server decodes no media.
+
+*Amended 2026-10-02:* the text of a video's SOUND is now something a member can ask for (see
+"Transcripts on request"), and this paragraph stays true: the server still decodes no media. The
+asking device, which already downloaded the video to play it, takes the sound track out itself and
+sends that; the server sees no picture, cuts nothing and decodes nothing. The ASSISTANT is still
+shown a video as `[video]` and never anything from inside it.
 
 **Automatic routing** — the assistant deciding for itself that an answer would be better as a
 picture — is not here either, and the reason is worth writing down because it is the obvious design
@@ -3497,6 +3557,317 @@ way to remove it.
 sequence. Reactions, replies, editing, retention, catch-up and unread all work on it because it is
 not special, and a client that knows nothing about greetings draws it as what it is — a message
 from the assistant in the family chat, which every client can already draw.
+
+#### Transcripts on request
+
+*Decided 2026-10-02 (#62). The assessment, the facts that were checked and the six decisions are in
+`docs/transcripts-2026-09-13.md`; this section is what was decided.*
+
+A member may ask for the TEXT of a voice note, an audio file or a video's sound. **When they ask,
+one recording at a time, and the answer goes to whoever asked** — in the response to their own
+request. Nothing is transcribed unasked, and nothing is added to the message for everyone else.
+
+The issue asked for the opposite — every recording transcribed automatically and the text attached
+to the message as a second layer — and that design was worked out in full before it was set aside.
+It would have sent every member's voice to a provider without anybody asking for it that time, which
+this protocol has only ever allowed behind an owner's switch; it would have needed a new frame, a new
+sequence and a new catch-up feed, because the edit feed marks a message "edited" on every installed
+iPhone, Mac and Android phone; and it would have billed every voice note of every family whether
+anybody read it or not. On request, each of those disappears: the member who asks is the member
+sending the sound, so consent has a person; the answer is the response, so there is nothing to
+deliver; and the bill follows what somebody actually wanted to read.
+
+It runs **on the server, through the operator's provider**, rather than on the device. On-device
+speech recognition is uneven across this product's clients — Apple's needs iOS 26 / macOS 26 and has
+no Serbian, Android's takes a file only from API 33, browsers have none — so whether a member could
+read a recording would depend on which phone they hold, and two members could read two different
+texts of the same voice note.
+
+**The deployment.** `[ai.transcribe]`, a fourth deployment beside `[ai.vision]` and `[ai.images]`
+and, under the default `api = "openai"`, the same shape: it inherits the endpoint, key, auth and
+api-version of `[ai]` unless it names its own; naming a `deployment` (or an `endpoint` of its own —
+a pasted full target URI is used verbatim, as everywhere else) is what turns it on. (Under
+`api = "speech"` — "two provider contracts", below — nothing is inherited but the key: the section
+must name its own `endpoint` AND a `model`, and a `deployment` or `auth` is refused at startup.)
+Either way, `GET /families/mine` reports it in the `assistant` object:
+
+- **`transcribe`** — `true` when this server has a transcription deployment, `false` otherwise.
+  Present whenever the `assistant` object is. A client offers "Show text" only when it is true,
+  for the reason the whole object exists: an affordance that silently does nothing is worse than
+  one that is not there. A client that predates it reads an absent key as false.
+- **`transcribe_max_bytes`** — the most bytes of sound one request may send, present only when
+  `transcribe` is true. It is `[ai.transcribe] max_bytes`, **25 MiB (26 214 400) by default and
+  never more** — the OpenAI contract refuses larger files, so the server refuses to be configured
+  above it. The speech contract would take more (under 250 MB and two hours), but the ceiling is the
+  same under both: every client sizes the sound track it supplies to this one number, so it has to
+  mean one thing whichever contract the server speaks. A client uses it to decide BEFORE asking whether a stored recording can be sent as it is or
+  whether it has to send a sound track of its own (below).
+
+The request the server makes is Azure's documented transcription contract: `POST
+…/openai/deployments/{deployment}/audio/transcriptions?api-version=…` as `multipart/form-data`,
+with the sound as `file`, `response_format=json`, and `language` when the family has one. As with
+the images deployment, only the documented shape was read; it has to be confirmed against a live
+endpoint, and an operator whose deployment answers differently will see it in the log as a failure
+of the provider, never as something a family can act on.
+
+*Amended 2026-10-02 — two provider contracts.* The paragraph above describes ONE of two contracts
+the server can speak for transcription, and the operator chooses which, per server, with
+`[ai.transcribe] api`. Nothing on the wire between a client and this server differs between them:
+the same request, the same answer, the same codes. What differs is only what the SERVER sends to
+the provider, and in both cases it is still **only the recording's sound** — never text, never a
+member's name, never the chat, never a prompt.
+
+- **`api = "openai"`** (the default, and every config written before this paragraph) — the
+  Azure OpenAI transcription contract above, unchanged byte for byte: `file`, `model`,
+  `response_format=json`, and `language` when the family has one.
+- **`api = "speech"`** — the Azure Speech "Fast Transcription" / "LLM Speech" contract, which is
+  what serves Microsoft's own speech models (MAI-Transcribe-2, MAI-Transcribe-1.5; 1 is
+  deprecated): `POST {resource}/speechtotext/transcriptions:transcribe?api-version=2025-10-15`
+  as `multipart/form-data` with two parts — `audio`, the sound under its stored type, and
+  `definition`, a small JSON document the SERVER writes, carrying exactly three things: the model's
+  name, the transcription style, and at most one locale. For example
+  `{"enhancedMode": {"enabled": true, "model": "MAI-Transcribe-2", "modelOptions":
+  {"transcribeStyle": "clean"}}}`. The key travels in the `Ocp-Apim-Subscription-Key` header and
+  never in a URL. The style is `clean` by default — the model leaves out "um" and false starts —
+  because the text is read in a chat, by a person, and a verbatim rendering of a voice note is
+  harder to read than what was meant; an operator may choose `verbatim`. **No locale is sent by
+  default**: the provider documents a locale as a very strong hint to be given only when the
+  language is certain and its own detection fails, and two of the family languages, `sr` and
+  `sr-Latn`, are not in MAI-Transcribe-2's list at all and would be refused. An operator may opt in
+  to sending the family's language (`language_hint = true`), and even then a Serbian family's is
+  never sent. This contract is in public preview on the provider's side, with no SLA.
+
+What comes back from the speech contract is read the same way the other is: the text of each
+channel joined in channel order (one channel for every voice note), `""` when it holds none —
+silence, not an error — and `language` from the first phrase's locale (`en-US`, as the provider
+spells it). `combinedPhrases` is documented as always there; should an answer carry text only in
+its `phrases`, that text is read instead, and an answer carrying neither list is a failure of the
+provider (`internal`), never silence. The provider's own measure of the recording's length, when it gives one, is what Family
+statistics counts for that call (see "What it costs, for Family statistics").
+
+**Some provider refusals are answers about the FILE, and reach the client as such.** Under the
+speech contract, a provider that says the audio format is not one it reads (`InvalidAudioFormat`,
+`UnsupportedMediaType`) or that the recording is too long (`AudioLengthLimitExceeded`) is answered
+`not_transcribable`, exactly as the server's own refusal of the same file would be — so a client
+that sent no body falls back to supplying its own sound track, as it already does for an Ogg file.
+So is a provider that finds no audio (`EmptyAudioFile`): the server never sends empty bytes, so that
+can only mean it could not read the audio in a file that has some — a container it does not read —
+and the client's own sound track may get round it. A provider that cannot tell which language it
+hears (`NoLanguageIdentified`) is answered `not_transcribable` too, and NEVER `""`: it is what a
+language the model does not know looks like (Serbian on MAI-Transcribe-2), and an answer of silence
+would be drawn as "No speech" for a recording somebody spoke in — and kept, by the server for every
+later asker and by the asker's own device, which keeps every answer it is given. A client that sent
+no body then sends its own sound track as usual, which costs one more provider call and gets the
+same refusal, shown as "not available"; nothing is kept anywhere, so a later asker, or the same one
+after the operator changes the model, asks the provider afresh. **A provider's refusal is never
+turned into an answer of silence**: `""` is only ever what the provider ANSWERED. None of these
+refusals is counted in Family statistics — nothing was answered. Every other refusal of the speech
+contract — a bad locale, too many requests, the provider's own failure — is `internal`, which is
+transient. The speech contract documents no
+content filter, so it never answers `transcript_refused`; that answer, and the way it is decided,
+belong to the OpenAI contract alone.
+
+Whether the speech contract reads AAC in an MPEG-4 container — every voice note any client records,
+and the one shape a device may supply — is NOT settled by its documentation: the MAI page lists WAV,
+MP3 and FLAC, the Fast Transcription page adds OGG/Opus, WebM, AAC, AMR and more, and neither names
+M4A. Until it is confirmed against a live deployment, an operator who chooses `speech` should
+expect that a voice note may come back `not_transcribable` from both forms. The server will not
+convert it: it decodes no media.
+
+**The request.**
+
+```
+POST /chats/{chat_id}/messages/{message_id}/attachments/{attachment_id}/transcript
+→ 200 {"transcript": {"text": "Мы будем в шесть, не ждите с ужином", "language": "ru"}}
+```
+
+It has two forms, and which one a client sends depends only on what the server can read:
+
+- **No body — the server's own copy.** For an attachment of `kind=audio` whose stored type is one
+  the provider reads — `audio/mp4`, `audio/m4a`, `audio/mpeg` or `audio/wav` — and whose size is at
+  most `transcribe_max_bytes`, the server sends the STORED bytes, exactly as they were uploaded. It
+  decodes nothing. Every voice note any client records is AAC in MPEG-4 and qualifies. Anything
+  else — a video, an `audio/ogg` file (Ogg is not in the provider's list), a recording over the
+  ceiling, a photo — is `not_transcribable`. A request whose `Content-Type` is not
+  `multipart/form-data` is this form, and whatever body it carries is ignored, so a client that
+  always sends `{}` is not punished for it.
+- **`multipart/form-data` with one part named `audio` — sound the asking device supplies.** For
+  an attachment of `kind=audio` or `kind=video`. The asking device already holds the file — it
+  downloaded it to play it — and every client carries media code that can take the sound track out
+  without decoding the pictures, re-encoding to AAC where it has to (64 kbit/s mono is about fifty
+  minutes in 25 MiB). The part is that sound as **AAC in an MPEG-4 container** (an `.m4a`, part
+  `Content-Type: audio/mp4`), at most `transcribe_max_bytes`; the server checks that it IS an
+  MPEG-4 file (the `ftyp` box) and nothing more. This is the path for a video, an Ogg file and an
+  audio file over the ceiling. A part that is missing, empty, over the ceiling or not MPEG-4, or an
+  attachment of any other kind, is `not_transcribable`; a body that cannot be parsed as multipart
+  at all is `validation`.
+
+`text` is always present. **Silence is not an error**: a recording with no speech in it answers
+`{"transcript": {"text": ""}}`, and a client draws "No speech", because "nothing was said" is an
+answer. `language` is present only when the provider names the language it heard, and is passed on
+as the provider spells it (`ru`, or a name such as `russian` from some deployments); a client may
+show it and must not depend on it.
+
+**Who may ask — the whole rule, in one sentence:** a member may ask for the text of an attachment on
+a message THEY sent, in any chat they are in, direct chats included; of a message ANOTHER member
+sent only in the family chat (its threads included, which are the same chat), only while the
+family's `ai_transcripts` is on, and only when that sender has themselves agreed to the assistant;
+never of another member's message in a direct chat, and never of the assistant's own messages.
+
+- **Your own recordings need only your consent**, wherever you sent them, because the voice is
+  yours and you are the one sending it — the same reason a member's own question needs nobody
+  else's permission.
+- **Somebody else's voice needs the owner's switch AND that person's consent.** "Nothing anybody
+  else said leaves the server unasked" is the invariant that lets this server talk to a provider at
+  all, and every widening of it has been an owner's switch, off by default — this is the sixth,
+  `ai_transcripts`. The sender's consent is required beside it for the reason the history a mention
+  carries is filtered by each sender's consent: declining protects a member's words wherever they
+  are, not only when they are the one asking (see "Consenting to the assistant"). A refusal for
+  that reason is the same `transcript_not_allowed` as a refusal for the switch.
+- **A direct chat: your own messages only.** The other person's voice in a one-to-one chat stays
+  under the rule that nothing reads a direct chat — written for the assistant, and its reason, that
+  two people talking one-to-one are the conversation nothing else reads, applies unchanged to a
+  speech model on the same provider. No setting lifts it.
+- **The assistant's own messages are never transcribed.** It sends no sound, its account has no
+  consent to give, and in a member's `ai` chat it is the other party.
+
+**What the rule can and cannot hold** (written down 2026-10-02, after a review found it). The owner's
+switch and the sender's consent are checked on the attachment the request NAMES. They hold
+completely for the stored copy, and for every client that follows this section. They cannot hold
+against a member who sets out to get round them: a member who can play another member's recording
+can download it (`GET /attachments/{id}`, as any player does) and send those bytes as the supplied
+sound of a recording of their OWN — or simply upload them again as their own voice note — and the
+server cannot tell a sound track from somebody else's voice. That sends the other member's voice to
+the provider on the asker's consent alone, billed to the family and counted in the asker's
+statistics. It is the same reach a member has always had over anything they can see — they could
+forward it, or play it into another app — and no rule on this server can take it away without
+decoding and fingerprinting sound, which this server does not do. So the switch is a statement of
+what the family's own apps will do, honoured by every client here, and not a lock: an owner who
+needs a recording never to reach a provider has to keep it out of the chat.
+
+**The checks, in order**, each with its own answer — so a client can tell "not here" from "not
+you" from "not this file":
+
+1. the chat exists and the caller is in it — `chat_not_found` (404), `not_chat_member` (403), and
+   `blocked` (409) for a direct chat the caller has blocked, exactly as every chat endpoint answers;
+2. the message is in that chat — `message_not_found` (404);
+3. the attachment is on that message — `attachment_not_found` (404);
+4. this server has a transcription deployment — `transcripts_unavailable` (403, a fact about the
+   SERVER; `assistant.transcribe` is what a client checks first);
+5. the ASKER has agreed to the assistant — `assistant_consent_required` (403; the client shows the
+   consent screen and offers to ask again). Asked even when an answer is already stored, because
+   whether one is is not something the asker can know, and a consent screen that appears only
+   sometimes is a bug report;
+6. the rule above allows it — `transcript_not_allowed` (403; terminal until the owner's switch, or
+   the sender's consent, changes);
+7. the recording can be sent in this form — `not_transcribable` (400; terminal for this form — a
+   client that sent no body may send the sound track instead, and every client here does, so that
+   one recording gets one answer whichever device asks). Under `api = "speech"` the PROVIDER can
+   also give this answer, after the checks, when it refuses the file's format or its length, finds
+   no audio in it, or cannot tell its language — see "two provider contracts" above;
+8. the provider transcribed it — `transcript_refused` (400) when the provider's own content filter
+   refused, decided exactly as `ai_error`'s `"refused"` is decided (the provider's structured error
+   fields, never its wording alone — see "The assistant"); every other failure of the provider,
+   including its timeout, is `internal` (500), which is transient. (`transcript_refused` belongs to
+   `api = "openai"`: the speech contract documents no content filter.)
+
+**Kept once, and handed to whoever asks next.** An answer made from the server's own stored bytes is
+written down — one row per attachment — and every later request for that attachment that passes
+the checks above gets it back at once: no second provider call, no second bill. It is still shown
+only to whoever asked: the text is not in the `Attachment` object, not in a history page, not in a
+frame and not in a push, so every member taps for it themselves, and a member the rule refuses is
+refused whatever is stored.
+
+**An answer made from sound a client supplied is returned and never kept.** The server cannot check
+that uploaded sound is really this video's — if such an answer were kept and handed to the next
+member, one member could put words into another's video. So it goes to the asker and nowhere else;
+the asker's device keeps it, and the next member who asks sends their own sound and pays their own
+call. The one exception runs the other way: if an answer from the stored bytes already exists for
+that attachment — only possible for `kind=audio` — it is returned and the supplied sound is not sent
+anywhere.
+
+**One provider call per attachment at a time.** Two members, or two devices of one member, asking
+together for the stored bytes of the same recording wait on the same call and get the same answer.
+Requests with supplied sound are each their own call.
+
+**Finished even if the asker gives up.** A request for the stored bytes is not abandoned when its
+connection closes, unlike a backdrop: the call runs to the end and its answer is written down, so the
+next request — the same member asking again, or anybody else — gets it at once instead of paying
+again. A request with supplied sound IS abandoned with its connection, because its answer could not
+be kept for anybody anyway.
+
+**It is SLOW, and a client waits for it as such.** One call is bounded by the server's `[ai]
+timeout_secs` (180 s by default), and a long recording is routinely slower than the 15 or 20
+seconds that suit an ordinary JSON call — so **a client gives this request a timeout of its OWN, no
+shorter than 90 s**, never its ordinary request timeout, the backdrop's rule and for the same
+reason. The reference proxy waits up to 300 s on this one route. A timeout that covers the whole
+request covers the UPLOAD of supplied sound too — up to `transcribe_max_bytes` going up before the
+provider's own wait begins — and a supplied request that runs out is lost (it is abandoned with its
+connection and nothing is kept), so asking again would only fail the same way: the clients here
+wait a little past the proxy (300–310 s) and let the server, or the proxy answering for it, end
+the wait. A client that stops waiting on a
+request for the stored bytes shows the failure, and may ask again a little later: the answer is
+being finished and kept in the meantime.
+
+**Language.** The family's language goes with the request as a hint when the owner has set one, as
+the bare ISO 639-1 language (`sr-Latn` as `sr`, `zh-Hans` as `zh`); otherwise none goes and the
+provider detects it. A hint names a language and not a script, so a Serbian family may get either
+alphabet back — the hint cannot choose, and the server does not transliterate. *Amended
+2026-10-02:* under `api = "speech"` no hint goes unless the operator set `language_hint = true`,
+and a Serbian family's never goes (see "two provider contracts" above).
+
+**What a client does with what it is given** (2026-10-02). The rest of this section is the
+server's; these are the clients', so that the four of them agree:
+
+- **The action is offered on every voice note, audio file and video the rule allows** — inside an
+  album too, one per video, saying which video it is when the album holds more than one. It is
+  never hidden for a reason of the SOUND, because what a file holds is only known once it is read,
+  and a hidden action cannot say why it is missing.
+- **What the device could not do is said in its own words**, terminally and with nothing sent: a
+  recording whose stated `duration_ms` could not fit `transcribe_max_bytes` even at 64 kbit/s mono
+  — told before a byte of it is downloaded — or sound that still came out over the ceiling is
+  "This recording is too long to turn into text."; no sound track, or one the device cannot
+  decode, is "Couldn't read the sound in this file.". "Not available for this message." is kept for
+  the server's own refusals, because it reads as one.
+- **An answer belongs to the account that asked.** A device keeps what it was given, per
+  attachment, and wipes it at sign-out; an answer that arrives after the member signed out — the
+  request was still out — is dropped, not kept and not drawn, so the next account on the device is
+  never shown it. This matters most for an answer made from supplied sound, which nobody but the
+  asker may ever be handed.
+
+**What it costs, for Family statistics.** Each provider call that produced an answer records one
+`transcript` and the recording's `duration_ms` (the attachment's own, `0` when it was uploaded
+without one) against the member who asked — transcription is billed by audio length, not tokens.
+A stored answer handed out again records nothing; a refused or failed call records nothing.
+*Amended 2026-10-02:* when the provider reports the length it heard (the speech contract's
+`durationMilliseconds`), that is the `duration_ms` recorded instead — it is what the provider bills,
+and it is right for supplied sound too, whose length the attachment row does not know. A call the
+provider answered with silence (`""`) records one like any other answer.
+
+**What is never logged**: the text, the language, the sound, or anything the provider said about
+them. The server's log records the outcome as one word — `stored`, `supplied`, `shared`,
+`refused` or `failed`, and under the speech contract also `unreadable` (the provider refused the
+file) or `unheard` (it named no language) — both answered `not_transcribable`, neither kept —
+beside the ids, and a
+provider's error under the same allow-list every provider error gets: its codes, never its
+message.
+
+**Limits.** At most four transcription calls are in flight on one server at once (fixed); a request
+beyond that waits for a slot, and reads its sound only once it has one, so a queue of uploads
+cannot fill the server's memory. The sound itself is bounded by `transcribe_max_bytes`.
+
+**What does not change.** The `Attachment` object, history pages, the message, its `edit_seq`,
+every frame and every push are exactly as they were — nothing is added to the message, so no
+installed app has anything new to misread. A report's `message_attachments` stays kind and name
+only. Retention and account deletion need nothing new: the stored answer belongs to the attachment
+row and goes when it goes, by cascade — with the message past `retention_days`, with a departing
+member's direct chats, with a family that is deleted. **The assistant is still shown `[voice note]`
+and `[video]`**, never a transcript: showing it the text would widen what a mention sends, and every
+such widening has been written down here and switched on its own first.
+
+**What old clients and old servers do.** A client that predates this ignores `transcribe`,
+`transcribe_max_bytes` and `ai_transcripts` and draws exactly what it drew before. A server that
+predates it sends no `transcribe` key, which a client reads as false and offers nothing.
 
 ### Photos, videos, audio, files and locations
 
@@ -3797,12 +4168,12 @@ rows are what this caller may see of it.
                             "location": 3,
                             "bytes": 734003200, "stored_bytes": 612368384},
             "ai": {"questions": 43, "prompt_tokens": 12040, "completion_tokens": 30512,
-                   "images": 6}},
+                   "images": 6, "transcripts": 5, "transcript_duration_ms": 214300}},
  "members": [{"user_id": 7, "display_name": "Anna", "messages": 512,
               "attachments": {"count": 31, "photo": 22, "video": 4, "audio": 3, "file": 2,
                               "location": 0, "bytes": 241172480},
               "ai": {"questions": 12, "prompt_tokens": 3400, "completion_tokens": 9120,
-                     "images": 2}}]}
+                     "images": 2, "transcripts": 1, "transcript_duration_ms": 41800}}]}
 ```
 
 **`bytes` and `stored_bytes` are different numbers and the gap is the point.** `bytes` adds up what
@@ -3843,6 +4214,18 @@ its `prompt` was refused (see "Drawing without being told to"), is still one `qu
 deciding to draw, plus the rewrite's when the member's words had to be reworded too. A request
 the images deployment refused is not an image: the bill counts pictures, never requests.
 
+*Amended 2026-10-02:* **`transcripts`** counts the calls to the transcription deployment that
+produced an answer (see "Transcripts on request"), and **`transcript_duration_ms`** adds up the
+length of the recordings they were made from — because transcription is billed by audio length, and
+a family reading only tokens would again see it as free. Both are always present, `0` on a server
+that has never transcribed anything, per member and in the totals, and both are counted against the
+member who ASKED, not the one who spoke. A transcript is not a `question`: `questions` counts what
+was asked of the assistant, and is exactly the number it was before transcripts existed. A stored
+transcript handed to a second member is not counted again — the bill counts calls, not readers —
+and an answer made from sound a device supplied is counted every time, because every one of those
+is a call. A recording uploaded without a `duration_ms` adds `0` to the duration and still `1` to
+the count.
+
 ### Retention
 
 The server deletes messages older than `limits.retention_days` (**100 days** by default), together
@@ -3850,7 +4233,8 @@ with any photo, video or file they own; the sweep runs at boot and hourly after.
 keeps everything — "off" is a state rather than a very large number.
 
 What goes with a message: its reactions, and its attachment (whose FILE is removed only once no
-other message shares those bytes — see "One copy per family"). What survives: a newer **reply** that
+other message shares those bytes — see "One copy per family"), and with the attachment its stored
+transcript, if anybody asked for one (see "Transcripts on request"). What survives: a newer **reply** that
 quoted it, which keeps existing and simply loses its quote, because a reply is a message in its own
 right and deleting today's conversation to enforce a policy about last spring's would be wrong. The
 family **board** is not touched at all — a note is a live thing on a wall, not history. Neither is
@@ -3891,7 +4275,8 @@ to go is the *account*.
 **Direct chats do go**, both halves. A one-to-one chat has no meaning with one side removed, it was
 private to the two of them rather than shared with the family, and it is the only history the
 departing member can take with them without taking somebody else's. The other person's messages in
-it go too; that is the honest reading of a private conversation ending. The member's private
+it go too; that is the honest reading of a private conversation ending — and any stored transcript
+of a recording in it goes with the recording. The member's private
 assistant thread goes the same way.
 
 Uploads the member never USED — on no message, pinned to no note and in no sticker pack — are
@@ -4478,9 +4863,9 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 |---|---|
 | `POST /families` | `{name}` (1–64 chars) → `201 {family: Family}`. Caller becomes owner; the family chat is created automatically. Errors: `already_in_family`; `family_registration_disabled` (403) when the operator has closed this server to new families — see "Starting a family". |
 | `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). A family whose policy is `closed` admits nobody: the invite code answers `invalid_invite_code` (404), byte-identical to a code that never existed, so a shut door tells a stranger nothing — the same non-enumeration reasoning the avatar and password-reset endpoints follow. A family that is full answers `family_full` (409) — full meaning at its own `max_members`, or at the operator's ceiling when it has set none, because a valve that limited only what an owner may TYPE would hold nothing shut. The checks run in order — closed, then already in a family, then a pending request, then full — so a closed family answers `invalid_invite_code` whatever else is true of it, and under policy `approval` this door is where the REQUEST is created and the cap is read there too, then read again at approval. `family_full` does admit that the code is real, and that is the one thing this endpoint tells a stranger: the alternative is telling an invited member their code is invalid on the day the family filled up, which costs a real person a real join, where a closed family's code may be years old and in anybody's hands. Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`, `family_full` (409). |
-| `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, max_pack_seq: 14, max_pack_items: 200, max_pack_item_bytes: 524288, assistant: {user_id, display_name, mention, draw, vision, images}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `max_pack_seq` is the same mark for the family's sticker pack, omitted while the pack is empty and untouched; `max_pack_items` and `max_pack_item_bytes` are the pack's two ceilings, ALWAYS present on a server that has packs — so their absence is how a client knows this server predates them and offers no stickers (see "Sticker pack"). `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. Its `vision` and `images` booleans say whether this SERVER can look at a picture and make one — a client offers to attach a picture in an `ai` chat only when `vision` and the family's own `ai_vision` are both true, and offers `draw` (the `/draw` token) only when `images` is true (see "Pictures"). `family.invite_code` present for the owner only. Plus `blocked_user_ids: [11, 14]` as on `GET /me`, always present and `[]` when empty, and a complete state-set there too. Plus `next_owner_user_id: 11`, present for the OWNER only, naming the member who would inherit the family if the owner left right now — the same rule as "Deleting an account", computed once server-side so the leave dialog can say who it is instead of two clients computing it and eventually disagreeing (the roster does not carry join times, so no client could compute it anyway); omitted when the owner is the sole member. It is a PREDICTION and takes no frame of its own: any `member_joined` or `member_left` can change the answer, so a client re-reads `GET /families/mine` immediately before it shows the leave dialog and never names a successor from a cached value. Absence on that fresh read means the owner is the last member and leaving DELETES the family, which is a different dialog and a different confirmation. Error: `not_in_family`. |
+| `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, max_pack_seq: 14, max_pack_items: 200, max_pack_item_bytes: 524288, assistant: {user_id, display_name, mention, draw, vision, images, transcribe, transcribe_max_bytes?}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `max_pack_seq` is the same mark for the family's sticker pack, omitted while the pack is empty and untouched; `max_pack_items` and `max_pack_item_bytes` are the pack's two ceilings, ALWAYS present on a server that has packs — so their absence is how a client knows this server predates them and offers no stickers (see "Sticker pack"). `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. Its `vision` and `images` booleans say whether this SERVER can look at a picture and make one — a client offers to attach a picture in an `ai` chat only when `vision` and the family's own `ai_vision` are both true, and offers `draw` (the `/draw` token) only when `images` is true (see "Pictures"). Its `transcribe` boolean says whether this SERVER can turn a recording into text, and `transcribe_max_bytes` — present only when `transcribe` is true — is the most bytes of sound one transcript request may send; a client offers "Show text" on a voice note, audio file or video only when `transcribe` is true (see "Transcripts on request"). `family.invite_code` present for the owner only. Plus `blocked_user_ids: [11, 14]` as on `GET /me`, always present and `[]` when empty, and a complete state-set there too. Plus `next_owner_user_id: 11`, present for the OWNER only, naming the member who would inherit the family if the owner left right now — the same rule as "Deleting an account", computed once server-side so the leave dialog can say who it is instead of two clients computing it and eventually disagreeing (the roster does not carry join times, so no client could compute it anyway); omitted when the owner is the sole member. It is a PREDICTION and takes no frame of its own: any `member_joined` or `member_left` can change the answer, so a client re-reads `GET /families/mine` immediately before it shows the leave dialog and never names a successor from a cached value. Absence on that fresh read means the owner is the last member and leaving DELETES the family, which is a different dialog and a different confirmation. Error: `not_in_family`. |
 | `POST /families/invite-code/rotate` | (owner) → `200 {invite_code}`. Old code stops working; pending requests survive. |
-| `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval"\|"closed", max_members?: int\|null, language?: "ru"\|null, ai_history?: true\|false, ai_vision?: true\|false, ai_history_photos?: true\|false, ai_greeting?: true\|false, ai_faces?: true\|false}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language and `"max_members": null` CLEARS the cap, while leaving either key out entirely leaves it alone — these are **the two places** in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"); `ai_vision` is a second boolean of exactly that shape, differing only in defaulting to FALSE (see "Pictures"); `ai_history_photos` is a third, defaulting to FALSE, and the one with a rule between it and its neighbour: it may only be `true` while `ai_vision` is — sending `true` for it while `ai_vision` is off, or would be off after this same request, is `validation`, and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Recent photos from the family chat"). A cap must be between 1 and the operator's ceiling (`limits.max_family_members`). A cap BELOW the family's current size is ACCEPTED and acts as a freeze — nobody new until people leave — rather than being refused: an owner who inherits a large family must still be able to shut the door, and the cap is read at the door and never enforced over the room. `ai_greeting` is a FOURTH boolean of the same shape, defaulting to FALSE, and it is the one with no rule between it and any neighbour: it is about whether the assistant speaks unprompted, not about what it may be shown, so it may be set true or false regardless of the other three and it is never cleared by any of them (see "The daily greeting"). `ai_faces` is a FIFTH, defaulting to FALSE, under exactly `ai_history_photos`'s rule: it may only be `true` while `ai_vision` is — `true` while `ai_vision` is off, or would be off after this same request, is `validation` — and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Profile pictures of members"). Errors: `not_family_owner` (403), `validation` (a `join_policy` that is none of the three, a `max_members` outside 1..ceiling, or `ai_history_photos: true` or `ai_faces: true` without `ai_vision`), `invalid_language`. |
+| `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval"\|"closed", max_members?: int\|null, language?: "ru"\|null, ai_history?: true\|false, ai_vision?: true\|false, ai_history_photos?: true\|false, ai_greeting?: true\|false, ai_faces?: true\|false, ai_transcripts?: true\|false}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language and `"max_members": null` CLEARS the cap, while leaving either key out entirely leaves it alone — these are **the two places** in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"); `ai_vision` is a second boolean of exactly that shape, differing only in defaulting to FALSE (see "Pictures"); `ai_history_photos` is a third, defaulting to FALSE, and the one with a rule between it and its neighbour: it may only be `true` while `ai_vision` is — sending `true` for it while `ai_vision` is off, or would be off after this same request, is `validation`, and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Recent photos from the family chat"). A cap must be between 1 and the operator's ceiling (`limits.max_family_members`). A cap BELOW the family's current size is ACCEPTED and acts as a freeze — nobody new until people leave — rather than being refused: an owner who inherits a large family must still be able to shut the door, and the cap is read at the door and never enforced over the room. `ai_greeting` is a FOURTH boolean of the same shape, defaulting to FALSE, and it is the one with no rule between it and any neighbour: it is about whether the assistant speaks unprompted, not about what it may be shown, so it may be set true or false regardless of the other three and it is never cleared by any of them (see "The daily greeting"). `ai_faces` is a FIFTH, defaulting to FALSE, under exactly `ai_history_photos`'s rule: it may only be `true` while `ai_vision` is — `true` while `ai_vision` is off, or would be off after this same request, is `validation` — and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Profile pictures of members"). `ai_transcripts` is a SIXTH, defaulting to FALSE, and like `ai_greeting` bound to none of the others: it decides whether a member may ask for the text of ANOTHER member's recording in the family chat, so it may be set true or false regardless of the other five and is never cleared by any of them (see "Transcripts on request"). Errors: `not_family_owner` (403), `validation` (a `join_policy` that is none of the three, a `max_members` outside 1..ceiling, or `ai_history_photos: true` or `ai_faces: true` without `ai_vision`), `invalid_language`. |
 | `GET /families/join-requests` | (owner) → `200 {requests: [JoinRequest]}` (pending only). |
 | `POST /families/join-requests/{id}/approve` | (owner) → `200 {member: Member}`. The cap is re-checked here, because the roster can fill between a request and the decision: `family_full` (409), which leaves the request PENDING — a full family is a temporary condition and not a decision, and the owner may approve it again once a seat frees. The cap counts the rows in `members`, the owner included; `former_members` do not count, and a pending request reserves nothing — three members, a cap of four and two pending requests means the first approval succeeds and the second is `family_full`. Closing the family does NOT touch requests that were already pending, and the owner may still approve them — closing is about the invite code, and an approval is the deliberate act of the person who closed it. Errors: `join_request_not_pending`, `user_already_in_family`, `family_full` (409). |
 | `POST /families/join-requests/{id}/reject` | (owner) → `204`. Error: `join_request_not_pending`. |
@@ -4548,6 +4933,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `PUT /chats/{id}/messages/{mid}/reaction` | `{emoji}` → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Sets or replaces the caller's reaction on the message — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or remove). One reaction per user per message. Emoji: trimmed, non-empty, ≤ 32 bytes UTF-8. Re-PUT of the current emoji is a no-op: no seq bump, no fan-out. Errors: `invalid_emoji`, `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `DELETE /chats/{id}/messages/{mid}/reaction` | → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Removes the caller's reaction; idempotent (deleting nothing returns the current state unchanged). Same errors minus `invalid_emoji`. |
 | `GET /chats/{id}/reactions` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {message_reactions: [{message_id, reaction_seq, reactions: [Reaction]}]}` ordered by `reaction_seq` ascending — the reaction catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
+| `POST /chats/{id}/messages/{mid}/attachments/{attachment_id}/transcript` | No body, or `multipart/form-data` with one part `audio` → `200 {transcript: {text, language?}}`. The text of a voice note, an audio file or a video's sound, for the CALLER only (see "Transcripts on request"). NO BODY sends the server's stored copy: `kind=audio` stored as `audio/mp4`, `audio/m4a`, `audio/mpeg` or `audio/wav`, at most `assistant.transcribe_max_bytes`; that answer is KEPT and handed to every later caller the rule allows, with no second provider call. A body that is not multipart is ignored and treated as no body. The `audio` PART is sound the caller's device took out of the file itself — AAC in MPEG-4 (`audio/mp4`, an `.m4a`), at most `transcribe_max_bytes` — for `kind=audio` or `kind=video`; that answer is returned and NEVER kept or shared, unless an answer from the stored copy already exists, which is then returned instead. `text` is always present and `""` is silence ("No speech"), never an error; `language` only when the provider names one. ALLOWED: the caller's own message in any chat they are in; another member's only in the family chat (threads included), only with the family's `ai_transcripts` on, and only when that sender has agreed to the assistant; never another member's in a direct chat, never the assistant's. SLOW — a client gives it a timeout of its own, no shorter than 90 s; a no-body request is finished and kept even if the caller stops waiting. Errors, checked in this order: `chat_not_found` (404), `not_chat_member` (403), `blocked` (409), `message_not_found` (404 — not in this chat), `attachment_not_found` (404 — not on this message), `transcripts_unavailable` (403 — no transcription deployment), `assistant_consent_required` (403 — the CALLER has not agreed), `transcript_not_allowed` (403 — the rule above), `not_transcribable` (400 — wrong kind, a stored type the provider does not read, over the ceiling, or a supplied part missing, empty, too large or not MPEG-4; under `api = "speech"` also the provider refusing the file's format or length, finding no audio in it, or identifying no language — never answered as `""`), `validation` (400 — a multipart body that cannot be parsed), `transcript_refused` (400 — the provider's own filter refused; terminal); any other provider failure is `internal` (500). |
 
 ### Devices
 
@@ -5163,7 +5549,7 @@ unregistered deletes the row, as an ordinary push would.
 | Members in one family | no per-family cap by default; `limits.max_family_members` (default 50) is the operator's ceiling and binds at the join door for EVERY family, capped or not — an owner's `max_members` may only be lower, and is the control the apps show |
 | Reaction emoji | 32 bytes UTF-8 (fixed) |
 | Page size | 50 default / 200 max |
-| HTTP body | 16 KiB (except `PUT /me/avatar`) |
+| HTTP body | 16 KiB (except `PUT /me/avatar`, the attachment uploads, and a transcript request's sound) |
 | Profile picture | 256 KiB |
 | Per-socket outbound queue | 64 frames |
 | Session TTL | 180 days, sliding |
@@ -5175,6 +5561,8 @@ unregistered deletes the row, as an ordinary push would.
 | A picture prompt the assistant writes for itself (`draw_picture`) | the message-body ceiling, 4000 chars by default; over it is `ai_error`, never cut |
 | Requests per picture asked for | `/draw` and a board backdrop: 2 to the images deployment and 1 rewrite to the text deployment; `draw_picture`: 3 to the images deployment (its prompt, the member's own words, their rewrite) and 1 rewrite (fixed) |
 | Largest photo shown to the assistant | 5 MiB after preferring the preview; a larger one is left out and the assistant is told so (fixed) |
+| Sound sent for one transcript — the stored recording, or the part a device supplies | 25 MiB (`[ai.transcribe] max_bytes`, sent as `assistant.transcribe_max_bytes`; may be lowered, never raised — the OpenAI contract refuses more, and both contracts share one ceiling) |
+| Transcription calls in flight on one server | 4; a request beyond that waits for a slot (fixed) |
 | Attachment size | 100 MB (`limits.max_attachment_bytes`; keep nginx in step) |
 | Attachments per message | 10 (`limits.max_attachments_per_message`; the fewest is 1, fixed) |
 | Items in one family's sticker pack | 200 (`limits.max_pack_items`) |

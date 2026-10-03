@@ -39,7 +39,7 @@ public static class BackdropConsent
     public static bool AsksAfter(ApiError? error, bool askedAlready) =>
         !askedAlready && error?.Code == ErrorCodes.AssistantConsentRequired;
 
-    /// <summary>One click, from the question (when it is needed) to the answer.</summary>
+    /// <summary>One click, from the question (when it is needed) to the answer — in <see cref="ConsentedAsk"/>'s order.</summary>
     /// <param name="asksFirst">Read when the click lands, from the session as it is then (<see cref="AsksFirst"/>).</param>
     /// <param name="ask">The consent question, and the answer recorded on the server: true only on a yes it has kept.</param>
     /// <param name="draw">The request itself.</param>
@@ -48,27 +48,9 @@ public static class BackdropConsent
         Func<Task<bool>> ask,
         Func<Task<(AttachmentDto? Drawn, ApiError? Error)>> draw)
     {
-        ArgumentNullException.ThrowIfNull(asksFirst);
-        ArgumentNullException.ThrowIfNull(ask);
         ArgumentNullException.ThrowIfNull(draw);
-        var asked = false;
-        if (asksFirst())
-        {
-            asked = true;
-            if (!await ask().ConfigureAwait(true))
-            {
-                return new Outcome(null, null, Declined: true);
-            }
-        }
-        var (drawn, error) = await draw().ConfigureAwait(true);
-        if (AsksAfter(error, asked))
-        {
-            if (!await ask().ConfigureAwait(true))
-            {
-                return new Outcome(null, null, Declined: true);
-            }
-            (drawn, error) = await draw().ConfigureAwait(true);
-        }
-        return new Outcome(drawn, error, Declined: false);
+        var outcome = await ConsentedAsk.RunAsync<AttachmentDto>(
+            asksFirst, ask, async () => await draw().ConfigureAwait(true)).ConfigureAwait(true);
+        return new Outcome(outcome.Value, outcome.Error, outcome.Declined);
     }
 }

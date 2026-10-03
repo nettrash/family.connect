@@ -189,8 +189,29 @@
     <string name="s_couldnt_load_statistics">Impossible de charger les statistiques</string>
     <string name="s_check_connection_try_again">Vérifie ta connexion et réessaie.</string>
     <string name="s_saved_by_one_copy">%1$s économisés en ne gardant qu\'une copie des fichiers identiques.</string>
-    <string name="s_attachments_and_size">%1$d pièces jointes, %2$s</string>
-    <string name="s_questions_to_assistant">%1$d questions à l\'assistant</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d pièce jointe, %2$s</item>
+        <item quantity="many">%1$d pièces jointes, %2$s</item>
+        <item quantity="other">%1$d pièces jointes, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d question à l\'assistant</item>
+        <item quantity="many">%1$d questions à l\'assistant</item>
+        <item quantity="other">%1$d questions à l\'assistant</item>
+    </plurals>
+    <string name="s_stats_pictures">Images</string>
+    <string name="s_stats_recordings_as_text">Enregistrements transcrits</string>
+    <string name="s_stats_recording_time">Durée des enregistrements</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d image de l’assistant</item>
+        <item quantity="many">%1$d images de l’assistant</item>
+        <item quantity="other">%1$d images de l’assistant</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d enregistrement transcrit</item>
+        <item quantity="many">%1$d enregistrements transcrits</item>
+        <item quantity="other">%1$d enregistrements transcrits</item>
+    </plurals>
     <string name="s_family_language">Langue de la famille</string>
     <string name="s_family_language_explanation">La langue dans laquelle l’assistant répond quand on l’interroge dans la conversation familiale. Cela ne change pas la langue de cette app. Sans choix, il répond dans la langue de la question.</string>
     <string name="s_not_set">Non défini</string>
@@ -601,4 +622,21 @@
     <string name="s_sticker_remove_not_allowed">Seule la personne qui a ajouté un autocollant, ou le propriétaire de la famille, peut le retirer.</string>
     <string name="s_sticker_remove_failed">Impossible de retirer l\'autocollant. Réessaie.</string>
     <string name="s_sticker_not_available_offline">Cet autocollant n\'est pas encore sur ce téléphone. Réessaie quand tu seras en ligne.</string>
+
+    <!-- Transcripts on request (#62): text under a recording, the owner's switch, the consent line. -->
+    <string name="s_transcript_show">Afficher le texte</string>
+    <string name="s_transcript_hide">Masquer le texte</string>
+    <string name="s_transcript_getting">Récupération du texte…</string>
+    <string name="s_transcript_no_speech">Aucune parole</string>
+    <string name="s_transcript_failed">Impossible d’obtenir le texte. Réessaie.</string>
+    <string name="s_transcript_refused">Le fournisseur de l\'assistant a refusé cet enregistrement.</string>
+    <string name="s_transcript_unavailable">Indisponible pour ce message.</string>
+    <string name="s_transcript_too_long">Cet enregistrement est trop long pour être transcrit.</string>
+    <string name="s_transcript_unreadable">Impossible de lire le son de ce fichier.</string>
+    <string name="s_transcript_a11y">Texte de l’enregistrement</string>
+    <string name="s_assistant_transcripts">Voix et vidéo en texte</string>
+    <string name="s_assistant_transcripts_explanation">Avec ceci activé, les membres peuvent demander le texte des messages vocaux, audios et vidéos des autres membres dans la discussion familiale, et le son de cet enregistrement est alors envoyé à %1$s. Il n’est envoyé que si quelqu’un le demande, et seulement si le membre qui l’a envoyé a accepté l’assistant. Chacun peut obtenir le texte de ses propres enregistrements sans cela. C’est désactivé tant que vous ne l’activez pas.</string>
+    <string name="s_assistant_transcripts_no_server">Indisponible ici : ce serveur ne peut pas transcrire les enregistrements.</string>
+    <string name="s_consent_transcript_sound_sent">Si vous demandez le texte d’un message vocal, d’un fichier audio ou d’une vidéo, le son est envoyé à %1$s.</string>
+    <string name="e_change_assistant_transcripts_failed">Impossible de modifier ce réglage</string>
 </resources>

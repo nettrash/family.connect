@@ -19,6 +19,8 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import me.nettrash.familyconnect.data.repo.TranscriptRepository
+import me.nettrash.familyconnect.testutil.FakeTranscriptApi
 import android.app.NotificationManager
 import android.content.ClipData
 import android.net.Uri
@@ -247,6 +249,8 @@ class ChatViewModelTest {
             // Real provider, never asked: these tests hold no location
             // permission, so `hasPermission()` is false and nothing runs.
             locationProvider = LocationProvider(RuntimeEnvironment.getApplication()),
+            // Never asked: these tests draw no bubble, so no "Show text".
+            transcriptRepository = TranscriptRepository(FakeTranscriptApi(), db.transcriptDao(), me.nettrash.familyconnect.testutil.FakeTranscriptSound()),
             // The repo scope stands in for the app scope: a media send
             // must outlive the ViewModel, which is the whole point of it.
             appScope = repoScope,

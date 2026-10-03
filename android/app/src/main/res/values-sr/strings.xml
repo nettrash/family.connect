@@ -96,8 +96,29 @@
     <string name="s_couldnt_load_statistics">Статистика није учитана</string>
     <string name="s_check_connection_try_again">Провери везу и покушај поново.</string>
     <string name="s_saved_by_one_copy">%1$s уштеђено — исте датотеке се чувају у једном примерку.</string>
-    <string name="s_attachments_and_size">прилога: %1$d, %2$s</string>
-    <string name="s_questions_to_assistant">питања асистенту: %1$d</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d прилог, %2$s</item>
+        <item quantity="few">%1$d прилога, %2$s</item>
+        <item quantity="other">%1$d прилога, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d питање асистенту</item>
+        <item quantity="few">%1$d питања асистенту</item>
+        <item quantity="other">%1$d питања асистенту</item>
+    </plurals>
+    <string name="s_stats_pictures">Слике</string>
+    <string name="s_stats_recordings_as_text">Снимци у текст</string>
+    <string name="s_stats_recording_time">Трајање снимака</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d слика од асистента</item>
+        <item quantity="few">%1$d слике од асистента</item>
+        <item quantity="other">%1$d слика од асистента</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d снимак у текст</item>
+        <item quantity="few">%1$d снимка у текст</item>
+        <item quantity="other">%1$d снимака у текст</item>
+    </plurals>
     <string name="s_record_audio">Сними аудио</string>
     <string name="s_stop">Заустави</string>
     <string name="s_audio">Аудио</string>
@@ -601,4 +622,21 @@
     <string name="s_sticker_remove_not_allowed">Стикер може да уклони само онај ко га је додао или власник породице.</string>
     <string name="s_sticker_remove_failed">Стикер није уклоњен. Покушај поново.</string>
     <string name="s_sticker_not_available_offline">Тај стикер још није на овом телефону. Покушај поново кад будеш на мрежи.</string>
+
+    <!-- Transcripts on request (#62): text under a recording, the owner's switch, the consent line. -->
+    <string name="s_transcript_show">Прикажи текст</string>
+    <string name="s_transcript_hide">Сакриј текст</string>
+    <string name="s_transcript_getting">Текст се припрема…</string>
+    <string name="s_transcript_no_speech">Нема говора</string>
+    <string name="s_transcript_failed">Текст није добијен. Покушај поново.</string>
+    <string name="s_transcript_refused">Добављач асистента је одбио овај снимак.</string>
+    <string name="s_transcript_unavailable">Није доступно за ову поруку.</string>
+    <string name="s_transcript_too_long">Овај снимак је предугачак да би се претворио у текст.</string>
+    <string name="s_transcript_unreadable">Звук у овој датотеци није прочитан.</string>
+    <string name="s_transcript_a11y">Текст снимка</string>
+    <string name="s_assistant_transcripts">Глас и видео као текст</string>
+    <string name="s_assistant_transcripts_explanation">Када је ово укључено, чланови могу да затраже текст гласовних порука, аудио снимака и видео снимака других чланова у породичном чету, и тада се звук тог снимка шаље ка %1$s. Шаље се само када неко затражи, и само ако је члан који га је послао прихватио асистента. Свако може да добије текст својих снимака и без овога. Искључено је док га не укључиш.</string>
+    <string name="s_assistant_transcripts_no_server">Овде није доступно: овај сервер не може да претвори снимке у текст.</string>
+    <string name="s_consent_transcript_sound_sent">Ако затражиш текст гласовне поруке, аудио датотеке или видеа, звук се шаље ка %1$s.</string>
+    <string name="e_change_assistant_transcripts_failed">Није успела промена подешавања</string>
 </resources>

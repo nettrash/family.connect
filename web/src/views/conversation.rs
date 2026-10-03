@@ -95,6 +95,10 @@ pub struct ConversationProps {
     /// (docs/protocol.md, "Consenting to the assistant").
     #[prop_or_default]
     pub agreed_to_assistant: bool,
+    /// The text of recordings this member asked for, as this tab holds it
+    /// (docs/protocol.md, "Transcripts on request").
+    #[prop_or_default]
+    pub transcripts: fc_text::transcript::Transcripts,
     pub on_action: Callback<Action>,
     /// Wall-clock now, for the day pills.
     pub now_ms: f64,
@@ -1117,6 +1121,13 @@ pub fn conversation(props: &ConversationProps) -> Html {
         }
     });
 
+    // "Show text" under a recording, which raises this chat's consent
+    // screen when this member has not agreed yet.
+    let transcription =
+        crate::views::bubble::Transcription::of(props.assistant.as_ref(), props.family.as_ref(), {
+            let consent_open = consent_open.clone();
+            Callback::from(move |()| consent_open.set(true))
+        });
     let consent_dialog = consent_open
         .then(|| {
             props
@@ -1144,6 +1155,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                     {processor}
                     family_history={family.is_some_and(|family| family.ai_history)}
                     family_vision={family.is_some_and(|family| family.ai_vision)}
+                    transcribe={props.assistant.as_ref().is_some_and(|assistant| assistant.transcribe)}
                     {on_agree}
                     {on_cancel}
                 />
@@ -1300,6 +1312,8 @@ pub fn conversation(props: &ConversationProps) -> Html {
                                     on_report={on_report.clone()}
                                     on_report_assistant={on_report_assistant.clone()}
                                     on_jump={on_jump.clone()}
+                                    transcription={transcription.clone()}
+                                    transcripts={props.transcripts.of(message.attachments().iter().map(|attachment| attachment.id))}
                                 />
                             </div>
                         </>

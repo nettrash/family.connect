@@ -46,6 +46,11 @@
 //!   stand, the 512 × 512 box one is made to fit, who may remove one, and
 //!   the order a panel shows them in. (Everywhere else here "sticker" is a
 //!   board note; in that module it is the picture sent in a chat.)
+//! - [`transcript`] — the text of a recording on request: whether "Show
+//!   text" is offered, what each refusal means, and what the device keeps.
+//! - [`transcript_sound`] — the sound a device sends for that text when the
+//!   server's stored copy will not do (a video, Ogg, an oversized file):
+//!   AAC copied where it fits, re-encoded to 64 kbit/s mono where not.
 
 pub mod account;
 pub mod assistant;
@@ -71,4 +76,6 @@ pub mod notify;
 pub mod pack;
 pub mod reactions;
 pub mod transcode;
+pub mod transcript;
+pub mod transcript_sound;
 pub mod wav;

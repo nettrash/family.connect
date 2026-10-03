@@ -7,8 +7,11 @@
 //! once they land, so a row is the height it will be from the moment it is
 //! drawn and a picture arriving does not shove the chat.
 
+use std::collections::{HashMap, HashSet};
+
 use fc_text::i18n::{t, t1, t2, tn};
 use fc_text::media;
+use fc_text::transcript::State as TranscriptState;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlAudioElement;
 use yew::prelude::*;
@@ -26,6 +29,26 @@ pub struct StackProps {
     /// Something to say under the composer — a download that failed.
     #[prop_or_default]
     pub on_notice: Callback<String>,
+    /// The text of these recordings, on request — None where none is
+    /// offered and none is held.
+    #[prop_or_default]
+    pub transcribing: Option<Transcribing>,
+}
+
+/// One message's share of "Show text" (docs/protocol.md, "Transcripts on
+/// request"): which of its recordings offer it, what this device holds for
+/// them, and where a press goes.
+#[derive(Clone, PartialEq, Default)]
+pub struct Transcribing {
+    /// The attachments "Show text" is drawn under
+    /// (`fc_text::transcript::offers_show_text`).
+    pub offered: HashSet<i64>,
+    /// What this device holds for this message's attachments.
+    pub held: HashMap<i64, TranscriptState>,
+    /// "Show text", or "Try Again", by attachment id.
+    pub on_show: Callback<i64>,
+    /// "Hide text", by attachment id.
+    pub on_hide: Callback<i64>,
 }
 
 /// One attachment exactly as it always drew; several as a pile of the
@@ -50,6 +73,32 @@ pub fn attachment_stack(props: &StackProps) -> Html {
         let media = media.clone();
         Callback::from(move |_: ()| on_open.emit((media.clone(), index)))
     };
+    // A video's text goes under the picture, as a recording's goes under
+    // its player — one block per video, in the order they were sent. In a
+    // pile of two or more videos each block is marked with where its video
+    // stands in the pile, a number every language reads, so that no text
+    // is left wondering whose it is.
+    let videos: Vec<(usize, i64)> = media
+        .iter()
+        .enumerate()
+        .filter(|(_, attachment)| attachment.kind == "video")
+        .map(|(index, attachment)| (index + 1, attachment.id))
+        .collect();
+    let marked = videos.len() >= 2;
+    let video_text = props.transcribing.as_ref().map(|transcribing| {
+        html! {
+            { for videos.iter().map(|&(place, id)| html! {
+                <TranscriptBlock
+                    key={id}
+                    state={transcribing.held.get(&id).cloned()}
+                    offered={transcribing.offered.contains(&id)}
+                    on_show={transcribing.on_show.reform(move |()| id)}
+                    on_hide={transcribing.on_hide.reform(move |()| id)}
+                    marker={marked.then(|| format!("▶ {place}"))}
+                />
+            }) }
+        }
+    });
     html! {
         <div class="attachments">
             if media.len() >= 2 {
@@ -57,12 +106,14 @@ pub fn attachment_stack(props: &StackProps) -> Html {
             } else if let Some(single) = media.first() {
                 <Tile attachment={single.clone()} mine={props.mine} on_open={open(0)} />
             }
+            { video_text.unwrap_or_default() }
             { for rows.iter().map(|attachment| html! {
                 <Row
                     key={attachment.id}
                     attachment={attachment.clone()}
                     mine={props.mine}
                     on_notice={props.on_notice.clone()}
+                    transcribing={props.transcribing.clone()}
                 />
             }) }
         </div>
@@ -211,6 +262,8 @@ struct RowProps {
     attachment: Attachment,
     mine: bool,
     on_notice: Callback<String>,
+    #[prop_or_default]
+    transcribing: Option<Transcribing>,
 }
 
 /// A file, a recording or a place: read, not looked at.
@@ -218,7 +271,23 @@ struct RowProps {
 fn row(props: &RowProps) -> Html {
     match props.attachment.kind.as_str() {
         "audio" => {
-            html! { <AudioPlayer attachment={props.attachment.clone()} mine={props.mine} /> }
+            let id = props.attachment.id;
+            let text = props.transcribing.as_ref().map(|transcribing| {
+                html! {
+                    <TranscriptBlock
+                        state={transcribing.held.get(&id).cloned()}
+                        offered={transcribing.offered.contains(&id)}
+                        on_show={transcribing.on_show.reform(move |()| id)}
+                        on_hide={transcribing.on_hide.reform(move |()| id)}
+                    />
+                }
+            });
+            html! {
+                <>
+                    <AudioPlayer attachment={props.attachment.clone()} mine={props.mine} />
+                    { text.unwrap_or_default() }
+                </>
+            }
         }
         "location" => {
             html! { <LocationRow attachment={props.attachment.clone()} mine={props.mine} /> }
@@ -525,6 +594,99 @@ fn location_row(props: &LocationProps) -> Html {
                 <span class="open-maps">{ t("Open in Maps") }</span>
             }
         </button>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct TranscriptProps {
+    /// What this device holds for the recording, if anything.
+    pub state: Option<TranscriptState>,
+    /// Whether "Show text" is offered for it at all.
+    pub offered: bool,
+    pub on_show: Callback<()>,
+    pub on_hide: Callback<()>,
+    /// Which of a pile's videos this is the text of — `▶ 2` — where there
+    /// is more than one.
+    #[prop_or_default]
+    pub marker: Option<String>,
+}
+
+/// Under a recording's player, or a video's picture: "Show text", then
+/// "Getting the text…", then the text itself — selectable, and labelled as
+/// the recording's so that a screen reader does not read it as the message
+/// — with "Hide text".
+/// Silence is "No speech", an answer and not a failure; a failure is one
+/// line, with "Try Again" only where asking again could help.
+#[function_component(TranscriptBlock)]
+pub fn transcript_block(props: &TranscriptProps) -> Html {
+    let show = {
+        let on_show = props.on_show.clone();
+        Callback::from(move |event: MouseEvent| {
+            event.stop_propagation();
+            on_show.emit(());
+        })
+    };
+    let hide = {
+        let on_hide = props.on_hide.clone();
+        Callback::from(move |event: MouseEvent| {
+            event.stop_propagation();
+            on_hide.emit(());
+        })
+    };
+    let marker = props.marker.as_ref().map(|marker| {
+        html! { <span class="transcript-marker">{ marker.clone() }</span> }
+    });
+    let show_button = |label: &'static str| {
+        html! {
+            <button type="button" class="link transcript-action" onclick={show.clone()}>{ label }</button>
+        }
+    };
+    match &props.state {
+        None if props.offered => html! {
+            <div class="transcript">{ marker.clone().unwrap_or_default() }{ show_button(t("Show text")) }</div>
+        },
+        None => Html::default(),
+        Some(TranscriptState::Asking) => html! {
+            <div class="transcript">{ marker.clone().unwrap_or_default() }
+                <p class="transcript-status" role="status" aria-busy="true">{ t("Getting the text…") }</p>
+            </div>
+        },
+        Some(TranscriptState::Hidden(_)) => html! {
+            <div class="transcript">{ marker.clone().unwrap_or_default() }{ show_button(t("Show text")) }</div>
+        },
+        Some(TranscriptState::Shown(said)) => {
+            // Selecting a word is a double-click, and a double-click on a
+            // bubble is a heart: the text keeps its own.
+            let keep = Callback::from(|event: MouseEvent| event.stop_propagation());
+            let lang = said
+                .language
+                .as_deref()
+                .filter(|code| {
+                    (2..=3).contains(&code.len()) && code.chars().all(|c| c.is_ascii_alphabetic())
+                })
+                .map(str::to_ascii_lowercase);
+            html! {
+                <div class="transcript">{ marker.clone().unwrap_or_default() }
+                    <div class="transcript-text" role="group"
+                        aria-label={t("Text of the recording")} ondblclick={keep}>
+                        if said.is_silence() {
+                            <p class="is-silence">{ t("No speech") }</p>
+                        } else {
+                            <p {lang}>{ said.text.clone() }</p>
+                        }
+                    </div>
+                    <button type="button" class="link transcript-action" onclick={hide}>{ t("Hide text") }</button>
+                </div>
+            }
+        }
+        Some(TranscriptState::Failed(failure)) => html! {
+            <div class="transcript">{ marker.clone().unwrap_or_default() }
+                <p class="transcript-failure" role="status">{ failure.sentence() }</p>
+                if failure.may_retry() && props.offered {
+                    { show_button(t("Try Again")) }
+                }
+            </div>
+        },
     }
 }
 

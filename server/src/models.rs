@@ -267,6 +267,19 @@ pub struct Family {
     /// an absent key as false, which is the truth for every family that
     /// predates it.
     pub ai_faces: bool,
+
+    /// Whether a member may ask for the text of ANOTHER member's voice note,
+    /// audio file or video in the family chat (protocol.md, "Transcripts on
+    /// request"). A SIXTH switch, owner-set, **false** by default for every
+    /// family before and after it (migration 0049).
+    ///
+    /// Always serialized, like its neighbours, for the same reason. Bound to
+    /// none of them — it widens nothing the assistant is shown — and it is
+    /// only one of the keys: the asker's consent and the SENDER's consent
+    /// are asked beside it, and a member's own recordings need no switch at
+    /// all. A client that never heard of it reads an absent key as false,
+    /// which is the truth for every family that predates it.
+    pub ai_transcripts: bool,
 }
 
 /// What a member says the ASSISTANT got wrong (docs/protocol.md, "Reporting
@@ -1376,6 +1389,7 @@ mod tests {
             ai_history_photos: false,
             ai_greeting: false,
             ai_faces: false,
+            ai_transcripts: false,
         };
         let json = serde_json::to_value(&family).expect("serialize");
         assert!(
@@ -1402,6 +1416,7 @@ mod tests {
             ai_history_photos: false,
             ai_greeting: false,
             ai_faces: false,
+            ai_transcripts: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1409,7 +1424,8 @@ mod tests {
                 "id": 3, "name": "The Smiths", "join_policy": "open",
                 "created_at": "2026-08-19T17:03:12Z", "ai_history": true,
                 "ai_vision": false, "ai_history_photos": false,
-                "ai_greeting": false, "ai_faces": false
+                "ai_greeting": false, "ai_faces": false,
+                "ai_transcripts": false
             })
         );
     }
@@ -1429,6 +1445,7 @@ mod tests {
             ai_history_photos: false,
             ai_greeting: false,
             ai_faces: false,
+            ai_transcripts: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1437,7 +1454,8 @@ mod tests {
                 "created_at": "2026-08-19T17:03:12Z",
                 "invite_code": "ABCD2345", "language": "ru", "ai_history": true,
                 "ai_vision": false, "ai_history_photos": false,
-                "ai_greeting": false, "ai_faces": false
+                "ai_greeting": false, "ai_faces": false,
+                "ai_transcripts": false
             })
         );
     }
@@ -1460,6 +1478,7 @@ mod tests {
             ai_history_photos: false,
             ai_greeting: false,
             ai_faces: false,
+            ai_transcripts: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1467,7 +1486,8 @@ mod tests {
                 "id": 3, "name": "The Smiths", "join_policy": "closed",
                 "created_at": "2026-08-19T17:03:12Z",
                 "max_members": 12, "ai_history": true, "ai_vision": false,
-                "ai_history_photos": false, "ai_greeting": false, "ai_faces": false
+                "ai_history_photos": false, "ai_greeting": false, "ai_faces": false,
+                "ai_transcripts": false
             })
         );
     }
