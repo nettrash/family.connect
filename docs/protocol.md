@@ -266,7 +266,7 @@ Member    {"id": 7, "username": "anna", "display_name": "Anna", "role": "owner|m
 Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval|closed",
            "created_at": "…", "ai_history": true, "ai_vision": false,
            "ai_history_photos": false, "ai_greeting": false, "ai_faces": false,
-           "ai_transcripts": false, "ai_lookups": false}
+           "ai_transcripts": false, "ai_lookups": false, "greeting_places": []}
           — plus "invite_code": "ABCD2345" when (and only when) the caller is the owner
           — plus "max_members": 8 when (and only when) the owner has set a cap. ABSENT means
             the family has no cap of its own and only the operator's ceiling binds — absent is
@@ -332,6 +332,15 @@ Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval|closed",
             of the six above. It does nothing on a server whose `assistant.lookups` is absent. A
             client that never heard of it reads an absent key as false, which is the truth for
             every family that predates it — see "Looking things up"
+          — "greeting_places" is ALWAYS present too, `[]` by default (added 2026-10-03): the
+            places, at most three, whose forecast for the day the daily greeting mentions —
+            `["Moscow", "Belgrade"]` — as the owner typed them and the server kept them. Not a
+            switch and bound to none: an empty list is "no weather". Every member reads it,
+            because these names are what leaves the server for the weather provider; only the
+            owner sets it. It does nothing unless `assistant.greeting_weather` is true and the
+            family is greeted at all. A client that never heard of it reads an absent key as
+            `[]`, which is the truth for every family that predates it — see "Today's weather,
+            for places the owner chose"
 JoinRequest {"id": 12, "user": {User}, "created_at": "…"}
 Report    {"id": 4, "reporter": {User}, "reported": {User},
            "reason": "spam|harassment|inappropriate|other", "created_at": "…"}
@@ -1939,13 +1948,16 @@ assistant outright when the server has one:
               "draw": "/draw", "vision": true, "images": true,
               "transcribe": true, "transcribe_max_bytes": 26214400,
               "lookups": ["Brave Search", "Open-Meteo", "Wikipedia"],
+              "greeting_weather": true,
               "processor": "Microsoft — Azure OpenAI (Sweden Central)"}
 ```
 
 `draw`, `vision` and `images` are about pictures and are described under "Pictures" below;
 `transcribe` and `transcribe_max_bytes` are about the text of recordings and are described under
 "Transcripts on request"; `lookups` (2026-10-03) names the sources the assistant may look things up
-in, and is absent when the server has none — see "Looking things up"; the first three keys are the whole of what the family chat needs to name
+in, and is absent when the server has none — see "Looking things up"; `greeting_weather`
+(2026-10-03) says whether the daily greeting can carry the weather for the owner's places — see
+"Today's weather, for places the owner chose"; the first three keys are the whole of what the family chat needs to name
 the assistant and offer `@ai`.
 
 **`processor` names who actually answers**, in the operator's own words, and a client must show it
@@ -2114,8 +2126,22 @@ model is told nothing about them, because "three messages were withheld" is itse
 about who declined.
 
 **The daily greeting needs no consent** and asks for none: its prompt is a fixed instruction plus
-the star signs of the family's stored birthdays, with no name, no message and nothing anybody
-wrote. It is the one thing the assistant sends that is not made of somebody's words.
+the star signs of the family's stored birthdays, with no name, no message and nothing a member
+wrote. It is the one thing the assistant sends that is not made of a member's words.
+
+*Amended 2026-10-03 (#72).* That sentence used to say the greeting is made of nothing anybody
+wrote, and it is no longer quite true. The greeting may now carry today's forecast for up to three
+places the family's OWNER typed into a family setting, and to get it the server sends those place
+names to the weather provider (Open-Meteo, which is not `processor`), and the forecast it gets back
+— each place's own name and country, as the geocoder spells them, and the day's numbers — to the
+model. The model never sees the names as the owner typed them. It still needs no member's
+consent, and the reason is the one this whole section turns on: consent here protects a member's
+own words, and none are in it. The names are the owner's, chosen for exactly this purpose, in a
+setting only the owner can change — the same standing as the family's `language`, which also
+shapes what the assistant writes for everyone. Every member can read the list (`greeting_places` on
+the `Family` object), each client's settings say under the field where the names go, and a greeting
+that used the weather says so in its own credit line. See "Today's weather, for places the owner
+chose".
 
 #### Mentioning a member
 
@@ -3566,8 +3592,10 @@ The family reads it when they next open the chat, which is what a good morning i
 precedent is already here: a call record pushes only when it is a missed call, and is delivered
 silently otherwise.
 
-**What it may contain, and what it may never.** A short, warm note about the day, and the **zodiac
-signs** present in the family. Signs only:
+**What it may contain, and what it may never.** A short, warm note about the day, the **zodiac
+signs** present in the family, and — only when the owner chose places and the server can fetch
+weather — **today's forecast for those places** (see "Today's weather, for places the owner chose"
+below). Signs only:
 
 - **no names, and no roster.** A mention already refuses to send the family's roster to the model,
   and a mention has a member's deliberate act behind it; a greeting has none at all. What travels
@@ -3583,7 +3611,10 @@ signs** present in the family. Signs only:
 - **no factual claims about the date.** No "on this day in history", no anniversaries, no news. The
   model has no retrieval of any kind, so an on-this-day line is a daily opportunity for a confident
   falsehood posted unattended into a family chat that nobody reviews — and one that then feeds back
-  into the transcript every later mention reads. The instruction says so rather than hoping.
+  into the transcript every later mention reads. The instruction says so rather than hoping. The
+  forecast is not an exception to this: it is not something the model recalls, it is data the
+  server fetched minutes earlier and hands over, and the instruction lets the model describe the
+  weather only from that data, for those places.
 
 **The language is the family's**, exactly as a family-chat mention's answer is. A greeting has no
 asking device, so the usual fallback to the device's `Accept-Language` has nothing to fall back to,
@@ -3610,6 +3641,116 @@ way to remove it.
 sequence. Reactions, replies, editing, retention, catch-up and unread all work on it because it is
 not special, and a client that knows nothing about greetings draws it as what it is — a message
 from the assistant in the family chat, which every client can already draw.
+
+##### Today's weather, for places the owner chose
+
+*Decided 2026-10-03 (#72), by the owner of this project: the greeting mentions today's forecast for
+up to three places the family's owner chooses, as a family setting, when the server can fetch
+weather — and nothing else about it changes.*
+
+**The owner chooses the places.** `greeting_places` on the `Family` object, set through
+`PATCH /families/mine` by the owner alone and read by every member: an array of **at most 3** place
+names, `[]` by default for every family before this and after it (migration 0051). Each name, as the
+server keeps it:
+
+- is **trimmed**, with every run of whitespace inside it folded to one space;
+- is **not empty** after that, has **no control characters**, and is **at most 80 characters**;
+- is **different from the others once both are lower-cased** — a repeat is dropped silently and the
+  first spelling is kept, so `["Moscow", "moscow"]` is kept as `["Moscow"]`. The limit of three is
+  counted after that.
+
+Anything else is `validation`, and nothing in the request is written. `"greeting_places": [...]`
+REPLACES the list, `[]` clears it, an absent key leaves it alone, and `null` is `validation` — the
+list has no "unset" for a null to mean, so a client sends `[]`. The answer carries the list the
+server KEPT, which is what a client then shows; it may be shorter than what was sent, or spelt with
+less whitespace. A name is words the owner typed: never coordinates, and never a device's location.
+
+**The server must be able to fetch weather**: `[ai.lookups] weather = true`, on a server that posts
+greetings at all. `GET /families/mine` says so in the `assistant` object as **`greeting_weather`**,
+a boolean ALWAYS present whenever the object is, and true exactly when `greetings_enabled` (on
+`GET /me`) is true and the weather source is configured. A client offers the places field, beside
+the greeting switch and its time, only when it is true. Places stored on a server where it is false
+are kept and do nothing; the PATCH is accepted there too, so an owner never loses the list to an
+operator's config change.
+
+It is bound to no switch but the greeting's own. Not to `ai_lookups`: that switch decides whether a
+MEMBER's question may become a query for an outside service, and this list is not made from
+anybody's question — the owner wrote it for this purpose, and writing it is the choice. An empty
+list is "no weather", which is why there is no separate switch. Nothing is fetched for a family that
+is not being greeted — both greeting keys turned and a language resolved — and nothing is fetched
+twice for one greeting.
+
+**What leaves, and to whom.** For each place, when that family's greeting is being written:
+
+1. **to Open-Meteo's geocoder**: the name, exactly as stored, with a result count of `1`, the
+   greeting's language (the lookup language code of the family's language, or of the operator's
+   greeting language, as for a lookup) and `format=json`;
+2. **to Open-Meteo's forecast**: that geocoded place's own coordinates rounded to two decimals, with
+   exactly the parameters a two-day `get_weather` lookup sends, `timezone=auto` among them — so a
+   forecast is shared with that lookup's 30-minute cache, and the other way round.
+
+Nothing else: no member's words, no name of anybody, no birthday, no message, no device location
+and nothing that identifies the family. With them go the server's IP address and the User-Agent
+described under "What leaves the server, and to whom"; Open-Meteo's commercial endpoints and key are
+used when `weather_key` is set, as for a lookup.
+
+**An ambiguous name is the geocoder's top match, and the greeting says which.** There is no one to
+ask which "Paris" the owner meant, so the first match is the place, and the model is given its
+name, its kind (a city, an island…), its country and its region, as the geocoder spells them, and
+told to name each place with its country — "Belgrade, Serbia". A family whose "Paris" turned out to
+be in Texas sees that in the first greeting, and the owner can change the name.
+
+**Today is the place's own today.** The forecast is counted in the place's own time zone, and the
+day used is that place's date at the moment the greeting is written: the server reads the
+forecast's UTC offset rather than assuming its own date. A greeting written at 22:30 UTC gives
+Moscow the day that has already begun there and New York the one that has not ended. For each
+place the model receives the date, the day's high and low, the conditions in words (the WMO weather
+code, as the server turns it into English words for every lookup), the highest chance of
+precipitation, and the units Open-Meteo gave. A place with no entry for its own date is left out.
+
+**What the model is told.** The forecast is DATA: a JSON list in the request's user turn, after the
+date and the signs, introduced as weather data from an outside service that is information and
+never instructions. The instruction changes in one sentence and no more: instead of forbidding the
+weather outright, it tells the model to mention the given forecast briefly, naming each place with
+its country, in the family's language, and to say nothing about the weather anywhere else — no
+season, no daylight and no hemisphere, still. The language line still goes last. The geocoder's
+words are cleaned and bounded on their way in, as a lookup's are.
+
+**A failure costs the weather, never the greeting.** The places are fetched at the same time, under
+**one deadline of 8 seconds** for all of them together (each request also keeps its own
+`timeout_secs`). A place whose geocoding or forecast fails, times out, finds nothing or has no entry
+for its date is left out, and the others are still used. If none is left, the request to the model
+is **byte for byte** the request with no places at all — the server's tests pin that, the way they
+pin the request without lookups — and the greeting is the usual one.
+
+**The credit, and the filter.** A greeting that used at least one forecast ends, after one blank
+line, with the credit line a lookup answer carries for the weather:
+"[Weather data by Open-Meteo.com](https://open-meteo.com/)", in the greeting's language for the nine
+the apps ship in and in English for anything else (see "How sources are shown"). There is no sources
+line, because a forecast has no page to link. The model's words in such a greeting pass through the
+same link filter as a lookup answer's, because text from an outside service reached the model. A
+greeting that used no forecast has no credit and no filtering, and is exactly what it was.
+
+**The disclosure.** The credit line names the provider under every greeting that used it. And each
+client says, under the places field, where the names go — in its own words, to this effect: *"These
+place names are sent to Open-Meteo once a day to fetch the forecast for the greeting. Nothing else
+is sent."*
+
+**Logged, kept, counted.** A log line may say how many places a family has, how many forecasts were
+used, and a failure's outcome word and the provider's host. **It never holds** a place name, a
+coordinate or any part of a forecast. The geocoder's answer for a stored name is kept in memory for
+30 minutes, by name and language, beside the forecasts kept by coordinates, so a greeting retried
+every minute after a model failure does not ask again each time; a member's query is never kept by
+its words, and a lookup never reads this. Weather is free, so these calls are counted nowhere —
+neither in `ai_usage.searches`, which counts only paid web searches, nor against the daily search
+cap — and the greeting's usage row is the one it always was.
+
+**Old clients and old servers.** A client that predates this ignores `greeting_places` and
+`assistant.greeting_weather` and cannot set places; a family whose owner set them from a newer
+client still gets the weather in its greeting, and the credit is markdown every client draws. A
+server that predates this sends neither key, which a client reads as "no greeting weather here",
+and it ignores a `greeting_places` in a PATCH — so a client confirms the list from the answer, not
+from what it sent.
 
 #### Transcripts on request
 
@@ -3960,7 +4101,9 @@ everything below is arranged around saying exactly who that is, what they receiv
 Astrology, funny facts and interesting facts need no source and get none (decision 11): the model
 writes a horoscope as entertainment, as the daily greeting already does, and a fact that should be
 checkable comes from Wikipedia. The daily greeting keeps declaring no tools, and its "you have no
-way to look anything up" stays true.
+way to look anything up" stays true: the forecast it may carry for the owner's places is fetched by
+the server before the model is asked, from names the owner chose, never by the model (see "Today's
+weather, for places the owner chose").
 
 ##### How the model reaches them
 
@@ -5275,9 +5418,9 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 |---|---|
 | `POST /families` | `{name}` (1–64 chars) → `201 {family: Family}`. Caller becomes owner; the family chat is created automatically. Errors: `already_in_family`; `family_registration_disabled` (403) when the operator has closed this server to new families — see "Starting a family". |
 | `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). A family whose policy is `closed` admits nobody: the invite code answers `invalid_invite_code` (404), byte-identical to a code that never existed, so a shut door tells a stranger nothing — the same non-enumeration reasoning the avatar and password-reset endpoints follow. A family that is full answers `family_full` (409) — full meaning at its own `max_members`, or at the operator's ceiling when it has set none, because a valve that limited only what an owner may TYPE would hold nothing shut. The checks run in order — closed, then already in a family, then a pending request, then full — so a closed family answers `invalid_invite_code` whatever else is true of it, and under policy `approval` this door is where the REQUEST is created and the cap is read there too, then read again at approval. `family_full` does admit that the code is real, and that is the one thing this endpoint tells a stranger: the alternative is telling an invited member their code is invalid on the day the family filled up, which costs a real person a real join, where a closed family's code may be years old and in anybody's hands. Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`, `family_full` (409). |
-| `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, max_pack_seq: 14, max_pack_items: 200, max_pack_item_bytes: 524288, assistant: {user_id, display_name, mention, draw, vision, images, transcribe, transcribe_max_bytes?, lookups?}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `max_pack_seq` is the same mark for the family's sticker pack, omitted while the pack is empty and untouched; `max_pack_items` and `max_pack_item_bytes` are the pack's two ceilings, ALWAYS present on a server that has packs — so their absence is how a client knows this server predates them and offers no stickers (see "Sticker pack"). `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. Its `vision` and `images` booleans say whether this SERVER can look at a picture and make one — a client offers to attach a picture in an `ai` chat only when `vision` and the family's own `ai_vision` are both true, and offers `draw` (the `/draw` token) only when `images` is true (see "Pictures"). Its `transcribe` boolean says whether this SERVER can turn a recording into text, and `transcribe_max_bytes` — present only when `transcribe` is true — is the most bytes of sound one transcript request may send; a client offers "Show text" on a voice note, audio file or video only when `transcribe` is true (see "Transcripts on request"). Its `lookups` array (2026-10-03) names the providers the assistant may look things up in — `"Brave Search"` or `"SearXNG"`, `"Open-Meteo"`, `"Wikipedia"`, each only when configured — and is ABSENT, never `[]`, when the server has none; a client names them on the consent screen and beside the owner's `ai_lookups` switch, and offers that switch only when the array is present (see "Looking things up"). `family.invite_code` present for the owner only. Plus `blocked_user_ids: [11, 14]` as on `GET /me`, always present and `[]` when empty, and a complete state-set there too. Plus `next_owner_user_id: 11`, present for the OWNER only, naming the member who would inherit the family if the owner left right now — the same rule as "Deleting an account", computed once server-side so the leave dialog can say who it is instead of two clients computing it and eventually disagreeing (the roster does not carry join times, so no client could compute it anyway); omitted when the owner is the sole member. It is a PREDICTION and takes no frame of its own: any `member_joined` or `member_left` can change the answer, so a client re-reads `GET /families/mine` immediately before it shows the leave dialog and never names a successor from a cached value. Absence on that fresh read means the owner is the last member and leaving DELETES the family, which is a different dialog and a different confirmation. Error: `not_in_family`. |
+| `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, max_pack_seq: 14, max_pack_items: 200, max_pack_item_bytes: 524288, assistant: {user_id, display_name, mention, draw, vision, images, transcribe, transcribe_max_bytes?, lookups?, greeting_weather}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `max_pack_seq` is the same mark for the family's sticker pack, omitted while the pack is empty and untouched; `max_pack_items` and `max_pack_item_bytes` are the pack's two ceilings, ALWAYS present on a server that has packs — so their absence is how a client knows this server predates them and offers no stickers (see "Sticker pack"). `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. Its `vision` and `images` booleans say whether this SERVER can look at a picture and make one — a client offers to attach a picture in an `ai` chat only when `vision` and the family's own `ai_vision` are both true, and offers `draw` (the `/draw` token) only when `images` is true (see "Pictures"). Its `transcribe` boolean says whether this SERVER can turn a recording into text, and `transcribe_max_bytes` — present only when `transcribe` is true — is the most bytes of sound one transcript request may send; a client offers "Show text" on a voice note, audio file or video only when `transcribe` is true (see "Transcripts on request"). Its `lookups` array (2026-10-03) names the providers the assistant may look things up in — `"Brave Search"` or `"SearXNG"`, `"Open-Meteo"`, `"Wikipedia"`, each only when configured — and is ABSENT, never `[]`, when the server has none; a client names them on the consent screen and beside the owner's `ai_lookups` switch, and offers that switch only when the array is present (see "Looking things up"). Its `greeting_weather` boolean (2026-10-03), ALWAYS present whenever the object is, says whether the daily greeting can carry today's forecast for the family's `greeting_places`: true exactly when this server posts greetings (`greetings_enabled` on `GET /me`) and has `[ai.lookups] weather` on; a client offers the places field beside the greeting switch only when it is true (see "Today's weather, for places the owner chose"). `family.invite_code` present for the owner only. Plus `blocked_user_ids: [11, 14]` as on `GET /me`, always present and `[]` when empty, and a complete state-set there too. Plus `next_owner_user_id: 11`, present for the OWNER only, naming the member who would inherit the family if the owner left right now — the same rule as "Deleting an account", computed once server-side so the leave dialog can say who it is instead of two clients computing it and eventually disagreeing (the roster does not carry join times, so no client could compute it anyway); omitted when the owner is the sole member. It is a PREDICTION and takes no frame of its own: any `member_joined` or `member_left` can change the answer, so a client re-reads `GET /families/mine` immediately before it shows the leave dialog and never names a successor from a cached value. Absence on that fresh read means the owner is the last member and leaving DELETES the family, which is a different dialog and a different confirmation. Error: `not_in_family`. |
 | `POST /families/invite-code/rotate` | (owner) → `200 {invite_code}`. Old code stops working; pending requests survive. |
-| `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval"\|"closed", max_members?: int\|null, language?: "ru"\|null, ai_history?: true\|false, ai_vision?: true\|false, ai_history_photos?: true\|false, ai_greeting?: true\|false, ai_faces?: true\|false, ai_transcripts?: true\|false, ai_lookups?: true\|false}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language and `"max_members": null` CLEARS the cap, while leaving either key out entirely leaves it alone — these are **the two places** in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"); `ai_vision` is a second boolean of exactly that shape, differing only in defaulting to FALSE (see "Pictures"); `ai_history_photos` is a third, defaulting to FALSE, and the one with a rule between it and its neighbour: it may only be `true` while `ai_vision` is — sending `true` for it while `ai_vision` is off, or would be off after this same request, is `validation`, and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Recent photos from the family chat"). A cap must be between 1 and the operator's ceiling (`limits.max_family_members`). A cap BELOW the family's current size is ACCEPTED and acts as a freeze — nobody new until people leave — rather than being refused: an owner who inherits a large family must still be able to shut the door, and the cap is read at the door and never enforced over the room. `ai_greeting` is a FOURTH boolean of the same shape, defaulting to FALSE, and it is the one with no rule between it and any neighbour: it is about whether the assistant speaks unprompted, not about what it may be shown, so it may be set true or false regardless of the other three and it is never cleared by any of them (see "The daily greeting"). `ai_faces` is a FIFTH, defaulting to FALSE, under exactly `ai_history_photos`'s rule: it may only be `true` while `ai_vision` is — `true` while `ai_vision` is off, or would be off after this same request, is `validation` — and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Profile pictures of members"). `ai_transcripts` is a SIXTH, defaulting to FALSE, and like `ai_greeting` bound to none of the others: it decides whether a member may ask for the text of ANOTHER member's recording in the family chat, so it may be set true or false regardless of the other five and is never cleared by any of them (see "Transcripts on request"). `ai_lookups` is a SEVENTH, defaulting to FALSE, and bound to none of the others either: it decides whether the assistant may look things up for this family, sending a query it wrote to the providers `assistant.lookups` names, so it may be set regardless of the other six — and on a server with no lookup source, where it does nothing — and is never cleared by any of them (see "Looking things up"). Errors: `not_family_owner` (403), `validation` (a `join_policy` that is none of the three, a `max_members` outside 1..ceiling, or `ai_history_photos: true` or `ai_faces: true` without `ai_vision`), `invalid_language`. |
+| `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval"\|"closed", max_members?: int\|null, language?: "ru"\|null, ai_history?: true\|false, ai_vision?: true\|false, ai_history_photos?: true\|false, ai_greeting?: true\|false, ai_faces?: true\|false, ai_transcripts?: true\|false, ai_lookups?: true\|false, greeting_places?: ["Moscow", "Belgrade"]}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language and `"max_members": null` CLEARS the cap, while leaving either key out entirely leaves it alone — these are **the two places** in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"); `ai_vision` is a second boolean of exactly that shape, differing only in defaulting to FALSE (see "Pictures"); `ai_history_photos` is a third, defaulting to FALSE, and the one with a rule between it and its neighbour: it may only be `true` while `ai_vision` is — sending `true` for it while `ai_vision` is off, or would be off after this same request, is `validation`, and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Recent photos from the family chat"). A cap must be between 1 and the operator's ceiling (`limits.max_family_members`). A cap BELOW the family's current size is ACCEPTED and acts as a freeze — nobody new until people leave — rather than being refused: an owner who inherits a large family must still be able to shut the door, and the cap is read at the door and never enforced over the room. `ai_greeting` is a FOURTH boolean of the same shape, defaulting to FALSE, and it is the one with no rule between it and any neighbour: it is about whether the assistant speaks unprompted, not about what it may be shown, so it may be set true or false regardless of the other three and it is never cleared by any of them (see "The daily greeting"). `ai_faces` is a FIFTH, defaulting to FALSE, under exactly `ai_history_photos`'s rule: it may only be `true` while `ai_vision` is — `true` while `ai_vision` is off, or would be off after this same request, is `validation` — and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Profile pictures of members"). `ai_transcripts` is a SIXTH, defaulting to FALSE, and like `ai_greeting` bound to none of the others: it decides whether a member may ask for the text of ANOTHER member's recording in the family chat, so it may be set true or false regardless of the other five and is never cleared by any of them (see "Transcripts on request"). `ai_lookups` is a SEVENTH, defaulting to FALSE, and bound to none of the others either: it decides whether the assistant may look things up for this family, sending a query it wrote to the providers `assistant.lookups` names, so it may be set regardless of the other six — and on a server with no lookup source, where it does nothing — and is never cleared by any of them (see "Looking things up"). `greeting_places` (2026-10-03) is not a switch but a list, and it REPLACES the stored one: at most 3 names, each trimmed with inner whitespace folded, non-empty, without control characters and at most 80 characters; a name equal to an earlier one once both are lower-cased is dropped silently, and the three are counted after that; `[]` clears it, absent leaves it alone, and `null` is `validation`. The answer carries the list as kept (see "Today's weather, for places the owner chose"). Errors: `not_family_owner` (403), `validation` (a `join_policy` that is none of the three, a `max_members` outside 1..ceiling, `ai_history_photos: true` or `ai_faces: true` without `ai_vision`, or a `greeting_places` that is `null`, not an array of strings, longer than 3 after duplicates are dropped, or holds a name that is empty, too long or has a control character), `invalid_language`. |
 | `GET /families/join-requests` | (owner) → `200 {requests: [JoinRequest]}` (pending only). |
 | `POST /families/join-requests/{id}/approve` | (owner) → `200 {member: Member}`. The cap is re-checked here, because the roster can fill between a request and the decision: `family_full` (409), which leaves the request PENDING — a full family is a temporary condition and not a decision, and the owner may approve it again once a seat frees. The cap counts the rows in `members`, the owner included; `former_members` do not count, and a pending request reserves nothing — three members, a cap of four and two pending requests means the first approval succeeds and the second is `family_full`. Closing the family does NOT touch requests that were already pending, and the owner may still approve them — closing is about the invite code, and an approval is the deliberate act of the person who closed it. Errors: `join_request_not_pending`, `user_already_in_family`, `family_full` (409). |
 | `POST /families/join-requests/{id}/reject` | (owner) → `204`. Error: `join_request_not_pending`. |
@@ -5982,6 +6125,8 @@ unregistered deletes the row, as an ordinary push would.
 | A whole reply that may look things up | twice `[ai] timeout_secs`, 360 s by default; a call still running then ends the reply in `ai_error` |
 | A lookup query or place name | 200 chars (`[ai.lookups] max_query_chars`); over it is refused back to the model, never cut |
 | Source links in a lookup answer's footer | 3 (fixed) |
+| Places in a family's `greeting_places` | 3, each at most 80 chars (fixed) |
+| Fetching the weather for one greeting, every place together | 8 s, then the greeting goes out with what arrived (fixed) |
 | Attachment size | 100 MB (`limits.max_attachment_bytes`; keep nginx in step) |
 | Attachments per message | 10 (`limits.max_attachments_per_message`; the fewest is 1, fixed) |
 | Items in one family's sticker pack | 200 (`limits.max_pack_items`) |

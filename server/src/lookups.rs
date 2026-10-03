@@ -401,6 +401,17 @@ impl Ledger {
         }
     }
 
+    /// The ledger of a daily greeting that was handed at least one forecast
+    /// (protocol.md, "Today's weather, for places the owner chose"): no
+    /// source to link, Open-Meteo to credit — so [`finish_answer`] filters
+    /// the words and writes the weather credit line, exactly as for a
+    /// weather-only lookup answer.
+    pub fn greeting_weather() -> Self {
+        let mut ledger = Self::default();
+        ledger.record(Vec::new(), Some(Credit::OpenMeteo));
+        ledger
+    }
+
     /// Whether ANY lookup result reached the model — the condition for the
     /// footer and for the link filter. A reply whose lookups all failed is
     /// the answer it would have been.
@@ -1507,9 +1518,16 @@ async fn get_json(
 /// Rounded latitude and longitude (hundredths of a degree), and days.
 type WeatherKey = (i32, i32, u8);
 
+/// The geocoder's top match for one of a family's `greeting_places`, by the
+/// greeting's language and the name lower-cased. ONLY the owner's stored
+/// names are kept this way — a lookup never reads or writes it, so a
+/// member's query is never kept by its words.
+type PlaceKey = (String, String);
+
 #[derive(Default)]
 pub struct WeatherCache {
     entries: Mutex<HashMap<WeatherKey, (Instant, Value)>>,
+    places: Mutex<HashMap<PlaceKey, (Instant, Value)>>,
 }
 
 impl WeatherCache {
@@ -1530,6 +1548,27 @@ impl WeatherCache {
             return;
         }
         entries.insert(key, (Instant::now(), value));
+    }
+
+    /// A greeting place's geocoder match, while it is fresh — so a greeting
+    /// retried every minute after a model failure does not ask again.
+    fn get_place(&self, key: &PlaceKey) -> Option<Value> {
+        let places = self.places.lock().ok()?;
+        places
+            .get(key)
+            .filter(|(at, _)| at.elapsed() < WEATHER_CACHE_TTL)
+            .map(|(_, value)| value.clone())
+    }
+
+    fn put_place(&self, key: PlaceKey, value: Value) {
+        let Ok(mut places) = self.places.lock() else {
+            return;
+        };
+        places.retain(|_, (at, _)| at.elapsed() < WEATHER_CACHE_TTL);
+        if places.len() >= WEATHER_CACHE_ENTRIES {
+            return;
+        }
+        places.insert(key, (Instant::now(), value));
     }
 }
 
@@ -1883,6 +1922,129 @@ fn place_summary(found: &Value) -> Value {
     place
 }
 
+/// Open-Meteo's geocoder and forecast endpoints, and the key: the free
+/// ones while `weather_key` is unset, the commercial ones once it is.
+fn open_meteo(cfg: &AiLookupsConfig) -> (&str, &str, &str) {
+    let key = cfg.weather_key.trim();
+    if key.is_empty() {
+        (&cfg.endpoints.geocoding, &cfg.endpoints.forecast, key)
+    } else {
+        (
+            &cfg.endpoints.geocoding_keyed,
+            &cfg.endpoints.forecast_keyed,
+            key,
+        )
+    }
+}
+
+/// Why a weather step came back with nothing: the failure, the host that
+/// was asked (never its URL), and whether a provider was asked at all.
+struct WeatherMiss {
+    failure: Failure,
+    host: Option<String>,
+    attempted: bool,
+}
+
+/// Ask the geocoder for a place, by its words, and return the matches that
+/// carry coordinates — at most [`MAX_RESULTS`] — with the host asked.
+///
+/// What leaves is the place, a result count, a language code and the
+/// format, and the key when there is one. Nothing else.
+async fn geocode(
+    state: &AppState,
+    place: &str,
+    language: &str,
+    count: &str,
+) -> Result<(Vec<Value>, Option<String>), WeatherMiss> {
+    let (geocoding, _, key) = open_meteo(&state.cfg.ai.lookups);
+    let mut params: Vec<(&str, &str)> = vec![
+        ("name", place),
+        ("count", count),
+        ("language", language),
+        ("format", "json"),
+    ];
+    if !key.is_empty() {
+        params.push(("apikey", key));
+    }
+    let Ok(url) = reqwest::Url::parse_with_params(geocoding, &params) else {
+        return Err(WeatherMiss {
+            failure: Failure::Invalid,
+            host: None,
+            attempted: false,
+        });
+    };
+    let host = url_host(&url);
+    let matches = match get_json(state, url, &[]).await {
+        Ok(answer) => answer["results"].as_array().cloned().unwrap_or_default(),
+        Err(failure) => {
+            return Err(WeatherMiss {
+                failure,
+                host,
+                attempted: true,
+            });
+        }
+    };
+    let usable: Vec<Value> = matches
+        .into_iter()
+        .filter(|found| found["latitude"].is_number() && found["longitude"].is_number())
+        .take(MAX_RESULTS)
+        .collect();
+    Ok((usable, host))
+}
+
+/// The forecast for a geocoder match, from the cache or from Open-Meteo.
+///
+/// Asked for the match's OWN coordinates, rounded to two decimals (about a
+/// kilometre) — which is also the cache key — with `timezone=auto`, so the
+/// days are counted in that place's own time. The same request whoever
+/// asks, a lookup or the greeting, so the two share the cache.
+async fn forecast_for(state: &AppState, found: &Value, days: u8) -> Result<Value, WeatherMiss> {
+    let latitude = (found["latitude"].as_f64().unwrap_or_default() * 100.0).round() / 100.0;
+    let longitude = (found["longitude"].as_f64().unwrap_or_default() * 100.0).round() / 100.0;
+    let cache_key = ((latitude * 100.0) as i32, (longitude * 100.0) as i32, days);
+    if let Some(cached) = state.lookup_cache.get(cache_key) {
+        return Ok(cached);
+    }
+    let (_, forecast, key) = open_meteo(&state.cfg.ai.lookups);
+    let latitude = format!("{latitude:.2}");
+    let longitude = format!("{longitude:.2}");
+    let days_text = days.to_string();
+    let mut params: Vec<(&str, &str)> = vec![
+        ("latitude", &latitude),
+        ("longitude", &longitude),
+        (
+            "daily",
+            "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,\
+             precipitation_probability_max,wind_speed_10m_max",
+        ),
+        ("current", "temperature_2m,weather_code,wind_speed_10m"),
+        ("timezone", "auto"),
+        ("forecast_days", &days_text),
+    ];
+    if !key.is_empty() {
+        params.push(("apikey", key));
+    }
+    let Ok(url) = reqwest::Url::parse_with_params(forecast, &params) else {
+        return Err(WeatherMiss {
+            failure: Failure::Invalid,
+            host: None,
+            attempted: true,
+        });
+    };
+    let host = url_host(&url);
+    match get_json(state, url, &[]).await {
+        Ok(answer) => {
+            state.lookup_cache.put(cache_key, answer.clone());
+            Ok(answer)
+        }
+        Err(failure) => Err(WeatherMiss {
+            failure,
+            host,
+            attempted: true,
+        }),
+    }
+}
+
 async fn weather(
     state: &AppState,
     plan: &LookupPlan,
@@ -1890,41 +2052,13 @@ async fn weather(
     days: u8,
     ledger: &mut Ledger,
 ) -> LookupResult {
-    let cfg = &state.cfg.ai.lookups;
     let query_chars = place.chars().count();
-    let key = cfg.weather_key.trim();
-    let (geocoding, forecast) = if key.is_empty() {
-        (&cfg.endpoints.geocoding, &cfg.endpoints.forecast)
-    } else {
-        (
-            &cfg.endpoints.geocoding_keyed,
-            &cfg.endpoints.forecast_keyed,
-        )
-    };
 
     // The place, as words, to the geocoder — and nothing else.
-    let mut params: Vec<(&str, &str)> = vec![
-        ("name", place),
-        ("count", "5"),
-        ("language", &plan.language.wiki),
-        ("format", "json"),
-    ];
-    if !key.is_empty() {
-        params.push(("apikey", key));
-    }
-    let Ok(url) = reqwest::Url::parse_with_params(geocoding, &params) else {
-        return failed(Failure::Invalid, None, query_chars, false);
+    let (usable, host) = match geocode(state, place, &plan.language.wiki, "5").await {
+        Ok(found) => found,
+        Err(miss) => return failed(miss.failure, miss.host, query_chars, miss.attempted),
     };
-    let host = url_host(&url);
-    let matches = match get_json(state, url, &[]).await {
-        Ok(answer) => answer["results"].as_array().cloned().unwrap_or_default(),
-        Err(failure) => return failed(failure, host, query_chars, true),
-    };
-    let usable: Vec<&Value> = matches
-        .iter()
-        .filter(|found| found["latitude"].is_number() && found["longitude"].is_number())
-        .take(MAX_RESULTS)
-        .collect();
     let Some(top) = usable.first() else {
         return LookupResult {
             content: json!({
@@ -1943,43 +2077,13 @@ async fn weather(
         };
     };
 
-    // The geocoder's own coordinates, rounded to two decimals (about a
-    // kilometre), which is also the cache key.
-    let latitude = (top["latitude"].as_f64().unwrap_or_default() * 100.0).round() / 100.0;
-    let longitude = (top["longitude"].as_f64().unwrap_or_default() * 100.0).round() / 100.0;
-    let cache_key = ((latitude * 100.0) as i32, (longitude * 100.0) as i32, days);
-    let forecast_answer = match state.lookup_cache.get(cache_key) {
-        Some(cached) => cached,
-        None => {
-            let latitude = format!("{latitude:.2}");
-            let longitude = format!("{longitude:.2}");
-            let days_text = days.to_string();
-            let mut params: Vec<(&str, &str)> = vec![
-                ("latitude", &latitude),
-                ("longitude", &longitude),
-                (
-                    "daily",
-                    "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,\
-                     precipitation_probability_max,wind_speed_10m_max",
-                ),
-                ("current", "temperature_2m,weather_code,wind_speed_10m"),
-                ("timezone", "auto"),
-                ("forecast_days", &days_text),
-            ];
-            if !key.is_empty() {
-                params.push(("apikey", key));
-            }
-            let Ok(url) = reqwest::Url::parse_with_params(forecast, &params) else {
-                return failed(Failure::Invalid, host, query_chars, true);
-            };
-            let forecast_host = url_host(&url);
-            match get_json(state, url, &[]).await {
-                Ok(answer) => {
-                    state.lookup_cache.put(cache_key, answer.clone());
-                    answer
-                }
-                Err(failure) => return failed(failure, forecast_host, query_chars, true),
-            }
+    let forecast_answer = match forecast_for(state, top, days).await {
+        Ok(answer) => answer,
+        Err(miss) => {
+            // A URL that would not build is reported against the geocoder's
+            // host, as it always was; a provider failure against its own.
+            let host = if miss.host.is_some() { miss.host } else { host };
+            return failed(miss.failure, host, query_chars, true);
         }
     };
 
@@ -2022,11 +2126,7 @@ async fn weather(
             "wind_speed": current["wind_speed_10m"].clone(),
         });
     }
-    let others: Vec<Value> = usable
-        .iter()
-        .skip(1)
-        .map(|found| place_summary(found))
-        .collect();
+    let others: Vec<Value> = usable.iter().skip(1).map(place_summary).collect();
     if !others.is_empty() {
         content["other_matches"] = json!(others);
     }
@@ -2041,6 +2141,143 @@ async fn weather(
         paid_search: false,
         attempted: true,
     }
+}
+
+// -- the daily greeting's weather ------------------------------------------------
+
+/// How long the daily greeting waits for the weather of ALL its places
+/// together (protocol.md, "Today's weather, for places the owner chose").
+/// Each request keeps its own `timeout_secs` as well; this is the bound on
+/// the whole, after which the greeting goes out with whatever arrived.
+pub const GREETING_WEATHER_DEADLINE: Duration = Duration::from_secs(8);
+
+/// The forecast days the greeting asks for. TWO, not one, and the same two
+/// a lookup asks for by default: the server's date and a place's date can
+/// differ by a day either way, and a cached answer can be up to half an hour
+/// old — so the place's own today is looked for among two days rather than
+/// assumed to be the first. Being a lookup's own request, it shares the
+/// cache with lookups.
+const GREETING_FORECAST_DAYS: u8 = 2;
+
+/// What the greeting's weather came to: one forecast per place that
+/// produced one, in the owner's order, and for each place that did not, an
+/// outcome word and the host asked — what a log line may hold, and nothing
+/// of what was asked or found.
+#[derive(Debug, Default)]
+pub struct GreetingWeather {
+    pub forecasts: Vec<Value>,
+    pub misses: Vec<(&'static str, Option<String>)>,
+}
+
+/// Today's forecast for each of the owner's places, fetched together under
+/// [`GREETING_WEATHER_DEADLINE`].
+///
+/// What leaves, per place: its name as stored, to the geocoder (count 1,
+/// the greeting's language) — then that match's rounded coordinates, to the
+/// forecast. Nothing about any member, and no device location. A place that
+/// fails, times out, finds nothing or has no entry for its own date is
+/// left out and the others are kept. Nothing here logs.
+pub async fn greeting_weather(
+    state: &AppState,
+    places: &[String],
+    language: &LookupLanguage,
+    now: time::OffsetDateTime,
+) -> GreetingWeather {
+    let deadline = tokio::time::Instant::now() + GREETING_WEATHER_DEADLINE;
+    let lookups = places.iter().map(|place| async move {
+        match tokio::time::timeout_at(deadline, greeting_place(state, place, language, now)).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(("timeout", None)),
+        }
+    });
+    let mut weather = GreetingWeather::default();
+    for outcome in futures_util::future::join_all(lookups).await {
+        match outcome {
+            Ok(forecast) => weather.forecasts.push(forecast),
+            Err(miss) => weather.misses.push(miss),
+        }
+    }
+    weather
+}
+
+/// One place's forecast for its own today, or why not.
+async fn greeting_place(
+    state: &AppState,
+    place: &str,
+    language: &LookupLanguage,
+    now: time::OffsetDateTime,
+) -> Result<Value, (&'static str, Option<String>)> {
+    let place_key = (language.wiki.clone(), place.to_lowercase());
+    let top = match state.lookup_cache.get_place(&place_key) {
+        Some(top) => top,
+        None => {
+            // The TOP match and nothing else: there is nobody to ask which
+            // place was meant, so the model is told which one this is.
+            let (usable, host) = geocode(state, place, &language.wiki, "1")
+                .await
+                .map_err(|miss| (miss.failure.outcome(), miss.host))?;
+            let top = usable.into_iter().next().ok_or(("empty", host))?;
+            state.lookup_cache.put_place(place_key, top.clone());
+            top
+        }
+    };
+    let answer = forecast_for(state, &top, GREETING_FORECAST_DAYS)
+        .await
+        .map_err(|miss| (miss.failure.outcome(), miss.host))?;
+    greeting_forecast(&top, &answer, now).ok_or(("empty", None))
+}
+
+/// The forecast entry for the place's own date, shaped for the greeting.
+///
+/// The place's date is the server's moment moved by the forecast's own UTC
+/// offset — `timezone=auto` makes Open-Meteo count days in the place's
+/// time and say by how much. No entry for that date (a stale cache across
+/// the place's midnight, an answer cut short) is no forecast, never the
+/// nearest day passed off as today.
+fn greeting_forecast(found: &Value, answer: &Value, now: time::OffsetDateTime) -> Option<Value> {
+    let offset = answer["utc_offset_seconds"].as_i64().unwrap_or(0);
+    // A real offset is within ±18 hours; anything else is not one.
+    if offset.abs() > 18 * 3600 {
+        return None;
+    }
+    let local = (now + time::Duration::seconds(offset)).date();
+    let wanted = format!(
+        "{:04}-{:02}-{:02}",
+        local.year(),
+        u8::from(local.month()),
+        local.day()
+    );
+    let daily = &answer["daily"];
+    let index = daily["time"]
+        .as_array()?
+        .iter()
+        .position(|date| date.as_str() == Some(wanted.as_str()))?;
+    let column = |name: &str| daily[name].get(index).cloned().unwrap_or(Value::Null);
+    let number = |value: Value| {
+        if value.is_number() {
+            value
+        } else {
+            Value::Null
+        }
+    };
+    let unit = |name: &str| {
+        answer["daily_units"][name]
+            .as_str()
+            .map(|unit| json!(clean_text(unit, 16)))
+            .unwrap_or(Value::Null)
+    };
+    Some(json!({
+        "place": place_summary(found),
+        "date": wanted,
+        "weather": weather_words(column("weather_code").as_i64().unwrap_or(-1)),
+        "temperature_max": number(column("temperature_2m_max")),
+        "temperature_min": number(column("temperature_2m_min")),
+        "precipitation_probability_max": number(column("precipitation_probability_max")),
+        "units": {
+            "temperature": unit("temperature_2m_max"),
+            "precipitation_probability": unit("precipitation_probability_max"),
+        },
+    }))
 }
 
 /// The article's address on the Wikipedia the server asked — built here,
@@ -2796,5 +3033,48 @@ mod tests {
             note.starts_with("Today's date is 2026-10-03 (UTC)."),
             "{note}"
         );
+    }
+
+    /// The greeting's forecast is the entry for the place's OWN date — the
+    /// moment moved by the forecast's UTC offset — and nothing when there is
+    /// no entry for it.
+    #[test]
+    fn the_greeting_takes_the_places_own_today() {
+        let found = json!({"name": "Moscow", "country": "Russia", "feature_code": "PPLC",
+                           "latitude": 55.75, "longitude": 37.62});
+        let answer = |offset: i64| {
+            json!({
+                "utc_offset_seconds": offset,
+                "daily_units": {"temperature_2m_max": "°C",
+                                "precipitation_probability_max": "%"},
+                "daily": {
+                    "time": ["2026-10-03", "2026-10-04"],
+                    "weather_code": [0, 95],
+                    "temperature_2m_max": [11.5, 14.0],
+                    "temperature_2m_min": [3.0, 6.5],
+                    "precipitation_probability_max": [5, 70],
+                },
+            })
+        };
+        let late = time::macros::datetime!(2026-10-03 22:30 UTC);
+        // UTC+3: already the 4th there.
+        let moscow = greeting_forecast(&found, &answer(3 * 3600), late).expect("a forecast");
+        assert_eq!(moscow["date"], "2026-10-04");
+        assert_eq!(moscow["weather"], "thunderstorm");
+        assert_eq!(moscow["temperature_max"], 14.0);
+        assert_eq!(moscow["temperature_min"], 6.5);
+        assert_eq!(moscow["precipitation_probability_max"], 70);
+        assert_eq!(moscow["units"]["temperature"], "°C");
+        assert_eq!(moscow["place"]["country"], "Russia");
+        assert_eq!(moscow["place"]["kind"], "capital city");
+        // UTC-4: still the 3rd.
+        let behind = greeting_forecast(&found, &answer(-4 * 3600), late).expect("a forecast");
+        assert_eq!(behind["date"], "2026-10-03");
+        assert_eq!(behind["weather"], "clear sky");
+        // Two days on, neither entry is today: nothing, never the nearest day.
+        let later = time::macros::datetime!(2026-10-05 12:00 UTC);
+        assert!(greeting_forecast(&found, &answer(0), later).is_none());
+        // An offset that cannot be one is not trusted.
+        assert!(greeting_forecast(&found, &answer(30 * 3600), late).is_none());
     }
 }

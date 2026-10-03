@@ -912,7 +912,7 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 f.created_at AS family_created_at, f.owner_user_id, f.invite_code,
                 f.language, f.max_members, f.ai_history, f.ai_vision,
                 f.ai_history_photos, f.ai_greeting, f.ai_faces, f.ai_transcripts,
-                f.ai_lookups
+                f.ai_lookups, f.greeting_places
          FROM users u
          LEFT JOIN families f ON f.id = u.family_id
          WHERE u.id = $1",
@@ -964,6 +964,9 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 // And the seventh, which decides whether a query written
                 // from their words may reach a lookup provider.
                 ai_lookups: row.get("ai_lookups"),
+                // And the place names the greeting sends to the weather
+                // provider — the owner's words, which every member may read.
+                greeting_places: row.get("greeting_places"),
             };
             let role = if is_owner { "owner" } else { "member" };
             (Some(family), Some(role))
