@@ -429,6 +429,7 @@ fn app() -> Html {
                 family={store.family.clone()}
                 stickers={(store.pack.is_offered() && store.family.is_some()).then(|| store.pack.panel())}
                 agreed_to_assistant={store.assistant_consent_at().is_some()}
+                transcripts={store.transcripts.clone()}
                 on_action={on_action.clone()}
             />
         }
@@ -632,6 +633,7 @@ fn app() -> Html {
                         agreed_to_assistant={store.assistant_consent_at().is_some()}
                         family_history={store.family.as_ref().is_some_and(|family| family.ai_history)}
                         family_vision={store.family.as_ref().is_some_and(|family| family.ai_vision)}
+                        transcribe={store.assistant.as_ref().is_some_and(|assistant| assistant.transcribe)}
                         names={store.names.clone()}
                         members={store.members.clone()}
                         blocked={store.blocked.clone()}
@@ -670,6 +672,7 @@ fn app() -> Html {
                         support_contact={store.support_contact.clone()}
                         stickers={(store.pack.is_offered() && store.family.is_some()).then(|| store.pack.panel())}
                         agreed_to_assistant={store.assistant_consent_at().is_some()}
+                        transcripts={store.transcripts.clone()}
                         on_action={on_action.clone()}
                         now_ms={now}
                         item={item.clone()}

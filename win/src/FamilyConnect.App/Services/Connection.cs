@@ -64,6 +64,8 @@ internal sealed class Connection : IAsyncDisposable
         PeerReads = new PeerReads();
         Answers = new AssistantAnswers();
         Previews = new LinkPreviews(() => LinkPreviewSetting.Enabled);
+        // The text of recordings this member asked for: kept in the same cache file, and wiped with it at sign-out.
+        Transcripts = new TranscriptModel(Api, new TranscriptStore(Cache));
         Router.PeerRead += (chatId, _, lastRead) => PeerReads.Apply(chatId, lastRead);
         Router.AiDelta += (chatId, messageId, text) => Answers.Delta(chatId, messageId, text, Chats.Message(messageId));
         Router.AiStopped += Answers.Stopped;
@@ -72,6 +74,7 @@ internal sealed class Connection : IAsyncDisposable
         {
             PeerReads.Clear();
             Answers.Clear();
+            Transcripts.Clear();
         };
     }
 
@@ -80,6 +83,12 @@ internal sealed class Connection : IAsyncDisposable
 
     /// <summary>The assistant's answers while they are written: the streamed text, and the ones that stopped.</summary>
     public AssistantAnswers Answers { get; }
+
+    /// <summary>
+    /// The text of voice notes and audio, asked for one at a time and kept on this device (docs/protocol.md, "Transcripts
+    /// on request").
+    /// </summary>
+    public TranscriptModel Transcripts { get; }
 
     /// <summary>The cards under links: the one place this app asks a host the family does not own, and only while switched on.</summary>
     public LinkPreviews Previews { get; }

@@ -16,6 +16,8 @@
 
 package me.nettrash.familyconnect.ui.thread
 
+import me.nettrash.familyconnect.ui.chat.LocalTranscripts
+import androidx.compose.runtime.CompositionLocalProvider
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -150,6 +152,10 @@ fun ThreadScreen(
         if (attachment != null && granted) runSave(attachment)
     }
 
+    // "Show text" under every recording here reaches the screen's own
+    // Transcripts through this, rather than through every bubble's
+    // parameters (docs/protocol.md, "Transcripts on request").
+    CompositionLocalProvider(LocalTranscripts provides viewModel.transcripts) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -319,6 +325,7 @@ fun ThreadScreen(
             }
         }
     }
+    }
 
     if (stickerPanelOpen) {
         StickerPanelSheet(
@@ -342,8 +349,24 @@ fun ThreadScreen(
             processor = ask.processor,
             familyHistory = ask.familyHistory,
             familyVision = ask.familyVision,
+            transcripts = ask.transcripts,
             onAgree = viewModel::agreeToTheAssistant,
             onDismiss = viewModel::dismissAssistantConsent,
+        )
+    }
+
+    // The consent screen, raised by "Show text": the asker is the one
+    // sending the recording's sound to the provider (docs/protocol.md,
+    // "Transcripts on request"). Agreeing asks for the text again.
+    val transcriptConsentAsk by viewModel.transcripts.consentAsk.collectAsStateWithLifecycle()
+    transcriptConsentAsk?.let { ask ->
+        AssistantConsentDialog(
+            processor = ask.processor,
+            familyHistory = ask.familyHistory,
+            familyVision = ask.familyVision,
+            transcripts = ask.transcripts,
+            onAgree = viewModel.transcripts::agreed,
+            onDismiss = viewModel.transcripts::dismissed,
         )
     }
 

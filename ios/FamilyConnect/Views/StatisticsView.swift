@@ -98,7 +98,8 @@ struct StatisticsView: View {
                 }
             }
 
-            if stats.totals.ai.questions > 0 || stats.totals.ai.images > 0 {
+            if stats.totals.ai.questions > 0 || stats.totals.ai.images > 0
+                || stats.totals.ai.transcripts > 0 {
                 Section("Assistant") {
                     LabeledContent("Questions", value: "\(stats.totals.ai.questions)")
                     LabeledContent(
@@ -114,6 +115,17 @@ struct StatisticsView: View {
                     // including every server that cannot.
                     if stats.totals.ai.images > 0 {
                         LabeledContent("Pictures", value: "\(stats.totals.ai.images)")
+                    }
+                    // A third bill of its own: a speech model is paid by
+                    // the length of the sound, not by tokens, so the count
+                    // and the time are both shown (protocol.md, "Family
+                    // statistics"). Hidden at zero, which is every server
+                    // that has never been asked — and every one that can't.
+                    if stats.totals.ai.transcripts > 0 {
+                        LabeledContent("Recordings as text", value: "\(stats.totals.ai.transcripts)")
+                        LabeledContent(
+                            "Recording time",
+                            value: Self.duration(milliseconds: stats.totals.ai.transcriptDurationMS))
                     }
                 }
             }
@@ -152,8 +164,22 @@ struct StatisticsView: View {
         if member.ai.images > 0 {
             parts.append(String(localized: "\(member.ai.images) pictures from the assistant"))
         }
+        if member.ai.transcripts > 0 {
+            parts.append(String(localized: "\(member.ai.transcripts) recordings as text"))
+        }
         if parts.isEmpty { return String(localized: "Words only") }
         return parts.joined(separator: " · ")
+    }
+
+    /// `1 hr, 4 min`, in the reader's own language — the length of the
+    /// recordings a speech model was paid to hear.
+    static func duration(milliseconds: Int64) -> String {
+        let seconds = Double(max(0, milliseconds)) / 1000
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .abbreviated
+        formatter.allowedUnits = seconds >= 3600 ? [.hour, .minute] : [.minute, .second]
+        formatter.zeroFormattingBehavior = .dropAll
+        return formatter.string(from: seconds.rounded()) ?? ""
     }
 
     /// `1.2 MB`, in the reader's own units and language.

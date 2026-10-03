@@ -323,7 +323,7 @@ public sealed partial class SettingsView : UserControl
         var agreed = !string.IsNullOrWhiteSpace(state.AssistantConsentAt);
         if (!agreed && !await Dialogs.AssistantConsentAsync(
             XamlRoot, services.Say, processor,
-            state.Family?.AiHistory == true, state.Family?.AiVision == true))
+            state.Family?.AiHistory == true, state.Family?.AiVision == true, state.Assistant?.Transcribe == true))
         {
             return;
         }
@@ -651,7 +651,7 @@ public sealed partial class SettingsView : UserControl
         }
         body.Children.Add(Group(say.Get("Attachments"), [.. rows]));
 
-        if (totals.Ai is { } ai && (ai.Questions > 0 || ai.Images > 0))
+        if (totals.Ai is { } ai && (ai.Questions > 0 || ai.Images > 0 || ai.Transcripts > 0))
         {
             var assistant = new List<UIElement>
             {
@@ -661,6 +661,12 @@ public sealed partial class SettingsView : UserControl
             if (ai.Images > 0)
             {
                 assistant.Add(Row(say.Get("Pictures"), Number(ai.Images)));
+            }
+            if (ai.Transcripts > 0)
+            {
+                // Billed by the length of the sound, not by tokens: the count and the time, both.
+                assistant.Add(Row(say.Get("Recordings as text"), Number(ai.Transcripts)));
+                assistant.Add(Row(say.Get("Recording time"), CallRecordText.Duration(Math.Max(0, ai.TranscriptDurationMs) / 1000)));
             }
             body.Children.Add(Group(say.Get("Assistant"), [.. assistant]));
         }

@@ -27,6 +27,12 @@ pub struct ConsentProps {
     pub family_history: bool,
     /// Whether a photograph may be shown to the model at all.
     pub family_vision: bool,
+    /// Whether this server can turn a recording into text
+    /// (`assistant.transcribe`) — and so whether a recording's sound may go
+    /// to the processor when this member asks for its text
+    /// (docs/protocol.md, "Transcripts on request").
+    #[prop_or_default]
+    pub transcribe: bool,
     pub on_agree: Callback<()>,
     pub on_cancel: Callback<()>,
 }
@@ -41,8 +47,12 @@ pub fn assistant_consent_dialog(props: &ConsentProps) -> Html {
         let on_cancel = props.on_cancel.clone();
         Callback::from(move |_: MouseEvent| on_cancel.emit(()))
     };
-    let lines =
-        assistant_consent::disclosure(&props.processor, props.family_history, props.family_vision);
+    let lines = assistant_consent::disclosure(
+        &props.processor,
+        props.family_history,
+        props.family_vision,
+        props.transcribe,
+    );
     html! {
         <Modal title={t("The Assistant")} on_cancel={props.on_cancel.clone()}>
             <h3>{ t("Before the assistant answers") }</h3>

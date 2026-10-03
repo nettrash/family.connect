@@ -628,6 +628,91 @@ internal static class MediaPreparing
     }
 
     /// <summary>
+    /// A recording's or a video's SOUND, as an M4A of AAC no bigger than <paramref name="maxBytes"/>, for a transcript the
+    /// server cannot make from its own copy (docs/protocol.md, "Transcripts on request"; <see cref="TranscriptSound"/>
+    /// decides every step). Failed with <see cref="TranscriptSound.Unreadable"/> when this machine cannot read it — no
+    /// sound track Media Foundation reads, a codec it does not have (Ogg without the web media extension), every way
+    /// refused — and with <see cref="TranscriptSound.TooLong"/> when no way of making it can fit the ceiling, or what came
+    /// out is still over it.
+    /// </summary>
+    /// <remarks>
+    /// The same transcoder, the same attempt loop, the same one ceiling on time as a picked sound file's re-encode — only
+    /// the profile differs: an M4A with NO video in it, so the picture track is never connected and never decoded, and
+    /// its AAC track either asked for as the very type it was read as (copied, as a video's own track is in
+    /// <see cref="VideoProfile"/>) or encoded at a voice note's numbers.
+    /// </remarks>
+    /// <exception cref="OperationCanceledException"><paramref name="cancel"/> was cancelled.</exception>
+    public static async Task<SuppliedSound> SoundTrackAsync(StorageFile file, long? durationMs, long maxBytes, CancellationToken cancel)
+    {
+        AudioEncodingProperties track;
+        try
+        {
+            var read = await MediaEncodingProfile.CreateFromFileAsync(file);
+            if (read.Audio is not { } audio)
+            {
+                Diagnostics.Write("a recording has no sound track Media Foundation reads");
+                return SuppliedSound.Failed(TranscriptSound.Unreadable);
+            }
+            track = audio;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a recording's sound track: {e.GetType().Name}");
+            return SuppliedSound.Failed(TranscriptSound.Unreadable);
+        }
+        var codec = AudioCodec(track.Subtype);
+        var attempts = TranscriptSound.Attempts(
+            codec, MediaEncoding.FirstKnown(track.Bitrate), MediaEncoding.FirstKnown(track.SampleRate), durationMs, maxBytes);
+        if (attempts.Count == 0)
+        {
+            Diagnostics.Write($"a recording's sound ({codec}) cannot be made to fit {maxBytes} bytes");
+            return SuppliedSound.Failed(TranscriptSound.TooLong);
+        }
+        var result = await TranscodeAsync(
+            file,
+            ".m4a",
+            TranscriptSound.Mime,
+            attempts,
+            attempt => SoundProfile(attempt, track),
+            (output, attempt, token) => SoundCameOutAsync(output, attempt, maxBytes, token),
+            durationMs,
+            cancel);
+        return result is not { Bytes: { } bytes }
+            ? SuppliedSound.Failed(TranscriptSound.Unreadable)
+            : TranscriptSound.Fits(bytes.LongLength, maxBytes)
+                ? SuppliedSound.Made(bytes)
+                : SuppliedSound.Failed(TranscriptSound.TooLong);
+    }
+
+    /// <summary>An M4A and nothing else: the track copied as it was read, or encoded at the attempt's numbers.</summary>
+    private static MediaEncodingProfile SoundProfile(SoundAttempt attempt, AudioEncodingProperties track)
+    {
+        var profile = MediaEncodingProfile.CreateM4a(AudioEncodingQuality.Medium);
+        // No picture asked for, so none is decoded: the transcoder connects only the streams the profile names.
+        profile.Video = null;
+        profile.Audio = attempt.Aac is { } aac
+            ? AudioEncodingProperties.CreateAac(aac.SampleRate, aac.Channels, aac.Bitrate)
+            : track;
+        return profile;
+    }
+
+    /// <summary>What came out, read back and judged by <see cref="TranscriptSound.Judge"/>.</summary>
+    private static async Task<AttemptEnd> SoundCameOutAsync(StorageFile output, SoundAttempt attempt, long maxBytes, CancellationToken cancel)
+    {
+        cancel.ThrowIfCancellationRequested();
+        var profile = await MediaEncodingProfile.CreateFromFileAsync(output);
+        var length = new FileInfo(output.Path).Length;
+        var codec = profile.Audio is { } audio ? AudioCodec(audio.Subtype) : null;
+        var ended = TranscriptSound.Judge(
+            attempt, codec, MediaEncoding.FirstKnown(profile.Audio?.Bitrate), length, profile.Video is not null, maxBytes);
+        if (ended != AttemptEnd.Taken)
+        {
+            Diagnostics.Write($"a recording's sound came out as {codec ?? "nothing"}, {profile.Audio?.Bitrate} bit/s, {length} bytes ({attempt.Way})");
+        }
+        return ended;
+    }
+
+    /// <summary>
     /// What goes once a transcode has come out as asked: <see cref="MediaEncoding.Choose"/> decides — rule D, and what
     /// faststart could not do — and this reads in whichever it named.
     /// </summary>

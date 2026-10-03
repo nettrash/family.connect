@@ -660,6 +660,7 @@ fun SettingsScreen(
                 processor = processor,
                 familyHistory = state.familyAiHistory,
                 familyVision = state.familyAiVision,
+                transcripts = state.assistantTranscribe,
                 onAgree = { viewModel.setAssistantConsent(true) },
                 onDismiss = viewModel::dismissAssistantReview,
             )

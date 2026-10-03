@@ -38,10 +38,10 @@ public class DatabaseTests : IDisposable
     {
         using var database = Database.Open(Path_("fresh.db"));
         Assert.Equal(Database.SchemaVersion, database.UserVersion);
-        Assert.Equal(4, Database.SchemaVersion);
+        Assert.Equal(5, Database.SchemaVersion);
         Assert.Equal(
             ["blocked", "chats", "gone", "members", "messages", "meta", "notes", "outbox",
-             "pack_gone", "pack_items", "pack_recents"],
+             "pack_gone", "pack_items", "pack_recents", "transcripts"],
             database.Tables());
     }
 
@@ -160,6 +160,39 @@ public class DatabaseTests : IDisposable
         Assert.Equal(0, pack.Cursor);
         // No ceilings are known yet, so no sticker button is offered until the server names them.
         Assert.Null(pack.Limits);
+    }
+
+    /// <summary>
+    /// STEP 5 ADDS THE KEPT TRANSCRIPTS AND READS NOTHING AGAIN. A version-4 cache keeps its messages, its pack and its
+    /// outbox, and holds no text for any recording until somebody asks.
+    /// </summary>
+    [Fact]
+    public void AVersionFourCacheGainsTranscriptsAndLosesNothing()
+    {
+        var path = Path_("four.db");
+        using (var four = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}"))
+        {
+            four.Open();
+            foreach (var statement in Migrations.All.Take(4).SelectMany(step => step)
+                         .Append("INSERT INTO chats (chat_id, kind, title) VALUES (42, 'family', 'The Smiths')")
+                         .Append("INSERT INTO messages (message_id, chat_id, sender_id, body, created_at, sequenced) VALUES (20, 42, 9, 'hi', 0, 1)")
+                         .Append("INSERT INTO pack_items (item_id, attachment_json) VALUES (1, '{\"id\": 71, \"kind\": \"photo\"}')")
+                         .Append("INSERT INTO outbox (client_msg_id, chat_id, body, queued_at, sticker) VALUES ('k', 42, 'Dinner at 7?', 0, 1)")
+                         .Append("PRAGMA user_version = 4"))
+            {
+                using var command = four.CreateCommand();
+                command.CommandText = statement;
+                command.ExecuteNonQuery();
+            }
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+        using var migrated = Database.Open(path);
+        Assert.Equal(Database.SchemaVersion, migrated.UserVersion);
+        Assert.Equal("hi", Assert.Single(new ChatStore(migrated).Messages(42)).Body);
+        Assert.Single(new PackStore(migrated).Items());
+        Assert.True(Assert.Single(new OutboxStore(migrated).All()).Sticker);
+        Assert.Null(new TranscriptStore(migrated).Find(34));
     }
 
     /// <summary>

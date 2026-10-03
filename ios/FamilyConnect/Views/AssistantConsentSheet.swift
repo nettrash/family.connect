@@ -31,6 +31,12 @@ struct AssistantConsentSheet: View {
     /// Whether a photograph may be shown to the model at all
     /// (`ai_vision`), for the same reason.
     let familyVision: Bool
+    /// Whether this server can turn a recording into text, which adds the
+    /// line saying a recording's sound goes too when its text is asked for
+    /// (protocol.md, "Transcripts on request"). Read from the server's last
+    /// answer unless a caller says otherwise, so every place that raises
+    /// this sheet says it.
+    var transcribes: Bool = AppSettings.assistantTranscribe
     /// Records the agreement — and, when the sheet was raised by a
     /// message waiting to go, sends it. Async and throwing so the sheet
     /// can keep the person here and say what went wrong instead of
@@ -49,7 +55,8 @@ struct AssistantConsentSheet: View {
                         AssistantConsent.disclosure(
                             processor: processor,
                             familyHistory: familyHistory,
-                            familyVision: familyVision
+                            familyVision: familyVision,
+                            transcribes: transcribes
                         ), id: \.self
                     ) { line in
                         Label {

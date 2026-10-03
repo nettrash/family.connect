@@ -36,6 +36,13 @@ fun AssistantConsentDialog(
     processor: String,
     familyHistory: Boolean,
     familyVision: Boolean,
+    /**
+     * Whether this server turns recordings into text on request
+     * (`assistant.transcribe`): the disclosure then says the sound of one
+     * goes to [processor] when its text is asked for (docs/protocol.md,
+     * "Transcripts on request").
+     */
+    transcripts: Boolean = false,
     onAgree: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -59,6 +66,9 @@ fun AssistantConsentDialog(
                 )
                 if (familyVision) {
                     Text(stringResource(R.string.s_consent_photo_only_when_attached))
+                }
+                if (transcripts) {
+                    Text(stringResource(R.string.s_consent_transcript_sound_sent, processor))
                 }
                 Text(stringResource(R.string.s_consent_answer_lands_in_the_chat))
                 Text(stringResource(R.string.s_consent_can_stop_in_settings))

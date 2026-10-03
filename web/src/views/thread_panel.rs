@@ -58,6 +58,10 @@ pub struct ThreadPanelProps {
     /// assistant") — as `ConversationProps::agreed_to_assistant`.
     #[prop_or_default]
     pub agreed_to_assistant: bool,
+    /// The text of recordings this member asked for, as this tab holds it
+    /// — as `ConversationProps::transcripts`.
+    #[prop_or_default]
+    pub transcripts: fc_text::transcript::Transcripts,
     pub on_action: Callback<Action>,
 }
 
@@ -120,6 +124,13 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
             <StickerMenu {items} busy={None::<String>} {on_pick} on_busy={Callback::noop()} />
         }
     });
+    // "Show text" under a recording: a thread's rows are the chat's, and
+    // so is what they offer (`Transcription`).
+    let transcription =
+        crate::views::bubble::Transcription::of(props.assistant.as_ref(), props.family.as_ref(), {
+            let consent_open = consent_open.clone();
+            Callback::from(move |()| consent_open.set(true))
+        });
     let consent_dialog = consent_open
         .then(|| {
             props
@@ -147,6 +158,7 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
                     {processor}
                     family_history={family.is_some_and(|family| family.ai_history)}
                     family_vision={family.is_some_and(|family| family.ai_vision)}
+                    transcribe={props.assistant.as_ref().is_some_and(|assistant| assistant.transcribe)}
                     {on_agree}
                     {on_cancel}
                 />
@@ -248,6 +260,8 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
                                 on_edit={Callback::from(|_: i64| {})}
                                 on_report={Callback::from(|_: (i64, Option<i64>)| {})}
                                 on_jump={noop_jump.clone()}
+                                transcription={transcription.clone()}
+                                transcripts={props.transcripts.of(message.attachments().iter().map(|attachment| attachment.id))}
                             />
                         </div>
                     }

@@ -7,6 +7,7 @@
 
 use fc_text::assistant_consent;
 use fc_text::i18n::{t, t1};
+use fc_text::transcript;
 use std::rc::Rc;
 
 use wasm_bindgen_futures::spawn_local;
@@ -197,6 +198,24 @@ pub enum Action {
     DrawBackdrop {
         note_id: i64,
         done: Callback<Backdrop>,
+    },
+    /// "Show text" under a voice note, an audio file or a video: the
+    /// recording's text, for this member alone (docs/protocol.md,
+    /// "Transcripts on request") — from the server's stored bytes where
+    /// they will do, and otherwise from sound this device takes out of the
+    /// file (fc_text::transcript::source). `ask_consent` is called instead
+    /// when the answer is the consent screen — this member has not agreed,
+    /// here or (the server says) since — and the member presses again once
+    /// it is answered, as they do for a backdrop.
+    ShowTranscript {
+        chat_id: i64,
+        message_id: i64,
+        attachment: Attachment,
+        ask_consent: Callback<()>,
+    },
+    /// "Hide text": folded away, and kept.
+    HideTranscript {
+        attachment_id: i64,
     },
     /// Peek at a note a block hides.
     RevealNote {
@@ -498,6 +517,43 @@ impl Actions {
     pub fn callback(self) -> Callback<Action> {
         let actions = Rc::new(self);
         Callback::from(move |action: Action| actions.handle(action))
+    }
+
+    /// The sound of `attachment` as this device can send it for its text
+    /// (fc_text::transcript_sound): told "too long" from its metadata
+    /// before a byte is fetched where that is certain; otherwise the file
+    /// is fetched through the media cache — the one a player already
+    /// filled, or would — and its sound taken out. A fetch that fails is
+    /// worth another try; a sound that cannot be made is not.
+    async fn supplied_sound(
+        &self,
+        attachment: &Attachment,
+        max_bytes: i64,
+    ) -> Result<web_sys::Blob, transcript::Failure> {
+        let max_bytes = u64::try_from(max_bytes).unwrap_or(0);
+        if fc_text::transcript_sound::known_too_long(attachment.duration_ms, max_bytes) {
+            return Err(transcript::Failure::TooLong);
+        }
+        let file = self
+            .media
+            .bytes(attachment.id, Variant::Original)
+            .await
+            .ok_or(transcript::Failure::TryAgain)?;
+        crate::encode::sound_for_text(&file, attachment.mime.as_deref(), max_bytes).await
+    }
+
+    /// The request with this device's sound — `Err` when none could be
+    /// made and nothing was sent, otherwise the server's answer.
+    async fn ask_with_sound(
+        &self,
+        token: &str,
+        chat_id: i64,
+        message_id: i64,
+        attachment: &Attachment,
+        max_bytes: i64,
+    ) -> Result<Result<transcript::Transcript, ApiError>, transcript::Failure> {
+        let sound = self.supplied_sound(attachment, max_bytes).await?;
+        Ok(api::transcript_of_sound(token, chat_id, message_id, attachment.id, &sound).await)
     }
 
     fn session_and_token(&self) -> Option<(u64, String)> {
@@ -1494,6 +1550,159 @@ impl Actions {
                     done.emit(outcome);
                 });
             }
+            Action::ShowTranscript {
+                chat_id,
+                message_id,
+                attachment,
+                ask_consent,
+            } => {
+                let attachment_id = attachment.id;
+                // NEVER ROUND THE CONSENT QUESTION: the asker is the one
+                // sending a recording's sound to the provider, so the
+                // asker's own consent is needed, and it is asked HERE, where
+                // the request is, so that no door onto the provider can be
+                // opened round it. Asked, nothing is held: the member presses
+                // again once it is answered, as for a backdrop.
+                let ask = live.read(|state| {
+                    transcript::asks_for_consent(
+                        state
+                            .store
+                            .assistant
+                            .as_ref()
+                            .and_then(|assistant| assistant.processor.as_deref()),
+                        state.store.assistant_consent_at().is_some(),
+                    )
+                });
+                if ask {
+                    ask_consent.emit(());
+                    return;
+                }
+                // Where the sound comes from: the server's stored copy, or
+                // this device — decided once, here, by the same rule that
+                // drew the button.
+                let max_bytes = live.read(|state| {
+                    transcript::Server {
+                        transcribe: true,
+                        max_bytes: state
+                            .store
+                            .assistant
+                            .as_ref()
+                            .and_then(|assistant| assistant.transcribe_max_bytes),
+                        processor: None,
+                    }
+                    .max_bytes()
+                });
+                let Some(source) = transcript::source(
+                    &transcript::Recording {
+                        id: attachment.id,
+                        kind: &attachment.kind,
+                        mime: attachment.mime.as_deref(),
+                        size: attachment.size,
+                    },
+                    max_bytes,
+                ) else {
+                    return;
+                };
+                // Held already — shown again, nobody asked — or already
+                // on its way.
+                if live.now(|state| state.store.transcripts.ask(attachment_id))
+                    != transcript::Ask::Send
+                {
+                    return;
+                }
+                spawn_local(async move {
+                    let recording = transcript::Recording {
+                        id: attachment.id,
+                        kind: &attachment.kind,
+                        mime: attachment.mime.as_deref(),
+                        size: attachment.size,
+                    };
+                    let answer = match source {
+                        transcript::Source::Stored => {
+                            match api::transcript(&token, chat_id, message_id, attachment_id).await
+                            {
+                                // The server's own reading of its copy
+                                // disagrees with the metadata: this
+                                // device's sound instead, as every client
+                                // does.
+                                Err(error)
+                                    if transcript::falls_back_to_device(
+                                        error.code(),
+                                        &recording,
+                                    ) =>
+                                {
+                                    this.ask_with_sound(
+                                        &token,
+                                        chat_id,
+                                        message_id,
+                                        &attachment,
+                                        max_bytes,
+                                    )
+                                    .await
+                                }
+                                answer => Ok(answer),
+                            }
+                        }
+                        transcript::Source::Device => {
+                            this.ask_with_sound(&token, chat_id, message_id, &attachment, max_bytes)
+                                .await
+                        }
+                    };
+                    let answer = match answer {
+                        Ok(answer) => answer,
+                        // Nothing was sent: the device could not make the
+                        // sound, or could not fetch the file to make it
+                        // from.
+                        Err(failure) => {
+                            live.update(session, |state| {
+                                state.store.transcripts.failed(attachment_id, failure)
+                            });
+                            return;
+                        }
+                    };
+                    match answer {
+                        // From stored bytes or supplied sound alike, kept
+                        // on this device for the life of the tab and never
+                        // in its storage — and an answer from supplied
+                        // sound is kept NOWHERE else: the server hands it
+                        // to nobody.
+                        Ok(said) => {
+                            live.update(session, |state| {
+                                state.store.transcripts.answered(attachment_id, said)
+                            });
+                        }
+                        Err(ApiError::Unauthorized) => {
+                            live.update(session, |state| {
+                                state.store.transcripts.forget(attachment_id)
+                            });
+                            expiry(&live, session, &this.sign_out)();
+                        }
+                        Err(error) => match transcript::after_refusal(error.code()) {
+                            // The server's word over this tab's copy —
+                            // consent withdrawn on another device: nothing
+                            // was sent, and the answer is the consent
+                            // screen, not a failure.
+                            transcript::Next::AskConsent => {
+                                let asked = live.update(session, |state| {
+                                    state.store.transcripts.forget(attachment_id);
+                                    state.store.set_assistant_consent(None);
+                                });
+                                if asked.is_some() {
+                                    ask_consent.emit(());
+                                }
+                            }
+                            transcript::Next::Fail(failure) => {
+                                live.update(session, |state| {
+                                    state.store.transcripts.failed(attachment_id, failure)
+                                });
+                            }
+                        },
+                    }
+                });
+            }
+            Action::HideTranscript { attachment_id } => {
+                live.now(|state| state.store.transcripts.hide(attachment_id));
+            }
             Action::RevealNote { note_id } => {
                 live.now(|state| {
                     state.store.board.revealed.insert(note_id);
@@ -2297,6 +2506,8 @@ mod tests {
                 vision: false,
                 images: true,
                 processor: Some("Microsoft — Azure OpenAI".into()),
+                transcribe: false,
+                transcribe_max_bytes: None,
             });
         });
         let draw = |actions: &Actions| {
@@ -2368,6 +2579,404 @@ mod tests {
         assert_eq!(
             actions.live.read(|state| state.failure.clone()).as_deref(),
             Some("The assistant's provider refused that. Try putting it another way.")
+        );
+    }
+
+    /// THE TRANSCRIPT ACTION, end to end against a stand-in server: not
+    /// agreed, the consent screen and nothing sent; agreed, one request and
+    /// the text held for this attachment; hidden and shown again with no
+    /// second request; `assistant_consent_required` taken at its word (the
+    /// tab's consent cleared, nothing left behind, the screen again); and
+    /// each failure kept as what it means — a transient one asked again.
+    #[wasm_bindgen_test]
+    async fn a_transcript_is_asked_once_and_kept() {
+        use crate::fake_server::{Answer, FakeServer};
+        use fc_text::transcript::{Failure, State, Transcript};
+        const ROUTE: &str = "/chats/42/messages/100/attachments/34/transcript";
+        let answer = Rc::new(RefCell::new(Answer::Json(
+            200,
+            serde_json::json!({"transcript": {"text": "Dinner at seven", "language": "en"}}),
+        )));
+        let server = {
+            let answer = answer.clone();
+            FakeServer::answering(move |asked| {
+                if asked.path == ROUTE {
+                    std::mem::replace(&mut *answer.borrow_mut(), Answer::Nothing)
+                } else {
+                    Answer::refusal(404, "not_found")
+                }
+            })
+        };
+        let actions = actions();
+        actions.live.now(|state| {
+            state.store.account = Some(crate::model::Me::default());
+            state.store.assistant = Some(crate::model::Assistant {
+                user_id: 2,
+                display_name: "Assistant".into(),
+                mention: Some("@ai".into()),
+                draw: None,
+                vision: false,
+                images: false,
+                processor: Some("Microsoft — Azure OpenAI".into()),
+                transcribe: true,
+                transcribe_max_bytes: Some(26_214_400),
+            });
+        });
+        let asked_consent = Rc::new(RefCell::new(0));
+        let show = |actions: &Actions| {
+            let asked_consent = asked_consent.clone();
+            actions.handle(Action::ShowTranscript {
+                chat_id: 42,
+                message_id: 100,
+                attachment: Attachment {
+                    id: 34,
+                    kind: "audio".into(),
+                    mime: Some("audio/mp4".into()),
+                    size: Some(48_000),
+                    duration_ms: Some(6_000),
+                    ..Attachment::default()
+                },
+                ask_consent: Callback::from(move |()| *asked_consent.borrow_mut() += 1),
+            });
+        };
+        let held = |actions: &Actions| {
+            actions
+                .live
+                .read(|state| state.store.transcripts.get(34).cloned())
+        };
+        let settle = |actions: &Actions| {
+            let actions = actions.clone();
+            async move {
+                for _ in 0..40 {
+                    if held(&actions) != Some(State::Asking) {
+                        break;
+                    }
+                    gloo_timers::future::TimeoutFuture::new(25).await;
+                }
+            }
+        };
+        let agree = |actions: &Actions| {
+            actions.live.now(|state| {
+                state
+                    .store
+                    .set_assistant_consent(Some("2026-10-02T10:00:00Z".into()))
+            })
+        };
+
+        // Not agreed: the screen, and nothing sent.
+        show(&actions);
+        assert_eq!(*asked_consent.borrow(), 1);
+        assert_eq!(held(&actions), None);
+        gloo_timers::future::TimeoutFuture::new(50).await;
+        assert!(server.lines(&[ROUTE]).is_empty());
+
+        // Agreed: asked once, and held.
+        agree(&actions);
+        show(&actions);
+        assert_eq!(held(&actions), Some(State::Asking));
+        // A second press while it is out sends nothing more.
+        show(&actions);
+        settle(&actions).await;
+        let said = Transcript {
+            text: "Dinner at seven".into(),
+            language: Some("en".into()),
+        };
+        assert_eq!(held(&actions), Some(State::Shown(said.clone())));
+        assert_eq!(server.lines(&[ROUTE]), vec![format!("POST {ROUTE}")]);
+
+        // Hidden, and shown again — by the device, not the server.
+        actions.handle(Action::HideTranscript { attachment_id: 34 });
+        assert_eq!(held(&actions), Some(State::Hidden(said.clone())));
+        show(&actions);
+        assert_eq!(held(&actions), Some(State::Shown(said)));
+        gloo_timers::future::TimeoutFuture::new(50).await;
+        assert_eq!(server.lines(&[ROUTE]).len(), 1, "asked once");
+
+        // The server's word on consent: nothing kept, the screen again.
+        actions
+            .live
+            .now(|state| state.store.transcripts = Default::default());
+        *answer.borrow_mut() = Answer::refusal(403, "assistant_consent_required");
+        show(&actions);
+        settle(&actions).await;
+        for _ in 0..40 {
+            if *asked_consent.borrow() == 2 {
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(25).await;
+        }
+        assert_eq!(*asked_consent.borrow(), 2);
+        assert_eq!(held(&actions), None);
+        assert!(actions
+            .live
+            .read(|state| state.store.assistant_consent_at().is_none()));
+        assert!(
+            actions.live.read(|state| state.failure.is_none()),
+            "a question, not a failure"
+        );
+
+        // Each failure, kept as what it means. (`not_transcribable` of a
+        // stored copy is not an answer but a turn to the device's own
+        // sound: a_stored_copy_the_server_refuses_goes_on_with_the_devices_sound.)
+        for (status, code, failure) in [
+            (400, "transcript_refused", Failure::Refused),
+            (403, "transcript_not_allowed", Failure::NotAvailable),
+            (403, "transcripts_unavailable", Failure::NotAvailable),
+            (500, "internal", Failure::TryAgain),
+        ] {
+            agree(&actions);
+            actions
+                .live
+                .now(|state| state.store.transcripts = Default::default());
+            *answer.borrow_mut() = Answer::refusal(status, code);
+            show(&actions);
+            settle(&actions).await;
+            assert_eq!(held(&actions), Some(State::Failed(failure)), "{code}");
+        }
+        // …and a transient one is asked again on the next press.
+        let before = server.lines(&[ROUTE]).len();
+        *answer.borrow_mut() = Answer::Json(200, serde_json::json!({"transcript": {"text": ""}}));
+        show(&actions);
+        settle(&actions).await;
+        assert_eq!(server.lines(&[ROUTE]).len(), before + 1);
+        assert!(held(&actions)
+            .as_ref()
+            .and_then(State::transcript)
+            .is_some_and(Transcript::is_silence));
+        assert!(actions.live.read(|state| state.failure.is_none()));
+    }
+
+    /// THE TRANSCRIPT OF A VIDEO, end to end against a stand-in server: the
+    /// file fetched through the media cache, its AAC taken out of it on
+    /// this device, and sent as the multipart form's one `audio` part —
+    /// never the stored-bytes shape — and the answer kept here, so a second
+    /// press asks nobody. A recording its metadata already says is too long
+    /// is told so before a byte is fetched; a film with no sound, and a
+    /// file that could not be fetched, send nothing at all.
+    #[wasm_bindgen_test]
+    async fn a_videos_text_is_asked_with_its_own_sound_and_kept_here() {
+        use crate::encode::testing::{film, whole, QUICKTIME};
+        use crate::fake_server::{Answer, FakeServer};
+        use fc_text::transcript::{Failure, State, Transcript};
+        let silent = whole(&film(160, 120, 30, 1, 200_000, None).await).await;
+        let server = FakeServer::answering(move |asked| match asked.path.as_str() {
+            "/attachments/36" => Answer::Bytes(200, QUICKTIME.to_vec(), "video/quicktime"),
+            "/attachments/38" => Answer::Bytes(200, silent.clone(), "video/mp4"),
+            "/chats/42/messages/100/attachments/36/transcript" => Answer::Json(
+                200,
+                serde_json::json!({"transcript": {"text": "Look at the snow", "language": "en"}}),
+            ),
+            _ => Answer::refusal(404, "not_found"),
+        });
+        let actions = actions();
+        actions.live.now(|state| {
+            state.store.account = Some(crate::model::Me::default());
+            state.store.assistant = Some(crate::model::Assistant {
+                user_id: 2,
+                display_name: "Assistant".into(),
+                mention: Some("@ai".into()),
+                draw: None,
+                vision: false,
+                images: false,
+                processor: Some("Microsoft — Azure OpenAI".into()),
+                transcribe: true,
+                transcribe_max_bytes: Some(26_214_400),
+            });
+            state
+                .store
+                .set_assistant_consent(Some("2026-10-02T10:00:00Z".into()));
+        });
+        let video = |id: i64, duration_ms: i64| Attachment {
+            id,
+            kind: "video".into(),
+            mime: Some("video/quicktime".into()),
+            size: Some(QUICKTIME.len() as i64),
+            duration_ms: Some(duration_ms),
+            width: Some(640),
+            height: Some(360),
+            ..Attachment::default()
+        };
+        let show = |actions: &Actions, attachment: Attachment| {
+            actions.handle(Action::ShowTranscript {
+                chat_id: 42,
+                message_id: 100,
+                attachment,
+                ask_consent: Callback::noop(),
+            });
+        };
+        let held = |actions: &Actions, id: i64| {
+            actions
+                .live
+                .read(|state| state.store.transcripts.get(id).cloned())
+        };
+        let settle = |actions: &Actions, id: i64| {
+            let actions = actions.clone();
+            async move {
+                for _ in 0..400 {
+                    if held(&actions, id) != Some(State::Asking) {
+                        break;
+                    }
+                    gloo_timers::future::TimeoutFuture::new(25).await;
+                }
+            }
+        };
+        const UNDER: &[&str] = &["/attachments/3", "/chats/42/messages/100/attachments/3"];
+
+        show(&actions, video(36, 500));
+        assert_eq!(held(&actions, 36), Some(State::Asking));
+        settle(&actions, 36).await;
+        assert_eq!(
+            held(&actions, 36),
+            Some(State::Shown(Transcript {
+                text: "Look at the snow".into(),
+                language: Some("en".into()),
+            }))
+        );
+        assert_eq!(
+            server.lines(UNDER),
+            vec![
+                "GET /attachments/36".to_string(),
+                "POST /chats/42/messages/100/attachments/36/transcript".to_string(),
+            ],
+            "the file, then its sound — and nothing asked of the stored copy"
+        );
+        let posted = &server.asked(&["/chats/42/messages/100/attachments/36/transcript"])[0];
+        assert!(
+            posted.content_type.starts_with("multipart/form-data"),
+            "{}",
+            posted.content_type
+        );
+        let body = String::from_utf8_lossy(&posted.body);
+        assert!(body.contains("name=\"audio\""), "the one part is `audio`");
+        assert!(body.contains("Content-Type: audio/mp4"));
+        assert!(body.contains("ftypM4A "), "an M4A, not the movie");
+        assert!(!body.contains("avc1"), "nothing of the picture");
+
+        // Held: shown again with nobody asked.
+        actions.handle(Action::HideTranscript { attachment_id: 36 });
+        show(&actions, video(36, 500));
+        assert!(matches!(held(&actions, 36), Some(State::Shown(_))));
+        gloo_timers::future::TimeoutFuture::new(50).await;
+        assert_eq!(server.lines(UNDER).len(), 2, "asked once");
+
+        // Two hours: too long even at 64 kbit/s, told at once — and the
+        // file is never fetched.
+        show(&actions, video(37, 2 * 60 * 60 * 1000));
+        settle(&actions, 37).await;
+        assert_eq!(held(&actions, 37), Some(State::Failed(Failure::TooLong)));
+        // A film with no sound track: fetched, and nothing to send.
+        show(&actions, video(38, 1_000));
+        settle(&actions, 38).await;
+        assert_eq!(held(&actions, 38), Some(State::Failed(Failure::Unreadable)));
+        // A file that could not be fetched: worth another try.
+        show(&actions, video(39, 1_000));
+        settle(&actions, 39).await;
+        assert_eq!(held(&actions, 39), Some(State::Failed(Failure::TryAgain)));
+        assert_eq!(
+            server.lines(UNDER),
+            vec![
+                "GET /attachments/36".to_string(),
+                "POST /chats/42/messages/100/attachments/36/transcript".to_string(),
+                "GET /attachments/38".to_string(),
+                "GET /attachments/39".to_string(),
+            ],
+            "no sound was sent for any of them"
+        );
+        assert!(actions.live.read(|state| state.failure.is_none()));
+    }
+
+    /// A stored copy the server will not send after all — its own reading
+    /// of the file disagreeing with the metadata — goes on with this
+    /// device's sound, as the protocol allows ("a client that sent no body
+    /// may send the sound track instead") and every other client does;
+    /// any other refusal of the stored copy fetches nothing.
+    #[wasm_bindgen_test]
+    async fn a_stored_copy_the_server_refuses_goes_on_with_the_devices_sound() {
+        use crate::encode::testing::QUICKTIME;
+        use crate::fake_server::{Answer, FakeServer};
+        use fc_text::transcript::{Failure, State, Transcript};
+        let server = FakeServer::answering(move |asked| match asked.path.as_str() {
+            "/attachments/40" => Answer::Bytes(200, QUICKTIME.to_vec(), "audio/mp4"),
+            "/chats/42/messages/100/attachments/40/transcript" => {
+                if asked.content_type.starts_with("multipart/form-data") {
+                    Answer::Json(
+                        200,
+                        serde_json::json!({"transcript": {"text": "from here"}}),
+                    )
+                } else {
+                    Answer::refusal(400, "not_transcribable")
+                }
+            }
+            "/chats/42/messages/100/attachments/41/transcript" => {
+                Answer::refusal(403, "transcript_not_allowed")
+            }
+            _ => Answer::refusal(404, "not_found"),
+        });
+        let actions = actions();
+        actions.live.now(|state| {
+            state.store.account = Some(crate::model::Me::default());
+            state.store.assistant = Some(crate::model::Assistant {
+                user_id: 2,
+                display_name: "Assistant".into(),
+                mention: Some("@ai".into()),
+                draw: None,
+                vision: false,
+                images: false,
+                processor: Some("Microsoft — Azure OpenAI".into()),
+                transcribe: true,
+                transcribe_max_bytes: Some(26_214_400),
+            });
+            state
+                .store
+                .set_assistant_consent(Some("2026-10-02T10:00:00Z".into()));
+        });
+        let voice = |id: i64| Attachment {
+            id,
+            kind: "audio".into(),
+            mime: Some("audio/mp4".into()),
+            size: Some(QUICKTIME.len() as i64),
+            duration_ms: Some(500),
+            ..Attachment::default()
+        };
+        let held = |actions: &Actions, id: i64| {
+            actions
+                .live
+                .read(|state| state.store.transcripts.get(id).cloned())
+        };
+        for id in [40, 41] {
+            actions.handle(Action::ShowTranscript {
+                chat_id: 42,
+                message_id: 100,
+                attachment: voice(id),
+                ask_consent: Callback::noop(),
+            });
+            for _ in 0..400 {
+                if held(&actions, id) != Some(State::Asking) {
+                    break;
+                }
+                gloo_timers::future::TimeoutFuture::new(25).await;
+            }
+        }
+        assert_eq!(
+            held(&actions, 40),
+            Some(State::Shown(Transcript {
+                text: "from here".into(),
+                language: None,
+            }))
+        );
+        assert_eq!(
+            held(&actions, 41),
+            Some(State::Failed(Failure::NotAvailable))
+        );
+        assert_eq!(
+            server.lines(&["/attachments/4", "/chats/42/messages/100/attachments/4"]),
+            vec![
+                "POST /chats/42/messages/100/attachments/40/transcript".to_string(),
+                "GET /attachments/40".to_string(),
+                "POST /chats/42/messages/100/attachments/40/transcript".to_string(),
+                "POST /chats/42/messages/100/attachments/41/transcript".to_string(),
+            ],
+            "the stored copy first; the file and its sound only after not_transcribable"
         );
     }
 
@@ -3174,6 +3783,8 @@ mod tests {
             mention: None,
             draw: None,
             vision: true,
+            transcribe: false,
+            transcribe_max_bytes: None,
             images: false,
             processor: processor.map(str::to_string),
         };

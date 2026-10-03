@@ -911,7 +911,7 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 f.id AS family_id, f.name AS family_name, f.join_policy,
                 f.created_at AS family_created_at, f.owner_user_id, f.invite_code,
                 f.language, f.max_members, f.ai_history, f.ai_vision,
-                f.ai_history_photos, f.ai_greeting, f.ai_faces
+                f.ai_history_photos, f.ai_greeting, f.ai_faces, f.ai_transcripts
          FROM users u
          LEFT JOIN families f ON f.id = u.family_id
          WHERE u.id = $1",
@@ -957,6 +957,9 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 // And the fifth, which decides whether a member's own FACE
                 // may leave the server with a mention.
                 ai_faces: row.get("ai_faces"),
+                // And the sixth, which decides whether their recorded voice
+                // may be sent at somebody else's request.
+                ai_transcripts: row.get("ai_transcripts"),
             };
             let role = if is_owner { "owner" } else { "member" };
             (Some(family), Some(role))

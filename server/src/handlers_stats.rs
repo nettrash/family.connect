@@ -62,7 +62,9 @@ pub async fn family_stats(
                 COALESCE(ai.questions, 0)       AS ai_questions,
                 COALESCE(ai.prompt_tokens, 0)   AS ai_prompt_tokens,
                 COALESCE(ai.completion_tokens, 0) AS ai_completion_tokens,
-                COALESCE(ai.images, 0)          AS ai_images
+                COALESCE(ai.images, 0)          AS ai_images,
+                COALESCE(ai.transcripts, 0)     AS ai_transcripts,
+                COALESCE(ai.audio_ms, 0)        AS ai_audio_ms
          FROM users u
          LEFT JOIN (
              SELECT msg.sender_id, COUNT(*) AS count
@@ -87,11 +89,16 @@ pub async fn family_stats(
              GROUP BY att.uploader_id
          ) a ON a.uploader_id = u.id
          LEFT JOIN (
+             -- A transcript is not a QUESTION (migration 0049): rows that
+             -- record one are counted on their own, and `questions` is
+             -- exactly the number it was before transcripts existed.
              SELECT user_id,
-                    COUNT(*) AS questions,
+                    COUNT(*) FILTER (WHERE transcripts = 0) AS questions,
                     SUM(prompt_tokens)::BIGINT AS prompt_tokens,
                     SUM(completion_tokens)::BIGINT AS completion_tokens,
-                    SUM(images)::BIGINT AS images
+                    SUM(images)::BIGINT AS images,
+                    SUM(transcripts)::BIGINT AS transcripts,
+                    SUM(audio_ms)::BIGINT AS audio_ms
              FROM ai_usage
              WHERE family_id = $1
              GROUP BY user_id
@@ -140,6 +147,8 @@ pub async fn family_stats(
                     "prompt_tokens": row.get::<i64, _>("ai_prompt_tokens"),
                     "completion_tokens": row.get::<i64, _>("ai_completion_tokens"),
                     "images": row.get::<i64, _>("ai_images"),
+                    "transcripts": row.get::<i64, _>("ai_transcripts"),
+                    "transcript_duration_ms": row.get::<i64, _>("ai_audio_ms"),
                 },
             })
         })
@@ -193,7 +202,8 @@ pub async fn family_stats(
                 JOIN messages msg ON msg.id = att.message_id
                 JOIN chats c ON c.id = msg.chat_id
                 WHERE c.family_id = $1 AND att.kind = 'location') AS att_location,
-            (SELECT COUNT(*) FROM ai_usage WHERE family_id = $1) AS ai_questions,
+            (SELECT COUNT(*) FROM ai_usage WHERE family_id = $1 AND transcripts = 0)
+                AS ai_questions,
             (SELECT COALESCE(SUM(prompt_tokens), 0)::BIGINT FROM ai_usage WHERE family_id = $1)
                 AS ai_prompt_tokens,
             (SELECT COALESCE(SUM(completion_tokens), 0)::BIGINT FROM ai_usage WHERE family_id = $1)
@@ -203,7 +213,14 @@ pub async fn family_stats(
             -- totals would see the expensive half of the assistant as free
             -- (protocol.md, Family statistics).
             (SELECT COALESCE(SUM(images), 0)::BIGINT FROM ai_usage WHERE family_id = $1)
-                AS ai_images",
+                AS ai_images,
+            -- Billed by audio length, not tokens, so counted the same way
+            -- (protocol.md, Family statistics): calls that produced an
+            -- answer, and the length of what they were made from.
+            (SELECT COALESCE(SUM(transcripts), 0)::BIGINT FROM ai_usage WHERE family_id = $1)
+                AS ai_transcripts,
+            (SELECT COALESCE(SUM(audio_ms), 0)::BIGINT FROM ai_usage WHERE family_id = $1)
+                AS ai_audio_ms",
     )
     .bind(family_id)
     .fetch_one(&state.pool)
@@ -234,6 +251,8 @@ pub async fn family_stats(
                 "prompt_tokens": totals.get::<i64, _>("ai_prompt_tokens"),
                 "completion_tokens": totals.get::<i64, _>("ai_completion_tokens"),
                 "images": totals.get::<i64, _>("ai_images"),
+                "transcripts": totals.get::<i64, _>("ai_transcripts"),
+                "transcript_duration_ms": totals.get::<i64, _>("ai_audio_ms"),
             },
         },
         "members": member_rows,

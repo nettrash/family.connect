@@ -26,6 +26,7 @@ import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.dto.ApproveResponse
+import me.nettrash.familyconnect.data.net.dto.AssistantDto
 import me.nettrash.familyconnect.data.net.dto.AssistantConsentResponse
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentResponse
@@ -217,6 +218,8 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         vision: Boolean,
         images: Boolean,
         processor: String?,
+        transcribe: Boolean,
+        transcribeMaxBytes: Long?,
     ) {
         _state.value = _state.value.copy(
             assistantUserId = userId,
@@ -226,6 +229,12 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
             assistantVision = userId != null && vision,
             assistantImages = userId != null && images,
             assistantProcessor = if (userId != null) processor?.ifBlank { null } else null,
+            assistantTranscribe = userId != null && transcribe,
+            assistantTranscribeMaxBytes = if (userId != null && transcribe) {
+                transcribeMaxBytes ?: AssistantDto.DEFAULT_TRANSCRIBE_MAX_BYTES
+            } else {
+                0L
+            },
         )
     }
 
@@ -247,6 +256,10 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
 
     override suspend fun setFamilyAiGreeting(enabled: Boolean) {
         _state.value = _state.value.copy(familyAiGreeting = enabled)
+    }
+
+    override suspend fun setFamilyAiTranscripts(enabled: Boolean) {
+        _state.value = _state.value.copy(familyAiTranscripts = enabled)
     }
 
     override suspend fun setGreetingsEnabled(enabled: Boolean) {
@@ -766,6 +779,14 @@ class FakeFamilyApi : FamilyApi {
 
     override suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> {
         aiFacesSet += enabled
+        return createResult
+    }
+
+    /** Every ai_transcripts PATCH, in order. */
+    val aiTranscriptsSet = mutableListOf<Boolean>()
+
+    override suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse> {
+        aiTranscriptsSet += enabled
         return createResult
     }
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> = joinRequestsResult
@@ -1534,3 +1555,60 @@ fun testChatRepository(
     settings,
     scope,
 )
+
+/**
+ * The transcript endpoint, scripted: [answers] are handed out in order
+ * (then [fallback]), and every call is recorded so a test can prove a held
+ * text asked nothing.
+ */
+class FakeTranscriptApi : me.nettrash.familyconnect.data.net.TranscriptApi {
+    data class Call(val chatId: Long, val messageId: Long, val attachmentId: Long)
+
+    val calls = mutableListOf<Call>()
+    val answers = ArrayDeque<ApiResult<me.nettrash.familyconnect.data.net.dto.TranscriptResponse>>()
+    var fallback: ApiResult<me.nettrash.familyconnect.data.net.dto.TranscriptResponse> =
+        ApiResult.NetworkError(IllegalStateException("unscripted"))
+
+    override suspend fun transcribeStored(
+        chatId: Long,
+        messageId: Long,
+        attachmentId: Long,
+    ): ApiResult<me.nettrash.familyconnect.data.net.dto.TranscriptResponse> {
+        calls += Call(chatId, messageId, attachmentId)
+        return answers.removeFirstOrNull() ?: fallback
+    }
+
+    /** One supplied-sound request: where, and the size of the sound sent. */
+    data class Supplied(val chatId: Long, val messageId: Long, val attachmentId: Long, val soundBytes: Long)
+
+    val supplied = mutableListOf<Supplied>()
+    val suppliedAnswers = ArrayDeque<ApiResult<me.nettrash.familyconnect.data.net.dto.TranscriptResponse>>()
+
+    override suspend fun transcribeSupplied(
+        chatId: Long,
+        messageId: Long,
+        attachmentId: Long,
+        sound: java.io.File,
+    ): ApiResult<me.nettrash.familyconnect.data.net.dto.TranscriptResponse> {
+        supplied += Supplied(chatId, messageId, attachmentId, sound.length())
+        return suppliedAnswers.removeFirstOrNull() ?: fallback
+    }
+}
+
+/**
+ * The sound a transcript request supplies, scripted: [next] is what the
+ * next ask comes to (a Ready file is made in [dir] when [readyBytes] is set).
+ */
+class FakeTranscriptSound : me.nettrash.familyconnect.data.repo.TranscriptSoundSource {
+    val asked = mutableListOf<Pair<Long, Long>>()
+    var next: me.nettrash.familyconnect.data.repo.TranscriptSoundPlan.Result =
+        me.nettrash.familyconnect.data.repo.TranscriptSoundPlan.Result.Unreadable
+
+    override suspend fun soundFor(
+        attachment: me.nettrash.familyconnect.data.net.dto.AttachmentDto,
+        maxBytes: Long,
+    ): me.nettrash.familyconnect.data.repo.TranscriptSoundPlan.Result {
+        asked += attachment.id to maxBytes
+        return next
+    }
+}

@@ -901,6 +901,8 @@ mod tests {
                     vision: false,
                     images: false,
                     processor: Some("Microsoft — Azure OpenAI".into()),
+                    transcribe: false,
+                    transcribe_max_bytes: None,
                 }),
                 agreed_to_assistant: false,
                 on_review_consent: {
@@ -1072,6 +1074,8 @@ mod tests {
                     mention: Some("@ai".into()),
                     draw: Some("/draw".into()),
                     vision: false,
+                    transcribe: false,
+                    transcribe_max_bytes: None,
                     images,
                     processor: Some("Microsoft — Azure OpenAI".into()),
                 }),

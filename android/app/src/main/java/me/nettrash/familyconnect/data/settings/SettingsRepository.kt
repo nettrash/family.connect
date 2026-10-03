@@ -18,6 +18,7 @@
 
 package me.nettrash.familyconnect.data.settings
 
+import me.nettrash.familyconnect.data.net.dto.AssistantDto
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -185,6 +186,20 @@ data class SettingsState(
      */
     val assistantProcessor: String? = null,
     /**
+     * Whether this server can turn a recording into text on request
+     * (`assistant.transcribe`, docs/protocol.md, "Transcripts on request").
+     * Without it "Show text" is not offered anywhere. Cleared with the
+     * assistant, like the two capabilities above.
+     */
+    val assistantTranscribe: Boolean = false,
+    /**
+     * The largest stored recording the server will transcribe
+     * (`assistant.transcribe_max_bytes`); 0 while [assistantTranscribe] is
+     * false. A recording over it is not offered "Show text" from the
+     * stored copy.
+     */
+    val assistantTranscribeMaxBytes: Long = 0L,
+    /**
      * When this member agreed that their words may go to the model
      * (`GET /me` → `assistant_consent_at`), or null until they have.
      *
@@ -232,6 +247,14 @@ data class SettingsState(
      * predates it, and bound to none of the three switches above.
      */
     val familyAiGreeting: Boolean = false,
+    /**
+     * The owner's transcripts switch (`Family.ai_transcripts`): whether a
+     * member may ask for the text of OTHER members' recordings in the
+     * family chat (docs/protocol.md, "Transcripts on request"). FALSE by
+     * default and bound to no other switch. Mirrored so a bubble can
+     * decide whether to offer "Show text" without a round trip.
+     */
+    val familyAiTranscripts: Boolean = false,
     /**
      * Whether the SERVER posts daily greetings at all (`GET /me` →
      * greetings_enabled). Account-scoped like the assistant's own
@@ -340,6 +363,10 @@ interface SettingsRepository {
         vision: Boolean = false,
         images: Boolean = false,
         processor: String? = null,
+        /** `assistant.transcribe`: whether recordings can be turned into text here. */
+        transcribe: Boolean = false,
+        /** `assistant.transcribe_max_bytes`, present only while [transcribe] is. */
+        transcribeMaxBytes: Long? = null,
     )
 
     /**
@@ -377,6 +404,15 @@ interface SettingsRepository {
      * write this device did not make.
      */
     suspend fun setFamilyAiGreeting(enabled: Boolean)
+
+    /**
+     * Record the family's transcripts switch (`ai_transcripts`), from
+     * `GET /families/mine`, `GET /me` or the owner's own PATCH.
+     * Unconditional, `false` included: an owner turning it off must reach
+     * every device, or a bubble would go on offering "Show text" on other
+     * members' recordings the server will refuse.
+     */
+    suspend fun setFamilyAiTranscripts(enabled: Boolean)
 
     /** Record what `GET /me` said about daily greetings on this server. */
     suspend fun setGreetingsEnabled(enabled: Boolean)
@@ -463,6 +499,8 @@ class DataStoreSettingsRepository @Inject constructor(
         val ASSISTANT_VISION = booleanPreferencesKey("assistant_vision")
         val ASSISTANT_IMAGES = booleanPreferencesKey("assistant_images")
         val ASSISTANT_PROCESSOR = stringPreferencesKey("assistant_processor")
+        val ASSISTANT_TRANSCRIBE = booleanPreferencesKey("assistant_transcribe")
+        val ASSISTANT_TRANSCRIBE_MAX_BYTES = longPreferencesKey("assistant_transcribe_max_bytes")
         val ASSISTANT_CONSENT_AT = stringPreferencesKey("assistant_consent_at")
         // Stored PLAIN, not inverted like the two preview keys above: this
         // one's default is already `false`, so a missing key and an
@@ -478,6 +516,9 @@ class DataStoreSettingsRepository @Inject constructor(
         // Both plain, for FAMILY_AI_VISION's reason: a missing key and an
         // explicit `false` say the same thing — no greeting.
         val FAMILY_AI_GREETING = booleanPreferencesKey("family_ai_greeting")
+        // Plain, for FAMILY_AI_VISION's reason: missing and `false` both
+        // mean nobody else's recording is offered.
+        val FAMILY_AI_TRANSCRIPTS = booleanPreferencesKey("family_ai_transcripts")
         val GREETINGS_ENABLED = booleanPreferencesKey("greetings_enabled")
         val CALLS_ENABLED = booleanPreferencesKey("calls_enabled")
         val VIDEO_CALLS_ENABLED = booleanPreferencesKey("video_calls_enabled")
@@ -525,11 +566,14 @@ class DataStoreSettingsRepository @Inject constructor(
             assistantVision = prefs[Keys.ASSISTANT_VISION] == true,
             assistantImages = prefs[Keys.ASSISTANT_IMAGES] == true,
             assistantProcessor = prefs[Keys.ASSISTANT_PROCESSOR],
+            assistantTranscribe = prefs[Keys.ASSISTANT_TRANSCRIBE] == true,
+            assistantTranscribeMaxBytes = prefs[Keys.ASSISTANT_TRANSCRIBE_MAX_BYTES] ?: 0L,
             assistantConsentAt = prefs[Keys.ASSISTANT_CONSENT_AT],
             familyAiVision = prefs[Keys.FAMILY_AI_VISION] == true,
             familyAiHistory = prefs[Keys.FAMILY_AI_HISTORY] ?: true,
             familyAiHistoryPhotos = prefs[Keys.FAMILY_AI_HISTORY_PHOTOS] == true,
             familyAiGreeting = prefs[Keys.FAMILY_AI_GREETING] == true,
+            familyAiTranscripts = prefs[Keys.FAMILY_AI_TRANSCRIPTS] == true,
             greetingsEnabled = prefs[Keys.GREETINGS_ENABLED] == true,
             callsEnabled = prefs[Keys.CALLS_ENABLED] == true,
             videoCallsEnabled = prefs[Keys.VIDEO_CALLS_ENABLED] == true,
@@ -631,6 +675,8 @@ class DataStoreSettingsRepository @Inject constructor(
         vision: Boolean,
         images: Boolean,
         processor: String?,
+        transcribe: Boolean,
+        transcribeMaxBytes: Long?,
     ) {
         dataStore.edit { prefs ->
             if (userId != null && displayName != null) {
@@ -645,6 +691,16 @@ class DataStoreSettingsRepository @Inject constructor(
                 } else {
                     prefs[Keys.ASSISTANT_PROCESSOR] = processor
                 }
+                prefs[Keys.ASSISTANT_TRANSCRIBE] = transcribe
+                if (transcribe) {
+                    // Absent while transcribe is true means the
+                    // protocol's default (docs/protocol.md, "Transcripts
+                    // on request").
+                    prefs[Keys.ASSISTANT_TRANSCRIBE_MAX_BYTES] =
+                        transcribeMaxBytes ?: AssistantDto.DEFAULT_TRANSCRIBE_MAX_BYTES
+                } else {
+                    prefs.remove(Keys.ASSISTANT_TRANSCRIBE_MAX_BYTES)
+                }
             } else {
                 // Cleared rather than left stale: a server that turned the
                 // assistant off must stop offering `@ai` on the next resync.
@@ -656,6 +712,8 @@ class DataStoreSettingsRepository @Inject constructor(
                 prefs.remove(Keys.ASSISTANT_VISION)
                 prefs.remove(Keys.ASSISTANT_IMAGES)
                 prefs.remove(Keys.ASSISTANT_PROCESSOR)
+                prefs.remove(Keys.ASSISTANT_TRANSCRIBE)
+                prefs.remove(Keys.ASSISTANT_TRANSCRIBE_MAX_BYTES)
             }
         }
     }
@@ -686,6 +744,11 @@ class DataStoreSettingsRepository @Inject constructor(
 
     override suspend fun setFamilyAiGreeting(enabled: Boolean) {
         dataStore.edit { it[Keys.FAMILY_AI_GREETING] = enabled }
+    }
+
+    override suspend fun setFamilyAiTranscripts(enabled: Boolean) {
+        // Unconditional, false included. See the interface.
+        dataStore.edit { it[Keys.FAMILY_AI_TRANSCRIPTS] = enabled }
     }
 
     override suspend fun setGreetingsEnabled(enabled: Boolean) {
