@@ -26,8 +26,10 @@
 //! with one code per reason — see [`transcript`].
 //!
 //! **Never logged**: the text, the language, the sound. The log line says
-//! which of five outcomes happened — `stored`, `supplied`, `shared`,
-//! `refused`, `failed` — beside the ids, and a provider error goes through
+//! which outcome happened — `stored`, `supplied`, `shared`, `refused`,
+//! `failed`, and under the speech contract `unreadable` (the provider
+//! refused the file) or `unheard` (it named no language) — both answered
+//! `not_transcribable` and neither kept — beside the ids, and a provider error goes through
 //! `ai::loggable_detail`'s allow-list like every other.
 
 use std::collections::HashMap;
@@ -45,9 +47,9 @@ use sqlx::Row;
 use tokio::sync::{Mutex, Semaphore};
 use tracing::{info, warn};
 
-use crate::ai::{self, Recording, Transcript};
+use crate::ai::{self, Recording, Transcript, Transcription};
 use crate::auth::AuthUser;
-use crate::config::ModelRoute;
+use crate::config::TranscribeRoute;
 use crate::error::{ApiError, codes};
 use crate::handlers_chat::ensure_chat_access;
 use crate::state::AppState;
@@ -69,7 +71,10 @@ pub const TRANSCRIPTION_SLOTS: usize = 4;
 /// (`models::Attachment::ACCEPTED`) and what Azure's transcription contract
 /// lists (mp3, mp4, mpeg, mpga, m4a, wav, webm). `audio/ogg` is accepted on
 /// upload and is NOT here: the provider refuses Ogg, so a device sends its
-/// own sound track for one instead.
+/// own sound track for one instead. The same list serves the speech
+/// contract (`[ai.transcribe] api = "speech"`): whether MAI-Transcribe
+/// reads M4A is not documented, and a provider that refuses a format
+/// reaches the client as `not_transcribable` either way.
 pub const STORED_AUDIO: [(&str, &str); 4] = [
     ("audio/mp4", "audio.m4a"),
     ("audio/m4a", "audio.m4a"),
@@ -90,6 +95,12 @@ enum Outcome {
     Answered(Transcript),
     /// The provider's own filter said no — terminal.
     Refused,
+    /// The provider refused the FILE — `not_transcribable`, so a client
+    /// may send a sound track of its own (speech contract only).
+    Unreadable,
+    /// The provider named no language — `not_transcribable` too, and never
+    /// an answer of silence (speech contract only; see [`ai::Unheard`]).
+    Unheard,
     /// Anything else — transient, `internal`.
     Failed,
 }
@@ -135,7 +146,7 @@ struct Held {
 /// What a call is FOR — handed to the spawned task, which outlives the
 /// request that started it.
 struct Ask {
-    route: ModelRoute,
+    route: TranscribeRoute,
     asker: i64,
     family_id: Option<i64>,
     message_id: i64,
@@ -161,8 +172,9 @@ struct Ask {
 ///    another member's only in the family chat, only with `ai_transcripts`
 ///    on, and only when that SENDER has consented too;
 /// 7. the recording in this form — `not_transcribable`;
-/// 8. the provider — `transcript_refused` for its filter, `internal` for the
-///    rest.
+/// 8. the provider — `transcript_refused` for its filter, `not_transcribable`
+///    when it refuses the file itself or names no language (speech
+///    contract), `internal` for the rest.
 pub async fn transcript(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -404,6 +416,13 @@ fn respond(outcome: Outcome) -> Result<Response, ApiError> {
             codes::TRANSCRIPT_REFUSED,
             "the assistant's provider refused to transcribe this",
         )),
+        Outcome::Unreadable => Err(not_transcribable(
+            "the transcription provider could not read this recording's sound; send a sound \
+             track instead",
+        )),
+        Outcome::Unheard => Err(not_transcribable(
+            "the transcription provider could not tell which language this recording is in",
+        )),
         Outcome::Failed => Err(ApiError::Internal(anyhow::anyhow!(
             "the transcription could not be made"
         ))),
@@ -630,24 +649,40 @@ fn multipart_error(error: axum::extract::multipart::MultipartError, max_bytes: u
 /// differs is only what happens to the answer afterwards.
 async fn call(state: &AppState, ask: &Ask, recording: Recording) -> Outcome {
     match ai::transcribe(&state.http, &ask.route, recording, ask.language.as_deref()).await {
-        Ok(transcript) => {
-            record_usage(state, ask).await;
+        Ok(Transcription {
+            transcript,
+            audio_ms,
+        }) => {
+            record_usage(state, ask, audio_ms).await;
             Outcome::Answered(transcript)
         }
         Err(error) => {
             let refused = ai::is_refusal(&error);
+            let unreadable = ai::is_unreadable(&error);
+            let unheard = ai::is_unheard(&error);
             // The chain is the URL and the allow-listed fields of the
             // provider's error — never the sound and never any text.
             warn!(
                 attachment_id = ask.attachment_id,
                 refused,
+                unreadable,
+                unheard,
                 error = %format!("{error:#}"),
                 "the transcription deployment could not answer"
             );
-            log_outcome(ask, if refused { "refused" } else { "failed" });
             if refused {
+                log_outcome(ask, "refused");
                 Outcome::Refused
+            } else if unreadable {
+                log_outcome(ask, "unreadable");
+                Outcome::Unreadable
+            } else if unheard {
+                // Somebody may well have spoken: a language the model does
+                // not know looks like this. Not silence, so not kept.
+                log_outcome(ask, "unheard");
+                Outcome::Unheard
             } else {
+                log_outcome(ask, "failed");
                 Outcome::Failed
             }
         }
@@ -655,9 +690,11 @@ async fn call(state: &AppState, ask: &Ask, recording: Recording) -> Outcome {
 }
 
 /// One `transcript` and the recording's length against the member who
-/// asked (protocol.md, "Family statistics"). Best effort, like every usage
-/// row: an answer the member already has must not fail on a counter.
-async fn record_usage(state: &AppState, ask: &Ask) {
+/// asked (protocol.md, "Family statistics"). The length is the provider's
+/// own measure when it gave one — what it bills, and the only length there
+/// is for supplied sound — else the attachment's. Best effort, like every
+/// usage row: an answer the member already has must not fail on a counter.
+async fn record_usage(state: &AppState, ask: &Ask, provider_ms: Option<i64>) {
     let Some(family_id) = ask.family_id else {
         return;
     };
@@ -668,7 +705,11 @@ async fn record_usage(state: &AppState, ask: &Ask) {
     .bind(ask.asker)
     .bind(family_id)
     .bind(ask.message_id)
-    .bind(i64::from(ask.duration_ms.unwrap_or(0).max(0)))
+    .bind(
+        provider_ms
+            .unwrap_or_else(|| i64::from(ask.duration_ms.unwrap_or(0)))
+            .max(0),
+    )
     .execute(&state.pool)
     .await
     {

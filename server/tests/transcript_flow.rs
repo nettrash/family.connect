@@ -14,10 +14,11 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Multipart, Path, RawQuery, State};
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use common::{TestServer, assert_error, spawn_server_with_config};
-use family_connect::config::Config;
+use family_connect::config::{Config, TranscribeApi};
 use serde_json::{Value, json};
 
 /// What the stub answers with unless a test says otherwise. Words no other
@@ -29,6 +30,13 @@ const HEARD: &str = "klingon";
 
 const TEXT_DEPLOYMENT: &str = "test-gpt-oss";
 const TRANSCRIBE_DEPLOYMENT: &str = "test-whisper";
+/// The speech contract's model, and its own key — never `[ai]`'s.
+const SPEECH_MODEL: &str = "MAI-Transcribe-2";
+const SPEECH_KEY: &str = "speech-test-key";
+const SPEECH_PATH: &str = "/speechtotext/transcriptions:transcribe";
+/// The length the speech stub says it heard — NOT the 4200 every voice
+/// note here is uploaded with, so a usage row can say which one it took.
+const HEARD_MS: i64 = 5300;
 
 // --- the stub provider ------------------------------------------------------
 
@@ -51,6 +59,8 @@ impl Field {
 struct Call {
     path: String,
     query: Option<String>,
+    /// Lower-cased names.
+    headers: HashMap<String, String>,
     fields: HashMap<String, Field>,
 }
 
@@ -62,6 +72,8 @@ struct Stub {
     /// How long each answer takes, while a test says so — recorded BEFORE
     /// the wait, so a test can see a call started.
     delay: Mutex<Option<Duration>>,
+    /// A 200 body to answer the speech contract with instead of the usual.
+    speech_answer: Mutex<Option<Value>>,
 }
 
 impl Stub {
@@ -76,14 +88,17 @@ impl Stub {
     fn slow(&self, by: Duration) {
         *self.delay.lock().expect("stub lock") = Some(by);
     }
+
+    fn succeed(&self) {
+        *self.failure.lock().expect("stub lock") = None;
+    }
+
+    fn speech_answers(&self, body: Value) {
+        *self.speech_answer.lock().expect("stub lock") = Some(body);
+    }
 }
 
-async fn stub_transcribe(
-    Path(deployment): Path<String>,
-    RawQuery(query): RawQuery,
-    State(stub): State<Arc<Stub>>,
-    mut multipart: Multipart,
-) -> axum::response::Response {
+async fn read_fields(mut multipart: Multipart) -> HashMap<String, Field> {
     let mut fields = HashMap::new();
     while let Some(field) = multipart.next_field().await.expect("a multipart body") {
         let name = field.name().unwrap_or_default().to_string();
@@ -99,22 +114,84 @@ async fn stub_transcribe(
             },
         );
     }
-    stub.calls.lock().expect("stub lock").push(Call {
-        path: format!("/openai/deployments/{deployment}/audio/transcriptions"),
-        query,
-        fields,
-    });
+    fields
+}
+
+fn header_map(headers: &HeaderMap) -> HashMap<String, String> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_ascii_lowercase(),
+                value.to_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// The failure a test set, after the delay a test set — shared by both
+/// contracts' handlers.
+async fn delay_or_failure(stub: &Stub) -> Option<axum::response::Response> {
     let delay = *stub.delay.lock().expect("stub lock");
     if let Some(delay) = delay {
         tokio::time::sleep(delay).await;
     }
     let failure = stub.failure.lock().expect("stub lock").clone();
-    if let Some((status, body)) = failure {
-        return (
+    failure.map(|(status, body)| {
+        (
             axum::http::StatusCode::from_u16(status).expect("status"),
             axum::Json(body),
         )
-            .into_response();
+            .into_response()
+    })
+}
+
+/// The Azure Speech contract (`api = "speech"`): `audio` + `definition`,
+/// answered with combined phrases, a locale and a duration.
+async fn stub_speech(
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    State(stub): State<Arc<Stub>>,
+    multipart: Multipart,
+) -> axum::response::Response {
+    let fields = read_fields(multipart).await;
+    stub.calls.lock().expect("stub lock").push(Call {
+        path: SPEECH_PATH.to_string(),
+        query,
+        headers: header_map(&headers),
+        fields,
+    });
+    if let Some(failure) = delay_or_failure(&stub).await {
+        return failure;
+    }
+    let answer = stub.speech_answer.lock().expect("stub lock").clone();
+    axum::Json(answer.unwrap_or_else(|| {
+        json!({
+            "durationMilliseconds": HEARD_MS,
+            "combinedPhrases": [{"text": SPOKEN}],
+            "phrases": [{"text": SPOKEN, "locale": HEARD, "offsetMilliseconds": 0,
+                         "durationMilliseconds": HEARD_MS, "confidence": 0.93}],
+        })
+    }))
+    .into_response()
+}
+
+async fn stub_transcribe(
+    Path(deployment): Path<String>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    State(stub): State<Arc<Stub>>,
+    multipart: Multipart,
+) -> axum::response::Response {
+    let fields = read_fields(multipart).await;
+    stub.calls.lock().expect("stub lock").push(Call {
+        path: format!("/openai/deployments/{deployment}/audio/transcriptions"),
+        query,
+        headers: header_map(&headers),
+        fields,
+    });
+    if let Some(failure) = delay_or_failure(&stub).await {
+        return failure;
     }
     axum::Json(json!({"text": SPOKEN, "language": HEARD})).into_response()
 }
@@ -126,6 +203,7 @@ async fn spawn_stub() -> (Arc<Stub>, SocketAddr) {
             "/openai/deployments/{deployment}/audio/transcriptions",
             post(stub_transcribe),
         )
+        .route(SPEECH_PATH, post(stub_speech))
         .with_state(stub.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -153,6 +231,23 @@ async fn server_tweaked(addr: SocketAddr, extra: impl FnOnce(&mut Config)) -> Te
         cfg.ai.processor = "Microsoft — Azure OpenAI".to_string();
         cfg.ai.title = "Assistant".to_string();
         cfg.ai.transcribe.deployment.deployment = TRANSCRIBE_DEPLOYMENT.to_string();
+        extra(cfg);
+    })
+    .await
+}
+
+/// A server whose `[ai.transcribe]` speaks the Azure Speech contract, as
+/// an operator configures MAI-Transcribe-2: its OWN endpoint — the bare
+/// resource root, so the server adds the path and api-version — its own
+/// key, the model, and nothing else.
+async fn speech_server(addr: SocketAddr, extra: impl FnOnce(&mut Config)) -> TestServer {
+    server_tweaked(addr, move |cfg| {
+        let transcribe = &mut cfg.ai.transcribe;
+        transcribe.api = TranscribeApi::Speech;
+        transcribe.deployment.deployment = String::new();
+        transcribe.deployment.endpoint = format!("http://{addr}");
+        transcribe.deployment.api_key = SPEECH_KEY.to_string();
+        transcribe.deployment.model = SPEECH_MODEL.to_string();
         extra(cfg);
     })
     .await
@@ -1127,4 +1222,330 @@ async fn a_kept_answer_goes_with_its_recording() {
         .await
         .expect("deleting the message as retention does");
     assert_eq!(kept(&ts, note).await, 0, "gone with the attachment row");
+}
+
+// --- the Azure Speech contract (`api = "speech"`, MAI-Transcribe) -----------
+
+/// The definition part, parsed.
+fn definition(call: &Call) -> Value {
+    serde_json::from_slice(&call.fields["definition"].bytes).expect("the definition is JSON")
+}
+
+/// MAI-Transcribe-2 through the speech contract, end to end: the stored
+/// bytes as `audio`, a definition that names the model and the style and
+/// carries NO locale though the family has a language, the key in the
+/// subscription header and nowhere else — then kept, and counted with the
+/// length the PROVIDER heard rather than the one the upload claimed.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_speech_deployment_transcribes_the_stored_voice_note_and_counts_what_it_heard() {
+    let (log, _guard) = capture_log();
+    let (stub, addr) = spawn_stub().await;
+    let ts = speech_server(addr, |_| {}).await;
+    let f = family(&ts).await;
+    let set = ts
+        .patch(&f.owner, "/families/mine", json!({"language": "ru"}))
+        .await;
+    assert_eq!(set.status(), 200);
+    let bytes = mp4_bytes(31, 2048);
+    let note = upload(
+        &ts,
+        &f.member,
+        "?kind=audio&duration_ms=4200",
+        "audio/mp4",
+        bytes.clone(),
+    )
+    .await;
+    let message = send(&ts, &f.member, f.chat, note).await;
+
+    let transcript = transcript_of(ask(&ts, &f.member, f.chat, message, note).await).await;
+    assert_eq!(transcript, json!({"text": SPOKEN, "language": HEARD}));
+
+    let calls = stub.calls();
+    assert_eq!(calls.len(), 1);
+    let call = &calls[0];
+    assert_eq!(call.path, SPEECH_PATH);
+    assert_eq!(call.query.as_deref(), Some("api-version=2025-10-15"));
+    assert_eq!(
+        call.headers
+            .get("ocp-apim-subscription-key")
+            .map(String::as_str),
+        Some(SPEECH_KEY)
+    );
+    assert!(!call.headers.contains_key("api-key"), "{:?}", call.headers);
+    assert!(
+        !call.headers.contains_key("authorization"),
+        "{:?}",
+        call.headers
+    );
+    let audio = &call.fields["audio"];
+    assert_eq!(audio.bytes, bytes, "the stored bytes, exactly");
+    assert_eq!(audio.filename.as_deref(), Some("audio.m4a"));
+    assert_eq!(audio.content_type.as_deref(), Some("audio/mp4"));
+    assert_eq!(
+        definition(call),
+        json!({"enhancedMode": {"enabled": true, "model": SPEECH_MODEL,
+                                "modelOptions": {"transcribeStyle": "clean"}}}),
+        "the model, the style — and no locale by default"
+    );
+    let mut names: Vec<&String> = call.fields.keys().collect();
+    names.sort();
+    assert_eq!(names, ["audio", "definition"], "and nothing else");
+
+    assert_eq!(kept(&ts, note).await, 1);
+    assert_eq!(
+        usage_rows(&ts).await,
+        vec![(f.member_id, 1, HEARD_MS)],
+        "the provider's durationMilliseconds, not the upload's 4200"
+    );
+    let text = log.text();
+    assert!(text.contains("outcome=\"stored\""), "{text}");
+    for words in [SPOKEN, "umbrella", "Zinnia", HEARD, SPEECH_KEY] {
+        assert!(!text.contains(words), "{words:?} reached the log:\n{text}");
+    }
+}
+
+/// A provider that refuses the FORMAT answers the client
+/// `not_transcribable` — nothing kept, nothing counted, the codes and not
+/// the message in the log — and the client's fallback, its own sound
+/// track, then goes.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_format_the_speech_provider_refuses_is_not_transcribable_and_the_fallback_goes() {
+    let (log, _guard) = capture_log();
+    let (stub, addr) = spawn_stub().await;
+    let ts = speech_server(addr, |_| {}).await;
+    let f = family(&ts).await;
+    let note = voice_note(&ts, &f.member, 32).await;
+    let message = send(&ts, &f.member, f.chat, note).await;
+    stub.fail_with(
+        400,
+        json!({"code": "InvalidRequest", "message": format!("could not decode: {SPOKEN}"),
+               "innerError": {"code": "InvalidAudioFormat", "message": SPOKEN}}),
+    );
+
+    assert_error(
+        ask(&ts, &f.member, f.chat, message, note).await,
+        400,
+        "not_transcribable",
+    )
+    .await;
+    assert_eq!(stub.calls().len(), 1, "it was the provider that said so");
+    assert_eq!(kept(&ts, note).await, 0);
+    assert!(usage_rows(&ts).await.is_empty());
+    let text = log.text();
+    assert!(text.contains("outcome=\"unreadable\""), "{text}");
+    assert!(text.contains("inner=InvalidAudioFormat"), "{text}");
+    assert!(!text.contains(SPOKEN), "the message is withheld:\n{text}");
+
+    // The client falls back to a sound track of its own.
+    stub.succeed();
+    let sound = mp4_bytes(33, 1200);
+    let supplied = transcript_of(
+        ask_with_sound(
+            &ts,
+            &f.member,
+            (f.chat, message, note),
+            "audio",
+            sound.clone(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(supplied["text"], SPOKEN);
+    let calls = stub.calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1].fields["audio"].bytes, sound);
+    assert_eq!(kept(&ts, note).await, 0, "supplied sound is never kept");
+    assert_eq!(usage_rows(&ts).await, vec![(f.member_id, 1, HEARD_MS)]);
+
+    // A too-long recording, and a 429: the first is the file's fault, the
+    // second is transient.
+    stub.fail_with(
+        400,
+        json!({"code": "InvalidRequest", "innerError": {"code": "AudioLengthLimitExceeded"}}),
+    );
+    assert_error(
+        ask(&ts, &f.member, f.chat, message, note).await,
+        400,
+        "not_transcribable",
+    )
+    .await;
+    stub.fail_with(429, json!({"code": "TooManyRequests"}));
+    assert_error(
+        ask(&ts, &f.member, f.chat, message, note).await,
+        500,
+        "internal",
+    )
+    .await;
+}
+
+/// Silence is an answer under this contract only when the provider ANSWERS
+/// it: a 200 with no combined phrases is `""`, kept and counted. A refusal
+/// is never silence — kept as `""`, or kept by the asker's device, it would
+/// tell everyone who asks later that nothing was said:
+///
+/// - `EmptyAudioFile` for a file this server checked is not empty is the
+///   provider failing to read it — `not_transcribable`, nothing kept, and
+///   the client's fallback, its own sound track, goes;
+/// - `NoLanguageIdentified` is what a language the model does not know
+///   looks like (Serbian on MAI-Transcribe-2) — `not_transcribable`,
+///   nothing kept, logged `unheard`, from either form.
+///
+/// Neither is counted: the provider answered nothing.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn only_an_answer_of_silence_is_no_speech_and_a_refusal_is_never_kept_as_one() {
+    let (log, _guard) = capture_log();
+    let (stub, addr) = spawn_stub().await;
+    let ts = speech_server(addr, |_| {}).await;
+    let f = family(&ts).await;
+
+    stub.speech_answers(json!({"durationMilliseconds": 800, "combinedPhrases": [], "phrases": []}));
+    let quiet = voice_note(&ts, &f.member, 34).await;
+    let message = send(&ts, &f.member, f.chat, quiet).await;
+    let transcript = transcript_of(ask(&ts, &f.member, f.chat, message, quiet).await).await;
+    assert_eq!(transcript, json!({"text": ""}));
+    assert_eq!(kept(&ts, quiet).await, 1, "silence is kept like any answer");
+    assert_eq!(usage_rows(&ts).await, vec![(f.member_id, 1, 800)]);
+
+    stub.fail_with(
+        400,
+        json!({"code": "InvalidRequest", "innerError": {"code": "EmptyAudioFile"}}),
+    );
+    let empty = voice_note(&ts, &f.member, 35).await;
+    let message = send(&ts, &f.member, f.chat, empty).await;
+    assert_error(
+        ask(&ts, &f.member, f.chat, message, empty).await,
+        400,
+        "not_transcribable",
+    )
+    .await;
+    assert_eq!(
+        kept(&ts, empty).await,
+        0,
+        "a file it could not read is no answer"
+    );
+    assert!(
+        log.text().contains("outcome=\"unreadable\""),
+        "{}",
+        log.text()
+    );
+    // So the fallback goes, and a provider that reads the device's sound
+    // answers it.
+    stub.succeed();
+    stub.speech_answers(json!({"combinedPhrases": [{"text": SPOKEN}]}));
+    let supplied = transcript_of(
+        ask_with_sound(
+            &ts,
+            &f.member,
+            (f.chat, message, empty),
+            "audio",
+            mp4_bytes(37, 1200),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(supplied["text"], SPOKEN);
+
+    stub.fail_with(
+        400,
+        json!({"code": "InvalidRequest", "innerError": {"code": "NoLanguageIdentified"}}),
+    );
+    let unknown = voice_note(&ts, &f.member, 36).await;
+    let message = send(&ts, &f.member, f.chat, unknown).await;
+    let before = stub.calls().len();
+    let usage_before = usage_rows(&ts).await;
+    for _ in 0..2 {
+        assert_error(
+            ask(&ts, &f.member, f.chat, message, unknown).await,
+            400,
+            "not_transcribable",
+        )
+        .await;
+    }
+    assert_error(
+        ask_with_sound(
+            &ts,
+            &f.member,
+            (f.chat, message, unknown),
+            "audio",
+            mp4_bytes(38, 1200),
+        )
+        .await,
+        400,
+        "not_transcribable",
+    )
+    .await;
+    assert_eq!(kept(&ts, unknown).await, 0, "not kept");
+    assert_eq!(stub.calls().len(), before + 3, "each ask is the provider's");
+    assert_eq!(
+        usage_rows(&ts).await,
+        usage_before,
+        "nothing answered, nothing counted"
+    );
+    assert!(log.text().contains("outcome=\"unheard\""), "{}", log.text());
+}
+
+/// A 200 whose text is only in `phrases` is that text, never silence; a
+/// 200 with neither list is no answer at all — `internal`, nothing kept.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_speech_answer_without_combined_phrases_is_read_from_its_phrases() {
+    let (stub, addr) = spawn_stub().await;
+    let ts = speech_server(addr, |_| {}).await;
+    let f = family(&ts).await;
+
+    stub.speech_answers(json!({"durationMilliseconds": 900,
+        "phrases": [{"text": "We will be", "locale": "en-US"},
+                    {"text": "there at six.", "locale": "en-US"}]}));
+    let note = voice_note(&ts, &f.member, 39).await;
+    let message = send(&ts, &f.member, f.chat, note).await;
+    let transcript = transcript_of(ask(&ts, &f.member, f.chat, message, note).await).await;
+    assert_eq!(transcript["text"], "We will be there at six.");
+    assert_eq!(kept(&ts, note).await, 1);
+
+    stub.speech_answers(json!({"durationMilliseconds": 900}));
+    let bare = voice_note(&ts, &f.member, 40).await;
+    let message = send(&ts, &f.member, f.chat, bare).await;
+    assert_error(
+        ask(&ts, &f.member, f.chat, message, bare).await,
+        500,
+        "internal",
+    )
+    .await;
+    assert_eq!(kept(&ts, bare).await, 0, "no answer is not silence");
+}
+
+/// The family's language goes only when the operator opted in — and a
+/// Serbian family's never goes, in either alphabet.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_opted_in_speech_deployment_sends_the_familys_language_except_serbian() {
+    let (stub, addr) = spawn_stub().await;
+    let ts = speech_server(addr, |cfg| cfg.ai.transcribe.language_hint = Some(true)).await;
+    let f = family(&ts).await;
+    for (marker, language, expected) in [
+        (37, "de", Some("de")),
+        (38, "zh-Hans", Some("zh")),
+        (39, "sr", None),
+        (40, "sr-Latn", None),
+    ] {
+        let set = ts
+            .patch(&f.owner, "/families/mine", json!({"language": language}))
+            .await;
+        assert_eq!(set.status(), 200);
+        let note = voice_note(&ts, &f.member, marker).await;
+        let message = send(&ts, &f.member, f.chat, note).await;
+        transcript_of(ask(&ts, &f.member, f.chat, message, note).await).await;
+        let call = stub.calls().pop().expect("a call");
+        let definition = definition(&call);
+        match expected {
+            Some(locale) => assert_eq!(definition["locales"], json!([locale]), "{language}"),
+            None => assert!(
+                definition.get("locales").is_none(),
+                "{language}: {definition}"
+            ),
+        }
+    }
 }
