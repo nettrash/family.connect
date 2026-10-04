@@ -177,6 +177,32 @@ nonisolated enum MessageLinks {
         return found
     }
 
+    /// The link a bubble's preview card describes, or nil where it draws
+    /// none — the ONE decision both `MessageBubbleView` and `MacMessageRow`
+    /// ask, so the phone and the Mac cannot disagree about which rows
+    /// contact a third party.
+    ///
+    /// On top of `firstWebLinkAsDrawn`, an assistant answer previews
+    /// nothing while it is still being written (`isStreaming`) or after an
+    /// `ai_error` stopped it (`answerFailed`): the `ai_delta` text is the
+    /// model's own words, and only the FINISHED row is the server's
+    /// filtered body (protocol.md, "How sources are shown"). A card fetched
+    /// mid-stream could be for a link a web page talked the model into
+    /// writing — exactly the request the filter exists to prevent — and an
+    /// answer that stopped part-way keeps those words for good. The card
+    /// waits for the finished row; a failed one never gets one. The links
+    /// stay tappable in the text either way.
+    ///
+    /// Both flags are only ever true of an assistant row (the coordinator
+    /// sets them from `ai_delta`, `ai_error` and the empty-placeholder
+    /// rule), so a member's message is decided exactly as before. Same rule
+    /// as Android's `LookupFooter.suppressesPreview` and Windows'
+    /// `Lookups.MayPreview`.
+    static func previewLink(in text: String, isStreaming: Bool, answerFailed: Bool) -> URL? {
+        guard !isStreaming, !answerFailed else { return nil }
+        return firstWebLinkAsDrawn(in: text)
+    }
+
     private final class URLBox {
         let value: URL?
         init(_ value: URL?) { self.value = value }

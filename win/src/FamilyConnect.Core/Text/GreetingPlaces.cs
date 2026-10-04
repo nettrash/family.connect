@@ -129,8 +129,10 @@ public static class GreetingPlaces
     /// <summary>
     /// What a field holds as the person types or pastes into it: the control characters that are not whitespace taken out
     /// (the server refuses them, and nobody means one in a place name; a tab or a line break is whitespace, which the
-    /// server folds), and the rest cut at <see cref="MaxChars"/> characters, never inside a surrogate pair. Whitespace is
-    /// NOT folded here — that would eat the space somebody has just typed before the next word.
+    /// server folds), and the rest stopped where its FOLDED form would pass <see cref="MaxChars"/> characters, never
+    /// inside a surrogate pair. Whitespace is NOT folded here — that would eat the space somebody has just typed before
+    /// the next word — but it is counted as the server will count it: leading, trailing and repeated whitespace costs
+    /// nothing, and a gap between two words costs one. The iOS and Android <c>limitInput</c>, rune for rune.
     /// </summary>
     public static string Typed(string? text)
     {
@@ -140,18 +142,27 @@ public static class GreetingPlaces
         }
         var kept = new StringBuilder(text.Length);
         var count = 0;
+        var gap = false;
         foreach (var rune in text.EnumerateRunes())
         {
-            if (RustChar.IsControl(rune.Value) && !RustChar.IsWhitespace(rune.Value))
+            if (RustChar.IsWhitespace(rune.Value))
+            {
+                gap = count > 0;
+                kept.Append(rune.ToString());
+                continue;
+            }
+            if (RustChar.IsControl(rune.Value))
             {
                 continue;
             }
-            if (count == MaxChars)
+            var needed = gap ? 2 : 1;
+            if (count + needed > MaxChars)
             {
                 break;
             }
+            count += needed;
+            gap = false;
             kept.Append(rune.ToString());
-            count++;
         }
         return kept.ToString();
     }

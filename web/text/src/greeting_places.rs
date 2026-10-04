@@ -9,9 +9,11 @@
 //! PATCH this client makes is never refused for a name ([`typed`],
 //! [`write`]):
 //!
-//! - a field keeps at most [`MAX_CHARS`] characters (characters, not bytes
-//!   and not UTF-16 units, as the server counts) and no control character
-//!   that is not whitespace — the server refuses one, and nobody means one;
+//! - a field keeps at most [`MAX_CHARS`] characters once its whitespace is
+//!   folded (characters, not bytes and not UTF-16 units, as the server
+//!   counts) — the whitespace itself kept as typed — and no control
+//!   character that is not whitespace: the server refuses one, and nobody
+//!   means one;
 //! - a field left empty is not a place: it is dropped, never sent as `""`
 //!   (which the server refuses);
 //! - each name is trimmed and its inner whitespace folded to one space, and
@@ -44,15 +46,40 @@ pub fn offered(owner: bool, greetings_enabled: bool, greeting_weather: bool) -> 
 
 /// What a field keeps of what was typed or pasted into it: no control
 /// character that is not whitespace (a tab is whitespace, and folds to a
-/// space when it is sent), and at most [`MAX_CHARS`] characters — the
-/// server's limit, applied while typing so a name is never refused for its
-/// length. Counted before folding, so this is at most as generous as the
-/// server.
+/// space when it is sent), and at most [`MAX_CHARS`] characters as the
+/// server counts them — on the name it keeps, AFTER the fold — applied while
+/// typing so a name is never refused for its length.
+///
+/// The whitespace is kept as typed, trailing space included, or the space
+/// between two words could never be typed; the fold happens on the way out
+/// ([`places`]). So a run of whitespace costs nothing before the first word,
+/// one character between two words, and nothing after the last until a word
+/// follows it. The field stops at the first character that would make the
+/// folded name 81 long — iOS's and Android's `limitInput`, character for
+/// character, so a pasted name with a run of spaces in it is not cut shorter
+/// than the server would cut it.
 pub fn typed(raw: &str) -> String {
-    raw.chars()
-        .filter(|c| !c.is_control() || c.is_whitespace())
-        .take(MAX_CHARS)
-        .collect()
+    let mut kept = String::with_capacity(raw.len());
+    let mut count = 0;
+    let mut pending_space = false;
+    for c in raw.chars() {
+        if c.is_whitespace() {
+            pending_space |= count > 0;
+            kept.push(c);
+            continue;
+        }
+        if c.is_control() {
+            continue;
+        }
+        let needed = if pending_space { 2 } else { 1 };
+        if count + needed > MAX_CHARS {
+            break;
+        }
+        count += needed;
+        pending_space = false;
+        kept.push(c);
+    }
+    kept
 }
 
 /// One name as the server keeps it: trimmed, every run of whitespace inside
@@ -279,6 +306,82 @@ mod tests {
         // Whatever a field keeps, the server accepts.
         for raw in ["\u{0}\u{1}x", &"y ".repeat(60), &"🇷🇸".repeat(50)] {
             assert!(places(&[typed(raw)]).is_ok(), "{raw:?}");
+        }
+    }
+
+    /// The limit is the server's, counted on the name the server will keep —
+    /// after the fold — while the field keeps the whitespace as typed. A
+    /// run of spaces costs one character between two words and nothing at
+    /// either end (the iOS and Android `limitInput`, scalar for scalar).
+    #[test]
+    fn a_field_is_limited_by_its_folded_length_and_keeps_its_whitespace() {
+        // Copilot's example on #77: 79 leading spaces then "Paris". The
+        // server folds that to "Paris", so the field must keep all of it.
+        let leading = format!("{}Paris", " ".repeat(79));
+        assert_eq!(typed(&leading), leading);
+        assert_eq!(places(&[typed(&leading)]), Ok(list(&["Paris"])));
+
+        // Inner runs cost one character each, whatever their length; the
+        // typed spacing survives until the fold on the way out.
+        let inner = format!("Novi{}Sad", " \t ".repeat(40));
+        assert_eq!(typed(&inner), inner);
+        assert_eq!(places(&[typed(&inner)]), Ok(list(&["Novi Sad"])));
+
+        // Exactly 80 once folded is kept whole; the 81st folded character
+        // is where the field stops. 40 words of one letter = 79 folded.
+        let words = vec!["a"; 40].join("   ");
+        assert_eq!(fold(&words).chars().count(), 79);
+        assert_eq!(typed(&format!("{words}   b")), format!("{words}   "));
+        assert_eq!(typed(&format!("{words}b")), format!("{words}b"));
+        assert_eq!(typed(&format!("{words}bc")), format!("{words}b"));
+
+        // Trailing whitespace is kept (or no space between two words could
+        // ever be typed), and costs nothing until a word follows it.
+        assert_eq!(typed("Novi "), "Novi ");
+        let full = "x".repeat(MAX_CHARS);
+        assert_eq!(typed(&format!("{full}   ")), format!("{full}   "));
+        assert_eq!(typed(&format!("{full} y")), format!("{full} "));
+
+        // Characters as the server counts them (Rust `char`s, Unicode
+        // scalars): Cyrillic and CJK one each, an emoji one, a flag two.
+        let cyrillic = format!("{}{}", " ".repeat(10), "Москва ".repeat(12));
+        assert_eq!(fold(&cyrillic).chars().count(), 12 * 7 - 1);
+        let kept = typed(&cyrillic);
+        assert_eq!(fold(&kept).chars().count(), MAX_CHARS);
+        assert!(cyrillic.starts_with(&kept));
+        let cjk = format!("  {}", "東京 ".repeat(30));
+        let kept = typed(&cjk);
+        assert_eq!(fold(&kept).chars().count(), 80);
+        assert!(kept.starts_with("  東京 東京"));
+        let sun = format!("{} 🌤🌤", "🌤".repeat(77));
+        assert_eq!(typed(&sun), format!("{} 🌤🌤", "🌤".repeat(77)));
+        assert_eq!(typed(&format!("{sun}🌤")), sun);
+        // 🇷🇸 is two scalars, so 39 flags and a space fill 79, and the 40th
+        // flag's second half is the 81st character.
+        let flags = format!("{} {}", "🇷🇸".repeat(39), "🇷🇸");
+        assert_eq!(typed(&flags).chars().count(), 78 + 1 + 1);
+
+        // A control character still costs nothing and is still dropped,
+        // wherever it falls; a tab or a line break is whitespace, kept.
+        let mixed = format!("{}\u{0}Bel\u{1b}grade\n", "\t".repeat(90));
+        assert_eq!(typed(&mixed), format!("{}Belgrade\n", "\t".repeat(90)));
+
+        // Whatever a field keeps, the server accepts — and it keeps exactly
+        // the first 80 folded characters of what was typed, less a space
+        // the cut would leave at the end (the next word costs two there).
+        for raw in [
+            leading.as_str(),
+            inner.as_str(),
+            cyrillic.as_str(),
+            cjk.as_str(),
+            &" \u{3000}x".repeat(200),
+            &"\u{a0}\u{2003}日本".repeat(100),
+        ] {
+            let kept = typed(raw);
+            assert!(places(std::slice::from_ref(&kept)).is_ok(), "{raw:?}");
+            let first: String = fold(raw).chars().take(MAX_CHARS).collect();
+            assert_eq!(fold(&kept), first.trim_end(), "{raw:?}");
+            assert!(raw.starts_with(&kept), "{raw:?}");
         }
     }
 
