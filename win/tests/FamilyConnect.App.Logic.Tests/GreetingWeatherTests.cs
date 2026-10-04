@@ -122,6 +122,11 @@ public sealed class GreetingWeatherTests : IDisposable
         // A control character typed or pasted is taken out as it is typed; the field never holds one to refuse.
         Assert.Equal("Moscow", draft.Set(0, "Mos\u0000cow"));
         Assert.Null(draft.Pending());
+
+        // A pasted name padded with whitespace the server folds away is not cut for it: the server keeps "Paris".
+        var padded = new string(' ', 79) + "Paris";
+        Assert.Equal(padded, draft.Set(0, padded));
+        Assert.Equal(["Paris"], draft.Pending());
     }
 
     /// <summary>

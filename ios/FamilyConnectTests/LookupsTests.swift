@@ -599,6 +599,45 @@ struct LookupsFooterTests {
                 .absoluteString == "https://a.example/x")
     }
 
+    /// The bubble's whole decision (MessageBubbleView and MacMessageRow both
+    /// ask it): an answer's words are the model's until the finished row
+    /// replaces them, so no card while it streams or after it stopped — the
+    /// same cases Android's LookupFooterTest pins for suppressesPreview.
+    @Test("no preview card while an answer is written or after it stopped; a finished one keeps it")
+    func previewDecisionByState() {
+        // Partial, unfiltered model text: the link a web page talked it into.
+        let partial = "Tomorrow in Oslo: see https://evil.example/oslo for"
+        // Still streaming.
+        #expect(MessageLinks.previewLink(in: partial, isStreaming: true, answerFailed: false) == nil)
+        // Stopped by ai_error, partial text kept.
+        #expect(MessageLinks.previewLink(in: partial, isStreaming: false, answerFailed: true) == nil)
+        // Both at once (a racing frame) is still no card.
+        #expect(MessageLinks.previewLink(in: partial, isStreaming: true, answerFailed: true) == nil)
+        // Streamed so far INCLUDING a footer-shaped tail: still nothing.
+        #expect(MessageLinks.previewLink(in: Self.english, isStreaming: true, answerFailed: false) == nil)
+        // Finished, not failed, no sources footer: previews as today.
+        #expect(
+            MessageLinks.previewLink(
+                in: "see https://example.com/menu", isStreaming: false, answerFailed: false)?
+                .absoluteString == "https://example.com/menu")
+        // Finished with the server's footer: none, as today.
+        for body in [Self.english, Self.russian, Self.weatherOnly, Self.searxng] {
+            #expect(
+                MessageLinks.previewLink(in: body, isStreaming: false, answerFailed: false) == nil,
+                "\(body)")
+        }
+        // A member's message never carries either flag, and is decided
+        // exactly as firstWebLinkAsDrawn always decided it.
+        for body in [
+            "see https://example.com/menu", "see [the menu](https://example.com/menu)",
+            "http://plain.example", "no links here", Self.english,
+        ] {
+            #expect(
+                MessageLinks.previewLink(in: body, isStreaming: false, answerFailed: false)
+                    == MessageLinks.firstWebLinkAsDrawn(in: body), "\(body)")
+        }
+    }
+
     /// Nothing to build for the footer to be tappable — it is markdown the
     /// bubble already renders — but that has to stay true: every source
     /// and every credit is a link run, and the labels are what is drawn.

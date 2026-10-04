@@ -128,4 +128,43 @@ public class GreetingPlacesTests
             Assert.NotEqual(GreetingPlaces.Problem.TooLong, GreetingPlaces.Judge(GreetingPlaces.Typed(text)));
         }
     }
+
+    [Fact]
+    public void TypingCountsTheLengthTheServerCountsAfterFolding()
+    {
+        // The Copilot case: 79 leading spaces cost nothing, so all of "Paris" is kept, whitespace and all.
+        var padded = new string(' ', 79) + "Paris";
+        Assert.Equal(padded, GreetingPlaces.Typed(padded));
+        Assert.Equal(GreetingPlaces.Problem.None, GreetingPlaces.Judge(GreetingPlaces.Typed(padded)));
+
+        // A run of whitespace between two words costs ONE, as its folded space does.
+        var gapped = new string('a', 39) + " \t\u3000\u2028  " + new string('b', 40);
+        Assert.Equal(gapped, GreetingPlaces.Typed(gapped));
+        Assert.Equal(80, GreetingPlaces.Length(GreetingPlaces.Fold(gapped)));
+        Assert.Equal(gapped, GreetingPlaces.Typed(gapped + "c"));
+
+        // The 81st folded character stops it — and so does the gap that would make it the 81st.
+        Assert.Equal(new string('a', 79) + "  ", GreetingPlaces.Typed(new string('a', 79) + "  b"));
+        Assert.Equal(new string('a', 78) + "  b", GreetingPlaces.Typed(new string('a', 78) + "  b"));
+
+        // Trailing whitespace past the limit is kept (the space somebody is typing), and costs nothing.
+        var full = new string('a', 80) + "   ";
+        Assert.Equal(full, GreetingPlaces.Typed(full));
+
+        // Astral and multi-byte text: one rune, one character, whatever its UTF-16 or UTF-8 length.
+        var emoji = new string(' ', 40) + string.Concat(Enumerable.Repeat("\U0001F600", 77)) + "  \U0001F1F7\U0001F1F8!";
+        var typedEmoji = GreetingPlaces.Typed(emoji);
+        Assert.Equal(new string(' ', 40) + string.Concat(Enumerable.Repeat("\U0001F600", 77)) + "  \U0001F1F7\U0001F1F8", typedEmoji);
+        Assert.Equal(80, GreetingPlaces.Length(GreetingPlaces.Fold(typedEmoji)));
+        Assert.False(char.IsHighSurrogate(typedEmoji[^1]));
+
+        var cyrillic = "   " + string.Concat(Enumerable.Repeat("Москва ", 10)) + "Санкт-Петербург";
+        var typedCyrillic = GreetingPlaces.Typed(cyrillic);
+        Assert.Equal(80, GreetingPlaces.Length(GreetingPlaces.Fold(typedCyrillic)));
+        Assert.StartsWith("   " + string.Concat(Enumerable.Repeat("Москва ", 10)), typedCyrillic);
+        Assert.EndsWith("Москва Санкт-Пете", typedCyrillic);
+
+        // A control character dropped costs nothing either, and does not open a gap.
+        Assert.Equal(new string('a', 80), GreetingPlaces.Typed(new string('a', 40) + "\u0001\u009B" + new string('a', 41)));
+    }
 }
