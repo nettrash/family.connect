@@ -159,6 +159,12 @@ final class AppSession {
     /// agreed-on-that-phone. Replaced on every `/me`, which is step 1 of
     /// the resync, so a withdrawal from another device arrives here.
     private(set) var assistantConsentAt: Date?
+    /// When this member agreed that the assistant may send a query or place
+    /// name it wrote from their question to the lookup providers, nil until
+    /// they have (docs/protocol.md, "Consenting to the assistant", amended
+    /// 2026-10-03). The server's answer, replaced on every `/me`, for the
+    /// reasons `assistantConsentAt` is.
+    private(set) var assistantLookupConsentAt: Date?
     /// Set when a pending join request silently disappeared from /me:
     /// FamilyGateView surfaces "your request was declined" once.
     var joinDeclined = false
@@ -394,6 +400,7 @@ final class AppSession {
         maxFamilyMembers = me.maxFamilyMembers
         supportContact = me.supportContact
         assistantConsentAt = me.assistantConsentAt
+        assistantLookupConsentAt = me.assistantLookupConsentAt
         familyRegistrationEnabled = me.familyRegistrationEnabled
         familylessAccountTTLDays = me.familylessAccountTTLDays
         // The operator's half of the daily greeting. Stored rather than held
@@ -441,6 +448,44 @@ final class AppSession {
     /// that invented its own would show a date the server would not.
     func setAssistantConsent(_ granted: Bool) async throws {
         assistantConsentAt = try await api.setAssistantConsent(granted)
+        // Withdrawing the assistant consent withdraws the lookup consent
+        // with it, on the server (protocol.md) — mirrored here so Settings
+        // does not keep showing "Stop Lookups" until the next /me.
+        if assistantConsentAt == nil { assistantLookupConsentAt = nil }
+    }
+
+    /// The second consent, on its own: Settings' "Stop Lookups", and the
+    /// lookup screen of somebody who already agreed to the assistant.
+    func setAssistantLookupConsent(_ granted: Bool) async throws {
+        assistantLookupConsentAt = try await api.setAssistantLookupConsent(granted)
+    }
+
+    /// Record what a member chose on the consent screen, one server write
+    /// per step in the order `AssistantConsent.steps` gives — the
+    /// assistant's first, because the server refuses the lookup consent
+    /// without it. Throws on the first write that fails, leaving whatever
+    /// the earlier ones stored: granting is idempotent, so pressing the
+    /// same button again finishes the job.
+    ///
+    /// One exception. When "Agree With Lookups" finds the server has no
+    /// lookup source any more (404 — the operator took it away since the
+    /// screen was drawn), the assistant consent the member gave stands and
+    /// nothing is thrown: refusing to send their message over a lookup that
+    /// cannot happen would be punishing them for the server's change.
+    func agreeToAssistant(_ answer: AssistantConsent.Answer) async throws {
+        for step in AssistantConsent.steps(for: answer) {
+            switch step {
+            case .assistant:
+                try await setAssistantConsent(true)
+            case .lookups:
+                do {
+                    try await setAssistantLookupConsent(true)
+                } catch APIError.notFound where answer == .assistantAndLookups {
+                    assistantLookupConsentAt = nil
+                    AppSettings.assistantLookups = nil
+                }
+            }
+        }
     }
 
     // MARK: - Transitions
@@ -630,6 +675,7 @@ final class AppSession {
         maxFamilyMembers = nil
         supportContact = nil
         assistantConsentAt = nil
+        assistantLookupConsentAt = nil
         familyRegistrationEnabled = true
         familylessAccountTTLDays = 0
         phase = .needsAuth

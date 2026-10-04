@@ -99,6 +99,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import me.nettrash.familyconnect.ui.chat.AssistantLookups
+import me.nettrash.familyconnect.ui.components.lookupProvidersPhrase
 import me.nettrash.familyconnect.ui.stickers.FamilyStickersSection
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
@@ -117,6 +119,10 @@ import me.nettrash.familyconnect.ui.components.ErrorCard
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Remove
 import me.nettrash.familyconnect.util.MemberCap
+import me.nettrash.familyconnect.util.GreetingPlaces
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.annotation.StringRes
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.background
@@ -793,6 +799,39 @@ fun FamilyAdminScreen(
                     SectionDivider()
                 }
 
+                // -- Whether the assistant may LOOK THINGS UP ---------------------------
+                // Its own section, bound to none of the others
+                // (docs/protocol.md, "Looking things up"). HIDDEN where the
+                // server has no source: the switch would do nothing, and its
+                // footnote could name nobody. The footnote names every
+                // provider a query would reach.
+                if (AssistantLookups.showsOwnerSwitch(state.assistantLookups)) {
+                    val lookupsEnabled = !state.busy
+                    ListItem(
+                        overlineContent = { Text(stringResource(R.string.s_looking_things_up)) },
+                        headlineContent = { Text(stringResource(R.string.s_assistant_lookups)) },
+                        supportingContent = {
+                            Text(
+                                stringResource(
+                                    R.string.s_assistant_lookups_explanation,
+                                    lookupProvidersPhrase(state.assistantLookups),
+                                ),
+                            )
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = state.aiLookups,
+                                onCheckedChange = viewModel::setAiLookups,
+                                enabled = lookupsEnabled,
+                            )
+                        },
+                        modifier = Modifier.clickable(enabled = lookupsEnabled) {
+                            viewModel.setAiLookups(!state.aiLookups)
+                        },
+                    )
+                    SectionDivider()
+                }
+
                 // The FOURTH switch, and the only one here that is not about
                 // what leaves the server: whether the assistant SPEAKS when
                 // nobody asked (docs/protocol.md, "The daily greeting").
@@ -821,6 +860,25 @@ fun FamilyAdminScreen(
                         viewModel.setAiGreeting(!state.aiGreeting)
                     },
                 )
+
+                // -- Weather in the greeting --------------------------------------------
+                // Beside the greeting switch, for the owner, and only where
+                // the server can fetch weather (`assistant.greeting_weather`;
+                // docs/protocol.md, "Today's weather, for places the owner
+                // chose"). Shown and editable while the greeting itself is
+                // off — the server keeps the list either way, so an owner may
+                // choose the places before turning the greeting on. Edited
+                // here and sent by Save; the fields then show what the
+                // server KEPT.
+                if (GreetingPlaces.isShown(isOwner = isOwner, greetingWeather = state.greetingWeather)) {
+                    GreetingPlacesEditor(
+                        state = state,
+                        onEdit = viewModel::editPlaceField,
+                        onRemove = viewModel::removePlaceField,
+                        onAdd = viewModel::addPlaceField,
+                        onSave = viewModel::saveGreetingPlaces,
+                    )
+                }
                 SectionDivider()
             }
 
@@ -1460,4 +1518,83 @@ private fun SectionDivider() {
         modifier = Modifier.padding(start = 16.dp),
         color = MaterialTheme.colorScheme.outlineVariant,
     )
+}
+
+/**
+ * The owner's "Weather in the greeting" places: up to three fields, each
+ * with a remove button, then "Add place" (or "Up to 3 places." once there
+ * are three) beside Save, and the footnote saying where the names go
+ * (docs/protocol.md, "Today's weather, for places the owner chose" — "The
+ * disclosure").
+ */
+@Composable
+private fun GreetingPlacesEditor(
+    state: FamilyAdminViewModel.UiState,
+    onEdit: (Int, String) -> Unit,
+    onRemove: (Int) -> Unit,
+    onAdd: () -> Unit,
+    onSave: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = stringResource(R.string.s_greeting_weather),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp),
+        )
+        val removeLabel = stringResource(R.string.s_greeting_weather_remove_place)
+        state.placeFields.forEachIndexed { index, value ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp),
+            ) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { onEdit(index, it) },
+                    placeholder = { Text(stringResource(R.string.s_greeting_weather_place_placeholder)) },
+                    singleLine = true,
+                    enabled = !state.busy,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Words,
+                        imeAction = ImeAction.Done,
+                    ),
+                    keyboardActions = KeyboardActions(onDone = { if (state.placesSavable) onSave() }),
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = { onRemove(index) }, enabled = !state.busy) {
+                    Icon(Icons.Filled.Close, contentDescription = removeLabel)
+                }
+            }
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+        ) {
+            if (GreetingPlaces.canAdd(state.placeFields.size)) {
+                TextButton(onClick = onAdd, enabled = !state.busy) {
+                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.s_greeting_weather_add_place))
+                }
+            } else {
+                Text(
+                    text = stringResource(R.string.s_greeting_weather_limit),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onSave, enabled = state.placesSavable) {
+                Text(stringResource(R.string.s_save))
+            }
+        }
+        Text(
+            text = stringResource(R.string.s_greeting_weather_footer),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+        )
+    }
 }

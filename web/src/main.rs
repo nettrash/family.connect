@@ -634,6 +634,7 @@ fn app() -> Html {
                         family_history={store.family.as_ref().is_some_and(|family| family.ai_history)}
                         family_vision={store.family.as_ref().is_some_and(|family| family.ai_vision)}
                         transcribe={store.assistant.as_ref().is_some_and(|assistant| assistant.transcribe)}
+                        lookups={store.assistant.as_ref().map(|assistant| assistant.lookups.clone()).unwrap_or_default()}
                         names={store.names.clone()}
                         members={store.members.clone()}
                         blocked={store.blocked.clone()}

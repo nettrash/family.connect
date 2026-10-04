@@ -927,18 +927,18 @@ internal sealed class NoteSheet
         }
         var agreed = await AssistantConsentOverAsync(
             anchor, say, processor, state.Family?.AiHistory == true, state.Family?.AiVision == true,
-            state.Assistant?.Transcribe == true);
-        if (!agreed)
+            state.Assistant?.Transcribe == true, Lookups.Offered(state.Assistant) ? Lookups.Providers(state.Assistant) : null);
+        if (agreed == ConsentAnswer.NotNow)
         {
             return false;
         }
-        var answer = await connection.Api.SetAssistantConsent(true);
-        if (!answer.Ok)
+        var error = await Lookups.RecordAsync(connection.Api, agreed, assistantAgreed: false);
+        await connection.Session.RefreshAsync();
+        if (error is not null)
         {
             ShowProblem(problem, say.Get("Couldn't save your answer. Try again."));
             return false;
         }
-        await connection.Session.RefreshAsync();
         return true;
     }
 

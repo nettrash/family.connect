@@ -117,8 +117,8 @@ struct ThreadView: View {
                 processor: AppSettings.assistantProcessor ?? "",
                 familyHistory: session.family?.aiHistory == true,
                 familyVision: session.family?.aiVision == true,
-                onAgree: {
-                    try await session.setAssistantConsent(true)
+                onAgree: { answer in
+                    try await session.agreeToAssistant(answer)
                     showAssistantConsent = false
                     let resume = afterAssistantConsent
                     afterAssistantConsent = nil
@@ -239,6 +239,14 @@ struct ThreadView: View {
             senderName: memberNames[message.senderID],
             nameFor: { memberNames[$0] ?? String(localized: "Someone") },
             avatarVersionFor: { avatarVersions[$0] ?? 0 },
+            // A thread is where an @ai answer streams too (it replies to the
+            // question), so its preview waits for the finished, filtered body
+            // exactly as in the conversation (MessageLinks.previewLink).
+            isStreaming: coordinator.isAwaitingAssistant(
+                message, isAssistantChat: chat?.kind == "ai"),
+            assistantFailure: message.serverID.flatMap {
+                coordinator.assistantFailure(messageID: $0)
+            },
             isMine: isMine,
             showsSenderName: !isMine && isFamilyChat,
             isRead: MessagePresentation.isRead(
@@ -264,6 +272,11 @@ struct ThreadView: View {
         MessageBubbleView(
             message: message,
             isMine: isMine,
+            isStreaming: coordinator.isAwaitingAssistant(
+                message, isAssistantChat: chat?.kind == "ai"),
+            assistantFailure: message.serverID.flatMap {
+                coordinator.assistantFailure(messageID: $0)
+            },
             showsSenderName: !isMine && isFamilyChat,
             senderName: memberNames[message.senderID],
             senderID: message.senderID,

@@ -280,6 +280,10 @@ pub fn draw_picture_tool() -> Value {
 /// at a time.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolCall {
+    /// The call's id, as the provider named it — what a `role: "tool"`
+    /// answer must quote (protocol.md, "Looking things up"). Empty when a
+    /// surface sent none; nothing that only draws ever reads it.
+    pub id: String,
     pub name: String,
     pub arguments: String,
 }
@@ -336,6 +340,11 @@ impl ToolCall {
 pub struct Streamed {
     pub text: String,
     pub tool_call: Option<ToolCall>,
+    /// EVERY call the stream carried, in index order — `tool_call` is the
+    /// first of these. Read only by the lookup loop, where parallel calls
+    /// are allowed and each needs its answer (protocol.md, "Looking things
+    /// up"); the picture path still honours the first and drops the rest.
+    pub tool_calls: Vec<ToolCall>,
     pub usage: Usage,
     /// Why the model stopped, in the provider's own word — `stop`, `length`,
     /// `content_filter`, `tool_calls` — or empty when the stream never said.
@@ -360,19 +369,26 @@ const MAX_TOOL_CALLS: usize = 8;
 /// That is the half of the tool-call feature that protects every family
 /// whose server cannot draw: their requests do not change (protocol.md,
 /// "Drawing without being told to").
+///
+/// `tail` is what the lookup loop appends after the turns — the model's own
+/// tool calls, their `role: "tool"` answers, and the repeated language line
+/// (protocol.md, "Looking things up"). EMPTY on every other request, which
+/// is then the body it always was.
 fn request_body(
     route: &ModelRoute,
     system_prompt: &str,
     turns: &[ChatTurn],
+    tail: &[Value],
     tools: &[Value],
 ) -> Value {
-    let mut messages: Vec<Value> = Vec::with_capacity(turns.len() + 1);
+    let mut messages: Vec<Value> = Vec::with_capacity(turns.len() + tail.len() + 1);
     if !system_prompt.trim().is_empty() {
         messages.push(json!({"role": "system", "content": system_prompt}));
     }
     for turn in turns {
         messages.push(turn.to_json());
     }
+    messages.extend(tail.iter().cloned());
 
     let mut body = json!({
         "messages": messages,
@@ -465,6 +481,13 @@ fn absorb_event<F>(
         {
             draft.name.push_str(name);
         }
+        // The id is set once too, for the same reason: it arrives whole on
+        // the call's first chunk.
+        if let Some(id) = call["id"].as_str()
+            && draft.id.is_empty()
+        {
+            draft.id.push_str(id);
+        }
         if let Some(arguments) = call["function"]["arguments"].as_str() {
             draft.arguments.push_str(arguments);
         }
@@ -476,10 +499,40 @@ fn absorb_event<F>(
 /// emitting several has asked for one picture several times, and the
 /// second and later are dropped rather than drawn.
 fn finish(mut reply: Streamed, drafts: Vec<ToolCall>) -> Streamed {
-    reply.tool_call = drafts
+    reply.tool_calls = drafts
         .into_iter()
-        .find(|draft| !draft.name.is_empty() || !draft.arguments.is_empty());
+        .filter(|draft| !draft.name.is_empty() || !draft.arguments.is_empty())
+        .collect();
+    reply.tool_call = reply.tool_calls.first().cloned();
     reply
+}
+
+/// The assistant turn the lookup loop sends back after a round of tool
+/// calls: the words it streamed (or `null`), and every call, each with the
+/// id its `role: "tool"` answer quotes. The provider rejects a follow-up
+/// whose calls are not all answered, so the ids here and there are one set.
+pub fn assistant_tool_calls_message(text: &str, calls: &[ToolCall]) -> Value {
+    let calls: Vec<Value> = calls
+        .iter()
+        .map(|call| {
+            json!({
+                "id": call.id,
+                "type": "function",
+                "function": {"name": call.name, "arguments": call.arguments},
+            })
+        })
+        .collect();
+    let content = if text.is_empty() {
+        Value::Null
+    } else {
+        Value::String(text.to_string())
+    };
+    json!({"role": "assistant", "content": content, "tool_calls": calls})
+}
+
+/// One call's answer, as the follow-up request carries it.
+pub fn tool_result_message(call_id: &str, content: &str) -> Value {
+    json!({"role": "tool", "tool_call_id": call_id, "content": content})
 }
 
 /// The provider's OWN safety filter refused the request — the question, the
@@ -761,12 +814,30 @@ pub async fn stream_reply<F>(
     system_prompt: &str,
     turns: &[ChatTurn],
     tools: &[Value],
+    on_delta: F,
+) -> Result<Streamed>
+where
+    F: FnMut(&str),
+{
+    stream_reply_with_tail(client, route, system_prompt, turns, &[], tools, on_delta).await
+}
+
+/// [`stream_reply`], with messages appended after the turns — the lookup
+/// loop's follow-up calls (protocol.md, "Looking things up"). An empty
+/// `tail` is [`stream_reply`] exactly, byte for byte.
+pub async fn stream_reply_with_tail<F>(
+    client: &reqwest::Client,
+    route: &ModelRoute,
+    system_prompt: &str,
+    turns: &[ChatTurn],
+    tail: &[Value],
+    tools: &[Value],
     mut on_delta: F,
 ) -> Result<Streamed>
 where
     F: FnMut(&str),
 {
-    let body = request_body(route, system_prompt, turns, tools);
+    let body = request_body(route, system_prompt, turns, tail, tools);
 
     let url = &route.url;
     let response = with_key(client.post(url), route)
@@ -1749,7 +1820,7 @@ mod tests {
     /// working assistant stops working.
     #[test]
     fn a_server_that_cannot_draw_declares_no_tools_key_at_all() {
-        let body = request_body(&route(), "be brief", &[ChatTurn::user("hello")], &[]);
+        let body = request_body(&route(), "be brief", &[ChatTurn::user("hello")], &[], &[]);
         assert_eq!(
             body,
             json!({
@@ -1779,6 +1850,7 @@ mod tests {
             &route(),
             "be brief",
             &[ChatTurn::user("hello")],
+            &[],
             &[draw_picture_tool()],
         );
         assert_eq!(
@@ -1900,6 +1972,7 @@ mod tests {
         assert_eq!(
             reply.tool_call,
             Some(ToolCall {
+                id: "call_1".to_string(),
                 name: "draw_picture".to_string(),
                 arguments: "{\"prompt\": \"a cat in a hat\"}".to_string(),
             })
@@ -1970,6 +2043,7 @@ mod tests {
     #[test]
     fn a_bad_draw_call_is_refused_rather_than_repaired() {
         let call = |name: &str, arguments: &str| ToolCall {
+            id: String::new(),
             name: name.to_string(),
             arguments: arguments.to_string(),
         };
@@ -2056,6 +2130,7 @@ mod tests {
         assert_eq!(
             reply.tool_call,
             Some(ToolCall {
+                id: "call_1".to_string(),
                 name: "draw_picture".to_string(),
                 arguments: "{\"prompt\": \"a cat\"}".to_string(),
             })
@@ -2097,7 +2172,7 @@ mod tests {
     fn a_rewrite_request_is_the_description_and_nothing_else() {
         let description = "Taylor Swift singing to our cat";
         let (instruction, turns) = rephrase_request(description);
-        let body = request_body(&route(), instruction, &turns, &[]);
+        let body = request_body(&route(), instruction, &turns, &[], &[]);
         assert_eq!(
             body,
             json!({
@@ -3199,5 +3274,58 @@ mod tests {
         assert!(detail.contains("code=InvalidRequest"), "{detail}");
         assert!(detail.contains("inner=NoLanguageIdentified"), "{detail}");
         assert!(!detail.contains("six"), "{detail}");
+    }
+
+    /// The lookup loop's follow-up (protocol.md, "Looking things up"): the
+    /// tail goes after the turns, every parallel call is kept with its id,
+    /// and an empty tail is the body it always was.
+    #[test]
+    fn a_tail_follows_the_turns_and_every_call_keeps_its_id() {
+        let turns = [ChatTurn::user("hello")];
+        assert_eq!(
+            request_body(&route(), "be brief", &turns, &[], &[]),
+            request_body(&route(), "be brief", &turns, &[], &[]),
+        );
+        let mut reply = Streamed::default();
+        let mut drafts = Vec::new();
+        let events = [
+            json!({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "call_a", "function": {"name": "web_search", "arguments": "{\"query\":"}},
+                {"index": 1, "id": "call_b", "function": {"name": "get_weather", "arguments": "{\"place\":"}}
+            ]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": " \"x\"}"}},
+                {"index": 1, "function": {"arguments": " \"Oslo\"}"}}
+            ]}, "finish_reason": "tool_calls"}]}),
+        ];
+        for event in &events {
+            absorb_event(event, &mut reply, &mut drafts, &mut |_| {});
+        }
+        let reply = finish(reply, drafts);
+        assert_eq!(reply.tool_calls.len(), 2);
+        assert_eq!(reply.tool_calls[1].id, "call_b");
+        assert_eq!(reply.tool_calls[1].arguments, "{\"place\": \"Oslo\"}");
+        assert_eq!(reply.tool_call.as_ref(), reply.tool_calls.first());
+
+        let tail = [
+            assistant_tool_calls_message("", &reply.tool_calls),
+            tool_result_message("call_a", "a"),
+            tool_result_message("call_b", "b"),
+        ];
+        let body = request_body(&route(), "be brief", &turns, &tail, &[]);
+        let messages = body["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[1], json!({"role": "user", "content": "hello"}));
+        assert_eq!(messages[2]["content"], Value::Null);
+        assert_eq!(messages[2]["tool_calls"][0]["id"], "call_a");
+        assert_eq!(
+            messages[2]["tool_calls"][1]["function"]["name"],
+            "get_weather"
+        );
+        assert_eq!(
+            messages[4],
+            json!({"role": "tool", "tool_call_id": "call_b", "content": "b"})
+        );
+        assert!(body.get("tools").is_none());
     }
 }

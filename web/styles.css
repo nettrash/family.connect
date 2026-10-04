@@ -926,6 +926,7 @@ button.pack-cell:disabled { cursor: default; }
 .option-row { display: flex; gap: 6px; align-items: center; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .dialog-actions .secondary { background: transparent; color: var(--tint); }
+.dialog-actions.consent-choice { flex-wrap: wrap; }
 
 .emoji-picker { width: min(420px, 100%); }
 .emoji-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -1483,6 +1484,13 @@ input.code { text-transform: uppercase; }
 .stepper { display: inline-flex; align-items: center; gap: 4px; }
 .stepper input { width: 5em; text-align: center; }
 .stepper .link { font-size: 18px; padding: 0 8px; }
+/* The greeting's weather places: one name per row, its remove button at
+ * the end; dimmed (and still editable) while the greeting itself is off. */
+.place-rows { display: grid; gap: 6px; }
+.place-row { flex-wrap: nowrap; }
+.place-row input { flex: 1; min-width: 0; }
+.place-row .link { font-size: 18px; padding: 0 8px; }
+.greeting-places.is-dimmed > :not(.error) { opacity: .6; }
 .version { text-align: center; font-size: 12px; color: var(--muted); margin: 0; }
 .members { list-style: none; margin: 0; padding: 0; display: grid; }
 .member-row {

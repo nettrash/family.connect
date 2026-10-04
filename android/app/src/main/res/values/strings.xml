@@ -683,4 +683,31 @@
     <string name="s_assistant_transcripts_no_server">Not available here: this server can\'t turn recordings into text.</string>
     <string name="s_consent_transcript_sound_sent">If you ask for the text of a voice note, audio file or video, its sound is sent to %1$s.</string>
     <string name="e_change_assistant_transcripts_failed">Couldn\'t change that setting</string>
+    <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
+    <string name="s_looking_things_up">Looking things up</string>
+    <string name="s_assistant_lookups">Can look things up</string>
+    <string name="s_assistant_lookups_explanation">With this on, the assistant can look things up when a question needs it — the weather, the news, a fact it isn\'t sure of — in %1$s. Only a short search query or place name the assistant writes from the question is sent to them, never the conversation itself, and only when the member asking has agreed to it. Answers then list their sources. It is off unless you turn it on.</string>
+    <string name="s_consent_lookups_with_history">If your family\'s owner turns on lookups, the assistant may send a short search query or place name it writes from your question — in the family chat, possibly from recent messages too — to %1$s, and its answer then lists its sources.</string>
+    <string name="s_consent_lookups_alone">If your family\'s owner turns on lookups, the assistant may send a short search query or place name it writes from your question to %1$s, and its answer then lists its sources.</string>
+    <string name="s_agree_with_lookups">Agree With Lookups</string>
+    <string name="s_agree_without_lookups">Agree Without Lookups</string>
+    <string name="s_review_and_allow_lookups">Review and Allow Lookups…</string>
+    <string name="s_stop_lookups">Stop Lookups</string>
+    <string name="s_lookups_until_you_allow">Until you allow lookups, the assistant answers you from what it already knows, and nothing from your questions is sent to %1$s.</string>
+    <string name="s_lookups_stopping_takes_effect">The assistant may send a short search query or place name it writes from your questions to %1$s. Stopping takes effect at once; what has already been sent cannot be taken back.</string>
+    <string name="s_list_two">%1$s and %2$s</string>
+    <string name="s_list_three">%1$s, %2$s and %3$s</string>
+    <string name="s_stats_web_searches">Web searches</string>
+    <string name="e_change_assistant_lookups_failed">Couldn\'t change that setting</string>
+    <plurals name="s_web_searches">
+        <item quantity="one">%1$d web search</item>
+        <item quantity="other">%1$d web searches</item>
+    </plurals>
+    <!-- Weather in the greeting (#72): docs/protocol.md, "Today's weather, for places the owner chose" -->
+    <string name="s_greeting_weather">Weather in the greeting</string>
+    <string name="s_greeting_weather_place_placeholder">City or town</string>
+    <string name="s_greeting_weather_add_place">Add place</string>
+    <string name="s_greeting_weather_remove_place">Remove place</string>
+    <string name="s_greeting_weather_limit">Up to 3 places.</string>
+    <string name="s_greeting_weather_footer">The daily greeting will also mention today\'s weather in these places. Only the place names are sent to Open-Meteo to fetch the forecast. Nothing else is sent.</string>
 </resources>

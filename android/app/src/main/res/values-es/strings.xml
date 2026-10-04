@@ -639,4 +639,31 @@
     <string name="s_assistant_transcripts_no_server">No disponible aquí: este servidor no puede pasar grabaciones a texto.</string>
     <string name="s_consent_transcript_sound_sent">Si pides el texto de una nota de voz, un archivo de audio o un vídeo, su sonido se envía a %1$s.</string>
     <string name="e_change_assistant_transcripts_failed">No se pudo cambiar ese ajuste</string>
+    <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
+    <string name="s_looking_things_up">Búsqueda de información</string>
+    <string name="s_assistant_lookups">Puede buscar información</string>
+    <string name="s_assistant_lookups_explanation">Con esto activado, el asistente puede buscar información cuando una pregunta lo necesite —el tiempo, las noticias, un dato del que no esté seguro— en %1$s. Solo se les envía una breve consulta de búsqueda o un nombre de lugar que el asistente escribe a partir de la pregunta, nunca la conversación en sí, y solo cuando el miembro que pregunta lo ha aceptado. Las respuestas indican entonces sus fuentes. Está desactivado a menos que lo actives.</string>
+    <string name="s_consent_lookups_with_history">Si el propietario de tu familia activa las búsquedas, el asistente puede enviar a %1$s una breve consulta de búsqueda o un nombre de lugar que escribe a partir de tu pregunta (en el chat familiar, quizá también a partir de mensajes recientes), y su respuesta indicará entonces sus fuentes.</string>
+    <string name="s_consent_lookups_alone">Si el propietario de tu familia activa las búsquedas, el asistente puede enviar a %1$s una breve consulta de búsqueda o un nombre de lugar que escribe a partir de tu pregunta, y su respuesta indicará entonces sus fuentes.</string>
+    <string name="s_agree_with_lookups">Aceptar con búsquedas</string>
+    <string name="s_agree_without_lookups">Aceptar sin búsquedas</string>
+    <string name="s_review_and_allow_lookups">Leer y permitir búsquedas…</string>
+    <string name="s_stop_lookups">Detener las búsquedas</string>
+    <string name="s_lookups_until_you_allow">Hasta que permitas las búsquedas, el asistente te responde con lo que ya sabe y nada de tus preguntas se envía a %1$s.</string>
+    <string name="s_lookups_stopping_takes_effect">El asistente puede enviar a %1$s una breve consulta de búsqueda o un nombre de lugar que escribe a partir de tus preguntas. Detenerlo surte efecto de inmediato; lo ya enviado no se puede recuperar.</string>
+    <string name="s_list_two">%1$s y %2$s</string>
+    <string name="s_list_three">%1$s, %2$s y %3$s</string>
+    <string name="s_stats_web_searches">Búsquedas web</string>
+    <string name="e_change_assistant_lookups_failed">No se pudo cambiar ese ajuste</string>
+    <plurals name="s_web_searches">
+        <item quantity="one">%1$d búsqueda web</item>
+        <item quantity="many">%1$d búsquedas web</item>
+        <item quantity="other">%1$d búsquedas web</item>
+    </plurals>
+    <string name="s_greeting_weather">El tiempo en el saludo</string>
+    <string name="s_greeting_weather_place_placeholder">Ciudad o pueblo</string>
+    <string name="s_greeting_weather_add_place">Añadir lugar</string>
+    <string name="s_greeting_weather_remove_place">Quitar lugar</string>
+    <string name="s_greeting_weather_limit">Hasta 3 lugares.</string>
+    <string name="s_greeting_weather_footer">El saludo diario mencionará también el tiempo de hoy en estos lugares. Solo se envían los nombres de los lugares a Open-Meteo para obtener el pronóstico. No se envía nada más.</string>
 </resources>

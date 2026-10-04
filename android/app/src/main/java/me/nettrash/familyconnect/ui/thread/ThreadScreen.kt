@@ -350,8 +350,10 @@ fun ThreadScreen(
             familyHistory = ask.familyHistory,
             familyVision = ask.familyVision,
             transcripts = ask.transcripts,
-            onAgree = viewModel::agreeToTheAssistant,
+            onAgree = { viewModel.agreeToTheAssistant(withLookups = false) },
             onDismiss = viewModel::dismissAssistantConsent,
+            lookupProviders = ask.lookupProviders,
+            onAgreeWithLookups = { viewModel.agreeToTheAssistant(withLookups = true) },
         )
     }
 

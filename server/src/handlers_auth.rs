@@ -911,7 +911,8 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 f.id AS family_id, f.name AS family_name, f.join_policy,
                 f.created_at AS family_created_at, f.owner_user_id, f.invite_code,
                 f.language, f.max_members, f.ai_history, f.ai_vision,
-                f.ai_history_photos, f.ai_greeting, f.ai_faces, f.ai_transcripts
+                f.ai_history_photos, f.ai_greeting, f.ai_faces, f.ai_transcripts,
+                f.ai_lookups, f.greeting_places
          FROM users u
          LEFT JOIN families f ON f.id = u.family_id
          WHERE u.id = $1",
@@ -960,6 +961,12 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 // And the sixth, which decides whether their recorded voice
                 // may be sent at somebody else's request.
                 ai_transcripts: row.get("ai_transcripts"),
+                // And the seventh, which decides whether a query written
+                // from their words may reach a lookup provider.
+                ai_lookups: row.get("ai_lookups"),
+                // And the place names the greeting sends to the weather
+                // provider — the owner's words, which every member may read.
+                greeting_places: row.get("greeting_places"),
             };
             let role = if is_owner { "owner" } else { "member" };
             (Some(family), Some(role))
@@ -1063,6 +1070,17 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             // and no usable `[ai]` posts nothing and says so here rather than
             // promising otherwise (protocol.md, "The daily greeting").
             "greetings_enabled": state.cfg.greetings.is_usable() && state.cfg.ai.is_usable(),
+            // WHEN THIS CALLER AGREED that queries the assistant writes from
+            // their words may go to the lookup providers (protocol.md,
+            // "Consenting to the assistant"). ALWAYS present; null both when
+            // they have not and when this server has no lookup source.
+            "assistant_lookup_consent_at": if state.cfg.ai.lookups_usable() {
+                crate::handlers_ai::consent_stamp(
+                    crate::handlers_ai::assistant_lookup_consent_at(&state, auth.user_id).await?,
+                )
+            } else {
+                Value::Null
+            },
         })),
     )
         .into_response())
@@ -1127,8 +1145,13 @@ pub async fn set_assistant_consent(
         .fetch_one(&state.pool)
         .await?
     } else {
+        // The lookup consent goes with it: it may only stand on top of
+        // this one, and a member who stopped their words going to the
+        // model has stopped the lookups that would follow from them
+        // (protocol.md, "Consenting to the assistant").
         sqlx::query_scalar(
-            "UPDATE users SET assistant_consent_at = NULL WHERE id = $1
+            "UPDATE users SET assistant_consent_at = NULL, assistant_lookup_consent_at = NULL
+              WHERE id = $1
               RETURNING assistant_consent_at",
         )
         .bind(auth.user_id)
@@ -1144,6 +1167,70 @@ pub async fn set_assistant_consent(
         StatusCode::OK,
         Json(json!({
             "assistant_consent_at": crate::handlers_ai::consent_stamp(at),
+        })),
+    )
+        .into_response())
+}
+
+/// `POST /me/assistant-lookup-consent` — the caller's own permission for the
+/// assistant to send a query it wrote from their words to the lookup
+/// providers (docs/protocol.md, "Consenting to the assistant", "Looking
+/// things up").
+///
+/// The SAME shape as the first consent, and on top of it: granting needs the
+/// assistant consent already given (`assistant_consent_required`), because a
+/// lookup only ever follows a question the model was allowed to see.
+/// Granting twice keeps the first timestamp; withdrawing clears it and
+/// deletes nothing. A server with no lookup source answers 404 — as the
+/// first does with no assistant — so the endpoint reveals nothing a client
+/// could not read from `assistant.lookups`.
+pub async fn set_assistant_lookup_consent(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    AppJson(req): AppJson<AssistantConsentRequest>,
+) -> Result<Response, ApiError> {
+    if !state.cfg.ai.lookups_usable() {
+        return Err(ApiError::not_found(codes::NOT_FOUND, "no such endpoint"));
+    }
+    let at: Option<OffsetDateTime> = if req.granted {
+        // One statement, so a withdrawal of the first consent racing this
+        // grant cannot leave the second standing alone.
+        let granted: Option<Option<OffsetDateTime>> = sqlx::query_scalar(
+            "UPDATE users
+                SET assistant_lookup_consent_at = coalesce(assistant_lookup_consent_at, now())
+              WHERE id = $1 AND assistant_consent_at IS NOT NULL
+              RETURNING assistant_lookup_consent_at",
+        )
+        .bind(auth.user_id)
+        .fetch_optional(&state.pool)
+        .await?;
+        match granted {
+            Some(at) => at,
+            None => {
+                return Err(ApiError::forbidden(
+                    codes::ASSISTANT_CONSENT_REQUIRED,
+                    "agree that your messages may be sent to the assistant first",
+                ));
+            }
+        }
+    } else {
+        sqlx::query_scalar(
+            "UPDATE users SET assistant_lookup_consent_at = NULL WHERE id = $1
+              RETURNING assistant_lookup_consent_at",
+        )
+        .bind(auth.user_id)
+        .fetch_one(&state.pool)
+        .await?
+    };
+    tracing::info!(
+        user_id = auth.user_id,
+        granted = req.granted,
+        "assistant lookup consent set"
+    );
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "assistant_lookup_consent_at": crate::handlers_ai::consent_stamp(at),
         })),
     )
         .into_response())

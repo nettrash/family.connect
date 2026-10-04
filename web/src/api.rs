@@ -175,6 +175,14 @@ pub struct FamilyPatch {
     pub ai_faces: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_transcripts: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_lookups: Option<bool>,
+    /// The places for the greeting's weather: the WHOLE list, replacing
+    /// the stored one — `Some(vec![])` clears it, `None` leaves it alone.
+    /// Never a null: the server refuses one (docs/protocol.md, "Today's
+    /// weather, for places the owner chose").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub greeting_places: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1594,6 +1602,36 @@ struct AssistantConsentResponse {
     assistant_consent_at: Option<String>,
 }
 
+/// `POST /me/assistant-lookup-consent` — this member's own agreement that
+/// the assistant may send a query or a place name it writes from their
+/// words to the providers `assistant.lookups` names (docs/protocol.md,
+/// "Consenting to the assistant", amended 2026-10-03).
+///
+/// The same shape as the first: the stamp the server now holds comes back,
+/// a date when granted and none when withdrawn, and granting twice keeps
+/// the first date. It may only be GRANTED on top of the assistant consent —
+/// `assistant_consent_required` (403) otherwise — and a server with no
+/// lookup source answers 404.
+pub async fn set_assistant_lookup_consent(
+    token: &str,
+    granted: bool,
+) -> Result<Option<String>, ApiError> {
+    let body = AssistantConsentRequest { granted };
+    let answer: AssistantLookupConsentResponse = with_body(
+        Request::post(&path("/me/assistant-lookup-consent")),
+        token,
+        &body,
+    )
+    .await?;
+    Ok(answer.assistant_lookup_consent_at)
+}
+
+#[derive(Debug, Deserialize)]
+struct AssistantLookupConsentResponse {
+    #[serde(default)]
+    assistant_lookup_consent_at: Option<String>,
+}
+
 /// `PUT` / `DELETE /families/members/{id}/block`.
 pub async fn set_blocked(token: &str, user_id: i64, blocked: bool) -> Result<(), ApiError> {
     let url = path(&format!("/families/members/{user_id}/block"));
@@ -2199,6 +2237,111 @@ mod tests {
         assert_eq!(
             fc_text::transcript::after_refusal(gave_up.unwrap_err().code()),
             fc_text::transcript::Next::Fail(fc_text::transcript::Failure::TryAgain)
+        );
+    }
+
+    /// THE LOOKUP CONSENT, against a stand-in server: one POST to its own
+    /// route with exactly `{"granted": …}`, the server's stamp handed back
+    /// (a date granted, none withdrawn), and each refusal the protocol names
+    /// kept as its code — the first consent's route is never touched.
+    #[wasm_bindgen_test]
+    async fn the_lookup_consent_is_its_own_request() {
+        use crate::fake_server::{Answer, FakeServer};
+        const ROUTE: &str = "/me/assistant-lookup-consent";
+        let answer = std::rc::Rc::new(std::cell::RefCell::new(Answer::Nothing));
+        let server = {
+            let answer = answer.clone();
+            FakeServer::answering(move |asked| {
+                if asked.path == ROUTE {
+                    std::mem::replace(&mut *answer.borrow_mut(), Answer::Nothing)
+                } else {
+                    Answer::refusal(404, "not_found")
+                }
+            })
+        };
+        *answer.borrow_mut() = Answer::Json(
+            200,
+            serde_json::json!({"assistant_lookup_consent_at": "2026-10-03T09:30:00Z"}),
+        );
+        assert_eq!(
+            set_assistant_lookup_consent("t", true).await,
+            Ok(Some("2026-10-03T09:30:00Z".to_string()))
+        );
+        *answer.borrow_mut() = Answer::Json(
+            200,
+            serde_json::json!({"assistant_lookup_consent_at": null}),
+        );
+        assert_eq!(set_assistant_lookup_consent("t", false).await, Ok(None));
+        let asked = server.asked(&[ROUTE, "/me/assistant-consent"]);
+        assert_eq!(asked.len(), 2);
+        assert!(asked.iter().all(|asked| asked.path == ROUTE));
+        assert!(asked.iter().all(|asked| asked.method == "POST"));
+        assert_eq!(asked[0].json(), serde_json::json!({"granted": true}));
+        assert_eq!(asked[1].json(), serde_json::json!({"granted": false}));
+
+        for (status, code) in [
+            (403, "assistant_consent_required"),
+            (404, "not_found"),
+            (400, "validation"),
+        ] {
+            *answer.borrow_mut() = Answer::refusal(status, code);
+            assert_eq!(
+                set_assistant_lookup_consent("t", true)
+                    .await
+                    .unwrap_err()
+                    .code(),
+                Some(code)
+            );
+        }
+    }
+
+    /// The owner's switch goes as its one key, and only when it changed.
+    #[wasm_bindgen_test]
+    fn the_lookups_switch_is_one_key_of_the_patch() {
+        let patch = FamilyPatch {
+            ai_lookups: Some(true),
+            ..FamilyPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&patch).unwrap(),
+            serde_json::json!({"ai_lookups": true})
+        );
+        assert_eq!(
+            serde_json::to_value(FamilyPatch::default()).unwrap(),
+            serde_json::json!({}),
+            "absent, never false, when the owner did not touch it"
+        );
+    }
+
+    /// The greeting's places go as the WHOLE list under their one key:
+    /// `[]` to clear — never a null, which the server refuses — and absent
+    /// when the owner did not touch them.
+    #[wasm_bindgen_test]
+    fn the_greeting_places_go_as_the_whole_list_and_never_as_null() {
+        let patch = FamilyPatch {
+            greeting_places: Some(vec!["Moscow".into(), "Belgrade".into()]),
+            ..FamilyPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&patch).unwrap(),
+            r#"{"greeting_places":["Moscow","Belgrade"]}"#
+        );
+        let cleared = FamilyPatch {
+            greeting_places: Some(Vec::new()),
+            ..FamilyPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&cleared).unwrap(),
+            r#"{"greeting_places":[]}"#
+        );
+        let other = FamilyPatch {
+            ai_greeting: Some(true),
+            ..FamilyPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&other).unwrap(),
+            r#"{"ai_greeting":true}"#,
+            "absent, never null, when the places were not touched"
         );
     }
 }

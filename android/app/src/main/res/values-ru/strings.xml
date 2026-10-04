@@ -663,4 +663,32 @@
     <string name="s_assistant_transcripts_no_server">Здесь недоступно: этот сервер не умеет превращать записи в текст.</string>
     <string name="s_consent_transcript_sound_sent">Если вы попросите текст голосового сообщения, аудиофайла или видео, его звук будет отправлен в %1$s.</string>
     <string name="e_change_assistant_transcripts_failed">Не удалось изменить настройку</string>
+    <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
+    <string name="s_looking_things_up">Поиск сведений</string>
+    <string name="s_assistant_lookups">Может искать сведения</string>
+    <string name="s_assistant_lookups_explanation">Когда это включено, ассистент может искать сведения, если вопрос этого требует, — погоду, новости, факт, в котором он не уверен, — в %1$s. Туда уходит только короткий поисковый запрос или название места, которое ассистент составляет по вопросу, но никогда не сам разговор, и только если спрашивающий участник на это согласился. В ответах тогда указываются источники. Выключено, пока ты это не включишь.</string>
+    <string name="s_consent_lookups_with_history">Если владелец семьи включит поиск сведений, ассистент может отправить в %1$s короткий поисковый запрос или название места, которое он составит по вашему вопросу (в семейном чате — возможно, и по недавним сообщениям), и тогда в его ответе будут указаны источники.</string>
+    <string name="s_consent_lookups_alone">Если владелец семьи включит поиск сведений, ассистент может отправить в %1$s короткий поисковый запрос или название места, которое он составит по вашему вопросу, и тогда в его ответе будут указаны источники.</string>
+    <string name="s_agree_with_lookups">Согласиться вместе с поиском</string>
+    <string name="s_agree_without_lookups">Согласиться без поиска</string>
+    <string name="s_review_and_allow_lookups">Прочитать и разрешить поиск…</string>
+    <string name="s_stop_lookups">Отключить поиск</string>
+    <string name="s_lookups_until_you_allow">Пока вы не разрешите поиск, ассистент отвечает вам тем, что уже знает, и ничего из ваших вопросов не уходит в %1$s.</string>
+    <string name="s_lookups_stopping_takes_effect">Ассистент может отправить в %1$s короткий поисковый запрос или название места, которое он составит по вашим вопросам. Остановка действует сразу; уже отправленное вернуть нельзя.</string>
+    <string name="s_list_two">%1$s и %2$s</string>
+    <string name="s_list_three">%1$s, %2$s и %3$s</string>
+    <string name="s_stats_web_searches">Поиски в интернете</string>
+    <string name="e_change_assistant_lookups_failed">Не удалось изменить настройку</string>
+    <plurals name="s_web_searches">
+        <item quantity="one">%1$d поиск в интернете</item>
+        <item quantity="few">%1$d поиска в интернете</item>
+        <item quantity="many">%1$d поисков в интернете</item>
+        <item quantity="other">%1$d поиска в интернете</item>
+    </plurals>
+    <string name="s_greeting_weather">Погода в приветствии</string>
+    <string name="s_greeting_weather_place_placeholder">Город или посёлок</string>
+    <string name="s_greeting_weather_add_place">Добавить место</string>
+    <string name="s_greeting_weather_remove_place">Убрать место</string>
+    <string name="s_greeting_weather_limit">Не больше 3 мест.</string>
+    <string name="s_greeting_weather_footer">Ежедневное приветствие будет упоминать и сегодняшнюю погоду в этих местах. В Open-Meteo отправляются только названия мест, чтобы получить прогноз. Больше ничего не отправляется.</string>
 </resources>

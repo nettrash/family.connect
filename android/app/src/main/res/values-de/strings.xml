@@ -629,4 +629,30 @@
     <string name="s_assistant_transcripts_no_server">Hier nicht verfügbar: Dieser Server kann Aufnahmen nicht in Text umwandeln.</string>
     <string name="s_consent_transcript_sound_sent">Wenn du den Text einer Sprachnachricht, einer Audiodatei oder eines Videos abrufst, wird der Ton an %1$s gesendet.</string>
     <string name="e_change_assistant_transcripts_failed">Einstellung konnte nicht geändert werden</string>
+    <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
+    <string name="s_looking_things_up">Nachschlagen</string>
+    <string name="s_assistant_lookups">Kann nachschlagen</string>
+    <string name="s_assistant_lookups_explanation">Wenn das an ist, kann der Assistent nachschlagen, wenn eine Frage es braucht – das Wetter, die Nachrichten, eine Tatsache, bei der er unsicher ist –, und zwar bei %1$s. An sie geht nur eine kurze Suchanfrage oder ein Ortsname, den der Assistent aus der Frage formuliert, nie das Gespräch selbst, und nur, wenn das fragende Mitglied dem zugestimmt hat. Antworten nennen dann ihre Quellen. Es ist aus, solange du es nicht einschaltest.</string>
+    <string name="s_consent_lookups_with_history">Wenn der Eigentümer deiner Familie das Nachschlagen einschaltet, kann der Assistent eine kurze Suchanfrage oder einen Ortsnamen, den er aus deiner Frage formuliert – im Familienchat womöglich auch aus den letzten Nachrichten –, an %1$s senden; seine Antwort nennt dann ihre Quellen.</string>
+    <string name="s_consent_lookups_alone">Wenn der Eigentümer deiner Familie das Nachschlagen einschaltet, kann der Assistent eine kurze Suchanfrage oder einen Ortsnamen, den er aus deiner Frage formuliert, an %1$s senden; seine Antwort nennt dann ihre Quellen.</string>
+    <string name="s_agree_with_lookups">Mit Nachschlagen zustimmen</string>
+    <string name="s_agree_without_lookups">Ohne Nachschlagen zustimmen</string>
+    <string name="s_review_and_allow_lookups">Lesen und Nachschlagen erlauben…</string>
+    <string name="s_stop_lookups">Nachschlagen beenden</string>
+    <string name="s_lookups_until_you_allow">Bis du das Nachschlagen erlaubst, antwortet dir der Assistent mit dem, was er schon weiß, und nichts aus deinen Fragen geht an %1$s.</string>
+    <string name="s_lookups_stopping_takes_effect">Der Assistent kann eine kurze Suchanfrage oder einen Ortsnamen, den er aus deinen Fragen formuliert, an %1$s senden. Ein Stopp wirkt sofort; was schon gesendet wurde, lässt sich nicht zurückholen.</string>
+    <string name="s_list_two">%1$s und %2$s</string>
+    <string name="s_list_three">%1$s, %2$s und %3$s</string>
+    <string name="s_stats_web_searches">Websuchen</string>
+    <string name="e_change_assistant_lookups_failed">Einstellung konnte nicht geändert werden</string>
+    <plurals name="s_web_searches">
+        <item quantity="one">%1$d Websuche</item>
+        <item quantity="other">%1$d Websuchen</item>
+    </plurals>
+    <string name="s_greeting_weather">Wetter im Gruß</string>
+    <string name="s_greeting_weather_place_placeholder">Stadt oder Ort</string>
+    <string name="s_greeting_weather_add_place">Ort hinzufügen</string>
+    <string name="s_greeting_weather_remove_place">Ort entfernen</string>
+    <string name="s_greeting_weather_limit">Bis zu 3 Orte.</string>
+    <string name="s_greeting_weather_footer">Der tägliche Gruß nennt dann auch das heutige Wetter an diesen Orten. Nur die Ortsnamen werden an Open-Meteo gesendet, um die Vorhersage abzurufen. Sonst wird nichts gesendet.</string>
 </resources>

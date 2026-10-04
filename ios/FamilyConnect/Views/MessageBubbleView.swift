@@ -51,15 +51,18 @@ struct MessageBubbleView: View {
     let message: MessageSnapshot
     let isMine: Bool
     /// The assistant is still writing this one, so the bubble shows a
-    /// cursor. Purely cosmetic: the row's body is already whatever has
-    /// arrived, and the authoritative text lands as an edit either way.
+    /// cursor and no link preview card. The row's body is already whatever
+    /// has arrived, and the authoritative text lands as an edit either way
+    /// — which is why no card: until then the text is the model's, before
+    /// the server's link filter (MessageLinks.previewLink).
     ///
     /// True for an EMPTY assistant row from the moment it is fanned out,
     /// not from the first delta — a picture answer has no deltas at all,
     /// and the empty row is its whole "still working" state (protocol.md,
     /// "How a picture comes back").
     var isStreaming: Bool = false
-    /// An `ai_error` named this row: the answer stopped.
+    /// An `ai_error` named this row: the answer stopped. Its partial text,
+    /// if any, never gets a link preview card (MessageLinks.previewLink).
     ///
     /// Only ever drawn where the row would otherwise be BLANK. A text
     /// answer that failed midway keeps whatever arrived and says nothing
@@ -195,8 +198,12 @@ struct MessageBubbleView: View {
         guard !isEmojiOnly else { return nil }
         // The RENDERED text, matching what the balloon draws: markdown
         // deletes characters, so detecting over the raw body previews links
-        // the reader cannot see and misses ones they can.
-        return MessageLinks.firstWebLinkAsDrawn(in: message.body)
+        // the reader cannot see and misses ones they can. And never for an
+        // assistant answer still being written or stopped by an `ai_error`:
+        // that text is the model's, before the server's link filter
+        // (MessageLinks.previewLink).
+        return MessageLinks.previewLink(
+            in: message.body, isStreaming: isStreaming, answerFailed: assistantFailure != nil)
     }
 
     /// The card to draw under this bubble, once its fetch has landed.

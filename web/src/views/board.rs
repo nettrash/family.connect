@@ -85,6 +85,11 @@ pub struct BoardProps {
     /// the same screen says (`assistant.transcribe`).
     #[prop_or_default]
     pub transcribe: bool,
+    /// The providers the assistant may look things up in
+    /// (`assistant.lookups`) — and so whether the same screen offers
+    /// lookups beside the assistant.
+    #[prop_or_default]
+    pub lookups: Vec<String>,
     /// Hidden notes peeked at.
     pub revealed: HashSet<i64>,
     /// A photo on its way up.
@@ -447,9 +452,9 @@ pub fn board_pane(props: &BoardProps) -> Html {
             let on_agree = {
                 let on_action = props.on_action.clone();
                 let consent_open = consent_open.clone();
-                Callback::from(move |()| {
+                Callback::from(move |with_lookups: bool| {
                     consent_open.set(false);
-                    on_action.emit(Action::SetAssistantConsent { granted: true });
+                    on_action.emit(Action::agreement(with_lookups));
                 })
             };
             let on_cancel = {
@@ -462,6 +467,7 @@ pub fn board_pane(props: &BoardProps) -> Html {
                     family_history={props.family_history}
                     family_vision={props.family_vision}
                     transcribe={props.transcribe}
+                    lookups={props.lookups.clone()}
                     {on_agree}
                     {on_cancel}
                 />
@@ -3049,6 +3055,7 @@ mod tests {
             family_history: false,
             family_vision: false,
             transcribe: false,
+            lookups: Vec::new(),
             revealed: HashSet::new(),
             pinning: false,
             now_minute: (js_sys::Date::now() / 60_000.0) as i64,

@@ -1117,10 +1117,14 @@ class ChatViewModel @Inject constructor(
      * [send] is called again afterwards because the draft is still in the
      * box — agreeing finishes the send the person already asked for.
      */
-    fun agreeToTheAssistant() {
+    fun agreeToTheAssistant(withLookups: Boolean = false) {
         viewModelScope.launch {
             _assistantConsentAsked.value = false
-            if (familyRepository.setAssistantConsent(true)) {
+            // "Agree With Lookups" records the lookup consent too, after the
+            // first one (the server refuses it otherwise). If only that
+            // second write fails the send still goes — answered as it would
+            // be without lookups, which is the safe direction.
+            if (familyRepository.agreeToAssistant(withLookups).assistant) {
                 // The draft never left the box, so this finishes the send
                 // the person already asked for.
                 send()
@@ -1159,6 +1163,10 @@ class ChatViewModel @Inject constructor(
                     familyHistory = settingsState.familyAiHistory,
                     familyVision = settingsState.familyAiVision,
                     transcripts = settingsState.assistantTranscribe,
+                    // The second question rides on the same screen when this
+                    // server can look things up (docs/protocol.md,
+                    // "Consenting to the assistant", amended 2026-10-03).
+                    lookupProviders = AssistantLookups.providers(settingsState.assistantLookups),
                 )
             }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
@@ -1182,6 +1190,12 @@ class ChatViewModel @Inject constructor(
         val familyVision: Boolean,
         /** `assistant.transcribe`: the screen says a recording's sound goes too, when asked. */
         val transcripts: Boolean = false,
+        /**
+         * `assistant.lookups`: when non-empty the screen also asks the
+         * lookup question, naming these. Empty where the caller cannot
+         * record that answer, or the server has no source.
+         */
+        val lookupProviders: List<String> = emptyList(),
     )
 
     /** Screen calls this from a LifecycleResumeEffect. */
