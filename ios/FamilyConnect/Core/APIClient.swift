@@ -371,6 +371,11 @@ actor APIClient {
         /// things up"): whether the assistant may look things up for this
         /// family. No other switch refuses it or clears it.
         var aiLookups: Bool?
+        /// The owner's places for the greeting's weather (protocol.md,
+        /// "Today's weather, for places the owner chose"). The list REPLACES
+        /// the stored one and `[]` clears it, so a single Optional is enough:
+        /// absent leaves it alone, and the server refuses a `null`.
+        var greetingPlaces: [String]?
         /// The same double Optional the language uses, and for the same
         /// reason: the outer is "was this field touched", the inner is the
         /// value, and a real JSON `null` CLEARS the cap. These are the two
@@ -388,6 +393,7 @@ actor APIClient {
             case aiFaces = "ai_faces"
             case aiTranscripts = "ai_transcripts"
             case aiLookups = "ai_lookups"
+            case greetingPlaces = "greeting_places"
             case maxMembers = "max_members"
         }
 
@@ -411,6 +417,8 @@ actor APIClient {
             try container.encodeIfPresent(aiFaces, forKey: .aiFaces)
             try container.encodeIfPresent(aiTranscripts, forKey: .aiTranscripts)
             try container.encodeIfPresent(aiLookups, forKey: .aiLookups)
+            // An empty list is encoded as `[]` — the clear — never as null.
+            try container.encodeIfPresent(greetingPlaces, forKey: .greetingPlaces)
             if let maxMembers {
                 if let cap = maxMembers {
                     try container.encode(cap, forKey: .maxMembers)
@@ -608,6 +616,22 @@ actor APIClient {
     func setAILookups(_ enabled: Bool) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
             "PATCH", "/families/mine", body: FamilyPatchRequest(aiLookups: enabled))
+        return response.family
+    }
+
+    /// Replace the places whose weather the daily greeting mentions
+    /// (protocol.md, "Today's weather, for places the owner chose"). Sends
+    /// this one key and nothing else; `[]` clears the list. Owner-only
+    /// (`not_family_owner`, 403); a list the server refuses is `validation`
+    /// (400), and nothing in a refused request is written.
+    ///
+    /// The family it answers with carries the list AS KEPT — trimmed, with
+    /// repeats dropped — and that, not what was sent, is what to show. A
+    /// server that predates the field ignores the key, which the answer
+    /// shows too.
+    func setGreetingPlaces(_ places: [String]) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(greetingPlaces: places))
         return response.family
     }
 

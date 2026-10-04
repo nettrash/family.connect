@@ -660,4 +660,10 @@
         <item quantity="many">%1$d búsquedas web</item>
         <item quantity="other">%1$d búsquedas web</item>
     </plurals>
+    <string name="s_greeting_weather">El tiempo en el saludo</string>
+    <string name="s_greeting_weather_place_placeholder">Ciudad o pueblo</string>
+    <string name="s_greeting_weather_add_place">Añadir lugar</string>
+    <string name="s_greeting_weather_remove_place">Quitar lugar</string>
+    <string name="s_greeting_weather_limit">Hasta 3 lugares.</string>
+    <string name="s_greeting_weather_footer">El saludo diario mencionará también el tiempo de hoy en estos lugares. Solo se envían los nombres de los lugares a Open-Meteo para obtener el pronóstico. No se envía nada más.</string>
 </resources>

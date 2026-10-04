@@ -829,6 +829,14 @@ class FakeFamilyApi : FamilyApi {
         aiLookupsSet += enabled
         return createResult
     }
+
+    /** Every greeting_places PATCH, in order. */
+    val greetingPlacesSet = mutableListOf<List<String>>()
+
+    override suspend fun setGreetingPlaces(places: List<String>): ApiResult<FamilyResponse> {
+        greetingPlacesSet += places
+        return createResult
+    }
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> = joinRequestsResult
 
     var approveResult: ApiResult<ApproveResponse> =

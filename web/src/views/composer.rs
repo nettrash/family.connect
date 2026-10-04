@@ -904,6 +904,7 @@ mod tests {
                     transcribe: false,
                     transcribe_max_bytes: None,
                     lookups: Vec::new(),
+                    greeting_weather: false,
                 }),
                 agreed_to_assistant: false,
                 on_review_consent: {
@@ -1078,6 +1079,7 @@ mod tests {
                     transcribe: false,
                     transcribe_max_bytes: None,
                     lookups: Vec::new(),
+                    greeting_weather: false,
                     images,
                     processor: Some("Microsoft — Azure OpenAI".into()),
                 }),

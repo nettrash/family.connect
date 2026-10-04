@@ -3721,6 +3721,10 @@ final class ChatSyncCoordinator {
             // (protocol.md, "Looking things up"). Nil when the object or
             // the key is absent, which takes every lookup surface away.
             AppSettings.assistantLookups = mine.assistant?.lookups
+            // Whether the owner's place list for the greeting's weather is
+            // offered at all (protocol.md, "Today's weather, for places the
+            // owner chose"). False when the object or the key is absent.
+            AppSettings.assistantGreetingWeather = mine.assistant?.greetingWeather ?? false
             // The pack's two limits, which double as the capability check:
             // a server that predates the pack sends neither, and nil here
             // is what takes the sticker button and the Family screen's pack

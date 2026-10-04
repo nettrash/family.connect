@@ -558,6 +558,11 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
                 body[key] = flag;
             }
         }
+        // A list or nothing: `null` is `validation` for this key, and `[]` is how it is cleared.
+        if (patch.GreetingPlaces is { } places)
+        {
+            body["greeting_places"] = places.ToArray();
+        }
         return Send<FamilyOnlyResponse>(HttpMethod.Patch, "/families/mine", body, ct: ct);
     }
 

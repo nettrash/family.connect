@@ -247,7 +247,14 @@ public sealed record FamilyDto(
     /// name it wrote to the providers <c>assistant.lookups</c> names. Off by default, tied to no other switch; an older
     /// server omits it, which reads as false.
     /// </summary>
-    [property: JsonPropertyName("ai_lookups")] bool AiLookups = false);
+    [property: JsonPropertyName("ai_lookups")] bool AiLookups = false,
+    /// <summary>
+    /// The places the daily greeting gives today's weather for (docs/protocol.md, "Today's weather, for places the owner
+    /// chose"), in the owner's order and spelt as the server KEPT them: at most three, every member reads them, only the
+    /// owner sets them. <c>[]</c> by default; ABSENT on a server that predates them, which reads as none — read through
+    /// <c>GreetingWeather.Saved</c>, which treats null and a null inside as nothing.
+    /// </summary>
+    [property: JsonPropertyName("greeting_places")] string[]? GreetingPlaces = null);
 
 /// <summary>
 /// The family as the family screen needs it, with the assistant's capabilities.
@@ -329,7 +336,14 @@ public sealed record AssistantDto(
     /// (docs/protocol.md, "Looking things up"); read through <c>Lookups.Providers</c>, which treats an empty or blank
     /// list as absent too.
     /// </summary>
-    string[]? Lookups = null);
+    string[]? Lookups = null,
+    /// <summary>
+    /// Whether the daily greeting can carry today's forecast for the family's <c>greeting_places</c>: true exactly when
+    /// this server posts greetings and has its weather source on (docs/protocol.md, "Today's weather, for places the owner
+    /// chose"). ALWAYS present on a server that knows it; absent on an older one, which reads as false — no places field.
+    /// Bound to no family switch, <c>ai_lookups</c> included.
+    /// </summary>
+    [property: JsonPropertyName("greeting_weather")] bool GreetingWeather = false);
 
 /// <summary>
 /// <c>POST /me/assistant-consent</c> — this member's own answer to the assistant question, and
@@ -393,6 +407,14 @@ public sealed record FamilyPatch
 
     [JsonPropertyName("ai_lookups")]
     public bool? AiLookups { get; init; }
+
+    /// <summary>
+    /// The greeting's places, REPLACING the stored list: <c>[]</c> clears it and null (the default) leaves it alone. Not a
+    /// third place where <c>null</c> means something — the server refuses <c>"greeting_places": null</c>, so null here is
+    /// never sent at all (docs/protocol.md, "Today's weather, for places the owner chose").
+    /// </summary>
+    [JsonPropertyName("greeting_places")]
+    public IReadOnlyList<string>? GreetingPlaces { get; init; }
 
     /// <summary>Send <c>"max_members": null</c> — clear the cap, rather than leave it alone.</summary>
     [JsonIgnore]

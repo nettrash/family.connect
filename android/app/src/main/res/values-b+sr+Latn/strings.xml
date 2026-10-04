@@ -660,4 +660,10 @@
         <item quantity="few">%1$d pretrage na vebu</item>
         <item quantity="other">%1$d pretraga na vebu</item>
     </plurals>
+    <string name="s_greeting_weather">Vremenska prognoza u pozdravu</string>
+    <string name="s_greeting_weather_place_placeholder">Grad ili mesto</string>
+    <string name="s_greeting_weather_add_place">Dodaj mesto</string>
+    <string name="s_greeting_weather_remove_place">Ukloni mesto</string>
+    <string name="s_greeting_weather_limit">Najviše 3 mesta.</string>
+    <string name="s_greeting_weather_footer">Dnevni pozdrav će pomenuti i današnju vremensku prognozu za ova mesta. Servisu Open-Meteo šalju se samo nazivi mesta da bi se preuzela prognoza. Ništa drugo se ne šalje.</string>
 </resources>

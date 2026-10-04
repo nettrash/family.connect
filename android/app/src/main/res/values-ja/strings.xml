@@ -631,4 +631,10 @@
     <plurals name="s_web_searches">
         <item quantity="other">ウェブ検索 %1$d 件</item>
     </plurals>
+    <string name="s_greeting_weather">あいさつの天気予報</string>
+    <string name="s_greeting_weather_place_placeholder">市や町の名前</string>
+    <string name="s_greeting_weather_add_place">場所を追加</string>
+    <string name="s_greeting_weather_remove_place">場所を削除</string>
+    <string name="s_greeting_weather_limit">場所は3つまでです。</string>
+    <string name="s_greeting_weather_footer">毎日のあいさつで、これらの場所の今日の天気にも触れます。予報を取得するため、地名だけが Open-Meteo に送られます。それ以外は何も送られません。</string>
 </resources>

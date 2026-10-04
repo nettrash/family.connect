@@ -307,6 +307,15 @@ sources and its providers' credits, so a card would have every device showing it
 for **an assistant answer still being written**: the server filters links out of the finished body, not out of the
 stream, so the card waits for the finished row. `SourcesFooter` recognises the footer by its shape and its fixed words.
 
+**The greeting's weather is the owner's list of up to three places** (docs/protocol.md, "Today's weather, for places
+the owner chose"; issue #72; `GreetingPlaces`, `GreetingWeather`, `PlacesDraft`). It sits under the "Daily greeting"
+switch on the owner's family screen, drawn only where the server says it can (`assistant.greeting_weather`, absent on an
+older server) and editable with the greeting on or off, as on the other clients — the owner may choose the places
+before turning the greeting on. A field takes what the server would keep (no control characters, at most 80 characters, counted as Rust counts
+them), is saved when it is left or Enter is pressed, and the list shown afterwards is the one the server KEPT — repeats
+are the server's to drop. The credit line under such a greeting is markdown the server writes, so it is a link that
+opens, and it is the lookups' credit line, so the greeting draws no preview card.
+
 **A notification is never the message.** The body is the one a server with
 `include_message_body = false` would send, and the block reaches one step further than the sender:
 the assistant's answer to a blocked member's question raises nothing either, because it would light

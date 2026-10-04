@@ -703,4 +703,11 @@
         <item quantity="one">%1$d web search</item>
         <item quantity="other">%1$d web searches</item>
     </plurals>
+    <!-- Weather in the greeting (#72): docs/protocol.md, "Today's weather, for places the owner chose" -->
+    <string name="s_greeting_weather">Weather in the greeting</string>
+    <string name="s_greeting_weather_place_placeholder">City or town</string>
+    <string name="s_greeting_weather_add_place">Add place</string>
+    <string name="s_greeting_weather_remove_place">Remove place</string>
+    <string name="s_greeting_weather_limit">Up to 3 places.</string>
+    <string name="s_greeting_weather_footer">The daily greeting will also mention today\'s weather in these places. Only the place names are sent to Open-Meteo to fetch the forecast. Nothing else is sent.</string>
 </resources>

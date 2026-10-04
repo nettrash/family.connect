@@ -274,6 +274,48 @@
                                     </StackPanel>
                                     <ToggleSwitch x:Name="GreetingSwitch" Grid.Column="1" MinWidth="0" VerticalAlignment="Top" />
                                 </Grid>
+                                <!--
+                                    Today's weather in the greeting (docs/protocol.md, "Today's weather, for places the owner chose"):
+                                    up to three place names, beside the switch they ride on. Drawn only where the server says it can
+                                    (assistant.greeting_weather), editable with the greeting on or off (FamilyView.DrawPlaces), and
+                                    the footnote says where the names go.
+                                -->
+                                <StackPanel x:Name="PlacesPanel" Padding="20,4,20,12" Spacing="8" Visibility="Collapsed">
+                                    <TextBlock x:Name="PlacesHeading" TextWrapping="Wrap" />
+                                    <Grid x:Name="PlaceRow0" ColumnSpacing="8" Visibility="Collapsed">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" MaxWidth="360" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="PlaceBox0" />
+                                        <Button x:Name="RemovePlace0" Grid.Column="1" VerticalAlignment="Center" Padding="8" AllowFocusOnInteraction="False">
+                                            <FontIcon Glyph="&#xE711;" FontSize="12" />
+                                        </Button>
+                                    </Grid>
+                                    <Grid x:Name="PlaceRow1" ColumnSpacing="8" Visibility="Collapsed">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" MaxWidth="360" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="PlaceBox1" />
+                                        <Button x:Name="RemovePlace1" Grid.Column="1" VerticalAlignment="Center" Padding="8" AllowFocusOnInteraction="False">
+                                            <FontIcon Glyph="&#xE711;" FontSize="12" />
+                                        </Button>
+                                    </Grid>
+                                    <Grid x:Name="PlaceRow2" ColumnSpacing="8" Visibility="Collapsed">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" MaxWidth="360" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="PlaceBox2" />
+                                        <Button x:Name="RemovePlace2" Grid.Column="1" VerticalAlignment="Center" Padding="8" AllowFocusOnInteraction="False">
+                                            <FontIcon Glyph="&#xE711;" FontSize="12" />
+                                        </Button>
+                                    </Grid>
+                                    <HyperlinkButton x:Name="AddPlaceButton" Padding="0,4,0,4" AllowFocusOnInteraction="False" />
+                                    <TextBlock x:Name="PlacesFull" Style="{StaticResource Footnote}" />
+                                    <TextBlock x:Name="PlacesFootnote" Style="{StaticResource Footnote}" />
+                                </StackPanel>
                             </StackPanel>
                         </Border>
                         <!--

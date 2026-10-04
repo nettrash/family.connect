@@ -322,6 +322,7 @@ mod tests {
             transcribe: false,
             transcribe_max_bytes: None,
             lookups: Vec::new(),
+            greeting_weather: false,
         }
     }
 

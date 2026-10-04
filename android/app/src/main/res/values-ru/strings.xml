@@ -685,4 +685,10 @@
         <item quantity="many">%1$d поисков в интернете</item>
         <item quantity="other">%1$d поиска в интернете</item>
     </plurals>
+    <string name="s_greeting_weather">Погода в приветствии</string>
+    <string name="s_greeting_weather_place_placeholder">Город или посёлок</string>
+    <string name="s_greeting_weather_add_place">Добавить место</string>
+    <string name="s_greeting_weather_remove_place">Убрать место</string>
+    <string name="s_greeting_weather_limit">Не больше 3 мест.</string>
+    <string name="s_greeting_weather_footer">Ежедневное приветствие будет упоминать и сегодняшнюю погоду в этих местах. В Open-Meteo отправляются только названия мест, чтобы получить прогноз. Больше ничего не отправляется.</string>
 </resources>

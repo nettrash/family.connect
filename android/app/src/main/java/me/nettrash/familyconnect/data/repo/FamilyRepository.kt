@@ -514,6 +514,15 @@ class FamilyRepository @Inject constructor(
      * up"). Mirrored like the others so the owner's own device agrees with
      * the server at once.
      */
+    /**
+     * Owner-only: the greeting's weather places (docs/protocol.md, "Today's
+     * weather, for places the owner chose"). Nothing is mirrored into
+     * settings: only the owner's own screen reads the list, and it reads it
+     * from this answer.
+     */
+    suspend fun setGreetingPlaces(places: List<String>): ApiResult<FamilyResponse> =
+        familyApi.setGreetingPlaces(places)
+
     suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse> {
         val result = familyApi.setAiLookups(enabled)
         if (result is ApiResult.Ok) {

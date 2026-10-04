@@ -2133,8 +2133,8 @@ wrote. It is the one thing the assistant sends that is not made of a member's wo
 wrote, and it is no longer quite true. The greeting may now carry today's forecast for up to three
 places the family's OWNER typed into a family setting, and to get it the server sends those place
 names to the weather provider (Open-Meteo, which is not `processor`), and the forecast it gets back
-— each place's own name and country, as the geocoder spells them, and the day's numbers — to the
-model. The model never sees the names as the owner typed them. It still needs no member's
+— each place's name, kind, country and region as the geocoder spells them, and the day's numbers
+— to the model. The model never sees the names as the owner typed them. It still needs no member's
 consent, and the reason is the one this whole section turns on: consent here protects a member's
 own words, and none are in it. The names are the owner's, chosen for exactly this purpose, in a
 setting only the owner can change — the same standing as the family's `language`, which also
@@ -3657,7 +3657,9 @@ server keeps it:
 - is **not empty** after that, has **no control characters**, and is **at most 80 characters**;
 - is **different from the others once both are lower-cased** — a repeat is dropped silently and the
   first spelling is kept, so `["Moscow", "moscow"]` is kept as `["Moscow"]`. The limit of three is
-  counted after that.
+  counted after that. The lower-cased names are compared **code point for code point**, never by
+  canonical equivalence: "Café" written with `é` (U+00E9) and with `e` + U+0301 are two names, and
+  a client that drops repeats before sending compares the same way.
 
 Anything else is `validation`, and nothing in the request is written. `"greeting_places": [...]`
 REPLACES the list, `[]` clears it, an absent key leaves it alone, and `null` is `validation` — the
@@ -3682,9 +3684,11 @@ twice for one greeting.
 
 **What leaves, and to whom.** For each place, when that family's greeting is being written:
 
-1. **to Open-Meteo's geocoder**: the name, exactly as stored, with a result count of `1`, the
-   greeting's language (the lookup language code of the family's language, or of the operator's
-   greeting language, as for a lookup) and `format=json`;
+1. **to Open-Meteo's geocoder**: the name, exactly as stored, with a result count of `1` and
+   `format=json` — and **no language**. Unlike a lookup's, this request does not say which language
+   the family writes in: the owner's decision is that only the names leave, so the geocoder answers
+   in its default (English) spelling and the model, which writes in the family's language, renders
+   the place in it;
 2. **to Open-Meteo's forecast**: that geocoded place's own coordinates rounded to two decimals, with
    exactly the parameters a two-day `get_weather` lookup sends, `timezone=auto` among them — so a
    forecast is shared with that lookup's 30-minute cache, and the other way round.
@@ -3696,7 +3700,8 @@ used when `weather_key` is set, as for a lookup.
 
 **An ambiguous name is the geocoder's top match, and the greeting says which.** There is no one to
 ask which "Paris" the owner meant, so the first match is the place, and the model is given its
-name, its kind (a city, an island…), its country and its region, as the geocoder spells them, and
+name, its kind (a city, an island…), its country and its region, as the geocoder spells them —
+and nothing else of the geocoder's answer, not its time zone nor its coordinates — and
 told to name each place with its country — "Belgrade, Serbia". A family whose "Paris" turned out to
 be in Texas sees that in the first greeting, and the owner can change the name.
 
@@ -3733,13 +3738,21 @@ greeting that used no forecast has no credit and no filtering, and is exactly wh
 
 **The disclosure.** The credit line names the provider under every greeting that used it. And each
 client says, under the places field, where the names go — in its own words, to this effect: *"These
-place names are sent to Open-Meteo once a day to fetch the forecast for the greeting. Nothing else
-is sent."*
+place names are sent to Open-Meteo to fetch the forecast for the greeting. Nothing else is sent."*
+It does NOT say "once a day": a greeting whose model call fails is retried every minute, and once
+the 30-minute caches below have expired the names go again, so how often is not a promise a client
+can make.
+
+**The field is editable whether or not the greeting is on.** The places are the family's, kept by
+the server whatever `ai_greeting` says, and an owner may well choose them first and turn the
+greeting on afterwards; so a client lets the owner edit them with the switch off as with it on. A
+client may draw the field dimmed while the switch is off, as a hint that nothing is fetched until
+it is turned on — but never read-only.
 
 **Logged, kept, counted.** A log line may say how many places a family has, how many forecasts were
 used, and a failure's outcome word and the provider's host. **It never holds** a place name, a
 coordinate or any part of a forecast. The geocoder's answer for a stored name is kept in memory for
-30 minutes, by name and language, beside the forecasts kept by coordinates, so a greeting retried
+30 minutes, by name, beside the forecasts kept by coordinates, so a greeting retried
 every minute after a model failure does not ask again each time; a member's query is never kept by
 its words, and a lookup never reads this. Weather is free, so these calls are counted nowhere —
 neither in `ai_usage.searches`, which counts only paid web searches, nor against the daily search
