@@ -386,17 +386,13 @@ async fn greet(
 
     // Today's weather for the owner's places, when there are places and the
     // server can fetch it — fetched here, before the model is asked, and
-    // handed over as DATA. The words for the credit and the geocoder's
-    // language come from the same tag the greeting is written in.
+    // handed over as DATA. The credit's words come from the same tag the
+    // greeting is written in; the geocoder is told no language at all, so
+    // the owner's names are the only thing that leaves.
     let lookup_language = crate::lookups::lookup_language(tag);
     let forecasts = if weather_available(&state.cfg) && !candidate.greeting_places.is_empty() {
-        let weather = crate::lookups::greeting_weather(
-            state,
-            &candidate.greeting_places,
-            &lookup_language,
-            now,
-        )
-        .await;
+        let weather =
+            crate::lookups::greeting_weather(state, &candidate.greeting_places, now).await;
         // Counts and outcome words only: a place name, a coordinate or a
         // forecast never reaches a log.
         for (outcome, host) in &weather.misses {

@@ -1015,6 +1015,71 @@ public class ApiClientTests
     }
 
     /// <summary>
+    /// The greeting's weather, as <c>GET /families/mine</c> carries it (docs/protocol.md, "Today's weather, for places the
+    /// owner chose"): the owner's places on the family, the server's ability on the assistant — and an older server, which
+    /// carries neither, reads as no places and no greeting weather.
+    /// </summary>
+    [Fact]
+    public async Task TheGreetingPlacesAndWeatherArriveTolerantly()
+    {
+        var (client, _) = Client(new Fake()
+            .Then(HttpStatusCode.OK, """
+                {"family": {"id": 3, "name": "The Smiths", "ai_greeting": true, "greeting_places": ["Moscow", "Белград"]},
+                 "assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai", "greeting_weather": true}}
+                """)
+            .Then(HttpStatusCode.OK, """
+                {"family": {"id": 3, "name": "The Smiths", "greeting_places": []},
+                 "assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai", "greeting_weather": false}}
+                """)
+            .Then(HttpStatusCode.OK, """
+                {"family": {"id": 3, "name": "The Smiths"},
+                 "assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai"}}
+                """));
+        var newer = (await client.Family()).Value!;
+        Assert.Equal(["Moscow", "Белград"], newer.Family.GreetingPlaces!);
+        Assert.True(newer.Assistant!.GreetingWeather);
+        var off = (await client.Family()).Value!;
+        Assert.Empty(off.Family.GreetingPlaces!);
+        Assert.False(off.Assistant!.GreetingWeather);
+        var older = (await client.Family()).Value!;
+        Assert.Null(older.Family.GreetingPlaces);
+        Assert.False(older.Assistant!.GreetingWeather);
+    }
+
+    /// <summary>
+    /// The places go out as one list that REPLACES the stored one; <c>[]</c> clears it, and a patch without them never
+    /// carries the key — never a <c>null</c>, which the server refuses. The answer is the list as the server KEPT it.
+    /// </summary>
+    [Fact]
+    public async Task TheGreetingPlacesArePatchedAsOneListAndNeverAsNull()
+    {
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths", "greeting_places": ["Moscow"]}}""")
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths", "greeting_places": []}}""")
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths", "greeting_places": []}}""")
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths", "greeting_places": ["Белград"]}}"""));
+
+        var kept = await client.PatchFamily(new FamilyPatch { GreetingPlaces = ["Moscow", "moscow"] });
+        Assert.Equal(HttpMethod.Patch, handler.Sent[0].Method);
+        Assert.EndsWith("/families/mine", handler.Sent[0].RequestUri!.AbsolutePath, StringComparison.Ordinal);
+        Assert.Equal("{\"greeting_places\":[\"Moscow\",\"moscow\"]}", handler.Bodies[0]);
+        // What the server kept, not what was sent.
+        Assert.Equal(["Moscow"], kept.Value!.Family.GreetingPlaces!);
+
+        await client.PatchFamily(new FamilyPatch { GreetingPlaces = [] });
+        Assert.Equal("{\"greeting_places\":[]}", handler.Bodies[1]);
+
+        await client.PatchFamily(new FamilyPatch { AiGreeting = true });
+        Assert.DoesNotContain("greeting_places", handler.Bodies[2], StringComparison.Ordinal);
+
+        // Any script: the body is JSON whatever the escaping, and it reads back as what was typed.
+        await client.PatchFamily(new FamilyPatch { GreetingPlaces = ["Белград"] });
+        using var sent = System.Text.Json.JsonDocument.Parse(handler.Bodies[3]!);
+        Assert.Equal("Белград", sent.RootElement.GetProperty("greeting_places")[0].GetString());
+        Assert.Single(sent.RootElement.EnumerateObject());
+    }
+
+    /// <summary>
     /// The member's own lookup consent: its own endpoint, the same shape as the assistant's, the stamp read back — and
     /// the refusal for granting it without the first one read as its code, asked once.
     /// </summary>

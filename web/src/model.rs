@@ -91,6 +91,15 @@ pub struct Family {
     /// (docs/protocol.md, "Looking things up").
     #[serde(default)]
     pub ai_lookups: bool,
+    /// The places, at most three, whose weather today the daily greeting
+    /// mentions — names the owner typed, as the server KEPT them (trimmed,
+    /// folded, repeats dropped). ALWAYS present, `[]` by default; every
+    /// member reads it and only the owner sets it. Absent from a server
+    /// that predates it, and anything that is not a list of names reads as
+    /// none (docs/protocol.md, "Today's weather, for places the owner
+    /// chose").
+    #[serde(default, deserialize_with = "names_or_none")]
+    pub greeting_places: Vec<String>,
 }
 
 fn yes() -> bool {
@@ -250,6 +259,24 @@ pub struct Assistant {
     /// client that cannot name the providers does not ask.
     #[serde(default, deserialize_with = "names_or_none")]
     pub lookups: Vec<String>,
+    /// Whether the daily greeting can carry today's forecast for the
+    /// family's `greeting_places` — true only where this server posts
+    /// greetings and has weather configured. ALWAYS present whenever this
+    /// object is; absent from a server that predates it, which reads as
+    /// false, and so does anything that is not a boolean: the places field
+    /// is offered only when it is true.
+    #[serde(default, deserialize_with = "true_or_false")]
+    pub greeting_weather: bool,
+}
+
+/// `true`, or false for anything else — a missing key, a `null` or a
+/// stray shape never fails the read of the whole roster.
+fn true_or_false<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_bool().unwrap_or(false))
 }
 
 /// A list of names, or nothing at all — never a failed read of the whole
@@ -1383,5 +1410,59 @@ mod tests {
         assert_eq!(stats.totals.ai.searches, 9);
         assert_eq!(stats.members[0].ai.searches, 4);
         assert_eq!(stats.members[1].ai.searches, 0, "absent is none");
+    }
+
+    /// GREETING WEATHER, read tolerantly (docs/protocol.md, "Today's
+    /// weather, for places the owner chose"): the family's places from
+    /// `GET /me`, `GET /families/mine` and a PATCH answer, and the server's
+    /// `assistant.greeting_weather` — and from a server that predates them,
+    /// no places and no field, never a failed read.
+    #[wasm_bindgen_test]
+    fn greeting_weather_is_read_where_it_is_sent_and_nothing_where_it_is_not() {
+        let family = |extra: &str| -> Family {
+            let json = format!(r#"{{"id": 3, "name": "The Smiths"{extra}}}"#);
+            serde_json::from_str(&json).expect("the family still reads")
+        };
+        assert_eq!(
+            family(r#", "greeting_places": ["Moscow", "Belgrade"]"#).greeting_places,
+            vec!["Moscow", "Belgrade"]
+        );
+        for none in [
+            "",
+            r#", "greeting_places": []"#,
+            r#", "greeting_places": null"#,
+            r#", "greeting_places": "Moscow""#,
+        ] {
+            assert!(family(none).greeting_places.is_empty(), "{none:?}");
+        }
+        let me: Me = serde_json::from_str(
+            r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                "family": {"id": 3, "name": "The Smiths", "greeting_places": ["Novi Sad"]},
+                "greetings_enabled": true}"#,
+        )
+        .expect("reads");
+        assert_eq!(me.family.unwrap().greeting_places, vec!["Novi Sad"]);
+
+        let roster = |assistant: &str| -> Roster {
+            let json = format!(
+                r#"{{"members": [], "assistant": {{"user_id": 1, "display_name": "Assistant"{assistant}}}}}"#
+            );
+            serde_json::from_str(&json).expect("the roster still reads")
+        };
+        assert!(
+            roster(r#", "greeting_weather": true"#)
+                .assistant
+                .unwrap()
+                .greeting_weather
+        );
+        for off in [
+            "",
+            r#", "greeting_weather": false"#,
+            r#", "greeting_weather": null"#,
+            r#", "greeting_weather": "yes""#,
+            r#", "greeting_weather": 1"#,
+        ] {
+            assert!(!roster(off).assistant.unwrap().greeting_weather, "{off:?}");
+        }
     }
 }

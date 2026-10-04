@@ -1068,6 +1068,7 @@ mod tests {
             transcribe: false,
             transcribe_max_bytes: None,
             lookups: lookups.iter().map(|name| name.to_string()).collect(),
+            greeting_weather: false,
         };
         let account = |assistant_at: Option<&str>, lookup_at: Option<&str>| Me {
             user: crate::model::User {

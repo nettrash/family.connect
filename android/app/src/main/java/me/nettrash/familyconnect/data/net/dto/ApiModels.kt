@@ -235,7 +235,23 @@ data class FamilyDto(
      * which looks nothing up at all. Bound to no other switch.
      */
     @SerialName("ai_lookups") val aiLookups: Boolean = false,
-)
+    /**
+     * The places whose weather today the daily greeting mentions, as the
+     * SERVER kept them — at most three, trimmed, whitespace folded,
+     * case-insensitive repeats dropped (docs/protocol.md, "Today's
+     * weather, for places the owner chose"). Every member can read it;
+     * only the owner can set it.
+     *
+     * ALWAYS present on a current server, `[]` by default. Nullable here
+     * only so that a server that predates the field — which sends nothing
+     * — and any unexpected `null` both decode as "no places" instead of
+     * failing the whole family read; read it through [places].
+     */
+    @SerialName("greeting_places") val greetingPlaces: List<String>? = null,
+) {
+    /** [greetingPlaces], with absent read as none. */
+    val places: List<String> get() = greetingPlaces.orEmpty()
+}
 
 @Serializable
 data class PendingJoinRequestDto(
@@ -839,6 +855,7 @@ data class PatchFamilyRequest(
     @SerialName("max_members") val maxMembers: JsonElement? = null,
     @SerialName("ai_transcripts") val aiTranscripts: Boolean? = null,
     @SerialName("ai_lookups") val aiLookups: Boolean? = null,
+    @SerialName("greeting_places") val greetingPlaces: List<String>? = null,
 ) {
     companion object {
         fun joinPolicy(policy: String) = PatchFamilyRequest(joinPolicy = policy)
@@ -911,6 +928,15 @@ data class PatchFamilyRequest(
          * nothing, like [aiTranscripts].
          */
         fun aiLookups(enabled: Boolean) = PatchFamilyRequest(aiLookups = enabled)
+
+        /**
+         * The greeting's weather places (docs/protocol.md, "Today's weather,
+         * for places the owner chose"). The list REPLACES the stored one and
+         * `[]` CLEARS it — an empty list is not the Kotlin default (null),
+         * so `encodeDefaults=false` still sends it. There is no `null` form:
+         * the server refuses one.
+         */
+        fun greetingPlaces(places: List<String>) = PatchFamilyRequest(greetingPlaces = places)
     }
 }
 
@@ -1548,6 +1574,18 @@ data class AssistantDto(
      * consent screen and under the owner's switch, the way [processor] is.
      */
     val lookups: List<String>? = null,
+    /**
+     * Whether the daily greeting can carry today's forecast for the
+     * family's [FamilyDto.greetingPlaces]: true exactly when this server
+     * posts greetings AND has its weather source on (docs/protocol.md,
+     * "Today's weather, for places the owner chose"). The owner's places
+     * field is drawn only when this is true.
+     *
+     * Always present whenever this object is; false on a server that
+     * predates it, which is the honest answer there. Independent of the
+     * family's `ai_lookups` switch.
+     */
+    @SerialName("greeting_weather") val greetingWeather: Boolean = false,
 ) {
     companion object {
         /** The protocol's default and maximum for `transcribe_max_bytes`: 25 MiB. */

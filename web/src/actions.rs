@@ -2583,6 +2583,7 @@ mod tests {
                 transcribe: false,
                 transcribe_max_bytes: None,
                 lookups: Vec::new(),
+                greeting_weather: false,
             });
         });
         let draw = |actions: &Actions| {
@@ -2696,6 +2697,7 @@ mod tests {
                 transcribe: true,
                 transcribe_max_bytes: Some(26_214_400),
                 lookups: Vec::new(),
+                greeting_weather: false,
             });
         });
         let asked_consent = Rc::new(RefCell::new(0));
@@ -2858,6 +2860,7 @@ mod tests {
                 transcribe: true,
                 transcribe_max_bytes: Some(26_214_400),
                 lookups: Vec::new(),
+                greeting_weather: false,
             });
             state
                 .store
@@ -3003,6 +3006,7 @@ mod tests {
                 transcribe: true,
                 transcribe_max_bytes: Some(26_214_400),
                 lookups: Vec::new(),
+                greeting_weather: false,
             });
             state
                 .store
@@ -3864,6 +3868,7 @@ mod tests {
             transcribe: false,
             transcribe_max_bytes: None,
             lookups: Vec::new(),
+            greeting_weather: false,
             images: false,
             processor: processor.map(str::to_string),
         };

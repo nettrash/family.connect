@@ -318,6 +318,18 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     /// that predates it and for a server that predates the field, where
     /// nothing is ever looked up.
     let aiLookups: Bool
+    /// The places — at most three, as the owner typed them and the server
+    /// kept them — whose weather the daily greeting mentions (protocol.md,
+    /// "Today's weather, for places the owner chose"). Not a switch: these
+    /// names are the one thing it sends anywhere, to the weather provider,
+    /// once a day, and only while the server says
+    /// `assistant.greeting_weather`.
+    ///
+    /// ALWAYS present on the wire and `[]` by default; read as `[]` from a
+    /// server that predates the field, and from anything that is not a list
+    /// of strings, rather than failing the whole family — the Family object
+    /// rides on `/me`, which the app bootstraps from.
+    let greetingPlaces: [String]
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -334,6 +346,7 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         case aiFaces = "ai_faces"
         case aiTranscripts = "ai_transcripts"
         case aiLookups = "ai_lookups"
+        case greetingPlaces = "greeting_places"
     }
 
     init(
@@ -380,6 +393,11 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // reach a party that is NOT the processor, and a rebuild that
         // dropped it would show it off while the server had it on.
         aiLookups: Bool,
+        // And the places, undefaulted for a reason of their own: the editor
+        // saves the WHOLE list, so a rebuild that dropped it would show an
+        // empty list, and the owner's next added place would replace the
+        // ones the server holds.
+        greetingPlaces: [String],
         maxMembers: Int?
     ) {
         self.id = id
@@ -396,6 +414,7 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         self.aiFaces = aiFaces
         self.aiTranscripts = aiTranscripts
         self.aiLookups = aiLookups
+        self.greetingPlaces = greetingPlaces
     }
 
     /// Hand-written for the reason UserDTO's is, and this type had no
@@ -436,6 +455,10 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // FALSE, the protocol's own default: a server that predates the
         // field looks nothing up, which is what `false` reports.
         aiLookups = try container.decodeIfPresent(Bool.self, forKey: .aiLookups) ?? false
+        // EMPTY, the protocol's own default: a server that predates the
+        // field sends no place anywhere. Tolerant of a malformed value for
+        // the same reason, so a bad list costs the editor, not the family.
+        greetingPlaces = ((try? container.decodeIfPresent([String].self, forKey: .greetingPlaces)) ?? nil) ?? []
     }
 }
 
@@ -1417,6 +1440,12 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
     /// when the server has no source, and on a server that predates it;
     /// the server never sends `[]`, and this client reads one as absent.
     let lookups: [String]?
+    /// This server posts the daily greeting AND may fetch the weather for
+    /// it (protocol.md, "Today's weather, for places the owner chose"). The
+    /// owner's place list is offered only when it is true; absent — false —
+    /// on a server that predates it. It does not depend on the family's
+    /// `ai_lookups` switch.
+    let greetingWeather: Bool
 
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
@@ -1429,6 +1458,7 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         case transcribe
         case transcribeMaxBytes = "transcribe_max_bytes"
         case lookups
+        case greetingWeather = "greeting_weather"
     }
 
     init(
@@ -1441,7 +1471,8 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         processor: String? = nil,
         transcribe: Bool = false,
         transcribeMaxBytes: Int64? = nil,
-        lookups: [String]? = nil
+        lookups: [String]? = nil,
+        greetingWeather: Bool = false
     ) {
         self.userID = userID
         self.displayName = displayName
@@ -1453,6 +1484,7 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         self.transcribe = transcribe
         self.transcribeMaxBytes = transcribeMaxBytes
         self.lookups = lookups
+        self.greetingWeather = greetingWeather
     }
 
     /// Hand-written for the reason `UserDTO`'s is: a property default is
@@ -1482,6 +1514,9 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         lookups = (names?.isEmpty ?? true) ? nil : names
+        // FALSE when absent or malformed: a server that predates the field
+        // fetches no weather for a greeting, and the place editor is absent.
+        greetingWeather = ((try? container.decodeIfPresent(Bool.self, forKey: .greetingWeather)) ?? nil) ?? false
     }
 }
 

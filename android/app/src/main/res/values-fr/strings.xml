@@ -660,4 +660,10 @@
         <item quantity="many">%1$d recherches web</item>
         <item quantity="other">%1$d recherches web</item>
     </plurals>
+    <string name="s_greeting_weather">Météo dans la salutation</string>
+    <string name="s_greeting_weather_place_placeholder">Ville ou village</string>
+    <string name="s_greeting_weather_add_place">Ajouter un lieu</string>
+    <string name="s_greeting_weather_remove_place">Retirer le lieu</string>
+    <string name="s_greeting_weather_limit">Jusqu’à 3 lieux.</string>
+    <string name="s_greeting_weather_footer">La salutation quotidienne mentionnera aussi la météo du jour dans ces lieux. Seuls les noms des lieux sont envoyés à Open-Meteo pour obtenir les prévisions. Rien d’autre n’est envoyé.</string>
 </resources>

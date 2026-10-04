@@ -71,6 +71,14 @@ public sealed partial class FamilyView : UserControl
     private FamilyPatch? pending;
     private bool drawing;
 
+    // The greeting's places (docs/protocol.md, "Today's weather, for places the owner chose"): the three fields as they
+    // are being edited, and the controls that draw them.
+    private readonly PlacesDraft places = new();
+    private bool savingPlaces;
+    private readonly Grid[] placeRows;
+    private readonly TextBox[] placeBoxes;
+    private readonly Button[] placeRemovers;
+
     internal FamilyView(AppServices services, Connection connection, Action close, Action<long> openChat)
     {
         this.services = services;
@@ -122,6 +130,65 @@ public sealed partial class FamilyView : UserControl
         TranscriptsTitle.Text = say.Get("Voice and video as text");
         LookupsHeading.Text = say.Get("Looking things up");
         LookupsTitle.Text = say.Get("Can look things up");
+        PlacesHeading.Text = say.Get("Weather in the greeting");
+        AddPlaceButton.Content = say.Get("Add place");
+        PlacesFull.Text = say.Get("Up to 3 places.");
+        PlacesFootnote.Text = say.Get(
+            "The daily greeting will also mention today's weather in these places. Only the place names are sent to Open-Meteo to fetch the forecast. Nothing else is sent.");
+        placeRows = [PlaceRow0, PlaceRow1, PlaceRow2];
+        placeBoxes = [PlaceBox0, PlaceBox1, PlaceBox2];
+        placeRemovers = [RemovePlace0, RemovePlace1, RemovePlace2];
+        for (var index = 0; index < placeBoxes.Length; index++)
+        {
+            var at = index;
+            var box = placeBoxes[at];
+            box.PlaceholderText = say.Get("City or town");
+            AutomationProperties.SetName(box, say.Get("City or town"));
+            // What may be typed is what the server keeps: no control characters, at most 80 characters — counted as the
+            // server counts them, which a TextBox's MaxLength (UTF-16 units) does not.
+            box.TextChanging += (sender, _) =>
+            {
+                if (drawing)
+                {
+                    return;
+                }
+                var typed = places.Set(at, sender.Text);
+                if (!string.Equals(typed, sender.Text, StringComparison.Ordinal))
+                {
+                    var caret = sender.SelectionStart;
+                    sender.Text = typed;
+                    sender.SelectionStart = Math.Min(caret, typed.Length);
+                }
+            };
+            box.LostFocus += (_, _) => _ = SavePlacesAsync();
+            box.KeyDown += (_, e) =>
+            {
+                if (e.Key == Windows.System.VirtualKey.Enter)
+                {
+                    e.Handled = true;
+                    _ = SavePlacesAsync();
+                }
+            };
+            var remove = placeRemovers[at];
+            AutomationProperties.SetName(remove, say.Get("Remove place"));
+            ToolTipService.SetToolTip(remove, say.Get("Remove place"));
+            remove.Click += (_, _) =>
+            {
+                if (places.Remove(at))
+                {
+                    _ = SavePlacesAsync();
+                }
+            };
+        }
+        AddPlaceButton.Click += (_, _) =>
+        {
+            if (!places.Add())
+            {
+                return;
+            }
+            Draw();
+            placeBoxes[places.Fields.Count - 1].Focus(FocusState.Programmatic);
+        };
         // A switch drawn beside its words rather than under a header: the words are still its name to a screen reader.
         foreach (var (toggle, title) in new (ToggleSwitch, TextBlock)[]
         {
@@ -1044,6 +1111,98 @@ public sealed partial class FamilyView : UserControl
         LookupsSwitch.IsOn = shown.AiLookups;
         LookupsSwitch.IsEnabled = idle && lookups is not null;
         LookupsFootnote.Text = lookups is null ? string.Empty : Lookups.SwitchFootnote(lookups, say);
+
+        DrawPlaces(state, idle);
+    }
+
+    /// <summary>
+    /// The greeting's places, under its switch: drawn for the owner where the server can fetch weather, editable with the
+    /// greeting on or off, and filled from the server's list unless the owner is in the middle of changing it.
+    /// </summary>
+    private void DrawPlaces(SessionState state, bool idle)
+    {
+        var offered = GreetingWeather.Shown(state);
+        PlacesPanel.Visibility = offered ? Visibility.Visible : Visibility.Collapsed;
+        if (!offered)
+        {
+            return;
+        }
+        places.Sync(GreetingWeather.Saved(state.Family));
+        // Still editable while its OWN save is on its way: what is typed meanwhile is kept, and saved next.
+        var editable = GreetingWeather.Editable(idle || savingPlaces);
+        for (var index = 0; index < placeRows.Length; index++)
+        {
+            var listed = index < places.Fields.Count;
+            placeRows[index].Visibility = listed ? Visibility.Visible : Visibility.Collapsed;
+            var text = listed ? places.Fields[index] : string.Empty;
+            // Set only when it differs, so a redraw never moves the caret of the field being typed in.
+            if (!string.Equals(placeBoxes[index].Text, text, StringComparison.Ordinal))
+            {
+                placeBoxes[index].Text = text;
+            }
+            placeBoxes[index].IsEnabled = editable;
+            placeRemovers[index].IsEnabled = editable;
+        }
+        AddPlaceButton.Visibility = places.CanAdd ? Visibility.Visible : Visibility.Collapsed;
+        AddPlaceButton.IsEnabled = editable;
+        PlacesFull.Visibility = places.CanAdd ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>
+    /// Send the places when they ask for something new: the whole list, which REPLACES the stored one, and then the list
+    /// the server KEPT, from its answer — never what was sent. One family change at a time, as for every switch.
+    /// </summary>
+    /// <remarks>Never logged: a place name is the owner's words, and the one thing this list sends anywhere.</remarks>
+    private async Task SavePlacesAsync()
+    {
+        if (drawing)
+        {
+            return;
+        }
+        // Another change on its way, or nothing to change: the fields are drawn as they now stand (a removed one goes at
+        // once), and a change still owed is sent when the save on its way comes back.
+        if (pending is not null || connection.Session.State.Family is not { } held || places.Pending() is not { } request)
+        {
+            Draw();
+            return;
+        }
+        var patch = new FamilyPatch { GreetingPlaces = request };
+        pending = patch;
+        savingPlaces = true;
+        AssistantError.Visibility = Visibility.Collapsed;
+        Draw();
+        FamilyDto? answered = null;
+        ApiError? error;
+        try
+        {
+            (answered, error) = await family.ChangeAsync(held, patch);
+            if (error is null)
+            {
+                await connection.Session.RefreshFamilyAsync();
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"changing the greeting places: {e.GetType().Name}");
+            error = ApiError.Transport(e.GetType().Name);
+        }
+        pending = null;
+        savingPlaces = false;
+        if (answered is not null)
+        {
+            places.Adopt(request, GreetingWeather.Saved(answered));
+        }
+        if (error is not null)
+        {
+            ShowProblem(AssistantError, HouseRules.AssistantFailure(error, services.Say));
+        }
+        Draw();
+        // A field left while this save was on its way asked for its own save and was turned away; it is sent now. One
+        // still being typed in waits for the person to leave it, as always.
+        if (error is null && places.Pending() is not null && placeBoxes.All(box => box.FocusState == FocusState.Unfocused))
+        {
+            _ = SavePlacesAsync();
+        }
     }
 
     private static string WithNote(string sentence, string? note) => note is null ? sentence : $"{sentence} {note}";

@@ -631,4 +631,10 @@
     <plurals name="s_web_searches">
         <item quantity="other">网络搜索 %1$d 次</item>
     </plurals>
+    <string name="s_greeting_weather">问候中的天气</string>
+    <string name="s_greeting_weather_place_placeholder">城市或城镇</string>
+    <string name="s_greeting_weather_add_place">添加地点</string>
+    <string name="s_greeting_weather_remove_place">移除地点</string>
+    <string name="s_greeting_weather_limit">最多 3 个地点。</string>
+    <string name="s_greeting_weather_footer">每日问候还会提到这些地点今天的天气。为获取天气预报，只会把地名发送给 Open-Meteo，不会发送其他任何内容。</string>
 </resources>

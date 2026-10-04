@@ -793,6 +793,7 @@ async fn the_assistant_photo_door_is_there_only_when_all_three_allow_it() {
                 transcribe: false,
                 transcribe_max_bytes: None,
                 lookups: Vec::new(),
+                greeting_weather: false,
             });
             asked.family = Some(Family {
                 id: 3,
@@ -917,6 +918,7 @@ async fn a_threads_box_says_what_goes_to_the_assistant() {
             transcribe: false,
             transcribe_max_bytes: None,
             lookups: Vec::new(),
+            greeting_weather: false,
             images: false,
             processor: Some("Microsoft — Azure OpenAI".into()),
         }),
@@ -1384,6 +1386,7 @@ fn assistant_answered_by(processor: Option<&str>) -> crate::model::Assistant {
         transcribe: false,
         transcribe_max_bytes: None,
         lookups: Vec::new(),
+        greeting_weather: false,
         draw: Some("/draw".into()),
         vision: true,
         images: false,

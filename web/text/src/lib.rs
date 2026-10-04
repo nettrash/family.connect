@@ -54,6 +54,9 @@
 //! - [`lookups`] — the assistant looking things up (#72): which providers a
 //!   client names and how, what the consent screen asks, and where the
 //!   server's sources footer starts under an answer.
+//! - [`greeting_places`] — the places the owner names for today's weather
+//!   in the daily greeting (#72): when the field is offered, and what a name
+//!   may be, by the server's own rules.
 
 pub mod account;
 pub mod assistant;
@@ -66,6 +69,7 @@ pub mod call_record;
 pub mod composer;
 pub mod emoji;
 pub mod excerpt;
+pub mod greeting_places;
 pub mod i18n;
 pub mod links;
 pub mod lookups;

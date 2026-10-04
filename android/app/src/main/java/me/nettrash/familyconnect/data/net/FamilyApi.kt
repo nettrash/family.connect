@@ -121,6 +121,16 @@ interface FamilyApi {
      * `assistant.lookups` is absent.
      */
     suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: the places whose weather the daily greeting mentions
+     * (docs/protocol.md, "Today's weather, for places the owner chose").
+     * The list REPLACES the stored one; `[]` clears it. The answer carries
+     * the list as the server KEPT it — possibly shorter, or spelt with less
+     * whitespace — and a server that predates the field ignores it, so the
+     * answer, never the request, is what a caller shows.
+     */
+    suspend fun setGreetingPlaces(places: List<String>): ApiResult<FamilyResponse>
     suspend fun joinRequests(): ApiResult<JoinRequestsResponse>
     suspend fun approve(requestId: Long): ApiResult<ApproveResponse>
     suspend fun reject(requestId: Long): ApiResult<Unit>
@@ -251,6 +261,9 @@ class DefaultFamilyApi @Inject constructor(
 
     override suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse> =
         client.patch("/families/mine", PatchFamilyRequest.aiLookups(enabled))
+
+    override suspend fun setGreetingPlaces(places: List<String>): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.greetingPlaces(places))
 
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> =
         client.get("/families/join-requests")

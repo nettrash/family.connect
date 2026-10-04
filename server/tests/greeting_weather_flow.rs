@@ -371,6 +371,9 @@ fn capture_log() -> (CapturedLog, tracing::subscriber::DefaultGuard) {
         .with_writer(move || writer.clone())
         .with_max_level(tracing::Level::TRACE)
         .with_ansi(false)
+        // No timestamps: a clock reading like `…:17.3…` would match a
+        // number this file looks for.
+        .without_time()
         .finish();
     (log, tracing::subscriber::set_default(subscriber))
 }
@@ -391,17 +394,18 @@ async fn two_places_reach_the_model_as_data_and_the_greeting_credits_open_meteo(
 
     assert_eq!(run(&ts).await, 1, "the greeting was posted");
 
-    // To the geocoder: each name as stored, the top match only, in the
-    // family's language — and nothing else.
+    // To the geocoder: each name as stored, the top match only — and
+    // nothing else, not even the family's language (protocol.md: only the
+    // owner's names leave).
     let geo = stub.to("/geo/search");
     assert_eq!(geo.len(), 2, "{geo:?}");
     let mut names: Vec<&str> = geo.iter().filter_map(|seen| seen.param("name")).collect();
     names.sort();
     assert_eq!(names, ["Belgrade", "Moscow"]);
     for seen in &geo {
-        assert_eq!(seen.param_keys(), ["count", "format", "language", "name"]);
+        assert_eq!(seen.param_keys(), ["count", "format", "name"]);
         assert_eq!(seen.param("count"), Some("1"));
-        assert_eq!(seen.param("language"), Some("ru"));
+        assert!(seen.param("language").is_none(), "{seen:?}");
     }
     // To the forecast: the geocoder's own coordinates, rounded, two days in
     // the place's own time — and no name.
@@ -485,9 +489,15 @@ async fn two_places_reach_the_model_as_data_and_the_greeting_credits_open_meteo(
         "Serbia",
         "thunderstorm",
         "light rain",
-        "17.3",
-        "55.75",
-        "44.80",
+        // The forecast's own keys and the rounded coordinates as they would
+        // be written into a URL — never a bare number, which a duration in
+        // some unrelated line could match.
+        "temperature_max",
+        "precipitation_probability",
+        "latitude=",
+        "longitude=",
+        "55.75&",
+        "44.80&",
     ] {
         assert!(
             !text.contains(leaked),

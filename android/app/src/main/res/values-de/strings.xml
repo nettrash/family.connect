@@ -649,4 +649,10 @@
         <item quantity="one">%1$d Websuche</item>
         <item quantity="other">%1$d Websuchen</item>
     </plurals>
+    <string name="s_greeting_weather">Wetter im Gruß</string>
+    <string name="s_greeting_weather_place_placeholder">Stadt oder Ort</string>
+    <string name="s_greeting_weather_add_place">Ort hinzufügen</string>
+    <string name="s_greeting_weather_remove_place">Ort entfernen</string>
+    <string name="s_greeting_weather_limit">Bis zu 3 Orte.</string>
+    <string name="s_greeting_weather_footer">Der tägliche Gruß nennt dann auch das heutige Wetter an diesen Orten. Nur die Ortsnamen werden an Open-Meteo gesendet, um die Vorhersage abzurufen. Sonst wird nichts gesendet.</string>
 </resources>

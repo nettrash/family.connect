@@ -177,6 +177,12 @@ pub struct FamilyPatch {
     pub ai_transcripts: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_lookups: Option<bool>,
+    /// The places for the greeting's weather: the WHOLE list, replacing
+    /// the stored one — `Some(vec![])` clears it, `None` leaves it alone.
+    /// Never a null: the server refuses one (docs/protocol.md, "Today's
+    /// weather, for places the owner chose").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub greeting_places: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2304,6 +2310,38 @@ mod tests {
             serde_json::to_value(FamilyPatch::default()).unwrap(),
             serde_json::json!({}),
             "absent, never false, when the owner did not touch it"
+        );
+    }
+
+    /// The greeting's places go as the WHOLE list under their one key:
+    /// `[]` to clear — never a null, which the server refuses — and absent
+    /// when the owner did not touch them.
+    #[wasm_bindgen_test]
+    fn the_greeting_places_go_as_the_whole_list_and_never_as_null() {
+        let patch = FamilyPatch {
+            greeting_places: Some(vec!["Moscow".into(), "Belgrade".into()]),
+            ..FamilyPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&patch).unwrap(),
+            r#"{"greeting_places":["Moscow","Belgrade"]}"#
+        );
+        let cleared = FamilyPatch {
+            greeting_places: Some(Vec::new()),
+            ..FamilyPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&cleared).unwrap(),
+            r#"{"greeting_places":[]}"#
+        );
+        let other = FamilyPatch {
+            ai_greeting: Some(true),
+            ..FamilyPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&other).unwrap(),
+            r#"{"ai_greeting":true}"#,
+            "absent, never null, when the places were not touched"
         );
     }
 }

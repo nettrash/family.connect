@@ -858,7 +858,10 @@ ring_timeout_secs = 45
 # # non-commercial use (no subscriptions, no ads). The place goes to the
 # # geocoder as WORDS — never a member's position — and the forecast is
 # # asked for the geocoder's coordinates. `weather_key` switches both to
-# # Open-Meteo's commercial endpoints.
+# # Open-Meteo's commercial endpoints. It also lets the daily greeting
+# # ([greetings]) mention today's forecast for up to three places a family's
+# # owner names in its settings (`greeting_places`): those names go to the
+# # geocoder when that family is greeted, and nothing else does.
 # weather = true
 # # weather_key = "YOUR-OPEN-METEO-KEY"
 #
