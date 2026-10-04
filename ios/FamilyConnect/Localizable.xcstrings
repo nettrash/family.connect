@@ -22,6 +22,59 @@
       },
       "shouldTranslate" : false
     },
+    "%@ and %@" : {
+      "comment" : "Two lookup providers named in one sentence (assistant.lookups), for example \"Open-Meteo and Wikipedia\".",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ und %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ y %@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ et %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@と%@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ и %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ и %@"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ i %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@和%@"
+          }
+        }
+      }
+    },
     "%@ are typing…" : {
       "localizations" : {
         "de" : {
@@ -511,6 +564,59 @@
       },
       "shouldTranslate" : false
     },
+    "%@, %@ and %@" : {
+      "comment" : "Three lookup providers named in one sentence (assistant.lookups), for example \"Brave Search, Open-Meteo and Wikipedia\".",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, %@ und %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, %@ y %@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, %@ et %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@、%@、%@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, %@ и %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, %@ и %@"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, %@ i %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@、%@和%@"
+          }
+        }
+      }
+    },
     "%@: %@" : {
       "comment" : "A name and an excerpt, joined — the second level of a quote. Pure format, no words.",
       "shouldTranslate" : false
@@ -847,19 +953,113 @@
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$lld Anhänge, %2$@"
+            "value" : "%#@arg1@, %2$@"
+          },
+          "substitutions" : {
+            "arg1" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg Anhang"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg Anhänge"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%#@arg1@, %2$@"
+          },
+          "substitutions" : {
+            "arg1" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg attachment"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg attachments"
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "es" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$lld adjuntos, %2$@"
+            "value" : "%#@arg1@, %2$@"
+          },
+          "substitutions" : {
+            "arg1" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg adjunto"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg adjuntos"
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$lld pièces jointes, %2$@"
+            "value" : "%#@arg1@, %2$@"
+          },
+          "substitutions" : {
+            "arg1" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg pièce jointe"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg pièces jointes"
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "ja" : {
@@ -2165,21 +2365,75 @@
     "%lld pictures from the assistant" : {
       "localizations" : {
         "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld Bilder vom Assistenten"
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Bild vom Assistenten"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Bilder vom Assistenten"
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld picture from the assistant"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld pictures from the assistant"
+                }
+              }
+            }
           }
         },
         "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld imágenes del asistente"
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld imagen del asistente"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld imágenes del asistente"
+                }
+              }
+            }
           }
         },
         "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld images de l’assistant"
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld image de l’assistant"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld images de l’assistant"
+                }
+              }
+            }
           }
         },
         "ja" : {
@@ -2189,21 +2443,81 @@
           }
         },
         "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld картинок от ассистента"
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld картинки от ассистента"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld картинок от ассистента"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld картинка от ассистента"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld картинки от ассистента"
+                }
+              }
+            }
           }
         },
         "sr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld слика од асистента"
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld слике од асистента"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld слика од асистента"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld слика од асистента"
+                }
+              }
+            }
           }
         },
         "sr-Latn" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld slika od asistenta"
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld slike od asistenta"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld slika od asistenta"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld slika od asistenta"
+                }
+              }
+            }
           }
         },
         "zh-Hans" : {
@@ -2218,21 +2532,75 @@
       "comment" : "How many questions a member asked the assistant.",
       "localizations" : {
         "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld Fragen an den Assistenten"
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Frage an den Assistenten"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Fragen an den Assistenten"
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld question to the assistant"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld questions to the assistant"
+                }
+              }
+            }
           }
         },
         "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld preguntas al asistente"
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld pregunta al asistente"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld preguntas al asistente"
+                }
+              }
+            }
           }
         },
         "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld questions à l'assistant"
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld question à l'assistant"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld questions à l'assistant"
+                }
+              }
+            }
           }
         },
         "ja" : {
@@ -2271,21 +2639,75 @@
       "comment" : "In a member's line on the statistics screen: how many recordings they had turned into text (ai.transcripts).",
       "localizations" : {
         "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld Aufnahmen als Text"
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Aufnahme als Text"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Aufnahmen als Text"
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld recording as text"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld recordings as text"
+                }
+              }
+            }
           }
         },
         "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld grabaciones a texto"
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld grabación a texto"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld grabaciones a texto"
+                }
+              }
+            }
           }
         },
         "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld enregistrements transcrits"
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld enregistrement transcrit"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld enregistrements transcrits"
+                }
+              }
+            }
           }
         },
         "ja" : {
@@ -2936,6 +3358,185 @@
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "%lld 人已投票"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld web searches" : {
+      "comment" : "In a member's line on the statistics screen: how many paid web searches the assistant made for their questions (ai.searches). Weather and Wikipedia lookups are not counted.",
+      "localizations" : {
+        "de" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Websuche"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Websuchen"
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld web search"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld web searches"
+                }
+              }
+            }
+          }
+        },
+        "es" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld búsqueda web"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld búsquedas web"
+                }
+              }
+            }
+          }
+        },
+        "fr" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld recherche web"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld recherches web"
+                }
+              }
+            }
+          }
+        },
+        "ja" : {
+          "variations" : {
+            "plural" : {
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "ウェブ検索 %lld 件"
+                }
+              }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld поиска в интернете"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld поисков в интернете"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld поиск в интернете"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld поиска в интернете"
+                }
+              }
+            }
+          }
+        },
+        "sr" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld претраге на вебу"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld претрага на вебу"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld претрага на вебу"
+                }
+              }
+            }
+          }
+        },
+        "sr-Latn" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld pretrage na vebu"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld pretraga na vebu"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld pretraga na vebu"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "variations" : {
+            "plural" : {
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "网络搜索 %lld 次"
                 }
               }
             }
@@ -4799,6 +5400,112 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "地址"
+          }
+        }
+      }
+    },
+    "Agree With Lookups" : {
+      "comment" : "Assistant consent screen, when the server names lookup providers: accepts the assistant AND lets it look things up from this member's questions (both agreements).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mit Nachschlagen zustimmen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aceptar con búsquedas"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accepter avec les recherches"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "調べものも含めて同意"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Согласиться вместе с поиском"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прихвати и тражење"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prihvati i traženje"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同意，包括查资料"
+          }
+        }
+      }
+    },
+    "Agree Without Lookups" : {
+      "comment" : "Assistant consent screen, when the server names lookup providers: accepts the assistant only; nothing is looked up from this member's questions.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ohne Nachschlagen zustimmen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aceptar sin búsquedas"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accepter sans les recherches"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "調べものなしで同意"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Согласиться без поиска"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прихвати без тражења"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prihvati bez traženja"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同意，但不查资料"
           }
         }
       }
@@ -7685,6 +8392,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "可以看照片"
+          }
+        }
+      }
+    },
+    "Can look things up" : {
+      "comment" : "The family owner's switch in the family's assistant settings (ai_lookups): whether the assistant may look things up — a web search, the weather, Wikipedia — for this family. Shown only when the server names lookup providers (assistant.lookups). Off by default.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kann nachschlagen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Puede buscar información"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Peut faire des recherches"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "調べものができる"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Может искать сведения"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Може да тражи податке"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Može da traži podatke"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可以查资料"
           }
         }
       }
@@ -15902,6 +16662,112 @@
         }
       }
     },
+    "If your family's owner turns on lookups, the assistant may send a short search query or place name it writes from your question — in the family chat, possibly from recent messages too — to %@, and its answer then lists its sources." : {
+      "comment" : "Assistant consent screen, when the server names lookup providers (assistant.lookups) and the family's Sees recent history (ai_history) is on; %@ is those providers, joined with \"%@ and %@\" or \"%@, %@ and %@\". protocol.md requires this line.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn der Eigentümer deiner Familie das Nachschlagen einschaltet, kann der Assistent eine kurze Suchanfrage oder einen Ortsnamen, den er aus deiner Frage formuliert – im Familienchat womöglich auch aus den letzten Nachrichten –, an %@ senden; seine Antwort nennt dann ihre Quellen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Si el propietario de tu familia activa las búsquedas, el asistente puede enviar a %@ una breve consulta de búsqueda o un nombre de lugar que escribe a partir de tu pregunta (en el chat familiar, quizá también a partir de mensajes recientes), y su respuesta indicará entonces sus fuentes."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Si le propriétaire de votre famille active les recherches, l’assistant peut envoyer à %@ une courte requête ou un nom de lieu qu’il rédige à partir de votre question — dans la discussion familiale, peut-être aussi à partir des messages récents — et sa réponse cite alors ses sources."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ファミリーのオーナーが調べものをオンにすると、アシスタントはあなたの質問をもとに書いた短い検索語や地名を %@ に送ることがあります（ファミリーチャットでは、最近のメッセージも参考にすることがあります）。そのときの回答には情報源が示されます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Если владелец семьи включит поиск сведений, ассистент может отправить в %@ короткий поисковый запрос или название места, которое он составит по вашему вопросу (в семейном чате — возможно, и по недавним сообщениям), и тогда в его ответе будут указаны источники."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ако власник породице укључи тражење података, асистент може да пошаље ка %@ кратак упит за претрагу или назив места који састави из твог питања — у породичном разговору можда и из недавних порука — а његов одговор онда наводи изворе."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ako vlasnik porodice uključi traženje podataka, asistent može da pošalje ka %@ kratak upit za pretragu ili naziv mesta koji sastavi iz tvog pitanja — u porodičnom razgovoru možda i iz nedavnih poruka — a njegov odgovor onda navodi izvore."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "如果家庭拥有者打开了查资料，助手可能会把它根据你的问题写出的简短搜索词或地名发送给 %@（在家庭对话里，也可能参考最近的消息），之后它的回答会列出信息来源。"
+          }
+        }
+      }
+    },
+    "If your family's owner turns on lookups, the assistant may send a short search query or place name it writes from your question to %@, and its answer then lists its sources." : {
+      "comment" : "Assistant consent screen, when the server names lookup providers (assistant.lookups) and the family's Sees recent history (ai_history) is off; %@ is those providers, joined with \"%@ and %@\" or \"%@, %@ and %@\". protocol.md requires this line.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn der Eigentümer deiner Familie das Nachschlagen einschaltet, kann der Assistent eine kurze Suchanfrage oder einen Ortsnamen, den er aus deiner Frage formuliert, an %@ senden; seine Antwort nennt dann ihre Quellen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Si el propietario de tu familia activa las búsquedas, el asistente puede enviar a %@ una breve consulta de búsqueda o un nombre de lugar que escribe a partir de tu pregunta, y su respuesta indicará entonces sus fuentes."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Si le propriétaire de votre famille active les recherches, l’assistant peut envoyer à %@ une courte requête ou un nom de lieu qu’il rédige à partir de votre question, et sa réponse cite alors ses sources."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ファミリーのオーナーが調べものをオンにすると、アシスタントはあなたの質問をもとに書いた短い検索語や地名を %@ に送ることがあります。そのときの回答には情報源が示されます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Если владелец семьи включит поиск сведений, ассистент может отправить в %@ короткий поисковый запрос или название места, которое он составит по вашему вопросу, и тогда в его ответе будут указаны источники."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ако власник породице укључи тражење података, асистент може да пошаље ка %@ кратак упит за претрагу или назив места који састави из твог питања, а његов одговор онда наводи изворе."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ako vlasnik porodice uključi traženje podataka, asistent može da pošalje ka %@ kratak upit za pretragu ili naziv mesta koji sastavi iz tvog pitanja, a njegov odgovor onda navodi izvore."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "如果家庭拥有者打开了查资料，助手可能会把它根据你的问题写出的简短搜索词或地名发送给 %@，之后它的回答会列出信息来源。"
+          }
+        }
+      }
+    },
     "In the family chat only a message that says %@ is sent — and with it the last 30 days of that chat, up to 200 messages, including what other people wrote, their names and the times." : {
       "comment" : "Assistant consent screen, family history on; %@ is the mention token.",
       "localizations" : {
@@ -17615,6 +18481,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在登录…"
+          }
+        }
+      }
+    },
+    "Looking things up" : {
+      "comment" : "Section header for the assistant's lookups (a web search, the weather, Wikipedia): over the owner's Can look things up switch, the lookup part of the assistant consent screen, and the member's lookup agreement in Settings.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nachschlagen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Búsqueda de información"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recherches"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "調べもの"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Поиск сведений"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Тражење података"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Traženje podataka"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查资料"
           }
         }
       }
@@ -25766,6 +26685,59 @@
         }
       }
     },
+    "Review and Allow Lookups…" : {
+      "comment" : "Settings: opens the assistant consent screen to agree to lookups, for a member who has agreed to the assistant but not to lookups.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lesen und Nachschlagen erlauben…"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Leer y permitir búsquedas…"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lire et autoriser les recherches…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内容を読んで調べものを許可…"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прочитать и разрешить поиск…"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прочитај и дозволи тражење…"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pročitaj i dozvoli traženje…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看并允许查资料…"
+          }
+        }
+      }
+    },
     "Review…" : {
       "comment" : "Composer bar button that opens the assistant consent screen.",
       "localizations" : {
@@ -28678,6 +29650,59 @@
         }
       }
     },
+    "Stop Lookups" : {
+      "comment" : "Settings: withdraws the lookup agreement (the assistant agreement stays).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nachschlagen beenden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Detener las búsquedas"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrêter les recherches"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "調べものをやめる"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отключить поиск"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заустави тражење"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zaustavi traženje"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止查资料"
+          }
+        }
+      }
+    },
     "Stop Sending My Messages" : {
       "comment" : "Settings: withdraws the assistant agreement.",
       "localizations" : {
@@ -29903,6 +30928,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "助手"
+          }
+        }
+      }
+    },
+    "The assistant may send a short search query or place name it writes from your questions to %@. Stopping takes effect at once; what has already been sent cannot be taken back." : {
+      "comment" : "Settings footer after the lookup agreement; %@ is the lookup providers (assistant.lookups), joined with \"%@ and %@\" or \"%@, %@ and %@\".",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Assistent kann eine kurze Suchanfrage oder einen Ortsnamen, den er aus deinen Fragen formuliert, an %@ senden. Ein Stopp wirkt sofort; was schon gesendet wurde, lässt sich nicht zurückholen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El asistente puede enviar a %@ una breve consulta de búsqueda o un nombre de lugar que escribe a partir de tus preguntas. Detenerlo surte efecto de inmediato; lo ya enviado no se puede recuperar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L’assistant peut envoyer à %@ une courte requête ou un nom de lieu qu’il rédige à partir de vos questions. L’arrêt prend effet immédiatement ; ce qui est déjà parti ne peut pas être repris."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アシスタントは、あなたの質問をもとに書いた短い検索語や地名を %@ に送ることがあります。停止はすぐ反映されますが、すでに送られたものは取り消せません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ассистент может отправить в %@ короткий поисковый запрос или название места, которое он составит по вашим вопросам. Остановка действует сразу; уже отправленное вернуть нельзя."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Асистент може да пошаље ка %@ кратак упит за претрагу или назив места који састави из твојих питања. Заустављање важи одмах; оно што је већ послато не може да се врати."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Asistent može da pošalje ka %@ kratak upit za pretragu ili naziv mesta koji sastavi iz tvojih pitanja. Zaustavljanje važi odmah; ono što je već poslato ne može da se vrati."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "助手可能会把它根据你的问题写出的简短搜索词或地名发送给 %@。停止后立即生效；已经发出去的收不回来。"
           }
         }
       }
@@ -33831,6 +34909,59 @@
         }
       }
     },
+    "Until you allow lookups, the assistant answers you from what it already knows, and nothing from your questions is sent to %@." : {
+      "comment" : "Settings footer before the lookup agreement; %@ is the lookup providers (assistant.lookups), joined with \"%@ and %@\" or \"%@, %@ and %@\".",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bis du das Nachschlagen erlaubst, antwortet dir der Assistent mit dem, was er schon weiß, und nichts aus deinen Fragen geht an %@."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hasta que permitas las búsquedas, el asistente te responde con lo que ya sabe y nada de tus preguntas se envía a %@."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tant que vous n’avez pas autorisé les recherches, l’assistant vous répond avec ce qu’il sait déjà et rien de vos questions n’est envoyé à %@."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "調べものを許可するまで、アシスタントはすでに知っていることだけで答え、あなたの質問から %@ に送られるものはありません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пока вы не разрешите поиск, ассистент отвечает вам тем, что уже знает, и ничего из ваших вопросов не уходит в %@."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Док не дозволиш тражење, асистент ти одговара оним што већ зна и ништа из твојих питања не иде ка %@."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dok ne dozvoliš traženje, asistent ti odgovara onim što već zna i ništa iz tvojih pitanja ne ide ka %@."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在你允许查资料之前，助手只用它已经知道的内容回答你，你的问题中的任何内容都不会发给 %@。"
+          }
+        }
+      }
+    },
     "Up to %lld of the most recent photos in this chat go to the model your server is set up to use, with your %@ message — pictures nobody pointed it at, whoever sent them." : {
       "localizations" : {
         "de" : {
@@ -34994,6 +36125,59 @@
         }
       }
     },
+    "Web searches" : {
+      "comment" : "Family statistics row: how many paid web searches the assistant made for the family (ai.searches). Weather and Wikipedia lookups are not counted.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Websuchen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Búsquedas web"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recherches web"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ウェブ検索"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Поиски в интернете"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Претраге на вебу"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pretrage na vebu"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "网络搜索"
+          }
+        }
+      }
+    },
     "WebP and PNG pictures are added as they are. Anything else is fitted into 512 × 512." : {
       "comment" : "Footnote on the screen that manages the family's sticker pack: what happens to a picture when it is added.",
       "localizations" : {
@@ -36066,6 +37250,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开后，在家庭对话里提到 %@ 时，会把这个对话最近一个月的内容一起发给助手，它就能回答之前说过的事。关闭后，只发送提到它的那条消息。"
+          }
+        }
+      }
+    },
+    "With this on, the assistant can look things up when a question needs it — the weather, the news, a fact it isn't sure of — in %@. Only a short search query or place name the assistant writes from the question is sent to them, never the conversation itself, and only when the member asking has agreed to it. Answers then list their sources. It is off unless you turn it on." : {
+      "comment" : "Footer under the owner's Can look things up switch; %@ is the lookup providers the server names (assistant.lookups), joined with \"%@ and %@\" or \"%@, %@ and %@\" — for example \"Brave Search, Open-Meteo and Wikipedia\".",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn das an ist, kann der Assistent nachschlagen, wenn eine Frage es braucht – das Wetter, die Nachrichten, eine Tatsache, bei der er unsicher ist –, und zwar bei %@. An sie geht nur eine kurze Suchanfrage oder ein Ortsname, den der Assistent aus der Frage formuliert, nie das Gespräch selbst, und nur, wenn das fragende Mitglied dem zugestimmt hat. Antworten nennen dann ihre Quellen. Es ist aus, solange du es nicht einschaltest."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Con esto activado, el asistente puede buscar información cuando una pregunta lo necesite —el tiempo, las noticias, un dato del que no esté seguro— en %@. Solo se les envía una breve consulta de búsqueda o un nombre de lugar que el asistente escribe a partir de la pregunta, nunca la conversación en sí, y solo cuando el miembro que pregunta lo ha aceptado. Las respuestas indican entonces sus fuentes. Está desactivado a menos que lo actives."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avec ceci activé, l’assistant peut faire des recherches quand une question le demande — la météo, l’actualité, un fait dont il n’est pas sûr — auprès de %@. Seule une courte requête ou un nom de lieu que l’assistant rédige à partir de la question leur est envoyé, jamais la conversation elle-même, et seulement si le membre qui pose la question l’a accepté. Les réponses citent alors leurs sources. C’est désactivé tant que vous ne l’activez pas."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "これをオンにすると、質問に必要なとき（天気、ニュース、確信の持てない事実など）、アシスタントが %@ で調べものをできるようになります。送られるのは、アシスタントが質問をもとに書いた短い検索語か地名だけで、会話そのものは送られません。また、質問したメンバーが同意している場合に限ります。回答には情報源が示されます。オンにしない限りオフのままです。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда это включено, ассистент может искать сведения, если вопрос этого требует, — погоду, новости, факт, в котором он не уверен, — в %@. Туда уходит только короткий поисковый запрос или название места, которое ассистент составляет по вопросу, но никогда не сам разговор, и только если спрашивающий участник на это согласился. В ответах тогда указываются источники. Выключено, пока ты это не включишь."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Када је ово укључено, асистент може да потражи податке када питање то захтева — временску прогнозу, вести, чињеницу у коју није сигуран — у %@. Тамо се шаље само кратак упит за претрагу или назив места који асистент састави из питања, никада сам разговор, и само ако је члан који пита то прихватио. Одговори тада наводе своје изворе. Искључено је док га не укључиш."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kada je ovo uključeno, asistent može da potraži podatke kada pitanje to zahteva — vremensku prognozu, vesti, činjenicu u koju nije siguran — u %@. Tamo se šalje samo kratak upit za pretragu ili naziv mesta koji asistent sastavi iz pitanja, nikada sam razgovor, i samo ako je član koji pita to prihvatio. Odgovori tada navode svoje izvore. Isključeno je dok ga ne uključiš."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开后，当问题需要时（比如天气、新闻、它不确定的事实），助手可以在 %@ 中查资料。发送给它们的只有助手根据问题写出的简短搜索词或地名，绝不会是对话本身，而且只在提问的成员已同意时才会发送。回答会列出信息来源。除非你打开，否则它是关闭的。"
           }
         }
       }
@@ -38046,6 +39283,324 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "请用笼统的词语描述人和事物——真实姓名和品牌常常会被拒绝。"
+          }
+        }
+      }
+    },
+    "Weather in the greeting" : {
+      "comment" : "Header of the section under Daily greeting where the family's owner names up to 3 places whose weather today the greeting mentions. Shown only when the server has greeting weather (assistant.greeting_weather).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wetter im Gruß"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El tiempo en el saludo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Météo dans la salutation"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "あいさつの天気予報"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Погода в приветствии"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Временска прогноза у поздраву"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vremenska prognoza u pozdravu"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "问候中的天气"
+          }
+        }
+      }
+    },
+    "City or town" : {
+      "comment" : "Placeholder of one place field in Weather in the greeting: the name of a place whose weather the daily greeting mentions, for example Moscow or Belgrade.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stadt oder Ort"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ciudad o pueblo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ville ou village"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "市や町の名前"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Город или посёлок"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Град или место"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grad ili mesto"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "城市或城镇"
+          }
+        }
+      }
+    },
+    "Add place" : {
+      "comment" : "Button in Weather in the greeting that adds one more place field, while there are fewer than 3.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ort hinzufügen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Añadir lugar"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ajouter un lieu"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "場所を追加"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить место"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Додај место"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj mesto"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加地点"
+          }
+        }
+      }
+    },
+    "Remove place" : {
+      "comment" : "Accessibility label of the button that removes one place from Weather in the greeting.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ort entfernen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quitar lugar"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Retirer le lieu"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "場所を削除"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убрать место"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Уклони место"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ukloni mesto"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除地点"
+          }
+        }
+      }
+    },
+    "Up to 3 places." : {
+      "comment" : "Shown in Weather in the greeting once 3 places are listed, in place of the Add place button: the server keeps at most 3.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bis zu 3 Orte."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hasta 3 lugares."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jusqu’à 3 lieux."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "場所は3つまでです。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не больше 3 мест."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Највише 3 места."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najviše 3 mesta."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最多 3 个地点。"
+          }
+        }
+      }
+    },
+    "The daily greeting will also mention today's weather in these places. Only the place names are sent to Open-Meteo to fetch the forecast. Nothing else is sent." : {
+      "comment" : "Footer under the place fields in Weather in the greeting. Open-Meteo is the weather service's name; keep it as is.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der tägliche Gruß nennt dann auch das heutige Wetter an diesen Orten. Nur die Ortsnamen werden an Open-Meteo gesendet, um die Vorhersage abzurufen. Sonst wird nichts gesendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El saludo diario mencionará también el tiempo de hoy en estos lugares. Solo se envían los nombres de los lugares a Open-Meteo para obtener el pronóstico. No se envía nada más."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La salutation quotidienne mentionnera aussi la météo du jour dans ces lieux. Seuls les noms des lieux sont envoyés à Open-Meteo pour obtenir les prévisions. Rien d’autre n’est envoyé."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "毎日のあいさつで、これらの場所の今日の天気にも触れます。予報を取得するため、地名だけが Open-Meteo に送られます。それ以外は何も送られません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ежедневное приветствие будет упоминать и сегодняшнюю погоду в этих местах. В Open-Meteo отправляются только названия мест, чтобы получить прогноз. Больше ничего не отправляется."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Дневни поздрав ће поменути и данашњу временску прогнозу за ова места. Сервису Open-Meteo шаљу се само називи места да би се преузела прогноза. Ништа друго се не шаље."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dnevni pozdrav će pomenuti i današnju vremensku prognozu za ova mesta. Servisu Open-Meteo šalju se samo nazivi mesta da bi se preuzela prognoza. Ništa drugo se ne šalje."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每日问候还会提到这些地点今天的天气。为获取天气预报，只会把地名发送给 Open-Meteo，不会发送其他任何内容。"
           }
         }
       }

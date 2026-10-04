@@ -84,6 +84,22 @@ pub struct Family {
     /// (docs/protocol.md, "Transcripts on request").
     #[serde(default)]
     pub ai_transcripts: bool,
+    /// Whether the assistant may look things up for this family — send a
+    /// query or a place name it wrote to the providers `assistant.lookups`
+    /// names. False unless the owner turned it on, tied to no other switch,
+    /// and absent (so false) from a server that predates it
+    /// (docs/protocol.md, "Looking things up").
+    #[serde(default)]
+    pub ai_lookups: bool,
+    /// The places, at most three, whose weather today the daily greeting
+    /// mentions — names the owner typed, as the server KEPT them (trimmed,
+    /// folded, repeats dropped). ALWAYS present, `[]` by default; every
+    /// member reads it and only the owner sets it. Absent from a server
+    /// that predates it, and anything that is not a list of names reads as
+    /// none (docs/protocol.md, "Today's weather, for places the owner
+    /// chose").
+    #[serde(default, deserialize_with = "names_or_none")]
+    pub greeting_places: Vec<String>,
 }
 
 fn yes() -> bool {
@@ -161,6 +177,13 @@ pub struct Me {
     /// drawn.
     #[serde(default)]
     pub assistant_consent_at: Option<String>,
+    /// When this member agreed that the assistant may send a query it wrote
+    /// from their words to the lookup providers — none if they have not, on
+    /// a server with no lookup source, and on one that predates it. It only
+    /// ever stands on `assistant_consent_at` (docs/protocol.md,
+    /// "Consenting to the assistant", amended 2026-10-03).
+    #[serde(default)]
+    pub assistant_lookup_consent_at: Option<String>,
 }
 
 impl Me {
@@ -228,6 +251,49 @@ pub struct Assistant {
     /// The most bytes of sound it sends, present only while `transcribe`.
     #[serde(default)]
     pub transcribe_max_bytes: Option<i64>,
+    /// The providers the assistant may look things up in, by name —
+    /// `"Brave Search"` or `"SearXNG"`, `"Open-Meteo"`, `"Wikipedia"`, in
+    /// that order. ABSENT when the server has none, which reads here as
+    /// empty, and so does `[]` (fc_text::lookups::offered). A `null`, or
+    /// anything else that is not a list of names, reads as none too: a
+    /// client that cannot name the providers does not ask.
+    #[serde(default, deserialize_with = "names_or_none")]
+    pub lookups: Vec<String>,
+    /// Whether the daily greeting can carry today's forecast for the
+    /// family's `greeting_places` — true only where this server posts
+    /// greetings and has weather configured. ALWAYS present whenever this
+    /// object is; absent from a server that predates it, which reads as
+    /// false, and so does anything that is not a boolean: the places field
+    /// is offered only when it is true.
+    #[serde(default, deserialize_with = "true_or_false")]
+    pub greeting_weather: bool,
+}
+
+/// `true`, or false for anything else — a missing key, a `null` or a
+/// stray shape never fails the read of the whole roster.
+fn true_or_false<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_bool().unwrap_or(false))
+}
+
+/// A list of names, or nothing at all — never a failed read of the whole
+/// roster because one optional key came in a shape this client did not
+/// expect. Entries that are not strings are dropped.
+fn names_or_none<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 /// `GET /families/mine`, trimmed to what this client draws.
@@ -373,6 +439,12 @@ pub struct AiCounts {
     pub transcripts: i64,
     #[serde(default)]
     pub transcript_duration_ms: i64,
+    /// The PAID web searches the assistant made answering this member (or
+    /// the family) — Brave or SearXNG calls that came back with an answer;
+    /// weather and Wikipedia are free and not counted. Absent, so 0, from a
+    /// server that predates lookups (docs/protocol.md, "Family statistics").
+    #[serde(default)]
+    pub searches: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -1273,5 +1345,124 @@ mod tests {
         let me: Me = serde_json::from_str(json).expect("reads");
         assert_eq!(me.blocked_user_ids, vec![9, 11]);
         assert_eq!(me.support_contact.as_deref(), Some("ops@example.com"));
+    }
+
+    /// LOOKUPS, read tolerantly (docs/protocol.md, "Looking things up"):
+    /// a server that has them says so in four places, and a server that
+    /// predates them says nothing in any — which reads as no switch, no
+    /// consent, no providers and no searches, never as a failed read.
+    #[wasm_bindgen_test]
+    fn lookups_are_read_where_they_are_sent_and_nothing_where_they_are_not() {
+        let me: Me = serde_json::from_str(
+            r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                "family": {"id": 3, "name": "The Smiths", "ai_lookups": true},
+                "assistant_consent_at": "2026-10-03T09:00:00Z",
+                "assistant_lookup_consent_at": "2026-10-03T09:30:00Z"}"#,
+        )
+        .expect("reads");
+        assert!(me.family.as_ref().is_some_and(|family| family.ai_lookups));
+        assert_eq!(
+            me.assistant_lookup_consent_at.as_deref(),
+            Some("2026-10-03T09:30:00Z")
+        );
+        let old: Me = serde_json::from_str(
+            r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                "family": {"id": 3, "name": "The Smiths"}}"#,
+        )
+        .expect("reads");
+        assert!(!old.family.as_ref().unwrap().ai_lookups, "absent is off");
+        assert_eq!(old.assistant_lookup_consent_at, None);
+
+        let assistant = |lookups: &str| -> Assistant {
+            let json = format!(
+                r#"{{"user_id": 1, "display_name": "Assistant", "processor": "Azure"{lookups}}}"#
+            );
+            serde_json::from_str(&json).expect("the roster still reads")
+        };
+        assert_eq!(
+            assistant(r#", "lookups": ["Brave Search", "Open-Meteo", "Wikipedia"]"#).lookups,
+            vec!["Brave Search", "Open-Meteo", "Wikipedia"]
+        );
+        assert_eq!(
+            assistant(r#", "lookups": ["SearXNG"]"#).lookups,
+            vec!["SearXNG"]
+        );
+        for nobody in [
+            "",
+            r#", "lookups": []"#,
+            r#", "lookups": null"#,
+            r#", "lookups": "Brave""#,
+        ] {
+            assert!(assistant(nobody).lookups.is_empty(), "{nobody:?}");
+        }
+        assert_eq!(
+            assistant(r#", "lookups": ["Wikipedia", 3, null]"#).lookups,
+            vec!["Wikipedia"],
+            "what is not a name is dropped, the rest kept"
+        );
+
+        let stats: Stats = serde_json::from_str(
+            r#"{"totals": {"ai": {"questions": 4, "searches": 9}},
+                "members": [{"user_id": 7, "display_name": "Anna", "ai": {"searches": 4}},
+                            {"user_id": 9, "display_name": "Bob", "ai": {"questions": 1}}]}"#,
+        )
+        .expect("reads");
+        assert_eq!(stats.totals.ai.searches, 9);
+        assert_eq!(stats.members[0].ai.searches, 4);
+        assert_eq!(stats.members[1].ai.searches, 0, "absent is none");
+    }
+
+    /// GREETING WEATHER, read tolerantly (docs/protocol.md, "Today's
+    /// weather, for places the owner chose"): the family's places from
+    /// `GET /me`, `GET /families/mine` and a PATCH answer, and the server's
+    /// `assistant.greeting_weather` — and from a server that predates them,
+    /// no places and no field, never a failed read.
+    #[wasm_bindgen_test]
+    fn greeting_weather_is_read_where_it_is_sent_and_nothing_where_it_is_not() {
+        let family = |extra: &str| -> Family {
+            let json = format!(r#"{{"id": 3, "name": "The Smiths"{extra}}}"#);
+            serde_json::from_str(&json).expect("the family still reads")
+        };
+        assert_eq!(
+            family(r#", "greeting_places": ["Moscow", "Belgrade"]"#).greeting_places,
+            vec!["Moscow", "Belgrade"]
+        );
+        for none in [
+            "",
+            r#", "greeting_places": []"#,
+            r#", "greeting_places": null"#,
+            r#", "greeting_places": "Moscow""#,
+        ] {
+            assert!(family(none).greeting_places.is_empty(), "{none:?}");
+        }
+        let me: Me = serde_json::from_str(
+            r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                "family": {"id": 3, "name": "The Smiths", "greeting_places": ["Novi Sad"]},
+                "greetings_enabled": true}"#,
+        )
+        .expect("reads");
+        assert_eq!(me.family.unwrap().greeting_places, vec!["Novi Sad"]);
+
+        let roster = |assistant: &str| -> Roster {
+            let json = format!(
+                r#"{{"members": [], "assistant": {{"user_id": 1, "display_name": "Assistant"{assistant}}}}}"#
+            );
+            serde_json::from_str(&json).expect("the roster still reads")
+        };
+        assert!(
+            roster(r#", "greeting_weather": true"#)
+                .assistant
+                .unwrap()
+                .greeting_weather
+        );
+        for off in [
+            "",
+            r#", "greeting_weather": false"#,
+            r#", "greeting_weather": null"#,
+            r#", "greeting_weather": "yes""#,
+            r#", "greeting_weather": 1"#,
+        ] {
+            assert!(!roster(off).assistant.unwrap().greeting_weather, "{off:?}");
+        }
     }
 }

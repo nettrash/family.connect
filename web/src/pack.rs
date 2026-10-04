@@ -321,6 +321,8 @@ mod tests {
             processor: processor.map(str::to_string),
             transcribe: false,
             transcribe_max_bytes: None,
+            lookups: Vec::new(),
+            greeting_weather: false,
         }
     }
 

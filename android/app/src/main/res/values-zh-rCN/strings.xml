@@ -612,4 +612,29 @@
     <string name="s_assistant_transcripts_no_server">此处不可用：这个服务器无法把录音转成文字。</string>
     <string name="s_consent_transcript_sound_sent">如果你请求获取语音消息、音频文件或视频的文字，它的声音会发送给 %1$s。</string>
     <string name="e_change_assistant_transcripts_failed">无法更改该设置</string>
+    <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
+    <string name="s_looking_things_up">查资料</string>
+    <string name="s_assistant_lookups">可以查资料</string>
+    <string name="s_assistant_lookups_explanation">打开后，当问题需要时（比如天气、新闻、它不确定的事实），助手可以在 %1$s 中查资料。发送给它们的只有助手根据问题写出的简短搜索词或地名，绝不会是对话本身，而且只在提问的成员已同意时才会发送。回答会列出信息来源。除非你打开，否则它是关闭的。</string>
+    <string name="s_consent_lookups_with_history">如果家庭拥有者打开了查资料，助手可能会把它根据你的问题写出的简短搜索词或地名发送给 %1$s（在家庭对话里，也可能参考最近的消息），之后它的回答会列出信息来源。</string>
+    <string name="s_consent_lookups_alone">如果家庭拥有者打开了查资料，助手可能会把它根据你的问题写出的简短搜索词或地名发送给 %1$s，之后它的回答会列出信息来源。</string>
+    <string name="s_agree_with_lookups">同意，包括查资料</string>
+    <string name="s_agree_without_lookups">同意，但不查资料</string>
+    <string name="s_review_and_allow_lookups">查看并允许查资料…</string>
+    <string name="s_stop_lookups">停止查资料</string>
+    <string name="s_lookups_until_you_allow">在你允许查资料之前，助手只用它已经知道的内容回答你，你的问题中的任何内容都不会发给 %1$s。</string>
+    <string name="s_lookups_stopping_takes_effect">助手可能会把它根据你的问题写出的简短搜索词或地名发送给 %1$s。停止后立即生效；已经发出去的收不回来。</string>
+    <string name="s_list_two">%1$s和%2$s</string>
+    <string name="s_list_three">%1$s、%2$s和%3$s</string>
+    <string name="s_stats_web_searches">网络搜索</string>
+    <string name="e_change_assistant_lookups_failed">无法更改该设置</string>
+    <plurals name="s_web_searches">
+        <item quantity="other">网络搜索 %1$d 次</item>
+    </plurals>
+    <string name="s_greeting_weather">问候中的天气</string>
+    <string name="s_greeting_weather_place_placeholder">城市或城镇</string>
+    <string name="s_greeting_weather_add_place">添加地点</string>
+    <string name="s_greeting_weather_remove_place">移除地点</string>
+    <string name="s_greeting_weather_limit">最多 3 个地点。</string>
+    <string name="s_greeting_weather_footer">每日问候还会提到这些地点今天的天气。为获取天气预报，只会把地名发送给 Open-Meteo，不会发送其他任何内容。</string>
 </resources>

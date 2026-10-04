@@ -80,6 +80,7 @@ struct SettingsView: View {
                 profileSection
                 familySection
                 assistantConsentSection
+                AssistantLookupConsentSection { reviewingAssistant = true }
                 privacySection
                 serverSection
                 sessionSection
@@ -106,8 +107,13 @@ struct SettingsView: View {
                     processor: AppSettings.assistantProcessor ?? "",
                     familyHistory: session.family?.aiHistory == true,
                     familyVision: session.family?.aiVision == true,
-                    onAgree: {
-                        try await session.setAssistantConsent(true)
+                    // Settings raises this for both questions: the first
+                    // for somebody who has not agreed, and only the lookup
+                    // one — from "Review and Allow Lookups…" — for
+                    // somebody who has.
+                    assistantAgreed: session.assistantConsentAt != nil,
+                    onAgree: { answer in
+                        try await session.agreeToAssistant(answer)
                         assistantConsentError = nil
                         reviewingAssistant = false
                     },

@@ -99,7 +99,7 @@ struct StatisticsView: View {
             }
 
             if stats.totals.ai.questions > 0 || stats.totals.ai.images > 0
-                || stats.totals.ai.transcripts > 0 {
+                || stats.totals.ai.transcripts > 0 || stats.totals.ai.searches > 0 {
                 Section("Assistant") {
                     LabeledContent("Questions", value: "\(stats.totals.ai.questions)")
                     LabeledContent(
@@ -127,6 +127,13 @@ struct StatisticsView: View {
                             "Recording time",
                             value: Self.duration(milliseconds: stats.totals.ai.transcriptDurationMS))
                     }
+                    // A fourth bill: paid web searches, per search
+                    // (protocol.md, "Family statistics"). Weather and
+                    // Wikipedia are free and not counted. Hidden at zero,
+                    // which is every server that cannot look things up.
+                    if stats.totals.ai.searches > 0 {
+                        LabeledContent("Web searches", value: "\(stats.totals.ai.searches)")
+                    }
                 }
             }
 
@@ -151,8 +158,10 @@ struct StatisticsView: View {
         .formStyle(.grouped)
     }
 
-    /// One line under a member: what they sent besides words.
-    private static func summary(for member: MemberStatsDTO) -> String {
+    /// One line under a member: what they sent besides words. Internal
+    /// rather than private so the counted phrases — plural forms come from
+    /// the catalogue — can be pinned.
+    static func summary(for member: MemberStatsDTO) -> String {
         var parts: [String] = []
         if member.attachments.count > 0 {
             parts.append(String(
@@ -166,6 +175,9 @@ struct StatisticsView: View {
         }
         if member.ai.transcripts > 0 {
             parts.append(String(localized: "\(member.ai.transcripts) recordings as text"))
+        }
+        if member.ai.searches > 0 {
+            parts.append(String(localized: "\(member.ai.searches) web searches"))
         }
         if parts.isEmpty { return String(localized: "Words only") }
         return parts.joined(separator: " · ")

@@ -13,6 +13,7 @@ package me.nettrash.familyconnect.data.net
 
 import me.nettrash.familyconnect.data.net.dto.AssistantConsentRequest
 import me.nettrash.familyconnect.data.net.dto.AssistantConsentResponse
+import me.nettrash.familyconnect.data.net.dto.AssistantLookupConsentResponse
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
 import me.nettrash.familyconnect.data.net.dto.BirthdayRequest
 import me.nettrash.familyconnect.data.net.dto.BirthdayResponse
@@ -82,6 +83,18 @@ interface AuthApi {
     suspend fun setAssistantConsent(granted: Boolean): ApiResult<AssistantConsentResponse>
 
     /**
+     * `POST /me/assistant-lookup-consent` — this member's own permission
+     * for the assistant to send a short query it wrote from their words to
+     * the lookup providers (docs/protocol.md, "Consenting to the
+     * assistant", amended 2026-10-03). The same `{"granted": bool}` body.
+     *
+     * Granting needs the assistant consent first (`assistant_consent_required`,
+     * 403); a server with no lookup source answers 404. Withdrawing the
+     * ASSISTANT consent clears this one on the server too.
+     */
+    suspend fun setAssistantLookupConsent(granted: Boolean): ApiResult<AssistantLookupConsentResponse>
+
+    /**
      * Server-setup probe: unauthenticated GET /me against a *candidate*
      * URL (not yet saved). A live Family Connect server answers 401 with
      * the protocol error body — that 401 is the success signal.
@@ -138,6 +151,11 @@ class DefaultAuthApi @Inject constructor(
         granted: Boolean,
     ): ApiResult<AssistantConsentResponse> =
         client.post("/me/assistant-consent", AssistantConsentRequest(granted))
+
+    override suspend fun setAssistantLookupConsent(
+        granted: Boolean,
+    ): ApiResult<AssistantLookupConsentResponse> =
+        client.post("/me/assistant-lookup-consent", AssistantConsentRequest(granted))
 
     override suspend fun probe(candidateServerUrl: String): ApiResult<MeResponse> =
         client.get(

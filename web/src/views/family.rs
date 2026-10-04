@@ -3,8 +3,9 @@
 //! Mac's is the one that disagrees with the protocol).
 //!
 //! What the owner sees: the invite code (copy, rotate), the join requests
-//! waiting, the report inbox, the join policy, the member limit, and the
-//! assistant's switches. What everybody sees: the members, with a way to
+//! waiting, the report inbox, the join policy, the member limit, the
+//! assistant's switches, and — where the server can fetch weather — the
+//! places whose forecast the daily greeting mentions. What everybody sees: the members, with a way to
 //! message, report or block each — and, for the owner, a birthday, a
 //! password reset and a removal on each, the removal asked about first.
 //!
@@ -23,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use fc_text::account::{self, cap_footer, cap_state};
+use fc_text::greeting_places::{self, Write};
 use fc_text::i18n::{t, t1, t2, tn};
 use gloo_timers::callback::Timeout;
 use wasm_bindgen::JsCast;
@@ -958,6 +960,10 @@ pub fn overlay(family: &Family, patch: Option<&FamilyPatch>) -> Family {
     if let Some(on) = patch.ai_transcripts {
         shown.ai_transcripts = on;
     }
+    // Tied to no other switch either.
+    if let Some(on) = patch.ai_lookups {
+        shown.ai_lookups = on;
+    }
     shown
 }
 
@@ -1119,6 +1125,13 @@ fn assistant_settings(props: &AssistantProps) -> Html {
                     .unwrap_or_else(|| props.assistant.display_name.clone())}
                 on_change={switch(|on| FamilyPatch { ai_transcripts: Some(on), ..FamilyPatch::default() })}
             />
+            if fc_text::lookups::offered(&props.assistant.lookups) {
+                <LookupsSwitch
+                    on={family.ai_lookups}
+                    lookups={props.assistant.lookups.clone()}
+                    on_change={switch(|on| FamilyPatch { ai_lookups: Some(on), ..FamilyPatch::default() })}
+                />
+            }
             <section class="group" aria-labelledby="assistant-greeting">
                 <h3 id="assistant-greeting">{ t("Daily greeting") }</h3>
                 <label class="setting-row toggle">
@@ -1133,6 +1146,15 @@ fn assistant_settings(props: &AssistantProps) -> Html {
                     }
                 </p>
             </section>
+            // Drawn inside the owner's sections only, so the owner half of
+            // the rule holds here; the server's half is these two keys.
+            if greeting_places::offered(true, props.greetings, props.assistant.greeting_weather) {
+                <GreetingPlaces
+                    saved={props.family.greeting_places.clone()}
+                    greeting_on={family.ai_greeting}
+                    on_action={props.on_action.clone()}
+                />
+            }
             if let Some(message) = (*error).clone() {
                 <p class="error" role="alert">{ message }</p>
             }
@@ -1172,6 +1194,284 @@ pub fn transcripts_switch(props: &TranscriptsSwitchProps) -> Html {
                     { " " }{ t("Not available here: this server can't turn recordings into text.") }
                 }
             </p>
+        </section>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct LookupsSwitchProps {
+    /// The family's `ai_lookups`, as a change on its way leaves it.
+    pub on: bool,
+    /// `assistant.lookups` — who the queries go to. The switch is drawn
+    /// only where there is somebody to name.
+    pub lookups: Vec<String>,
+    pub on_change: Callback<Event>,
+}
+
+/// The owner's `ai_lookups` (docs/protocol.md, "Looking things up"):
+/// whether the assistant may look things up for this family at all. A
+/// section of its own, offered only on a server with a lookup source — off
+/// one, it would be a switch that does nothing — with a footnote naming the
+/// providers, the way the consent screen names `processor`.
+#[function_component(LookupsSwitch)]
+pub fn lookups_switch(props: &LookupsSwitchProps) -> Html {
+    let named = fc_text::lookups::names(&fc_text::lookups::providers(&props.lookups));
+    html! {
+        <section class="group" aria-labelledby="assistant-lookups">
+            <h3 id="assistant-lookups">{ fc_text::lookups::heading() }</h3>
+            <label class="setting-row toggle">
+                <span>{ t("Can look things up") }</span>
+                <input type="checkbox" role="switch" class="lookups-switch"
+                    checked={props.on}
+                    onchange={props.on_change.clone()} />
+            </label>
+            <p class="footnote">{ fc_text::lookups::switch_footnote(&named) }</p>
+        </section>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct GreetingPlacesProps {
+    /// The family's `greeting_places`, as the server last answered — what
+    /// is drawn whenever nothing is being edited.
+    pub saved: Vec<String>,
+    /// Whether the family's greeting is on. Off, the field is still the
+    /// owner's to fill in — the places wait for the greeting — and is drawn
+    /// dimmed beneath the switch that would use them.
+    pub greeting_on: bool,
+    pub on_action: Callback<Action>,
+}
+
+/// What the places field draws: the family's list with any empty rows the
+/// owner added, or the rows as they are being typed.
+#[derive(Clone, PartialEq)]
+enum PlacesDraft {
+    Untouched { blanks: usize },
+    Editing(Vec<String>),
+}
+
+struct PlacesCell {
+    draft: PlacesDraft,
+    /// Bumped by every keystroke and every write, so only the answer to the
+    /// LAST write — with nothing typed since — puts the server's list back.
+    generation: u64,
+    /// Set by "Add place", so the row it adds takes the focus once drawn.
+    focus_last: bool,
+}
+
+impl PlacesCell {
+    fn rows(&self, saved: &[String]) -> Vec<String> {
+        match &self.draft {
+            PlacesDraft::Untouched { blanks } => greeting_places::rows(saved, *blanks),
+            PlacesDraft::Editing(rows) => rows.clone(),
+        }
+    }
+}
+
+/// The owner's places for the greeting's weather (docs/protocol.md,
+/// "Today's weather, for places the owner chose"; ios
+/// FamilyAssistantSettings): up to three names, each its own row with a
+/// remove button, "Add place" below them, and the footnote saying where the
+/// names go. A row is written when it is committed — Enter, or leaving it —
+/// and removing a row writes at once; each write sends the WHOLE list, as
+/// the protocol's PATCH replaces it, and the server's answer is what is then
+/// drawn.
+#[function_component(GreetingPlaces)]
+pub fn greeting_places_field(props: &GreetingPlacesProps) -> Html {
+    let cell = use_mut_ref(|| PlacesCell {
+        draft: PlacesDraft::Untouched { blanks: 0 },
+        generation: 0,
+        focus_last: false,
+    });
+    let redraw = use_force_update();
+    let error = use_state(|| Option::<String>::None);
+    let list = use_node_ref();
+    {
+        let cell = cell.clone();
+        let list = list.clone();
+        use_effect(move || {
+            if std::mem::take(&mut cell.borrow_mut().focus_last) {
+                let last = list
+                    .cast::<web_sys::Element>()
+                    .and_then(|list| list.query_selector_all("input.place-name").ok())
+                    .and_then(|inputs| inputs.item(inputs.length().saturating_sub(1)))
+                    .and_then(|node| node.dyn_into::<web_sys::HtmlElement>().ok());
+                if let Some(last) = last {
+                    let _ = last.focus();
+                }
+            }
+        });
+    }
+    let rows = cell.borrow().rows(&props.saved);
+    // Commit `rows`: send them if they change the family's list, put the
+    // server's list back if they say the same, refuse what it would refuse.
+    let commit = {
+        let cell = cell.clone();
+        let redraw = redraw.clone();
+        let error = error.clone();
+        let on_action = props.on_action.clone();
+        let saved = props.saved.clone();
+        Rc::new(move |rows: Vec<String>| {
+            error.set(None);
+            match greeting_places::write(&rows, &saved) {
+                Write::Nothing => {
+                    let mut held = cell.borrow_mut();
+                    held.generation += 1;
+                    held.draft = PlacesDraft::Untouched {
+                        blanks: greeting_places::blanks(&rows),
+                    };
+                }
+                Write::Refused(_) => {
+                    cell.borrow_mut().draft = PlacesDraft::Editing(rows);
+                    error.set(Some(t("Couldn't save that. Try again.").to_string()));
+                }
+                Write::Send(places) => {
+                    let generation = {
+                        let mut held = cell.borrow_mut();
+                        held.draft = PlacesDraft::Editing(rows);
+                        held.generation += 1;
+                        held.generation
+                    };
+                    let cell = cell.clone();
+                    let redraw = redraw.clone();
+                    let error = error.clone();
+                    on_action.emit(Action::ChangeFamily {
+                        patch: FamilyPatch {
+                            greeting_places: Some(places),
+                            ..FamilyPatch::default()
+                        },
+                        done: Callback::from(move |failure: Option<ApiError>| {
+                            let mut held = cell.borrow_mut();
+                            if held.generation != generation {
+                                return;
+                            }
+                            match failure {
+                                // The answer is the truth now: the list the
+                                // server KEPT, which the family holds by the
+                                // time this is drawn. Only the empty rows
+                                // still waiting for a name stay.
+                                None => {
+                                    let blanks = match &held.draft {
+                                        PlacesDraft::Editing(rows) => greeting_places::blanks(rows),
+                                        PlacesDraft::Untouched { blanks } => *blanks,
+                                    };
+                                    held.draft = PlacesDraft::Untouched { blanks };
+                                }
+                                // What was typed stays, to be tried again.
+                                Some(failure) => {
+                                    error.set(Some(
+                                        match failure.code() {
+                                            Some("not_family_owner") => {
+                                                t("Only the family owner can change this.")
+                                            }
+                                            _ => t("Couldn't save that. Try again."),
+                                        }
+                                        .to_string(),
+                                    ));
+                                }
+                            }
+                            drop(held);
+                            redraw.force_update();
+                        }),
+                    });
+                }
+            }
+            redraw.force_update();
+        })
+    };
+    let input = |index: usize| {
+        let cell = cell.clone();
+        let saved = props.saved.clone();
+        Callback::from(move |event: InputEvent| {
+            let field: HtmlInputElement = event.target_unchecked_into();
+            let raw = field.value();
+            let kept = greeting_places::typed(&raw);
+            if kept != raw {
+                field.set_value(&kept);
+            }
+            let mut held = cell.borrow_mut();
+            let mut rows = held.rows(&saved);
+            if let Some(row) = rows.get_mut(index) {
+                *row = kept;
+            }
+            held.draft = PlacesDraft::Editing(rows);
+            held.generation += 1;
+        })
+    };
+    let change = {
+        let cell = cell.clone();
+        let commit = commit.clone();
+        let saved = props.saved.clone();
+        Callback::from(move |_: Event| {
+            let rows = cell.borrow().rows(&saved);
+            commit(rows);
+        })
+    };
+    let remove = |index: usize| {
+        let cell = cell.clone();
+        let commit = commit.clone();
+        let saved = props.saved.clone();
+        Callback::from(move |_: MouseEvent| {
+            let mut rows = cell.borrow().rows(&saved);
+            if index < rows.len() {
+                rows.remove(index);
+            }
+            commit(rows);
+        })
+    };
+    let add = {
+        let cell = cell.clone();
+        let redraw = redraw.clone();
+        let saved = props.saved.clone();
+        Callback::from(move |_: MouseEvent| {
+            let mut held = cell.borrow_mut();
+            let rows = held.rows(&saved);
+            if !greeting_places::can_add(rows.len()) {
+                return;
+            }
+            held.draft = match &held.draft {
+                PlacesDraft::Untouched { blanks } => PlacesDraft::Untouched { blanks: blanks + 1 },
+                PlacesDraft::Editing(rows) => {
+                    let mut rows = rows.clone();
+                    rows.push(String::new());
+                    PlacesDraft::Editing(rows)
+                }
+            };
+            held.focus_last = true;
+            drop(held);
+            redraw.force_update();
+        })
+    };
+    let heading = greeting_places::heading();
+    let remove_label = greeting_places::remove_label();
+    html! {
+        <section class={classes!("group", "greeting-places", (!props.greeting_on).then_some("is-dimmed"))}
+            aria-labelledby="assistant-greeting-places">
+            <h3 id="assistant-greeting-places">{ heading }</h3>
+            <div class="place-rows" ref={list}>
+                { for rows.iter().enumerate().map(|(index, name)| html! {
+                    <div class="setting-row place-row" key={index}>
+                        <input type="text" class="place-name" value={name.clone()}
+                            placeholder={greeting_places::placeholder()}
+                            aria-label={greeting_places::placeholder()}
+                            autocomplete="off" spellcheck="false"
+                            oninput={input(index)} onchange={change.clone()} />
+                        <button class="link danger place-remove" aria-label={remove_label}
+                            title={remove_label} onclick={remove(index)}>{ "\u{2212}" }</button>
+                    </div>
+                }) }
+            </div>
+            if greeting_places::can_add(rows.len()) {
+                <div class="setting-row">
+                    <button class="link place-add" onclick={add}>{ greeting_places::add_label() }</button>
+                </div>
+            } else {
+                <p class="footnote place-limit">{ greeting_places::limit_note() }</p>
+            }
+            <p class="footnote">{ greeting_places::footnote() }</p>
+            if let Some(message) = (*error).clone() {
+                <p class="error" role="alert">{ message }</p>
+            }
         </section>
     }
 }
@@ -1469,6 +1769,8 @@ mod tests {
             processor: Some("Microsoft — Azure OpenAI".into()),
             transcribe,
             transcribe_max_bytes: transcribe.then_some(26_214_400),
+            lookups: Vec::new(),
+            greeting_weather: false,
         };
         let props = AssistantProps {
             family: Family::default(),
@@ -1522,6 +1824,478 @@ mod tests {
             .text_content()
             .unwrap_or_default()
             .contains("Not available here: this server can't turn recordings into text."));
+        root.remove();
+    }
+
+    /// The lookups switch rides on nothing: vision or transcripts going
+    /// off leave it as it was, and its own patch is one key.
+    #[wasm_bindgen_test]
+    fn the_lookups_switch_is_tied_to_no_other() {
+        let family = Family {
+            ai_vision: true,
+            ai_transcripts: true,
+            ai_lookups: true,
+            ..Default::default()
+        };
+        for other in [
+            FamilyPatch {
+                ai_vision: Some(false),
+                ..FamilyPatch::default()
+            },
+            FamilyPatch {
+                ai_transcripts: Some(false),
+                ..FamilyPatch::default()
+            },
+            FamilyPatch {
+                ai_history: Some(false),
+                ..FamilyPatch::default()
+            },
+        ] {
+            assert!(overlay(&family, Some(&other)).ai_lookups, "{other:?}");
+        }
+        let off = FamilyPatch {
+            ai_lookups: Some(false),
+            ..FamilyPatch::default()
+        };
+        let shown = overlay(&family, Some(&off));
+        assert!(!shown.ai_lookups && shown.ai_vision && shown.ai_transcripts);
+    }
+
+    /// THE OWNER'S LOOKUPS SWITCH, drawn and pressed: present only where
+    /// the server names providers, off unless turned on, its footnote
+    /// naming them, and one write of exactly its own key.
+    #[wasm_bindgen_test]
+    async fn the_owners_lookups_switch_names_the_providers_and_writes_its_own_key() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let into = sent.clone();
+        let on_action = Callback::from(move |action: Action| {
+            if let Action::ChangeFamily { patch, done } = action {
+                into.borrow_mut().push(patch);
+                done.emit(None);
+            }
+        });
+        let assistant = |lookups: &[&str]| Assistant {
+            user_id: 2,
+            display_name: "Assistant".into(),
+            mention: Some("@ai".into()),
+            draw: None,
+            vision: false,
+            images: false,
+            processor: Some("Microsoft — Azure OpenAI".into()),
+            transcribe: false,
+            transcribe_max_bytes: None,
+            lookups: lookups.iter().map(|name| name.to_string()).collect(),
+            greeting_weather: false,
+        };
+        let draw = |assistant: Assistant| {
+            let root = document.create_element("div").unwrap();
+            document.body().unwrap().append_child(&root).unwrap();
+            let props = AssistantProps {
+                family: Family::default(),
+                assistant,
+                greetings: false,
+                on_action: on_action.clone(),
+            };
+            yew::Renderer::<AssistantSettings>::with_root_and_props(root.clone(), props).render();
+            root
+        };
+
+        let root = draw(assistant(&["Brave Search", "Open-Meteo", "Wikipedia"]));
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        let switch: web_sys::HtmlInputElement = root
+            .query_selector(".lookups-switch")
+            .unwrap()
+            .expect("the switch")
+            .dyn_into()
+            .unwrap();
+        assert!(!switch.checked(), "off unless the owner turns it on");
+        let text = root.text_content().unwrap_or_default();
+        assert!(text.contains("Looking things up"));
+        assert!(text.contains("Can look things up"));
+        assert!(
+            text.contains("in Brave Search, Open-Meteo and Wikipedia. Only a short search query"),
+            "{text}"
+        );
+        switch.click();
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        assert_eq!(
+            *sent.borrow(),
+            vec![FamilyPatch {
+                ai_lookups: Some(true),
+                ..FamilyPatch::default()
+            }]
+        );
+        root.remove();
+
+        // No source on this server — absent and `[]` alike: no switch.
+        for nobody in [&[][..], &["  "][..]] {
+            let root = draw(assistant(nobody));
+            gloo_timers::future::TimeoutFuture::new(30).await;
+            assert!(root.query_selector(".lookups-switch").unwrap().is_none());
+            assert!(!root
+                .text_content()
+                .unwrap_or_default()
+                .contains("Can look things up"));
+            root.remove();
+        }
+    }
+
+    /// Every place-field test's server: it keeps a list as the real one
+    /// does (or, as one that predates the key, answers with none), and the
+    /// family it answers with is what the field is drawn from next.
+    #[derive(Properties, PartialEq)]
+    struct PlacesHostProps {
+        initial: Vec<String>,
+        greeting_on: bool,
+        old_server: bool,
+        refuse: bool,
+        sent: Rc<RefCell<Vec<FamilyPatch>>>,
+    }
+
+    #[function_component(PlacesHost)]
+    fn places_host(props: &PlacesHostProps) -> Html {
+        let saved = use_state(|| props.initial.clone());
+        let on_action = {
+            let saved = saved.clone();
+            let sent = props.sent.clone();
+            let old_server = props.old_server;
+            let refuse = props.refuse;
+            Callback::from(move |action: Action| {
+                if let Action::ChangeFamily { patch, done } = action {
+                    sent.borrow_mut().push(patch.clone());
+                    if refuse {
+                        done.emit(Some(ApiError::Server {
+                            code: "validation".into(),
+                            message: "greeting place 1 is empty".into(),
+                        }));
+                        return;
+                    }
+                    let list = patch.greeting_places.unwrap_or_default();
+                    saved.set(if old_server {
+                        Vec::new()
+                    } else {
+                        greeting_places::places(&list).expect("the server keeps it")
+                    });
+                    done.emit(None);
+                }
+            })
+        };
+        html! {
+            <GreetingPlaces saved={(*saved).clone()} greeting_on={props.greeting_on} {on_action} />
+        }
+    }
+
+    fn places_host(
+        initial: &[&str],
+        greeting_on: bool,
+        old_server: bool,
+        refuse: bool,
+    ) -> (web_sys::Element, Rc<RefCell<Vec<FamilyPatch>>>) {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root = document.create_element("div").unwrap();
+        document.body().unwrap().append_child(&root).unwrap();
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let props = PlacesHostProps {
+            initial: initial.iter().map(|name| name.to_string()).collect(),
+            greeting_on,
+            old_server,
+            refuse,
+            sent: sent.clone(),
+        };
+        yew::Renderer::<PlacesHost>::with_root_and_props(root.clone(), props).render();
+        (root, sent)
+    }
+
+    fn place_fields(root: &web_sys::Element) -> Vec<HtmlInputElement> {
+        let found = root.query_selector_all("input.place-name").unwrap();
+        (0..found.length())
+            .map(|index| found.item(index).unwrap().dyn_into().unwrap())
+            .collect()
+    }
+
+    fn place_values(root: &web_sys::Element) -> Vec<String> {
+        place_fields(root)
+            .iter()
+            .map(|field| field.value())
+            .collect()
+    }
+
+    /// Typed, then committed — what Enter or leaving the field does.
+    fn type_place(field: &HtmlInputElement, value: &str) {
+        field.set_value(value);
+        let init = web_sys::EventInit::new();
+        init.set_bubbles(true);
+        field
+            .dispatch_event(&web_sys::Event::new_with_event_init_dict("input", &init).unwrap())
+            .unwrap();
+    }
+
+    fn commit_place(field: &HtmlInputElement) {
+        let init = web_sys::EventInit::new();
+        init.set_bubbles(true);
+        field
+            .dispatch_event(&web_sys::Event::new_with_event_init_dict("change", &init).unwrap())
+            .unwrap();
+    }
+
+    fn places_sent(patch: &FamilyPatch) -> Vec<String> {
+        assert_eq!(
+            *patch,
+            FamilyPatch {
+                greeting_places: patch.greeting_places.clone(),
+                ..FamilyPatch::default()
+            },
+            "the places go alone"
+        );
+        patch.greeting_places.clone().expect("the places key")
+    }
+
+    async fn settle() {
+        gloo_timers::future::TimeoutFuture::new(30).await;
+    }
+
+    /// THE PLACES FIELD'S VISIBILITY: drawn beside the greeting only where
+    /// the server posts greetings AND says it can fetch their weather —
+    /// never on a server that predates the key (absent reads as false) —
+    /// with the family's places in it and the footnote saying where they
+    /// go. A member sees none of the owner's assistant settings at all.
+    #[wasm_bindgen_test]
+    async fn the_places_field_is_drawn_only_where_the_server_uses_it() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let assistant = |greeting_weather: bool| Assistant {
+            user_id: 2,
+            display_name: "Assistant".into(),
+            mention: Some("@ai".into()),
+            draw: None,
+            vision: false,
+            images: false,
+            processor: Some("Microsoft — Azure OpenAI".into()),
+            transcribe: false,
+            transcribe_max_bytes: None,
+            lookups: Vec::new(),
+            greeting_weather,
+        };
+        let draw = |greetings: bool, greeting_weather: bool| {
+            let root = document.create_element("div").unwrap();
+            document.body().unwrap().append_child(&root).unwrap();
+            let props = AssistantProps {
+                family: Family {
+                    ai_greeting: true,
+                    greeting_places: vec!["Moscow".into(), "Belgrade".into()],
+                    ..Default::default()
+                },
+                assistant: assistant(greeting_weather),
+                greetings,
+                on_action: Callback::noop(),
+            };
+            yew::Renderer::<AssistantSettings>::with_root_and_props(root.clone(), props).render();
+            root
+        };
+
+        let root = draw(true, true);
+        settle().await;
+        assert!(root.query_selector(".greeting-places").unwrap().is_some());
+        assert_eq!(place_values(&root), vec!["Moscow", "Belgrade"]);
+        let text = root.text_content().unwrap_or_default();
+        assert!(text.contains("Weather in the greeting"));
+        assert!(text.contains("Only the place names are sent to Open-Meteo to fetch the forecast"));
+        assert!(text.contains("Add place"));
+        // It follows the greeting's own section.
+        let html = root.inner_html();
+        assert!(
+            html.find("assistant-greeting\"").unwrap()
+                < html.find("assistant-greeting-places").unwrap()
+        );
+        root.remove();
+
+        for (greetings, greeting_weather) in [(true, false), (false, true), (false, false)] {
+            let root = draw(greetings, greeting_weather);
+            settle().await;
+            assert!(
+                root.query_selector(".greeting-places").unwrap().is_none(),
+                "{greetings} {greeting_weather}"
+            );
+            assert!(!root
+                .text_content()
+                .unwrap_or_default()
+                .contains("Weather in the greeting"));
+            root.remove();
+        }
+    }
+
+    /// ADD, TYPE, COMMIT: a row is added empty and focused; committing it
+    /// writes the WHOLE list, folded as the server folds it; at three rows
+    /// "Add place" gives way to the limit; a repeat is no change and
+    /// writes nothing; and what is drawn after is what the server kept.
+    #[wasm_bindgen_test]
+    async fn adding_and_committing_a_place_writes_the_whole_list() {
+        let (root, sent) = places_host(&["Moscow"], true, false, false);
+        settle().await;
+        assert_eq!(place_values(&root), vec!["Moscow"]);
+        element(&root, ".place-add").click();
+        settle().await;
+        let fields = place_fields(&root);
+        assert_eq!(place_values(&root), vec!["Moscow", ""]);
+        let focused = web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .active_element();
+        assert_eq!(
+            focused.map(|focused| focused.is_same_node(Some(&fields[1]))),
+            Some(true),
+            "the added row has the focus"
+        );
+        // An empty row committed is no place, and nothing is written.
+        commit_place(&fields[1]);
+        settle().await;
+        assert!(sent.borrow().is_empty());
+        let fields = place_fields(&root);
+        type_place(&fields[1], "  Novi   Sad ");
+        commit_place(&fields[1]);
+        settle().await;
+        assert_eq!(sent.borrow().len(), 1);
+        assert_eq!(places_sent(&sent.borrow()[0]), vec!["Moscow", "Novi Sad"]);
+        assert_eq!(place_values(&root), vec!["Moscow", "Novi Sad"], "as kept");
+
+        element(&root, ".place-add").click();
+        settle().await;
+        assert_eq!(place_fields(&root).len(), 3);
+        assert!(root.query_selector(".place-add").unwrap().is_none());
+        assert_eq!(
+            element(&root, ".place-limit").text_content().unwrap(),
+            "Up to 3 places."
+        );
+        let fields = place_fields(&root);
+        type_place(&fields[2], "MOSCOW");
+        commit_place(&fields[2]);
+        settle().await;
+        assert_eq!(sent.borrow().len(), 1, "a repeat changes nothing");
+        assert_eq!(place_values(&root), vec!["Moscow", "Novi Sad"]);
+        assert!(root.query_selector(".place-add").unwrap().is_some());
+        root.remove();
+    }
+
+    /// REMOVE: the row goes and the list without it is written at once;
+    /// removing the last writes `[]`, which clears it; removing an empty
+    /// row writes nothing.
+    #[wasm_bindgen_test]
+    async fn removing_a_place_writes_the_list_without_it() {
+        let (root, sent) = places_host(&["Moscow", "Belgrade"], true, false, false);
+        settle().await;
+        let remove: Vec<web_sys::HtmlElement> = {
+            let found = root.query_selector_all(".place-remove").unwrap();
+            (0..found.length())
+                .map(|index| found.item(index).unwrap().dyn_into().unwrap())
+                .collect()
+        };
+        assert_eq!(remove.len(), 2);
+        assert_eq!(
+            remove[0].get_attribute("aria-label").as_deref(),
+            Some("Remove place")
+        );
+        remove[0].click();
+        settle().await;
+        assert_eq!(places_sent(&sent.borrow()[0]), vec!["Belgrade"]);
+        assert_eq!(place_values(&root), vec!["Belgrade"]);
+
+        element(&root, ".place-add").click();
+        settle().await;
+        assert_eq!(place_values(&root), vec!["Belgrade", ""]);
+        let found = root.query_selector_all(".place-remove").unwrap();
+        found
+            .item(1)
+            .unwrap()
+            .dyn_into::<web_sys::HtmlElement>()
+            .unwrap()
+            .click();
+        settle().await;
+        assert_eq!(sent.borrow().len(), 1, "an empty row goes without a write");
+        assert_eq!(place_values(&root), vec!["Belgrade"]);
+
+        element(&root, ".place-remove").click();
+        settle().await;
+        assert_eq!(places_sent(&sent.borrow()[1]), Vec::<String>::new());
+        assert!(place_fields(&root).is_empty());
+        root.remove();
+    }
+
+    /// A field keeps the server's 80 characters — characters, not bytes —
+    /// and no control character.
+    #[wasm_bindgen_test]
+    async fn a_place_field_stops_at_eighty_characters() {
+        let (root, sent) = places_host(&[], true, false, false);
+        settle().await;
+        element(&root, ".place-add").click();
+        settle().await;
+        let field = place_fields(&root).remove(0);
+        type_place(&field, &format!("Bel\u{1}grade{}", "ж".repeat(90)));
+        assert_eq!(field.value().chars().count(), 80);
+        assert!(field.value().starts_with("Belgradeж"));
+        commit_place(&field);
+        settle().await;
+        let written = places_sent(&sent.borrow()[0]);
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].chars().count(), 80);
+        root.remove();
+    }
+
+    /// The answer is what is drawn, not what was sent: a server older than
+    /// the key ignores it, and its answer carries no list.
+    #[wasm_bindgen_test]
+    async fn the_list_drawn_is_the_one_the_server_answered_with() {
+        let (root, sent) = places_host(&[], true, true, false);
+        settle().await;
+        element(&root, ".place-add").click();
+        settle().await;
+        let field = place_fields(&root).remove(0);
+        type_place(&field, "Moscow");
+        commit_place(&field);
+        settle().await;
+        assert_eq!(places_sent(&sent.borrow()[0]), vec!["Moscow"]);
+        assert!(place_values(&root).is_empty(), "the server kept none");
+        root.remove();
+    }
+
+    /// A refused write keeps what was typed, and says so.
+    #[wasm_bindgen_test]
+    async fn a_refused_write_keeps_what_was_typed() {
+        let (root, sent) = places_host(&[], true, false, true);
+        settle().await;
+        element(&root, ".place-add").click();
+        settle().await;
+        let field = place_fields(&root).remove(0);
+        type_place(&field, "Moscow");
+        commit_place(&field);
+        settle().await;
+        assert_eq!(sent.borrow().len(), 1);
+        assert_eq!(place_values(&root), vec!["Moscow"]);
+        assert_eq!(
+            element(&root, ".greeting-places .error")
+                .text_content()
+                .unwrap(),
+            "Couldn't save that. Try again."
+        );
+        root.remove();
+    }
+
+    /// With the greeting off the field is still the owner's to fill in,
+    /// drawn dimmed beneath the switch that would use it.
+    #[wasm_bindgen_test]
+    async fn with_the_greeting_off_the_field_is_dimmed_and_still_editable() {
+        let (root, _) = places_host(&["Moscow"], false, false, false);
+        settle().await;
+        assert!(element(&root, ".greeting-places")
+            .class_list()
+            .contains("is-dimmed"));
+        assert!(place_fields(&root).iter().all(|field| !field.disabled()));
+        root.remove();
+        let (root, _) = places_host(&["Moscow"], true, false, false);
+        settle().await;
+        assert!(!element(&root, ".greeting-places")
+            .class_list()
+            .contains("is-dimmed"));
         root.remove();
     }
 }

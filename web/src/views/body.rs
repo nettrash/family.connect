@@ -482,4 +482,44 @@ mod tests {
             .collect();
         assert_eq!(joined, markdown::render(body).plain());
     }
+
+    /// A daily greeting that used the weather ends with the server's credit
+    /// (docs/protocol.md, "Today's weather, for places the owner chose"):
+    /// plain markdown in the body, drawn as a link a click opens — to
+    /// exactly the URL the server wrote — in every language it is written
+    /// in, and nothing else about the greeting is a link.
+    #[wasm_bindgen_test]
+    async fn a_greetings_weather_credit_is_a_link_to_open_meteo() {
+        use wasm_bindgen::JsCast;
+        let document = web_sys::window().unwrap().document().unwrap();
+        for (body, label) in [
+            (
+                "Good morning! Belgrade, Serbia: sunny, 24°/13°.\n\n[Weather data by Open-Meteo.com](https://open-meteo.com/)",
+                "Weather data by Open-Meteo.com",
+            ),
+            (
+                "Доброе утро! Москва, Россия: облачно, +12°.\n\n[Данные о погоде: Open-Meteo.com](https://open-meteo.com/)",
+                "Данные о погоде: Open-Meteo.com",
+            ),
+        ] {
+            let root = document.create_element("div").unwrap();
+            document.body().unwrap().append_child(&root).unwrap();
+            let props = BodyProps {
+                text: body.into(),
+                mentions: Vec::new(),
+                my_user_id: 7,
+                member_ids: HashSet::new(),
+                on_open_direct: Callback::noop(),
+            };
+            yew::Renderer::<Body>::with_root_and_props(root.clone(), props).render();
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            let links = root.query_selector_all("a").unwrap();
+            assert_eq!(links.length(), 1, "{}", root.inner_html());
+            let link: web_sys::Element = links.item(0).unwrap().dyn_into().unwrap();
+            assert_eq!(link.get_attribute("href").as_deref(), Some("https://open-meteo.com/"));
+            assert_eq!(link.text_content().as_deref(), Some(label));
+            assert!(!root.text_content().unwrap().contains("]("), "no markdown shows");
+            root.remove();
+        }
+    }
 }

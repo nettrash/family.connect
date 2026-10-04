@@ -145,8 +145,8 @@ struct TranscriptSection: View {
                 processor: AppSettings.assistantProcessor ?? "",
                 familyHistory: session.family?.aiHistory == true,
                 familyVision: session.family?.aiVision == true,
-                onAgree: {
-                    try await session.setAssistantConsent(true)
+                onAgree: { answer in
+                    try await session.agreeToAssistant(answer)
                     showAssistantConsent = false
                     ask()
                 },

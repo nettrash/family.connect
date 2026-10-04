@@ -276,6 +276,38 @@
                     </Button>
                 </StackPanel>
 
+                <!-- Looking things up (docs/protocol.md, "Looking things up"): the member's SECOND consent, which stands on -->
+                <!-- top of the first. Collapsed unless this server names its lookup providers and this member has agreed to -->
+                <!-- the assistant — before that, the assistant question itself asks about lookups. -->
+                <TextBlock x:Name="LookupsHeading" Style="{StaticResource Section}" Visibility="Collapsed" />
+                <StackPanel x:Name="LookupsPanel" Spacing="4" Visibility="Collapsed">
+                    <Border Style="{StaticResource Card}">
+                        <Grid Style="{StaticResource Row}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <FontIcon Style="{StaticResource RowIcon}" Glyph="&#xE721;" />
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                                <TextBlock x:Name="LookupsTitle" TextWrapping="Wrap" />
+                                <TextBlock x:Name="LookupsFootnote" Style="{StaticResource Footnote}" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                    <Button x:Name="LookupsButton" Style="{StaticResource ActionRow}">
+                        <Grid ColumnSpacing="16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <FontIcon Style="{StaticResource RowIcon}" Glyph="&#xE734;" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                            <TextBlock x:Name="LookupsAction" Grid.Column="1" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                            <FontIcon Grid.Column="2" Style="{StaticResource Chevron}" Glyph="&#xE8A7;" />
+                        </Grid>
+                    </Button>
+                </StackPanel>
+
                 <TextBlock x:Name="PrivacyHeading" Style="{StaticResource Section}" />
                 <StackPanel Spacing="4">
                     <!-- The one switch that changes who this app talks to, so it says so plainly. -->

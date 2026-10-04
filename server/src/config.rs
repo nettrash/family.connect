@@ -7,7 +7,7 @@
 //! value surface later as a confusing runtime error (e.g. an idle timeout
 //! shorter than the ping interval would silently kill every socket).
 //!
-//! Unknown keys are IGNORED everywhere except under `[ai]` and its three
+//! Unknown keys are IGNORED everywhere except under `[ai]` and its four
 //! sub-tables, where they fail the load by name (see
 //! [`reject_unknown_ai_keys`]). The asymmetry is deliberate: a mistyped
 //! `[limits]` key costs a default, while a mistyped — or misplaced — key
@@ -383,6 +383,12 @@ pub struct AiConfig {
     /// a speech model and clients are told not to offer "Show text".
     #[serde(default)]
     pub transcribe: AiTranscribeConfig,
+
+    /// `[ai.lookups]` — the web search, weather and Wikipedia the assistant
+    /// may look things up in (protocol.md, "Looking things up"). Absent
+    /// means none: no tool is declared and every request is what it was.
+    #[serde(default)]
+    pub lookups: AiLookupsConfig,
 }
 
 /// How the key is presented to the provider.
@@ -703,6 +709,314 @@ impl AiTranscribeConfig {
     }
 }
 
+/// `[ai.lookups]` — where the assistant may LOOK THINGS UP (docs/protocol.md,
+/// "Looking things up").
+///
+/// The first section under `[ai]` that is not a deployment of `processor`:
+/// every source named here is a DIFFERENT party, and what it receives is the
+/// query the model wrote — at most [`AiLookupsConfig::max_query_chars`] —
+/// and nothing else. Each source is OFF until it is named, and with none
+/// named the whole feature does not exist: no tool is declared, no date line
+/// is added, and every request is byte for byte what it was before.
+///
+/// Inherits NOTHING from `[ai]`. Its keys are its own, they fail the load
+/// when unknown like every other `[ai.*]` key, and the combinations that make
+/// no sense (a Brave key with SearXNG chosen, a weather key with the weather
+/// off, a contact that is an email address) are refused at startup by
+/// [`AiLookupsConfig::validate`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct AiLookupsConfig {
+    /// A URL that says whose server this is, for the User-Agent every lookup
+    /// carries — Wikimedia's User-Agent policy requires contact information
+    /// and refuses generic agents. A URL and NEVER an email address: the
+    /// agent goes to three third parties on every lookup, and an address in
+    /// it is an address handed to them. Empty means the project's own page,
+    /// [`DEFAULT_LOOKUP_CONTACT`].
+    #[serde(default)]
+    pub contact: String,
+
+    /// The web search provider, or `None` for no web search at all.
+    #[serde(default)]
+    pub search: Option<SearchProvider>,
+
+    /// The Brave Search API subscription token — `search = "brave"` only.
+    #[serde(default)]
+    pub search_key: String,
+
+    /// The SearXNG instance's base URL — `search = "searxng"` only. Its JSON
+    /// output must be enabled in the instance's `settings.yml`, or it
+    /// answers 403 to every query.
+    #[serde(default)]
+    pub searxng_url: String,
+
+    /// Open-Meteo's geocoder and forecast.
+    #[serde(default)]
+    pub weather: bool,
+
+    /// Open-Meteo's commercial key, which switches both requests to its
+    /// keyed endpoints. Empty uses the free, non-commercial ones.
+    #[serde(default)]
+    pub weather_key: String,
+
+    /// Wikipedia's search, summaries and "on this day".
+    #[serde(default)]
+    pub wikipedia: bool,
+
+    /// The most web searches one family may make in a UTC day — the
+    /// operator's bill. Past it `web_search` is not declared.
+    #[serde(default = "default_daily_searches_per_family")]
+    pub daily_searches_per_family: i64,
+
+    /// The most lookups one reply may make, across all its rounds.
+    #[serde(default = "default_lookups_per_reply")]
+    pub lookups_per_reply: u32,
+
+    /// The most rounds of lookups before the final answer, which declares
+    /// no lookup tool at all.
+    #[serde(default = "default_lookup_rounds")]
+    pub rounds: u32,
+
+    /// How long ONE lookup request may take, in seconds — set on that
+    /// request, so it never inherits `[ai] timeout_secs`.
+    #[serde(default = "default_lookup_timeout_secs")]
+    pub timeout_secs: u64,
+
+    /// The longest query or place name, in characters. A longer one is
+    /// refused back to the model, never cut.
+    #[serde(default = "default_max_query_chars")]
+    pub max_query_chars: usize,
+
+    /// Where each provider answers. NOT a config key — the providers'
+    /// public URLs are fixed, and an operator pointing them somewhere else
+    /// would be sending a family's queries to a party the protocol does not
+    /// name. It exists so the integration tests can stand a stub on a local
+    /// listener; a config file cannot reach it.
+    #[serde(skip)]
+    pub endpoints: LookupEndpoints,
+}
+
+/// The two web search providers, interchangeable, one per server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchProvider {
+    /// The Brave Search API.
+    Brave,
+    /// A SearXNG instance the operator runs.
+    Searxng,
+}
+
+impl SearchProvider {
+    /// The name a client shows on the consent screen (`assistant.lookups`).
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Brave => "Brave Search",
+            Self::Searxng => "SearXNG",
+        }
+    }
+}
+
+/// The project's own page — the User-Agent's contact when the operator
+/// names none. A URL, never an address.
+pub const DEFAULT_LOOKUP_CONTACT: &str = "https://github.com/nettrash/family.connect";
+
+/// Where each lookup provider answers. See [`AiLookupsConfig::endpoints`].
+#[derive(Debug, Clone)]
+pub struct LookupEndpoints {
+    pub brave_web: String,
+    pub brave_news: String,
+    pub geocoding: String,
+    pub forecast: String,
+    pub geocoding_keyed: String,
+    pub forecast_keyed: String,
+    /// `{lang}` is replaced by the Wikipedia language code.
+    pub wikipedia: String,
+}
+
+impl Default for LookupEndpoints {
+    fn default() -> Self {
+        Self {
+            brave_web: "https://api.search.brave.com/res/v1/web/search".to_string(),
+            brave_news: "https://api.search.brave.com/res/v1/news/search".to_string(),
+            geocoding: "https://geocoding-api.open-meteo.com/v1/search".to_string(),
+            forecast: "https://api.open-meteo.com/v1/forecast".to_string(),
+            geocoding_keyed: "https://customer-geocoding-api.open-meteo.com/v1/search".to_string(),
+            forecast_keyed: "https://customer-api.open-meteo.com/v1/forecast".to_string(),
+            wikipedia: "https://{lang}.wikipedia.org".to_string(),
+        }
+    }
+}
+
+fn default_daily_searches_per_family() -> i64 {
+    100
+}
+
+fn default_lookups_per_reply() -> u32 {
+    3
+}
+
+fn default_lookup_rounds() -> u32 {
+    2
+}
+
+fn default_lookup_timeout_secs() -> u64 {
+    10
+}
+
+fn default_max_query_chars() -> usize {
+    200
+}
+
+impl Default for AiLookupsConfig {
+    fn default() -> Self {
+        Self {
+            contact: String::new(),
+            search: None,
+            search_key: String::new(),
+            searxng_url: String::new(),
+            weather: false,
+            weather_key: String::new(),
+            wikipedia: false,
+            daily_searches_per_family: default_daily_searches_per_family(),
+            lookups_per_reply: default_lookups_per_reply(),
+            rounds: default_lookup_rounds(),
+            timeout_secs: default_lookup_timeout_secs(),
+            max_query_chars: default_max_query_chars(),
+            endpoints: LookupEndpoints::default(),
+        }
+    }
+}
+
+impl AiLookupsConfig {
+    /// Any source at all. False means the feature does not exist.
+    pub fn is_configured(&self) -> bool {
+        self.search.is_some() || self.weather || self.wikipedia
+    }
+
+    /// The providers a question could reach, by the names clients show —
+    /// `assistant.lookups`, in a fixed order.
+    pub fn source_names(&self) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        if let Some(search) = self.search {
+            names.push(search.display_name());
+        }
+        if self.weather {
+            names.push("Open-Meteo");
+        }
+        if self.wikipedia {
+            names.push("Wikipedia");
+        }
+        names
+    }
+
+    /// The contact the User-Agent names.
+    pub fn contact(&self) -> &str {
+        let contact = self.contact.trim();
+        if contact.is_empty() {
+            DEFAULT_LOOKUP_CONTACT
+        } else {
+            contact
+        }
+    }
+
+    /// `family.connect/<version> (<contact>) reqwest` — the shape
+    /// Wikimedia's User-Agent policy asks for: the product, its version, a
+    /// way to reach whoever runs it, and the library underneath.
+    pub fn user_agent(&self) -> String {
+        format!(
+            "family.connect/{} ({}) reqwest",
+            env!("CARGO_PKG_VERSION"),
+            self.contact()
+        )
+    }
+
+    /// Refused at startup by name, whether or not the assistant is on —
+    /// a section that is wrong is wrong before somebody flips the switch.
+    fn validate(&self) -> Result<()> {
+        let contact = self.contact.trim();
+        if !contact.is_empty() {
+            let is_url = contact.starts_with("https://") || contact.starts_with("http://");
+            if !is_url
+                || contact.contains('@')
+                || contact.chars().any(char::is_whitespace)
+                || contact.chars().count() > 200
+            {
+                anyhow::bail!(
+                    "ai.lookups.contact must be an http(s) URL of at most 200 characters, with no \
+                     email address in it — it goes in the User-Agent of every lookup, to every \
+                     provider; leave it out to name {DEFAULT_LOOKUP_CONTACT}"
+                );
+            }
+        }
+        match self.search {
+            Some(SearchProvider::Brave) => {
+                if self.search_key.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.lookups.search_key is required with search = \"brave\": it is the \
+                         Brave Search API subscription token"
+                    );
+                }
+                if !self.searxng_url.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.lookups.searxng_url means nothing with search = \"brave\" — one web \
+                         search per server; remove it, or set search = \"searxng\""
+                    );
+                }
+            }
+            Some(SearchProvider::Searxng) => {
+                let url = self.searxng_url.trim();
+                if !(url.starts_with("https://") || url.starts_with("http://")) {
+                    anyhow::bail!(
+                        "ai.lookups.searxng_url is required with search = \"searxng\" and must be \
+                         the instance's http(s) base URL, e.g. https://searx.internal"
+                    );
+                }
+                if !self.search_key.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.lookups.search_key means nothing with search = \"searxng\" — it is a \
+                         Brave token; remove it, or set search = \"brave\""
+                    );
+                }
+            }
+            None => {
+                if !self.search_key.trim().is_empty() || !self.searxng_url.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.lookups names a search key or a SearXNG URL but no `search` provider — \
+                         set search = \"brave\" or search = \"searxng\", or remove them"
+                    );
+                }
+            }
+        }
+        if !self.weather && !self.weather_key.trim().is_empty() {
+            anyhow::bail!(
+                "ai.lookups.weather_key is set but weather is off — set weather = true, or remove \
+                 the key"
+            );
+        }
+        if self.daily_searches_per_family < 1 || self.daily_searches_per_family > 1_000_000 {
+            anyhow::bail!(
+                "ai.lookups.daily_searches_per_family must be between 1 and 1000000 — leave \
+                 `search` out to have no web search at all"
+            );
+        }
+        if !(1..=10).contains(&self.lookups_per_reply) {
+            anyhow::bail!("ai.lookups.lookups_per_reply must be between 1 and 10");
+        }
+        if !(1..=5).contains(&self.rounds) {
+            anyhow::bail!("ai.lookups.rounds must be between 1 and 5");
+        }
+        if !(1..=60).contains(&self.timeout_secs) {
+            anyhow::bail!(
+                "ai.lookups.timeout_secs must be between 1 and 60 — it bounds ONE lookup, and \
+                 the reply waits for it"
+            );
+        }
+        if !(20..=500).contains(&self.max_query_chars) {
+            anyhow::bail!("ai.lookups.max_query_chars must be between 20 and 500");
+        }
+        Ok(())
+    }
+}
+
 /// One resolved provider call: where to POST it, which key opens it, what to
 /// name in the body, and the cap the server owns.
 ///
@@ -774,6 +1088,7 @@ impl Default for AiConfig {
             vision: AiDeployment::default(),
             images: AiImagesConfig::default(),
             transcribe: AiTranscribeConfig::default(),
+            lookups: AiLookupsConfig::default(),
         }
     }
 }
@@ -1086,6 +1401,13 @@ impl AiConfig {
     /// `assistant.transcribe`.
     pub fn transcribe_usable(&self) -> bool {
         self.transcribe_route().is_some()
+    }
+
+    /// Whether this server may look anything up at all: an assistant, and
+    /// at least one source in `[ai.lookups]`. The answer behind
+    /// `assistant.lookups` and behind every lookup tool ever declared.
+    pub fn lookups_usable(&self) -> bool {
+        self.is_usable() && self.lookups.is_configured()
     }
 }
 
@@ -1696,7 +2018,7 @@ impl Default for PushConfig {
 }
 
 /// The keys `[ai]` itself takes — the fields of [`AiConfig`], by their
-/// TOML names, plus the three sub-tables. Held beside the struct rather than
+/// TOML names, plus the four sub-tables. Held beside the struct rather than
 /// derived from it because serde offers no way to list a struct's fields,
 /// and `deny_unknown_fields` cannot be used on [`AiImagesConfig`] (serde
 /// refuses it beside `flatten`). The tests hold each list to its struct:
@@ -1719,6 +2041,7 @@ const AI_KEYS: &[&str] = &[
     "vision",
     "images",
     "transcribe",
+    "lookups",
 ];
 
 /// The fields of [`AiDeployment`] — what `[ai.vision]` takes, and what
@@ -1744,6 +2067,23 @@ const AI_IMAGES_OWN_KEYS: &[&str] = &[
 
 /// The fields [`AiTranscribeConfig`] adds beside its flattened deployment.
 const AI_TRANSCRIBE_OWN_KEYS: &[&str] = &["max_bytes", "api", "style", "language_hint"];
+
+/// The fields of [`AiLookupsConfig`] — what `[ai.lookups]` takes. Not a
+/// deployment, so none of [`AI_DEPLOYMENT_KEYS`].
+const AI_LOOKUPS_KEYS: &[&str] = &[
+    "contact",
+    "search",
+    "search_key",
+    "searxng_url",
+    "weather",
+    "weather_key",
+    "wikipedia",
+    "daily_searches_per_family",
+    "lookups_per_reply",
+    "rounds",
+    "timeout_secs",
+    "max_query_chars",
+];
 
 /// Refuse a key the `[ai]` tables do not know, by name and by table.
 ///
@@ -1774,7 +2114,7 @@ fn reject_unknown_ai_keys(raw: &str) -> Result<()> {
         .chain(AI_TRANSCRIBE_OWN_KEYS)
         .copied()
         .collect();
-    let tables: [(&str, Option<&toml::Table>, &[&str]); 4] = [
+    let tables: [(&str, Option<&toml::Table>, &[&str]); 5] = [
         ("[ai]", Some(ai), AI_KEYS),
         (
             "[ai.vision]",
@@ -1790,6 +2130,11 @@ fn reject_unknown_ai_keys(raw: &str) -> Result<()> {
             "[ai.transcribe]",
             ai.get("transcribe").and_then(toml::Value::as_table),
             &transcribe_keys,
+        ),
+        (
+            "[ai.lookups]",
+            ai.get("lookups").and_then(toml::Value::as_table),
+            AI_LOOKUPS_KEYS,
         ),
     ];
     for (name, table, known) in &tables {
@@ -2029,6 +2374,7 @@ impl Config {
             );
         }
         self.ai.transcribe.validate()?;
+        self.ai.lookups.validate()?;
         if self.calls.ring_timeout_secs < 5 {
             anyhow::bail!(
                 "calls.ring_timeout_secs must be at least 5 — a phone cannot be picked up faster"
@@ -2462,7 +2808,7 @@ deployment = "draws"
         let mut raw = String::from("[ai]\n");
         for key in AI_KEYS {
             let value = match *key {
-                "vision" | "images" | "transcribe" => continue,
+                "vision" | "images" | "transcribe" | "lookups" => continue,
                 "enabled" => "true".to_string(),
                 "auth" => "\"bearer\"".to_string(),
                 "max_tokens" | "history_messages" => "7".to_string(),
@@ -2505,7 +2851,29 @@ deployment = "draws"
             };
             raw.push_str(&format!("{key} = {value}\n"));
         }
+        raw.push_str("\n[ai.lookups]\n");
+        for key in AI_LOOKUPS_KEYS {
+            let value = match *key {
+                "contact" => "\"https://example.org/contact\"".to_string(),
+                "search" => "\"brave\"".to_string(),
+                // One web search per server: swept by the SearXNG test below.
+                "searxng_url" => continue,
+                "weather" | "wikipedia" => "true".to_string(),
+                "daily_searches_per_family" => "7".to_string(),
+                "lookups_per_reply" | "rounds" | "timeout_secs" => "4".to_string(),
+                "max_query_chars" => "150".to_string(),
+                _ => format!("\"{key}\""),
+            };
+            raw.push_str(&format!("{key} = {value}\n"));
+        }
         let cfg = Config::from_toml_str(&raw).unwrap_or_else(|err| panic!("{err:#}\n{raw}"));
+        assert_eq!(cfg.ai.lookups.search, Some(SearchProvider::Brave));
+        assert_eq!(cfg.ai.lookups.search_key, "search_key");
+        assert_eq!(cfg.ai.lookups.weather_key, "weather_key");
+        assert_eq!(cfg.ai.lookups.daily_searches_per_family, 7);
+        assert_eq!(cfg.ai.lookups.rounds, 4);
+        assert_eq!(cfg.ai.lookups.max_query_chars, 150);
+        assert_eq!(cfg.ai.lookups.contact(), "https://example.org/contact");
         // And they were READ, not merely tolerated.
         assert_eq!(cfg.ai.transcribe.max_bytes, 2048);
         assert_eq!(cfg.ai.transcribe.deployment.model, "model");
@@ -3539,5 +3907,77 @@ height = 1024
             "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 65536\n",
         )
         .expect("the two ceilings may be equal");
+    }
+
+    /// `[ai.lookups]` (protocol.md, "Looking things up"): off unless a
+    /// source is named, its combinations checked at startup, and its
+    /// contact a URL — never an address.
+    #[test]
+    fn the_lookups_section_is_off_by_default_and_refuses_nonsense() {
+        let cfg = Config::from_toml_str("").expect("empty is valid");
+        assert!(!cfg.ai.lookups.is_configured());
+        assert!(cfg.ai.lookups.source_names().is_empty());
+        assert_eq!(cfg.ai.lookups.daily_searches_per_family, 100);
+        assert_eq!(cfg.ai.lookups.lookups_per_reply, 3);
+        assert_eq!(cfg.ai.lookups.rounds, 2);
+        assert_eq!(cfg.ai.lookups.timeout_secs, 10);
+        assert_eq!(cfg.ai.lookups.max_query_chars, 200);
+        assert_eq!(cfg.ai.lookups.contact(), DEFAULT_LOOKUP_CONTACT);
+        assert!(
+            cfg.ai
+                .lookups
+                .user_agent()
+                .contains("(https://github.com/nettrash/family.connect)"),
+            "{}",
+            cfg.ai.lookups.user_agent()
+        );
+
+        let searx = Config::from_toml_str(
+            "[ai.lookups]\nsearch = \"searxng\"\nsearxng_url = \"https://searx.internal\"\nwikipedia = true\n",
+        )
+        .expect("a SearXNG section");
+        assert_eq!(
+            searx.ai.lookups.source_names(),
+            vec!["SearXNG", "Wikipedia"]
+        );
+
+        for (raw, says) in [
+            ("search = \"brave\"\n", "search_key"),
+            (
+                "search = \"brave\"\nsearch_key = \"k\"\nsearxng_url = \"https://s\"\n",
+                "searxng_url",
+            ),
+            ("search = \"searxng\"\n", "searxng_url"),
+            (
+                "search = \"searxng\"\nsearxng_url = \"https://s\"\nsearch_key = \"k\"\n",
+                "search_key",
+            ),
+            ("search_key = \"k\"\n", "no `search` provider"),
+            ("search = \"bing\"\n", "unknown variant"),
+            ("weather_key = \"k\"\n", "weather_key"),
+            ("contact = \"ops@example.org\"\n", "contact"),
+            (
+                "contact = \"https://example.org/?mail=ops@example.org\"\n",
+                "contact",
+            ),
+            (
+                "daily_searches_per_family = 0\n",
+                "daily_searches_per_family",
+            ),
+            ("lookups_per_reply = 0\n", "lookups_per_reply"),
+            ("rounds = 9\n", "rounds"),
+            ("timeout_secs = 0\n", "timeout_secs"),
+            ("max_query_chars = 5\n", "max_query_chars"),
+            (
+                "serach = \"brave\"\n",
+                "unknown key `serach` under [ai.lookups]",
+            ),
+        ] {
+            let err = format!(
+                "{:#}",
+                Config::from_toml_str(&format!("[ai.lookups]\n{raw}")).expect_err(raw)
+            );
+            assert!(err.contains(says), "{raw:?} must say {says:?}: {err}");
+        }
     }
 }

@@ -639,4 +639,31 @@
     <string name="s_assistant_transcripts_no_server">Овде није доступно: овај сервер не може да претвори снимке у текст.</string>
     <string name="s_consent_transcript_sound_sent">Ако затражиш текст гласовне поруке, аудио датотеке или видеа, звук се шаље ка %1$s.</string>
     <string name="e_change_assistant_transcripts_failed">Није успела промена подешавања</string>
+    <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
+    <string name="s_looking_things_up">Тражење података</string>
+    <string name="s_assistant_lookups">Може да тражи податке</string>
+    <string name="s_assistant_lookups_explanation">Када је ово укључено, асистент може да потражи податке када питање то захтева — временску прогнозу, вести, чињеницу у коју није сигуран — у %1$s. Тамо се шаље само кратак упит за претрагу или назив места који асистент састави из питања, никада сам разговор, и само ако је члан који пита то прихватио. Одговори тада наводе своје изворе. Искључено је док га не укључиш.</string>
+    <string name="s_consent_lookups_with_history">Ако власник породице укључи тражење података, асистент може да пошаље ка %1$s кратак упит за претрагу или назив места који састави из твог питања — у породичном разговору можда и из недавних порука — а његов одговор онда наводи изворе.</string>
+    <string name="s_consent_lookups_alone">Ако власник породице укључи тражење података, асистент може да пошаље ка %1$s кратак упит за претрагу или назив места који састави из твог питања, а његов одговор онда наводи изворе.</string>
+    <string name="s_agree_with_lookups">Прихвати и тражење</string>
+    <string name="s_agree_without_lookups">Прихвати без тражења</string>
+    <string name="s_review_and_allow_lookups">Прочитај и дозволи тражење…</string>
+    <string name="s_stop_lookups">Заустави тражење</string>
+    <string name="s_lookups_until_you_allow">Док не дозволиш тражење, асистент ти одговара оним што већ зна и ништа из твојих питања не иде ка %1$s.</string>
+    <string name="s_lookups_stopping_takes_effect">Асистент може да пошаље ка %1$s кратак упит за претрагу или назив места који састави из твојих питања. Заустављање важи одмах; оно што је већ послато не може да се врати.</string>
+    <string name="s_list_two">%1$s и %2$s</string>
+    <string name="s_list_three">%1$s, %2$s и %3$s</string>
+    <string name="s_stats_web_searches">Претраге на вебу</string>
+    <string name="e_change_assistant_lookups_failed">Није успела промена подешавања</string>
+    <plurals name="s_web_searches">
+        <item quantity="one">%1$d претрага на вебу</item>
+        <item quantity="few">%1$d претраге на вебу</item>
+        <item quantity="other">%1$d претрага на вебу</item>
+    </plurals>
+    <string name="s_greeting_weather">Временска прогноза у поздраву</string>
+    <string name="s_greeting_weather_place_placeholder">Град или место</string>
+    <string name="s_greeting_weather_add_place">Додај место</string>
+    <string name="s_greeting_weather_remove_place">Уклони место</string>
+    <string name="s_greeting_weather_limit">Највише 3 места.</string>
+    <string name="s_greeting_weather_footer">Дневни поздрав ће поменути и данашњу временску прогнозу за ова места. Сервису Open-Meteo шаљу се само називи места да би се преузела прогноза. Ништа друго се не шаље.</string>
 </resources>

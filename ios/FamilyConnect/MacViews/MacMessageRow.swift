@@ -25,15 +25,19 @@ struct MacMessageRow: View {
     /// Profile-picture version per user, so the who-reacted rows lead with
     /// a face like the phone's do.
     var avatarVersionFor: (Int64) -> Int64 = { _ in 0 }
-    /// The assistant is still writing this one — a cursor, nothing more.
+    /// The assistant is still writing this one — a cursor, and no link
+    /// preview card (MessageLinks.previewLink: the text so far is the
+    /// model's, before the server's link filter).
     /// True for an EMPTY assistant row from the moment it is fanned out:
     /// a picture answer streams nothing, so the empty row is the whole of
     /// its "still working" state (protocol.md, "How a picture comes back").
     var isStreaming: Bool = false
-    /// An `ai_error` named this row, and it is BLANK — no partial text and
-    /// no picture. The phone's rule, and its wording — including WHICH
-    /// sentence, a provider's refusal or the plain "ask again". Nil while
-    /// the answer has not failed.
+    /// An `ai_error` named this row: the answer stopped. Set whether or not
+    /// partial text arrived — a stopped answer draws no preview card
+    /// (MessageLinks.previewLink) — but the sentence is drawn only where the
+    /// row is BLANK, no partial text and no picture. The phone's rule, and
+    /// its wording — including WHICH sentence, a provider's refusal or the
+    /// plain "ask again". Nil while the answer has not failed.
     var assistantFailure: AssistantFailure? = nil
     let isMine: Bool
     /// Family chat, run head, not mine — the phone's rule, shared.
@@ -949,7 +953,11 @@ struct MacMessageRow: View {
     /// cannot see and misses ones they can.
     private var previewableLink: URL? {
         guard !isEmojiOnly else { return nil }
-        return MessageLinks.firstWebLinkAsDrawn(in: message.body)
+        // Never for an assistant answer still being written or stopped by
+        // an `ai_error` — the phone's rule, in the same function
+        // (MessageLinks.previewLink).
+        return MessageLinks.previewLink(
+            in: message.body, isStreaming: isStreaming, answerFailed: assistantFailure != nil)
     }
 
     /// The card to draw under this bubble, once its fetch has landed.

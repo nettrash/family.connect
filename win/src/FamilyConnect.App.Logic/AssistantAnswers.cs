@@ -91,6 +91,23 @@ public sealed class AssistantAnswers
         }
     }
 
+    /// <summary>
+    /// Whether what is drawn for this row includes streamed words the finished row has not yet replaced — the model's raw
+    /// text, before the server's link filter (docs/protocol.md, "How sources are shown"). True for an answer that stopped
+    /// part-way too, whose words are never replaced.
+    /// </summary>
+    public bool IsWriting(MessageDto message)
+    {
+        if (message.EditSeq is not null)
+        {
+            return false;
+        }
+        lock (gate)
+        {
+            return written.ContainsKey(message.Id);
+        }
+    }
+
     /// <summary>Whether the row says it failed — which sentence it says is <see cref="FailureSentence"/>.</summary>
     public bool Failed(MessageDto message)
     {

@@ -33,6 +33,7 @@ pub mod handlers_poll;
 pub mod handlers_report;
 pub mod handlers_stats;
 pub mod handlers_transcript;
+pub mod lookups;
 pub mod mentions;
 pub mod migrate;
 pub mod models;

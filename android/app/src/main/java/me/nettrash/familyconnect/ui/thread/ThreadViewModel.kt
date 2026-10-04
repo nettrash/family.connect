@@ -57,6 +57,7 @@ import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.ui.chat.AssistantConsent
+import me.nettrash.familyconnect.ui.chat.AssistantLookups
 import me.nettrash.familyconnect.ui.chat.ChatListItem
 import me.nettrash.familyconnect.ui.chat.ChatViewModel
 import me.nettrash.familyconnect.ui.chat.buildChatItems
@@ -272,6 +273,7 @@ class ThreadViewModel @Inject constructor(
                     familyHistory = settingsState.familyAiHistory,
                     familyVision = settingsState.familyAiVision,
                     transcripts = settingsState.assistantTranscribe,
+                    lookupProviders = AssistantLookups.providers(settingsState.assistantLookups),
                 )
             }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
@@ -281,10 +283,10 @@ class ThreadViewModel @Inject constructor(
      * sends a sticker, and the tap that raised the question was answered
      * with the question — the next one goes.
      */
-    fun agreeToTheAssistant() {
+    fun agreeToTheAssistant(withLookups: Boolean = false) {
         viewModelScope.launch {
             _assistantConsentAsked.value = false
-            familyRepository.setAssistantConsent(true)
+            familyRepository.agreeToAssistant(withLookups)
         }
     }
 

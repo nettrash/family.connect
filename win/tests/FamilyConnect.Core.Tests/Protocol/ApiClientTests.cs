@@ -963,4 +963,162 @@ public class ApiClientTests
         Assert.Equal(95_000, stats.Totals.Ai.TranscriptDurationMs);
         Assert.Equal(0, stats.Members![0].Ai!.Transcripts);
     }
+
+    /// <summary>
+    /// Looking things up, as <c>GET /families/mine</c> and <c>GET /me</c> carry it (docs/protocol.md, "Looking things up"):
+    /// the providers by name in the server's order, the owner's switch, and the member's stamp — and an older server, which
+    /// carries none of them, reads as "no lookups here".
+    /// </summary>
+    [Fact]
+    public async Task TheLookupProvidersSwitchAndConsentArriveTolerantly()
+    {
+        var (client, _) = Client(new Fake()
+            .Then(HttpStatusCode.OK, """
+                {"family": {"id": 3, "name": "The Smiths", "ai_lookups": true},
+                 "assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai", "processor": "Azure OpenAI",
+                               "lookups": ["Brave Search", "Open-Meteo", "Wikipedia"]}}
+                """)
+            .Then(HttpStatusCode.OK, """
+                {"family": {"id": 3, "name": "The Smiths"},
+                 "assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai"}}
+                """)
+            .Then(HttpStatusCode.OK, """
+                {"user": {"id": 7, "username": "anna", "display_name": "Anna"},
+                 "assistant_consent_at": "2026-09-19T08:12:04Z", "assistant_lookup_consent_at": "2026-10-03T09:30:00Z"}
+                """)
+            .Then(HttpStatusCode.OK, """
+                {"user": {"id": 7, "username": "anna", "display_name": "Anna"}, "assistant_consent_at": null}
+                """));
+        var newer = (await client.Family()).Value!;
+        Assert.True(newer.Family.AiLookups);
+        Assert.Equal(["Brave Search", "Open-Meteo", "Wikipedia"], newer.Assistant!.Lookups!);
+        var older = (await client.Family()).Value!;
+        Assert.False(older.Family.AiLookups);
+        Assert.Null(older.Assistant!.Lookups);
+        Assert.Equal("2026-10-03T09:30:00Z", (await client.Me()).Value!.AssistantLookupConsentAt);
+        Assert.Null((await client.Me()).Value!.AssistantLookupConsentAt);
+    }
+
+    /// <summary>The owner's switch goes out as its own key, and only when it is in the patch.</summary>
+    [Fact]
+    public async Task TheLookupSwitchIsPatchedAsItsOwnKey()
+    {
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths", "ai_lookups": false}}""")
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths", "ai_history": true}}"""));
+        var off = await client.PatchFamily(new FamilyPatch { AiLookups = false });
+        Assert.False(off.Value!.Family.AiLookups);
+        Assert.Equal("{\"ai_lookups\":false}", handler.Bodies[0]);
+        Assert.Equal(HttpMethod.Patch, handler.Sent[0].Method);
+        await client.PatchFamily(new FamilyPatch { AiHistory = true });
+        Assert.DoesNotContain("ai_lookups", handler.Bodies[1], StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The greeting's weather, as <c>GET /families/mine</c> carries it (docs/protocol.md, "Today's weather, for places the
+    /// owner chose"): the owner's places on the family, the server's ability on the assistant — and an older server, which
+    /// carries neither, reads as no places and no greeting weather.
+    /// </summary>
+    [Fact]
+    public async Task TheGreetingPlacesAndWeatherArriveTolerantly()
+    {
+        var (client, _) = Client(new Fake()
+            .Then(HttpStatusCode.OK, """
+                {"family": {"id": 3, "name": "The Smiths", "ai_greeting": true, "greeting_places": ["Moscow", "Белград"]},
+                 "assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai", "greeting_weather": true}}
+                """)
+            .Then(HttpStatusCode.OK, """
+                {"family": {"id": 3, "name": "The Smiths", "greeting_places": []},
+                 "assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai", "greeting_weather": false}}
+                """)
+            .Then(HttpStatusCode.OK, """
+                {"family": {"id": 3, "name": "The Smiths"},
+                 "assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai"}}
+                """));
+        var newer = (await client.Family()).Value!;
+        Assert.Equal(["Moscow", "Белград"], newer.Family.GreetingPlaces!);
+        Assert.True(newer.Assistant!.GreetingWeather);
+        var off = (await client.Family()).Value!;
+        Assert.Empty(off.Family.GreetingPlaces!);
+        Assert.False(off.Assistant!.GreetingWeather);
+        var older = (await client.Family()).Value!;
+        Assert.Null(older.Family.GreetingPlaces);
+        Assert.False(older.Assistant!.GreetingWeather);
+    }
+
+    /// <summary>
+    /// The places go out as one list that REPLACES the stored one; <c>[]</c> clears it, and a patch without them never
+    /// carries the key — never a <c>null</c>, which the server refuses. The answer is the list as the server KEPT it.
+    /// </summary>
+    [Fact]
+    public async Task TheGreetingPlacesArePatchedAsOneListAndNeverAsNull()
+    {
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths", "greeting_places": ["Moscow"]}}""")
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths", "greeting_places": []}}""")
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths", "greeting_places": []}}""")
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths", "greeting_places": ["Белград"]}}"""));
+
+        var kept = await client.PatchFamily(new FamilyPatch { GreetingPlaces = ["Moscow", "moscow"] });
+        Assert.Equal(HttpMethod.Patch, handler.Sent[0].Method);
+        Assert.EndsWith("/families/mine", handler.Sent[0].RequestUri!.AbsolutePath, StringComparison.Ordinal);
+        Assert.Equal("{\"greeting_places\":[\"Moscow\",\"moscow\"]}", handler.Bodies[0]);
+        // What the server kept, not what was sent.
+        Assert.Equal(["Moscow"], kept.Value!.Family.GreetingPlaces!);
+
+        await client.PatchFamily(new FamilyPatch { GreetingPlaces = [] });
+        Assert.Equal("{\"greeting_places\":[]}", handler.Bodies[1]);
+
+        await client.PatchFamily(new FamilyPatch { AiGreeting = true });
+        Assert.DoesNotContain("greeting_places", handler.Bodies[2], StringComparison.Ordinal);
+
+        // Any script: the body is JSON whatever the escaping, and it reads back as what was typed.
+        await client.PatchFamily(new FamilyPatch { GreetingPlaces = ["Белград"] });
+        using var sent = System.Text.Json.JsonDocument.Parse(handler.Bodies[3]!);
+        Assert.Equal("Белград", sent.RootElement.GetProperty("greeting_places")[0].GetString());
+        Assert.Single(sent.RootElement.EnumerateObject());
+    }
+
+    /// <summary>
+    /// The member's own lookup consent: its own endpoint, the same shape as the assistant's, the stamp read back — and
+    /// the refusal for granting it without the first one read as its code, asked once.
+    /// </summary>
+    [Fact]
+    public async Task TheLookupConsentIsItsOwnEndpoint()
+    {
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.OK, """{"assistant_lookup_consent_at": "2026-10-03T09:30:00Z"}""")
+            .Then(HttpStatusCode.OK, """{"assistant_lookup_consent_at": null}""")
+            .Then(HttpStatusCode.Forbidden, """{"error": {"code": "assistant_consent_required", "message": "agree first"}}"""));
+        var granted = await client.SetAssistantLookupConsent(true);
+        Assert.Equal("2026-10-03T09:30:00Z", granted.Value!.AssistantLookupConsentAt);
+        Assert.Equal(HttpMethod.Post, handler.Sent[0].Method);
+        Assert.Equal("https://chat.example.com/api/v1/me/assistant-lookup-consent", handler.Sent[0].RequestUri?.ToString());
+        Assert.Equal("{\"granted\":true}", handler.Bodies[0]);
+
+        var withdrawn = await client.SetAssistantLookupConsent(false);
+        Assert.True(withdrawn.Ok);
+        Assert.Null(withdrawn.Value!.AssistantLookupConsentAt);
+        Assert.Equal("{\"granted\":false}", handler.Bodies[1]);
+
+        var refused = await client.SetAssistantLookupConsent(true);
+        Assert.Equal(ErrorCodes.AssistantConsentRequired, refused.Error!.Code);
+        Assert.Equal(3, handler.Sent.Count);
+    }
+
+    /// <summary>The paid web searches, read per member and in the totals — and zero where an older server sends none.</summary>
+    [Fact]
+    public async Task TheWebSearchesAreInTheStatistics()
+    {
+        var (client, _) = Client(new Fake().Then(HttpStatusCode.OK, """
+            {"generated_at": "2026-10-03T10:00:00Z",
+             "totals": {"members": 2, "messages": 10, "board_notes": 0, "ai": {"questions": 3, "searches": 9}},
+             "members": [{"user_id": 7, "display_name": "Anna", "messages": 6, "ai": {"questions": 2, "searches": 4}},
+                         {"user_id": 11, "display_name": "Bob", "messages": 4, "ai": {"questions": 1}}]}
+            """));
+        var stats = (await client.Stats()).Value!;
+        Assert.Equal(9, stats.Totals.Ai!.Searches);
+        Assert.Equal(4, stats.Members![0].Ai!.Searches);
+        Assert.Equal(0, stats.Members[1].Ai!.Searches);
+    }
 }

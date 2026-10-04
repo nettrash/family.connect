@@ -108,6 +108,21 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         Send<AssistantConsentResponse>(
             HttpMethod.Post, "/me/assistant-consent", new { granted }, ct: ct);
 
+    /// <summary>
+    /// This member's own permission for the assistant to send a query or place name it writes from their words to the
+    /// lookup providers (docs/protocol.md, "Consenting to the assistant", amended 2026-10-03). Answers with the stamp the
+    /// server now holds: a date when granted, null when withdrawn.
+    /// </summary>
+    /// <remarks>
+    /// The same shape as <see cref="SetAssistantConsent"/>, and idempotent the same way. It may only be GRANTED on top of
+    /// the assistant consent — <c>assistant_consent_required</c> otherwise — and withdrawing the assistant consent clears
+    /// it on the server too. A server with no lookup source answers <c>404</c>.
+    /// </remarks>
+    public Task<ApiResult<AssistantLookupConsentResponse>> SetAssistantLookupConsent(
+        bool granted, CancellationToken ct = default) =>
+        Send<AssistantLookupConsentResponse>(
+            HttpMethod.Post, "/me/assistant-lookup-consent", new { granted }, ct: ct);
+
     public Task<ApiResult<FamilyResponse>> Family(CancellationToken ct = default) =>
         Send<FamilyResponse>(HttpMethod.Get, "/families/mine", ct: ct);
 
@@ -535,12 +550,18 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
                      ("ai_greeting", patch.AiGreeting),
                      ("ai_faces", patch.AiFaces),
                      ("ai_transcripts", patch.AiTranscripts),
+                     ("ai_lookups", patch.AiLookups),
                  })
         {
             if (value is { } flag)
             {
                 body[key] = flag;
             }
+        }
+        // A list or nothing: `null` is `validation` for this key, and `[]` is how it is cleared.
+        if (patch.GreetingPlaces is { } places)
+        {
+            body["greeting_places"] = places.ToArray();
         }
         return Send<FamilyOnlyResponse>(HttpMethod.Patch, "/families/mine", body, ct: ct);
     }

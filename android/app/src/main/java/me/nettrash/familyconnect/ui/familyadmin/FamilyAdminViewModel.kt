@@ -16,6 +16,7 @@ package me.nettrash.familyconnect.ui.familyadmin
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import me.nettrash.familyconnect.ui.chat.AssistantLookups
 import me.nettrash.familyconnect.R
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -34,6 +35,7 @@ import me.nettrash.familyconnect.data.net.dto.JoinRequestDto
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.util.GreetingPlaces
 import javax.inject.Inject
 import me.nettrash.familyconnect.data.net.dto.ReportDto
 
@@ -160,6 +162,37 @@ class FamilyAdminViewModel @Inject constructor(
         val assistantTranscribe: Boolean = false,
         /** Who the sound would go to (`assistant.processor`), named in the switch's footer. */
         val assistantProcessor: String? = null,
+        /**
+         * Whether the assistant may look things up for this family
+         * (`ai_lookups`, docs/protocol.md, "Looking things up"). FALSE by
+         * default and bound to no other switch.
+         */
+        val aiLookups: Boolean = false,
+        /**
+         * Who a lookup would reach (`assistant.lookups`). The switch above
+         * is HIDDEN when this is empty — it does nothing on a server with no
+         * source — and its footnote names these when it is drawn.
+         */
+        val assistantLookups: List<String> = emptyList(),
+        /**
+         * The greeting's weather places as the SERVER kept them
+         * (`greeting_places`, docs/protocol.md, "Today's weather, for places
+         * the owner chose"). What the editor below is compared against, and
+         * reset to after every Save — from the answer, never the request.
+         */
+        val greetingPlaces: List<String> = emptyList(),
+        /**
+         * Whether this server can put today's weather into the greeting
+         * (`assistant.greeting_weather`). The places editor is HIDDEN when
+         * this is false ([GreetingPlaces.isShown]): the list would be kept
+         * and do nothing.
+         */
+        val greetingWeather: Boolean = false,
+        /**
+         * The place fields as the owner is editing them — not yet sent.
+         * Opens on [greetingPlaces], or one empty field when there are none.
+         */
+        val placeFields: List<String> = GreetingPlaces.fieldsFor(emptyList()),
         /** The owner's own cap, or null for none of their own. */
         val maxMembers: Int? = null,
         /** The operator's ceiling; null on a server too old to say. */
@@ -182,6 +215,14 @@ class FamilyAdminViewModel @Inject constructor(
          */
         val historyPhotosSwitch: HistoryPhotosSwitch
             get() = HistoryPhotosSwitch.of(serverCanSee = assistantVision, familyAllowsPhotos = aiVision)
+
+        /** Do the place fields differ from what the server kept? */
+        val placesChanged: Boolean
+            get() = GreetingPlaces.isChanged(placeFields, greetingPlaces)
+
+        /** May Save be pressed: something changed, and the server would accept it. */
+        val placesSavable: Boolean
+            get() = !busy && placesChanged && GreetingPlaces.prepare(placeFields) is GreetingPlaces.Prepared.Ok
     }
 
     /**
@@ -256,6 +297,14 @@ class FamilyAdminViewModel @Inject constructor(
                         aiTranscripts = mine.family.aiTranscripts,
                         assistantTranscribe = mine.assistant?.transcribe == true,
                         assistantProcessor = mine.assistant?.processor,
+                        aiLookups = mine.family.aiLookups,
+                        assistantLookups = AssistantLookups.providers(mine.assistant?.lookups),
+                        greetingWeather = mine.assistant?.greetingWeather == true,
+                        greetingPlaces = mine.family.places,
+                        // A reload must not throw away what the owner is
+                        // typing: the fields follow the server only while
+                        // they still say what it had.
+                        placeFields = if (it.placesChanged) it.placeFields else GreetingPlaces.fieldsFor(mine.family.places),
                         greetingsEnabled = settings.state.first().greetingsEnabled,
                         maxMembers = mine.family.maxMembers,
                         memberCount = mine.members.size,
@@ -576,6 +625,101 @@ class FamilyAdminViewModel @Inject constructor(
                             busy = false,
                             error = result.message
                                 ?: appContext.getString(R.string.e_change_assistant_transcripts_failed),
+                        )
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /**
+     * Owner-only: the lookups switch (docs/protocol.md, "Looking things
+     * up"). Bound to no other switch; the switch stays where the server
+     * says it is.
+     */
+    fun setAiLookups(enabled: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setAiLookups(enabled)) {
+                is ApiResult.Ok ->
+                    _state.update {
+                        it.copy(busy = false, aiLookups = result.value.family.aiLookups)
+                    }
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = result.message
+                                ?: appContext.getString(R.string.e_change_assistant_lookups_failed),
+                        )
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    // -- The greeting's weather places ------------------------------------------
+    // Edited locally and sent with one Save: a PATCH per keystroke would
+    // send half-typed names to the server, and the server sends the list
+    // on to the weather provider.
+
+    /** Adds an empty place field, while there are fewer than three. */
+    fun addPlaceField() {
+        _state.update {
+            if (GreetingPlaces.canAdd(it.placeFields.size)) it.copy(placeFields = it.placeFields + "") else it
+        }
+    }
+
+    /** Removes the place field at [index]; the list is not sent until Save. */
+    fun removePlaceField(index: Int) {
+        _state.update {
+            if (index !in it.placeFields.indices) it
+            else it.copy(placeFields = it.placeFields.filterIndexed { i, _ -> i != index })
+        }
+    }
+
+    /** The owner typed into field [index]; kept within the server's rules as they type. */
+    fun editPlaceField(index: Int, text: String) {
+        _state.update {
+            if (index !in it.placeFields.indices) it
+            else it.copy(
+                placeFields = it.placeFields.mapIndexed { i, old ->
+                    if (i == index) GreetingPlaces.limitInput(text) else old
+                },
+            )
+        }
+    }
+
+    /**
+     * Owner-only: sends the places (docs/protocol.md, "Today's weather, for
+     * places the owner chose"). Blank fields are dropped, the rest go as the
+     * server would keep them, and what is drawn afterwards is the list in
+     * the ANSWER — shorter or respelt if the server made it so, and empty
+     * from a server too old to know the field.
+     */
+    fun saveGreetingPlaces() {
+        val prepared = GreetingPlaces.prepare(_state.value.placeFields)
+        if (prepared !is GreetingPlaces.Prepared.Ok) {
+            _state.update { it.copy(error = appContext.getString(R.string.e_change_assistant_greeting_failed)) }
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setGreetingPlaces(prepared.places)) {
+                is ApiResult.Ok -> {
+                    val kept = result.value.family.places
+                    _state.update {
+                        it.copy(busy = false, greetingPlaces = kept, placeFields = GreetingPlaces.fieldsFor(kept))
+                    }
+                }
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = result.message
+                                ?: appContext.getString(R.string.e_change_assistant_greeting_failed),
                         )
                     }
                 is ApiResult.NetworkError ->

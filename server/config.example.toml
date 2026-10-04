@@ -799,3 +799,88 @@ ring_timeout_secs = 45
 # # comes back `not_transcribable`, this contract cannot read your family's
 # # voice notes yet. This API is in public preview, with no SLA.
 # # ---------------------------------------------------------------------------
+#
+#
+# # ---------------------------------------------------------------------------
+# # Looking things up (docs/protocol.md, "Looking things up")
+# #
+# # Where the assistant may LOOK SOMETHING UP while it answers — a web
+# # search, the weather, Wikipedia — when a question needs current or
+# # checkable information. Each source is OFF until it is named here, and
+# # with none named nothing changes: no tool is declared, the model is not
+# # told the date, and every request is byte for byte what it was.
+# #
+# # THIS IS THE ONE PLACE THE ASSISTANT REACHES SOMEBODY WHO IS NOT YOUR
+# # `processor`. What each source receives is the short query (or place
+# # name) the MODEL wrote from the member's question — at most
+# # `max_query_chars` — plus a result count and the answer's language, this
+# # server's IP address and a User-Agent naming the product and `contact`.
+# # Never the conversation, a name, a photo, a location or who asked.
+# #
+# # Three keys must ALL be turned before a single lookup is made: a source
+# # here, the family owner's `ai_lookups` switch (off by default), and each
+# # asking member's own lookup consent (asked on the consent screen, beside
+# # the first). Clients learn the sources from `assistant.lookups`.
+# [ai.lookups]
+# # A URL that says whose server this is, for the User-Agent — Wikimedia's
+# # policy requires one. A URL, NEVER an email address (refused at
+# # startup). Leave it out to name the project's own page,
+# # https://github.com/nettrash/family.connect.
+# contact = "https://YOUR-SITE.example/contact"
+#
+# # THE WEB SEARCH: "brave" or "searxng", one per server; leave `search` out
+# # for none. Brave is below; the SearXNG block after it replaces these two
+# # lines.
+# #
+# # BRAVE'S TERMS, which YOU take on by turning it on (checked 2026-10-03):
+# # results may be stored only "transiently", derivative works are
+# # forbidden, each end user must be bound by a written agreement with the
+# # same restrictions, and "POWERED BY BRAVE" plus Brave's logo must appear
+# # in the application's description. A stored reply keeps its footer's
+# # titles and links for `retention_days`, and goes back to the model in
+# # later mentions. Ask Brave IN WRITING whether that fits your plan before
+# # you enable it (docs/information-streams-2026-10-03.md, decision 12).
+# # Every reply that used Brave ends "Powered by Brave"; the logo is yours
+# # to place.
+# search = "brave"
+# search_key = "YOUR-BRAVE-SEARCH-API-KEY"
+# #
+# # SearXNG, on hardware you run — queries stay with you, but it forwards
+# # them to the engines it scrapes, whose own terms forbid scraping and who
+# # rate-limit it, so results are best-effort. Its JSON output must be
+# # switched on in its settings.yml (`search: formats: [html, json]`), or it
+# # answers 403 to every query:
+# #
+# #     search = "searxng"
+# #     searxng_url = "https://YOUR-SEARXNG.example"
+#
+# # THE WEATHER: Open-Meteo's geocoder and forecast, keyless and free for
+# # non-commercial use (no subscriptions, no ads). The place goes to the
+# # geocoder as WORDS — never a member's position — and the forecast is
+# # asked for the geocoder's coordinates. `weather_key` switches both to
+# # Open-Meteo's commercial endpoints. It also lets the daily greeting
+# # ([greetings]) mention today's forecast for up to three places a family's
+# # owner names in its settings (`greeting_places`): those names go to the
+# # geocoder when that family is greeted, and nothing else does.
+# weather = true
+# # weather_key = "YOUR-OPEN-METEO-KEY"
+#
+# # WIKIPEDIA: search, article summaries and "on this day", in the answer's
+# # language, falling back to English. Text is CC BY-SA 4.0; every reply that
+# # used it carries the licence link.
+# wikipedia = true
+#
+# # The limits (protocol.md, "Limits, logging, statistics").
+# # Web searches one family may make per UTC day — YOUR bill. Past it the
+# # search is simply not offered until tomorrow. Weather and Wikipedia are
+# # free and not capped by it.
+# daily_searches_per_family = 100
+# # Lookups one reply may make, in all.
+# lookups_per_reply = 3
+# # Rounds of lookups before the final answer, which may look nothing up.
+# rounds = 2
+# # How long ONE lookup may take, in seconds — never the 180 of [ai].
+# timeout_secs = 10
+# # The longest query or place name; a longer one is refused, never cut.
+# max_query_chars = 200
+# # ---------------------------------------------------------------------------
