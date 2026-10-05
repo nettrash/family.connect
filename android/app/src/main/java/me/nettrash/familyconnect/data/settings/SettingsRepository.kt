@@ -30,6 +30,7 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import me.nettrash.familyconnect.data.repo.FamilyStatus
+import me.nettrash.familyconnect.data.repo.ParkedRecording
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -311,6 +312,34 @@ data class SettingsState(
      * family"). The family gate says so under its two doors.
      */
     val familylessAccountTtlDays: Int = 0,
+    /**
+     * The voice messages that were not sent, waiting in their chats' "Voice
+     * message not sent" rows (#79, docs/audio-video-messages-2026-10-04.md,
+     * S2.8). The INDEX only — the bytes live in `filesDir`, and
+     * ParkedRecordings is the one thing that reads or writes either. Kept here
+     * so it survives the app being closed, and account-scoped, so it goes at
+     * sign-out with everything else: nothing one account recorded may
+     * surface in the next.
+     */
+    val parkedRecordings: List<ParkedRecording> = emptyList(),
+    /**
+     * "Review Before Sending" (#79, S9): a held release keeps the voice
+     * message for review instead of opening the five-second Undo window — the
+     * window's WCAG 2.2.1 "turn off". Off by default, per DEVICE and never on
+     * the wire, so it survives a sign-out like the preview switches.
+     */
+    val reviewBeforeSending: Boolean = false,
+    /**
+     * Whether this device has had its first held release taught — that one
+     * went to review with "Next time, letting go will send it." (S2.3, S7).
+     * Per device: it is about the hand that holds this phone.
+     */
+    val heldReleaseTaught: Boolean = false,
+    /**
+     * Whether "You can also hold the microphone while you talk." has been
+     * shown on this device (S7.2) — once per device, ever.
+     */
+    val voiceCoachMarkShown: Boolean = false,
 )
 
 interface SettingsRepository {
@@ -489,6 +518,23 @@ interface SettingsRepository {
     /** Record the operator's published support contact, or clear it. */
     suspend fun setSupportContact(contact: String?)
 
+    /**
+     * Rewrite the not-sent voice messages' index in ONE transaction: [transform]
+     * gets what is stored and returns what to store. A transform rather than a
+     * setter because a park and a removal can land together, and a
+     * read-then-write from either would lose the other's entry.
+     */
+    suspend fun updateParkedRecordings(transform: (List<ParkedRecording>) -> List<ParkedRecording>)
+
+    /** S9's switch (#79). Device-scoped: kept through a sign-out. */
+    suspend fun setReviewBeforeSending(enabled: Boolean)
+
+    /** This device's first held release has been taught (#79, S2.3). Device-scoped. */
+    suspend fun setHeldReleaseTaught()
+
+    /** The voice coach mark has been shown on this device (#79, S7.2). Device-scoped. */
+    suspend fun setVoiceCoachMarkShown()
+
     suspend fun resetKeepingServerUrl()
 }
 
@@ -570,6 +616,16 @@ class DataStoreSettingsRepository @Inject constructor(
         val VIDEO_CALLS_ENABLED = booleanPreferencesKey("video_calls_enabled")
         val FAMILY_REGISTRATION_ENABLED = booleanPreferencesKey("family_registration_enabled")
         val FAMILYLESS_ACCOUNT_TTL_DAYS = intPreferencesKey("familyless_account_ttl_days")
+        // JSON, through ParkedRecording's own codec: a list of small records,
+        // which no Preferences key type can hold. Account-scoped: NOT among
+        // the keys resetKeepingServerUrl keeps.
+        val PARKED_RECORDINGS = stringPreferencesKey("parked_recordings")
+        // Device-scoped, all three (#79): kept by resetKeepingServerUrl, like
+        // the preview switches — they are about this phone and the hand on
+        // it, not about the account.
+        val REVIEW_BEFORE_SENDING = booleanPreferencesKey("review_before_sending")
+        val HELD_RELEASE_TAUGHT = booleanPreferencesKey("held_release_taught")
+        val VOICE_COACH_MARK_SHOWN = booleanPreferencesKey("voice_coach_mark_shown")
     }
 
     override val state: Flow<SettingsState> = dataStore.data.map { prefs ->
@@ -631,6 +687,12 @@ class DataStoreSettingsRepository @Inject constructor(
             videoCallsEnabled = prefs[Keys.VIDEO_CALLS_ENABLED] == true,
             familyRegistrationEnabled = prefs[Keys.FAMILY_REGISTRATION_ENABLED] != false,
             familylessAccountTtlDays = prefs[Keys.FAMILYLESS_ACCOUNT_TTL_DAYS] ?: 0,
+            // Never throws: a corrupt index reads as empty, like the block
+            // list's `toLongOrNull`, and the sweep reclaims the files.
+            parkedRecordings = ParkedRecording.decode(prefs[Keys.PARKED_RECORDINGS]),
+            reviewBeforeSending = prefs[Keys.REVIEW_BEFORE_SENDING] == true,
+            heldReleaseTaught = prefs[Keys.HELD_RELEASE_TAUGHT] == true,
+            voiceCoachMarkShown = prefs[Keys.VOICE_COACH_MARK_SHOWN] == true,
         )
     }
 
@@ -864,6 +926,31 @@ class DataStoreSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun updateParkedRecordings(
+        transform: (List<ParkedRecording>) -> List<ParkedRecording>,
+    ) {
+        dataStore.edit { prefs ->
+            val next = transform(ParkedRecording.decode(prefs[Keys.PARKED_RECORDINGS]))
+            if (next.isEmpty()) {
+                prefs.remove(Keys.PARKED_RECORDINGS)
+            } else {
+                prefs[Keys.PARKED_RECORDINGS] = ParkedRecording.encode(next)
+            }
+        }
+    }
+
+    override suspend fun setReviewBeforeSending(enabled: Boolean) {
+        dataStore.edit { it[Keys.REVIEW_BEFORE_SENDING] = enabled }
+    }
+
+    override suspend fun setHeldReleaseTaught() {
+        dataStore.edit { it[Keys.HELD_RELEASE_TAUGHT] = true }
+    }
+
+    override suspend fun setVoiceCoachMarkShown() {
+        dataStore.edit { it[Keys.VOICE_COACH_MARK_SHOWN] = true }
+    }
+
     override suspend fun resetKeepingServerUrl() {
         dataStore.edit { prefs ->
             val keepUrl = prefs[Keys.SERVER_URL]
@@ -878,11 +965,20 @@ class DataStoreSettingsRepository @Inject constructor(
             // previews back on would resume asking Google for tiles that
             // this person opted out of.
             val keepMapPreviews = prefs[Keys.MAP_PREVIEWS_DISABLED]
+            // The voice-message choices are this DEVICE's (#79): a sign-out
+            // must neither switch Review Before Sending back off under
+            // somebody who needs it, nor teach the same hand twice.
+            val keepReviewBeforeSending = prefs[Keys.REVIEW_BEFORE_SENDING]
+            val keepHeldReleaseTaught = prefs[Keys.HELD_RELEASE_TAUGHT]
+            val keepVoiceCoachMarkShown = prefs[Keys.VOICE_COACH_MARK_SHOWN]
             prefs.clear()
             keepUrl?.let { prefs[Keys.SERVER_URL] = it }
             keepPushToken?.let { prefs[Keys.PUSH_TOKEN] = it }
             keepLinkPreviews?.let { prefs[Keys.LINK_PREVIEWS_DISABLED] = it }
             keepMapPreviews?.let { prefs[Keys.MAP_PREVIEWS_DISABLED] = it }
+            keepReviewBeforeSending?.let { prefs[Keys.REVIEW_BEFORE_SENDING] = it }
+            keepHeldReleaseTaught?.let { prefs[Keys.HELD_RELEASE_TAUGHT] = it }
+            keepVoiceCoachMarkShown?.let { prefs[Keys.VOICE_COACH_MARK_SHOWN] = it }
         }
     }
 }

@@ -341,6 +341,36 @@ struct AppSessionTransitionTests {
         #expect(UserDefaults.standard.object(forKey: "v1.pack.recents") == nil)
     }
 
+    /// #79, S9: Review Before Sending is a DEVICE preference, off by
+    /// default, and the first held release is taught once per DEVICE — so
+    /// neither may go with a session, the way the sticker list above does.
+    @Test("Review Before Sending and the taught first release are this device's: off at first, and a sign-out keeps them")
+    func voicePreferencesOutliveSignOut() {
+        resetGlobals()
+        let review = UserDefaults.standard.object(forKey: "v1.voice.reviewBeforeSending")
+        let taught = UserDefaults.standard.object(forKey: "v1.voice.firstReleaseTaught")
+        defer {
+            UserDefaults.standard.set(review, forKey: "v1.voice.reviewBeforeSending")
+            UserDefaults.standard.set(taught, forKey: "v1.voice.firstReleaseTaught")
+            resetGlobals()
+        }
+        UserDefaults.standard.removeObject(forKey: "v1.voice.reviewBeforeSending")
+        UserDefaults.standard.removeObject(forKey: "v1.voice.firstReleaseTaught")
+        #expect(!AppSettings.voiceReviewBeforeSending, "Review Before Sending is on by default")
+        #expect(!AppSettings.voiceFirstReleaseTaught, "a new device counts as already taught")
+
+        AppSettings.serverURL = URL(string: "https://family.example")!
+        let (session, _) = makeSession()
+        session.apply(me: MeResponse(user: Self.user, family: Self.family, role: "member", pendingJoinRequest: nil))
+        AppSettings.voiceReviewBeforeSending = true
+        AppSettings.voiceFirstReleaseTaught = true
+
+        session.handleUnauthorized()
+
+        #expect(AppSettings.voiceReviewBeforeSending, "a sign-out turned the device's Review Before Sending off")
+        #expect(AppSettings.voiceFirstReleaseTaught, "a sign-out made the device teach its first release again")
+    }
+
     @Test("handleUnauthorized: token gone, server kept, chat data purged, → needsAuth")
     func unauthorizedTransition() throws {
         resetGlobals()
@@ -621,6 +651,24 @@ struct AppSessionTransitionTests {
         #expect(session.phase == .needsAuth)
         #expect(spies.chatStoreCleared == 1)
         #expect(AppSettings.currentUserID == nil)
+    }
+
+    /// #79, S2.8 and S4 "Sign-out": everything recorded and not sent goes
+    /// with the session — and with a family that went, whose chats it was
+    /// recorded in. Every purge wipes chat data, so every purge clears it.
+    @Test("every purge deletes the voice messages that were not sent", arguments: [
+        SessionLogic.PurgeReason.logout, .serverChange, .unauthorized, .accountDeleted, .kicked, .leftFamily,
+    ])
+    func purgeClearsParkedRecordings(reason: SessionLogic.PurgeReason) {
+        resetGlobals()
+        defer { resetGlobals() }
+        let (session, _) = makeSession()
+        var cleared = 0
+        session.clearParkedRecordings = { cleared += 1 }
+
+        session.purge(reason)
+
+        #expect(cleared == 1, "a not-sent recording outlived \(reason)")
     }
 
     @Test("family_owner outside a family is ignored")

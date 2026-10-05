@@ -57,6 +57,11 @@
 //! - [`greeting_places`] — the places the owner names for today's weather
 //!   in the daily greeting (#72): when the field is offered, and what a name
 //!   may be, by the server's own rules.
+//! - [`record`] — voice and video messages from the Send button (#79): which
+//!   control the composer's trailing slot is, when the video button shows,
+//!   what a press, a hold, a slide and a release do to a voice recording, and
+//!   a round video's length and size — the rules every port is held to by the
+//!   oracle's vectors.
 
 pub mod account;
 pub mod assistant;
@@ -83,6 +88,7 @@ pub mod mp4_read;
 pub mod notify;
 pub mod pack;
 pub mod reactions;
+pub mod record;
 pub mod transcode;
 pub mod transcript;
 pub mod transcript_sound;

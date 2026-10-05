@@ -48,6 +48,16 @@ struct AudioPlayerView: View {
     /// fight the thumb for the slider's position.
     @State private var scrubbing = false
     @State private var observer: Any?
+    /// This row's name to the app's one-thing-plays rule (#79, NowPlaying):
+    /// another note starting, or a recording starting, pauses this one.
+    @State private var playToken = UUID()
+    /// "You can play this after recording." — said for a tap that came
+    /// while a recording runs (S1.7).
+    @State private var saysAfterRecording = false
+
+    /// A voice recording runs somewhere in the app: no app sound plays, and
+    /// the play control is dimmed (S1.7).
+    private var recordingElsewhere: Bool { VoiceRecordingArbiter.shared.isRecording }
 
     private var total: TimeInterval {
         max(0.1, Double(attachment.durationMS ?? 0) / 1000)
@@ -63,6 +73,7 @@ struct AudioPlayerView: View {
                 Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
                     .font(.system(size: 32))
                     .foregroundStyle(ink)
+                    .opacity(recordingElsewhere ? 0.35 : 1)
                     // The glyph is 32; the target is the platform's 44.
                     .frame(width: 44, height: 44)
                     .contentShape(Circle())
@@ -83,13 +94,21 @@ struct AudioPlayerView: View {
                 .tint(ink)
                 .controlSize(.mini)
 
-                HStack {
-                    Text(verbatim: AudioRecorder.timeLabel(elapsed))
-                    Spacer(minLength: 8)
-                    Text(verbatim: AudioRecorder.timeLabel(total))
+                if saysAfterRecording {
+                    Text("You can play this after recording.")
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .opacity(0.75)
+                } else {
+                    HStack {
+                        Text(verbatim: AudioRecorder.timeLabel(elapsed))
+                        Spacer(minLength: 8)
+                        Text(verbatim: AudioRecorder.timeLabel(total))
+                    }
+                    .font(.caption2.monospacedDigit())
+                    .opacity(0.75)
                 }
-                .font(.caption2.monospacedDigit())
-                .opacity(0.75)
             }
         }
         .padding(.vertical, 6)
@@ -102,16 +121,25 @@ struct AudioPlayerView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(isMine ? Color.white.opacity(0.16) : Color.primary.opacity(0.06)))
         .onDisappear(perform: teardown)
+        .onChange(of: recordingElsewhere) { _, now in
+            if !now { saysAfterRecording = false }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Audio, \(AudioRecorder.timeLabel(total))")
     }
 
     private func toggle() {
         if isPlaying {
-            stream.player?.pause()
-            isPlaying = false
+            pause()
             return
         }
+        // Nothing of the app's plays under a recording (S1.7).
+        guard !recordingElsewhere else {
+            saysAfterRecording = true
+            AccessibilityNotification.Announcement(String(localized: "You can play this after recording.")).post()
+            return
+        }
+        saysAfterRecording = false
         guard let player = stream.player else {
             // First tap. The player cannot exist yet in this turn — its
             // URL is behind an actor — so playback and the pause glyph
@@ -127,6 +155,7 @@ struct AudioPlayerView: View {
         // Replaying after it ran to the end: without this the play button
         // does nothing, because the item is already at its duration.
         if elapsed >= total - 0.2 { seek(to: 0) }
+        claimPlayback()
         player.play()
         isPlaying = true
     }
@@ -155,10 +184,28 @@ struct AudioPlayerView: View {
                     Task { @MainActor in
                         isPlaying = false
                         elapsed = total
+                        NowPlaying.shared.release(playToken)
                     }
                 }
             }
+            claimPlayback()
             isPlaying = true
+        }
+    }
+
+    /// Pause, and let the app know nothing of this row plays any more.
+    private func pause() {
+        stream.player?.pause()
+        isPlaying = false
+        NowPlaying.shared.release(playToken)
+    }
+
+    /// One thing plays at a time: whoever played before is paused, and a
+    /// recording starting pauses this one (#79, S1.7, S5.3).
+    private func claimPlayback() {
+        NowPlaying.shared.claim(playToken) {
+            stream.player?.pause()
+            isPlaying = false
         }
     }
 
@@ -179,5 +226,6 @@ struct AudioPlayerView: View {
         }
         observer = nil
         isPlaying = false
+        NowPlaying.shared.release(playToken)
     }
 }

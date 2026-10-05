@@ -33,6 +33,13 @@
 //  Sending: Return sends, Shift-Return makes a new line, which is what
 //  every Mac chat app does and what a hardware keyboard makes possible.
 //
+//  Voice messages (#79, Phase 1): with nothing typed or staged the Send
+//  button is a microphone. A click records hands-free and the same button
+//  sends it; the recording row takes the field's place; Esc stops into
+//  review; File ▸ Record Voice Message (⌥⌘R) records, or stops into review.
+//  Return never records — it is the slot only while there is something to
+//  send, save, or stop (MacRecordSendSlot, MacVoiceCommands).
+//
 //  Attachments render through the SAME AttachmentStore the phone uses;
 //  only the picker differs (an open panel rather than PhotosPicker).
 //
@@ -134,7 +141,23 @@ struct MacConversationView: View {
     @State private var editTarget: (messageID: Int64, original: String)?
     @Environment(\.openWindow) private var openWindow
     @FocusState private var composerFocused: Bool
-    @State private var recorder = AudioRecorder()
+    /// The voice half of the composer (#79, Phase 1): the recorder, the
+    /// shared rules and the reducer's state — the phone's VoiceComposer,
+    /// driven by a click where the phone has a finger (S8.3). Its `id` is
+    /// this composer's name to the app's one-recording rule
+    /// (VoiceRecordingArbiter), stable for the life of the view: one
+    /// recording at a time across every window.
+    @State private var voice = VoiceComposer()
+    /// A line the voice flow shows — "That recording was too short.",
+    /// "Recording stopped at five minutes." (S2.5) — and when it goes again.
+    @State private var voiceHint: RecordGesture.Hint?
+    @State private var voiceHintToken = UUID()
+    /// Return, once per key press: the field's `onSubmit` and the slot's
+    /// shortcut can both see one press (MacReturnKey).
+    @State private var returnKey = MacReturnKey()
+    /// The window this conversation is drawn in, so minimising THAT window
+    /// stops its recording and minimising another does not (S4).
+    @State private var hostWindow = MacWindowBox()
     /// True while the poll form is up. A sheet, sized in the view itself:
     /// a macOS sheet cannot be resized by the person using it.
     @State private var showPollComposer = false
@@ -576,7 +599,9 @@ struct MacConversationView: View {
                         Label("Call", systemImage: "phone.fill")
                     }
                     .help("Call \(chat?.title ?? "")")
-                    .disabled(!calls.isIdle)
+                    // Nor while a voice message is being recorded in any
+                    // window: no recording during a call (#79, S1.7).
+                    .disabled(!calls.isIdle || VoiceRecordingArbiter.shared.isRecording)
                 }
                 // Beside the phone button, behind its own server switch
                 // (`video_calls_enabled`, docs/protocol.md, "Video").
@@ -589,7 +614,7 @@ struct MacConversationView: View {
                         }
                         .accessibilityLabel("Video Call")
                         .help("Video call \(chat?.title ?? "")")
-                        .disabled(!calls.isIdle)
+                        .disabled(!calls.isIdle || VoiceRecordingArbiter.shared.isRecording)
                     }
                 }
             }
@@ -655,8 +680,41 @@ struct MacConversationView: View {
         .onChange(of: windowActivation) { _, _ in
             publishPresence(isAtNewest: isPinnedToBottom)
         }
+        // A call rang, started or was placed — its own window opens and this
+        // composer stays usable beside it, which is why it matters most
+        // here: no recording during a call, in any phase (#79, S1.7, S8.3).
+        // A recording stops and is kept, never sent; and whatever of the
+        // app's plays, pauses (S4, Decision 23).
+        .onChange(of: calls.isIdle) { _, isIdle in
+            guard !isIdle else { return }
+            voice.interrupt()
+            NowPlaying.shared.pauseAll()
+        }
+        .onAppear {
+            // The voice flow's half of the composer, wired before anything
+            // can be clicked (#79, Phase 1).
+            wireVoice()
+            // ⌘Q gives no `onDisappear`: say now how a quit keeps what this
+            // composer holds unsent (S4, "A window really closes or the app
+            // quits").
+            VoiceRecordingArbiter.shared.keepOnQuit(voice.id) { parkOnLeaving() }
+        }
+        // File ▸ Record Voice Message ⌥⌘R acts on the KEY window's
+        // conversation, and is disabled where the microphone is dimmed
+        // (S8.3, MacVoiceCommands).
+        .focusedSceneValue(\.macVoiceMessage, MacVoiceMessageTarget(
+            isEnabled: MacVoiceMenu.isEnabled(slotInputs),
+            record: { recordVoiceMessage() }))
+        .background(MacHostWindowReader(box: hostWindow))
         .onDisappear {
             coordinator.releasePresence(chatID: chatID)
+            // Another chat picked, the window closed (⌘W, the close
+            // button): a recording stops and is kept, and a voice note in
+            // review goes with it, taking the words in the field as its
+            // caption (#79, S2.8, S4) — before the draft is stashed, so a
+            // caption that left with its note is not handed back as well.
+            parkOnLeaving()
+            VoiceRecordingArbiter.shared.forgetOnQuit(voice.id)
             // The sidebar's `.id(selectedChatID)` kills this identity on
             // every chat switch, and the draft with it — parked instead,
             // and handed back when the reader returns.
@@ -1461,18 +1519,20 @@ struct MacConversationView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if recorder.isRecording {
-                HStack(spacing: 10) {
-                    Image(systemName: "waveform")
-                        .foregroundStyle(.red)
-                    Text(verbatim: AudioRecorder.timeLabel(recorder.elapsed))
-                        .font(.callout.monospacedDigit())
-                    Spacer(minLength: 0)
-                    Button("Cancel") { recorder.cancel() }
-                    Button("Stop") { finishRecording() }
-                        .keyboardShortcut(.defaultAction)
-                }
+            // Voice messages something else stopped — a call, the Mac
+            // locking or sleeping, the window minimised or closed — each in
+            // its own row, with its own reply and caption, carried by no
+            // other Send (#79, S2.8).
+            ForEach(notSentHere) { entry in
+                NotSentVoiceRow(
+                    entry: entry,
+                    replyAuthor: entry.replyTo.map { quoteAuthorName($0.senderID) },
+                    onSend: { sendParked(entry) },
+                    onDelete: { deleteParked(entry) })
             }
+            // Phase 0's recording strip stood here, above the row, with a
+            // Stop that was the window's default button. The recording row
+            // is IN the row now (MacVoiceRecordingRow, #79 S2.4, S8.3).
             if let mediaNotice {
                 HStack(spacing: 6) {
                     if mediaNotice.isFailure {
@@ -1494,6 +1554,13 @@ struct MacConversationView: View {
                     // an error with no way out is one that outlives what it
                     // was about.
                     if mediaNotice.isFailure {
+                        // The microphone's denial points at the one place it
+                        // can be turned back on (#79, S2.2).
+                        if mediaNotice == Self.microphoneDeniedNotice {
+                            Button("Open System Settings") { openMicrophoneSettings() }
+                                .buttonStyle(.borderless)
+                                .font(.caption)
+                        }
                         Button("Dismiss") { self.mediaNotice = nil }
                             .buttonStyle(.borderless)
                             .font(.caption)
@@ -1507,6 +1574,11 @@ struct MacConversationView: View {
                             .font(.caption)
                     }
                 }
+            }
+            // What the voice flow has to say: the silence warning while a
+            // recording runs, otherwise its latest hint (S2.5, S2.9).
+            if let line = voiceLine {
+                voiceLineView(line)
             }
             if let replyDraft {
                 MacComposerBanner(
@@ -1526,7 +1598,12 @@ struct MacConversationView: View {
                     onCancel: { cancelEdit() })
             }
             if !staged.isEmpty {
-                StagedAttachmentRow(items: staged) { discardStaged($0) }
+                StagedAttachmentRow(items: staged) { item in
+                    // Taken off by the person: the guard lifts, and a
+                    // recording is "Recording deleted" (#79, S1.1, S6 —
+                    // VoiceComposer.tookOff, the phone's own).
+                    voice.tookOff(voiceNote: item.isVoiceNote) { discardStaged(item) }
+                }
             }
             // The roster, while a member is being named (protocol.md,
             // "Mentioning a member") — the phone's strip.
@@ -1535,6 +1612,9 @@ struct MacConversationView: View {
                 if !candidates.isEmpty {
                     MentionSuggestions(candidates: candidates) { name in
                         draft = MemberMentions.accept(draft: draft, name: name)
+                        // A suggestion taken is a change the person made
+                        // (#79, S1.1).
+                        voice.otherAction()
                     }
                 }
             }
@@ -1586,170 +1666,25 @@ struct MacConversationView: View {
                 .padding(.top, 6)
                 .accessibilityElement(children: .combine)
             }
+            // The input row: the controls and the field — or, while a voice
+            // message records, the row that takes their place — and the
+            // slot, which never moves (#79, S1.3, S2.4, S8.3). The field is
+            // GONE while a recording runs, not hidden: nothing can be typed
+            // into it unseen, and Return can reach nothing but the slot.
             HStack(alignment: .bottom, spacing: 8) {
-                Menu {
-                    // The Mac's answer to the phone's photo picker: its own
-                    // open panel, filtered to images and capped at the four
-                    // the model is shown (MacFilePicker.pickPictures).
-                    // Present only when BOTH locks are open — the operator
-                    // configured a deployment that can see, and this
-                    // family's owner turned `ai_vision` on — and absent
-                    // rather than disabled when they are not, because a
-                    // server without the deployment must show no surface at
-                    // all rather than one that lies (protocol.md,
-                    // "Pictures").
-                    if showsPictureAttach {
-                        Button {
-                            pickPictures()
-                        } label: {
-                            Label("Show the Assistant a Photo…", systemImage: "photo")
-                        }
-                    }
-                    Button {
-                        pickAttachment()
-                    } label: {
-                        Label("Attach a File…", systemImage: "doc")
-                    }
-                    // Inside the menu on purpose: the guard below disables
-                    // attaching while an edit is in progress, and an item
-                    // here inherits it for free.
-                    //
-                    // Through `pasteFromClipboard` like every other door.
-                    // This item used to call `pasteAttachment` directly, so
-                    // it answered "There's nothing to paste." to a clipboard
-                    // full of words — and it is the ONLY door on this
-                    // window that a text paste can reach, because
-                    // `.onPasteCommand` is filtered to non-text types.
-                    Button {
-                        pasteFromClipboard()
-                    } label: {
-                        Label("Paste", systemImage: "doc.on.clipboard")
-                    }
-                    Button {
-                        Task { await startRecording() }
-                    } label: {
-                        Label("Record Audio", systemImage: "mic")
-                    }
-                    Button {
-                        shareLocation()
-                    } label: {
-                        Label("Location", systemImage: "mappin.and.ellipse")
-                    }
-                    // The family chat only, and the server agrees: a poll
-                    // anywhere else is `invalid_poll` (docs/protocol.md,
-                    // "Polls").
-                    if chat?.kind == "family" {
-                        Button {
-                            showPollComposer = true
-                        } label: {
-                            Label("Poll", systemImage: "chart.bar")
-                        }
-                    }
-                } label: {
-                    Image(systemName: "paperclip")
-                        .font(.system(size: 16))
-                        // Same box as the send button, so the two are
-                        // optically level with each other and with the last
-                        // line of text — bottom-aligning glyphs of different
-                        // sizes lines up their edges, not their centres.
-                        .frame(width: composerControl, height: composerControl)
-                        .contentShape(Rectangle())
+                if voice.isRecording {
+                    MacVoiceRecordingRow(
+                        elapsed: voice.recorder.elapsed,
+                        litBars: AudioRecorder.litBars(peak: voice.recorder.peakLevel),
+                        besideDraft: voice.isBesideDraft,
+                        warning: voice.showsThirtySecondsLeft,
+                        height: composerControl,
+                        onDelete: { voice.delete() },
+                        onStop: { voice.stop() })
+                } else {
+                    composerControls
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Attach a photo, video or file")
-                // Editing borrows the composer to rewrite an existing
-                // message; there is no second attachment to add, and
-                // attaching would post it as a new message while leaving the
-                // edit banner armed. iOS and Android already gated this —
-                // and a running send gates it too, or staging more media
-                // mid-upload would arm a second, concurrent send.
-                .disabled(composerIsBusy)
-
-                // The family's stickers, one click from the composer
-                // (docs/protocol.md, "In the panel, one tap sends"). Absent
-                // rather than disabled where there is nothing behind it —
-                // see `showsStickers`.
-                if showsStickers {
-                    StickerComposerButton(side: composerControl, glyph: 16) { item in
-                        sendSticker(item)
-                    }
-                    .disabled(composerIsBusy)
-                }
-
-                if showsAssistantMention {
-                    Button {
-                        insertAssistantMention()
-                    } label: {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 15))
-                            .frame(width: composerControl, height: composerControl)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Ask the assistant")
-                    .disabled(editTarget != nil)
-                }
-
-                if showsPictureRequest {
-                    Button {
-                        insertDrawToken()
-                    } label: {
-                        Image(systemName: "paintbrush")
-                            .font(.system(size: 15))
-                            .frame(width: composerControl, height: composerControl)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Ask for a picture")
-                    .disabled(editTarget != nil)
-                }
-
-                TextField("Message", text: $draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.body)
-                    // The backstop for the door this side does not own: a
-                    // text paste into the focused field is handled by the
-                    // field editor, and intercepting it would mean an
-                    // NSViewRepresentable composer or a
-                    // CommandGroup(replacing: .pasteboard) that then owes
-                    // the whole text branch. The draft it leaves behind can
-                    // always be seen, so the protocol's 4000-character
-                    // ceiling is applied here for those, with the same
-                    // sentence the paste doors use.
-                    .onChange(of: draft) { _, updated in
-                        guard let clamped = ComposerText.clamping(updated) else { return }
-                        draft = clamped
-                        mediaNotice = .failed(String(
-                            localized: "A message can be at most \(ComposerText.bodyLimit) characters."))
-                    }
-                    .lineLimit(1...8)
-                    .focused($composerFocused)
-                    .onSubmit(send)
-                    // Escape backs out of what the composer is primed
-                    // with, the phone's two cancel buttons from the
-                    // keyboard: an edit first (it borrowed the field and
-                    // gives the draft back), else the reply. Nothing
-                    // primed, nothing happens.
-                    .onExitCommand {
-                        if editTarget != nil {
-                            cancelEdit()
-                        } else {
-                            replyDraft = nil
-                        }
-                    }
-
-                Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 22))
-                        .foregroundStyle(canSend ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
-                        .frame(width: composerControl, height: composerControl)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
-                .keyboardShortcut(.return, modifiers: [])
-                .disabled(!canSend)
+                recordSendSlot
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
@@ -1770,6 +1705,204 @@ struct MacConversationView: View {
         .onChange(of: replyDraft?.messageID, initial: true) { _, messageID in
             quotedAttachments = quotedAttachmentList(for: messageID)
         }
+        // Return and Esc, as window shortcuts — see `keyboardDoors`.
+        .background { keyboardDoors }
+        // The field is back: keyboard focus goes to it, and VoiceOver, which
+        // follows keyboard focus on a Mac, with it — so a second Return
+        // cannot reach anything but the field (S2.4), and a note in review
+        // gets its caption where the person left off (S2.7).
+        .onChange(of: voice.isRecording) { _, recording in
+            if !recording { composerFocused = true }
+        }
+        // A recording of ten seconds or more is stopped first, then asked
+        // about (S2.5). Dismissed without an answer is Keep: it loses nothing.
+        .confirmationDialog(
+            "Delete this recording?",
+            isPresented: Binding(
+                get: { voice.isAskingDelete },
+                set: { shown in if !shown, voice.isAskingDelete { voice.answerDelete(false) } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { voice.answerDelete(true) }
+            Button("Keep", role: .cancel) { voice.answerDelete(false) }
+        }
+    }
+
+    /// The paperclip, the sticker, `@ai` and `/draw` buttons and the field —
+    /// one view, so that the recording row can take its place whole (#79,
+    /// S2.4).
+    private var composerControls: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            Menu {
+                // The Mac's answer to the phone's photo picker: its own
+                // open panel, filtered to images and capped at the four
+                // the model is shown (MacFilePicker.pickPictures).
+                // Present only when BOTH locks are open — the operator
+                // configured a deployment that can see, and this
+                // family's owner turned `ai_vision` on — and absent
+                // rather than disabled when they are not, because a
+                // server without the deployment must show no surface at
+                // all rather than one that lies (protocol.md,
+                // "Pictures").
+                if showsPictureAttach {
+                    Button {
+                        pickPictures()
+                    } label: {
+                        Label("Show the Assistant a Photo…", systemImage: "photo")
+                    }
+                }
+                Button {
+                    pickAttachment()
+                } label: {
+                    Label("Attach a File…", systemImage: "doc")
+                }
+                // Inside the menu on purpose: the guard below disables
+                // attaching while an edit is in progress, and an item
+                // here inherits it for free.
+                //
+                // Through `pasteFromClipboard` like every other door.
+                // This item used to call `pasteAttachment` directly, so
+                // it answered "There's nothing to paste." to a clipboard
+                // full of words — and it is the ONLY door on this
+                // window that a text paste can reach, because
+                // `.onPasteCommand` is filtered to non-text types.
+                Button {
+                    pasteFromClipboard()
+                } label: {
+                    Label("Paste", systemImage: "doc.on.clipboard")
+                }
+                // Family and direct chats only — the assistant's chat has
+                // no microphone and no recording at all (#79, S1.5,
+                // Decision 24). With words typed or items staged it records
+                // beside them, and the slot is Stop (row 3).
+                if offersVoiceMessages {
+                    Button {
+                        recordVoiceMessage()
+                    } label: {
+                        Label("Record Voice Message", systemImage: "mic")
+                    }
+                    // Not during a call, and not while this chat holds a
+                    // voice message that was not sent (S1.5, S2.8) — the
+                    // menu's own guard already covers an edit and a send
+                    // in flight.
+                    .disabled(slotInputs.blocked != nil)
+                }
+                Button {
+                    shareLocation()
+                } label: {
+                    Label("Location", systemImage: "mappin.and.ellipse")
+                }
+                // The family chat only, and the server agrees: a poll
+                // anywhere else is `invalid_poll` (docs/protocol.md,
+                // "Polls").
+                if chat?.kind == "family" {
+                    Button {
+                        voice.otherAction()
+                        showPollComposer = true
+                    } label: {
+                        Label("Poll", systemImage: "chart.bar")
+                    }
+                }
+            } label: {
+                Image(systemName: "paperclip")
+                    .font(.system(size: 16))
+                    // Same box as the send button, so the two are
+                    // optically level with each other and with the last
+                    // line of text — bottom-aligning glyphs of different
+                    // sizes lines up their edges, not their centres.
+                    .frame(width: composerControl, height: composerControl)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Attach a photo, video or file")
+            // Editing borrows the composer to rewrite an existing
+            // message; there is no second attachment to add, and
+            // attaching would post it as a new message while leaving the
+            // edit banner armed. iOS and Android already gated this —
+            // and a running send gates it too, or staging more media
+            // mid-upload would arm a second, concurrent send.
+            .disabled(composerIsBusy)
+
+            // The family's stickers, one click from the composer
+            // (docs/protocol.md, "In the panel, one tap sends"). Absent
+            // rather than disabled where there is nothing behind it —
+            // see `showsStickers`.
+            if showsStickers {
+                StickerComposerButton(side: composerControl, glyph: 16) { item in
+                    sendSticker(item)
+                }
+                .disabled(composerIsBusy)
+            }
+
+            if showsAssistantMention {
+                Button {
+                    insertAssistantMention()
+                } label: {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 15))
+                        .frame(width: composerControl, height: composerControl)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help("Ask the assistant")
+                .disabled(editTarget != nil)
+            }
+
+            if showsPictureRequest {
+                Button {
+                    insertDrawToken()
+                } label: {
+                    Image(systemName: "paintbrush")
+                        .font(.system(size: 15))
+                        .frame(width: composerControl, height: composerControl)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help("Ask for a picture")
+                .disabled(editTarget != nil)
+            }
+
+            // Through `typedDraft`: only the person's own edits lift the
+            // slot's activation guard (#79, S1.1).
+            TextField("Message", text: typedDraft, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.body)
+                // The backstop for the door this side does not own: a
+                // text paste into the focused field is handled by the
+                // field editor, and intercepting it would mean an
+                // NSViewRepresentable composer or a
+                // CommandGroup(replacing: .pasteboard) that then owes
+                // the whole text branch. The draft it leaves behind can
+                // always be seen, so the protocol's 4000-character
+                // ceiling is applied here for those, with the same
+                // sentence the paste doors use.
+                .onChange(of: draft) { _, updated in
+                    guard let clamped = ComposerText.clamping(updated) else { return }
+                    draft = clamped
+                    mediaNotice = .failed(String(
+                        localized: "A message can be at most \(ComposerText.bodyLimit) characters."))
+                }
+                .lineLimit(1...8)
+                .focused($composerFocused)
+                // Return is the slot on rows 2 to 5 only — Send or Save
+                // here — and never a microphone: Return in an empty field
+                // records nothing (#79, S1.3, S8.3).
+                .onSubmit { returnPressed() }
+                // Escape backs out of what the composer is primed
+                // with, the phone's two cancel buttons from the
+                // keyboard: an edit first (it borrowed the field and
+                // gives the draft back), else the reply. Nothing
+                // primed, nothing happens.
+                .onExitCommand {
+                    if editTarget != nil {
+                        cancelEdit()
+                    } else {
+                        replyDraft = nil
+                    }
+                }
+        }
     }
 
     private var canSend: Bool {
@@ -1789,6 +1922,7 @@ struct MacConversationView: View {
     /// CoreLocation refuses without explaining itself.
     private func shareLocation() {
         guard !isSending else { return }
+        voice.otherAction()
         Task {
             // Permission is settled BEFORE `isSending`, which here disables
             // the attach menu AND `canSend` — the Send button itself. A
@@ -1890,6 +2024,9 @@ struct MacConversationView: View {
     /// the consent question exactly as words do (`send`) — the sheet holds
     /// the sticker and it goes on a yes — never around it.
     private func sendSticker(_ item: PackItemSnapshot) {
+        // Somebody did something else: the slot's activation guard goes
+        // (#79, S1.1).
+        voice.otherAction()
         switch stickerDoor {
         case .absent:
             return
@@ -2023,6 +2160,7 @@ struct MacConversationView: View {
     /// apply. Not a second staging path — that is the whole rule `ingest`
     /// exists to keep.
     private func pickPictures() {
+        voice.otherAction()
         ingest(MacFilePicker.pickPictures())
     }
 
@@ -2043,6 +2181,7 @@ struct MacConversationView: View {
     /// differs from the mention button: the token is only a request when it
     /// is the first thing in the body (protocol.md, "Pictures").
     private func insertDrawToken() {
+        voice.otherAction()
         let token = AssistantMention.drawToken
         guard !AssistantMention.asksForPicture(draft) else {
             composerFocused = true
@@ -2060,6 +2199,7 @@ struct MacConversationView: View {
     /// is not knowable, and moving somebody's cursor is worse than adding
     /// to the end of what they were writing.
     private func insertAssistantMention() {
+        voice.otherAction()
         let token = AssistantMention.token
         guard !AssistantMention.mentions(draft) else {
             composerFocused = true
@@ -2240,6 +2380,7 @@ struct MacConversationView: View {
 
     private func beginReply(_ message: MessageSnapshot) {
         guard let serverID = message.serverID else { return }
+        voice.otherAction()
         editTarget = nil
         // Decided HERE, before the banner grows the composer: afterwards the
         // sentinel has left the viewport and the answer would always be
@@ -2256,6 +2397,7 @@ struct MacConversationView: View {
 
     private func beginEdit(_ message: MessageSnapshot) {
         guard let serverID = message.serverID else { return }
+        voice.otherAction()
         replyDraft = nil
         // The same capture a reply makes, for the same reason and at the
         // same moment: the edit banner and the prefilled (often multi-line)
@@ -2292,6 +2434,7 @@ struct MacConversationView: View {
     /// to ten. What happens to the chosen files is `ingest`'s, which is
     /// also what a drop lands in.
     private func pickAttachment() {
+        voice.otherAction()
         ingest(MacFilePicker.pickMany())
     }
 
@@ -2375,12 +2518,12 @@ struct MacConversationView: View {
     /// the next item took no time; with a transcode per clip it left the
     /// second of three videos encoding behind a composer that said nothing.
     @discardableResult
-    private func stageIfWanted(_ prepared: MediaPrep.Prepared, moreToCome: Bool = false) -> Bool {
+    private func stageIfWanted(_ prepared: MediaPrep.Prepared, moreToCome: Bool = false, voiceNote: Bool = false) -> Bool {
         guard !Task.isCancelled else {
             MediaPrep.discard(prepared)
             return false
         }
-        let took = stage(prepared)
+        let took = stage(prepared, voiceNote: voiceNote)
         if took, moreToCome, mediaNotice == nil { mediaNotice = Self.preparingNotice }
         return took
     }
@@ -2415,6 +2558,9 @@ struct MacConversationView: View {
             mediaNotice = .failed(composerBusyNotice)
             return false
         }
+        // A drop is the person's own change: staging is never guarded
+        // (#79, S1.1).
+        voice.otherAction()
         switch DroppedAttachment.decide(urls, isDirectory: isDirectory) {
         case .attach(let files):
             ingest(files)
@@ -2473,6 +2619,8 @@ struct MacConversationView: View {
     /// "There's nothing to paste." to a clipboard of words, the other
     /// returned in silence whenever the composer was busy.
     private func pasteFromClipboard() {
+        // A paste is the person's own change (#79, S1.1).
+        voice.otherAction()
         switch ClipboardAttachment.door(composerIsBusy: composerIsBusy) {
         case .attach:
             pasteAttachment()
@@ -2557,14 +2705,288 @@ struct MacConversationView: View {
         }
     }
 
-    /// Stop recording and stage it, so a caption can be added and so a
-    /// recording made by accident can still be discarded — the phone's
-    /// behaviour, which the Mac could not have until it had a staged slot.
-    private func finishRecording() {
-        guard let url = recorder.stop() else {
-            mediaNotice = .failed(String(localized: "That recording was too short."))
-            return
+    // MARK: - Voice messages from the Send slot (#79, Phase 1)
+
+    /// What the composer is, for the slot (S1.2). Recording only ever comes
+    /// from the voice flow's own state, so the slot, the menu bar and the
+    /// reducer cannot disagree about whether something records.
+    ///
+    /// **busy** is the Mac's own attachment guard: a send in flight
+    /// (`isSending` — a location being found). An edit is not busy here; it
+    /// is S1.3's row 4, which comes first.
+    private var slotInputs: ComposerSlot.Inputs {
+        ComposerSlot.Inputs(
+            recording: voice.state.recording,
+            editing: editTarget != nil,
+            draftBlank: draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            staged: !staged.isEmpty,
+            assistantChat: isAssistantChat,
+            canRecord: true,
+            call: !calls.isIdle,
+            busy: isSending,
+            notSent: !notSentHere.isEmpty)
+    }
+
+    /// The trailing slot (S1.3).
+    private var slot: ComposerSlot { ComposerSlot.of(slotInputs) }
+
+    /// The dimmed row a recording would meet now — the same precedence as
+    /// rows 7 to 9 — read without the chat's query, so the voice flow can
+    /// ask it from a closure.
+    private var slotBlocked: ComposerSlot.Dimmed? {
+        ComposerSlot.Inputs(call: !calls.isIdle, busy: isSending, notSent: !notSentHere.isEmpty).blocked
+    }
+
+    /// Family and direct chats record; the assistant's chat has no
+    /// microphone and no Record Voice Message (S1.3 row 6, S1.5).
+    private var offersVoiceMessages: Bool { !isAssistantChat }
+
+    /// The slot itself (S1.3, S8.3).
+    private var recordSendSlot: some View {
+        MacRecordSendSlot(
+            slot: slot,
+            canSend: canSend,
+            side: composerControl,
+            focusRequest: voice.slotFocusRequest,
+            onActivate: { activateSlot() },
+            onRecordFromMenu: { recordVoiceMessage() },
+            onStopAndListen: { voice.stop() },
+            onDelete: { voice.delete() },
+            onEscape: { _ = voice.escape() })
+    }
+
+    /// The slot activated: a click on Send, Save, the microphone, the Send
+    /// arrow or the Stop square; VO-Space; Full Keyboard Access's Space; or
+    /// Return on rows 2 to 5 (`returnPressed`). A click records hands-free —
+    /// a Mac has no hold (S8.3).
+    private func activateSlot() {
+        // A double click on the Stop square must not send what it staged
+        // (S1.1) — the one guard a text Send asks (MacRecordSlot.activation).
+        switch MacRecordSlot.activation(of: slot, sendGuarded: voice.sendIsGuarded) {
+        case .send:
+            // A released note's Undo window cannot exist on a Mac (no hold
+            // releases one); kept for the reducer's sake all the same.
+            voice.otherAction()
+            send()
+            voice.emptied()
+        case .save:
+            send()
+            voice.emptied()
+        case .voice:
+            voice.activate()
+        case .nothing:
+            break
         }
+    }
+
+    /// Return, from the field's `onSubmit` or the slot's shortcut (S1.3,
+    /// S8.3): empty and idle — nothing; typing — Send; editing — Save;
+    /// recording — the slot only. Asked of the slot as it is NOW, at the key
+    /// press, and acted on once per press: two bindings can see one Return,
+    /// and the send the first one makes turns the slot into a microphone the
+    /// second one must not reach.
+    private func returnPressed() {
+        let press = NSApp.currentEvent.flatMap { $0.type == .keyDown ? $0.timestamp : nil }
+        guard returnKey.acts(onPressAt: press, slot: slot, canSend: canSend) else { return }
+        activateSlot()
+    }
+
+    /// Record Voice Message — the paperclip, the microphone's menu, File ▸
+    /// Record Voice Message (⌥⌘R), which pressed during a recording stops it
+    /// into review. Beside words or staged items the slot becomes Stop
+    /// (row 3).
+    private func recordVoiceMessage() {
+        voice.record(besideDraft: !slotInputs.isEmpty)
+    }
+
+    /// The composer's keyboard doors, zero-sized and unlabelled: Return is
+    /// the slot on rows 2 to 5 and only there; Esc stops a recording into
+    /// review (S2.4, S8.3) — never deletes it — and is otherwise the field's
+    /// own, cancelling an edit or a reply as it always has.
+    private var keyboardDoors: some View {
+        ZStack {
+            if MacRecordSlot.takesReturn(slot, canSend: canSend) {
+                Button {
+                    returnPressed()
+                } label: {
+                    Text(verbatim: MacRecordSlot.label(for: slot))
+                        .frame(width: 0, height: 0)
+                        .clipped()
+                        .opacity(0)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.return, modifiers: [])
+                .accessibilityHidden(true)
+            }
+            if voice.isRecording {
+                Button {
+                    voice.stop()
+                } label: {
+                    Text("Stop")
+                        .frame(width: 0, height: 0)
+                        .clipped()
+                        .opacity(0)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+                .accessibilityHidden(true)
+            }
+        }
+        .frame(width: 0, height: 0)
+    }
+
+    /// What the voice flow has to say above the row.
+    private enum VoiceLine: Equatable {
+        /// "We can't hear anything. Is the microphone muted?" — 3 s into a
+        /// recording that has heard nothing, until sound arrives (S2.9).
+        case silence
+        case hint(RecordGesture.Hint)
+    }
+
+    private var voiceLine: VoiceLine? {
+        if voice.showsSilenceWarning { return .silence }
+        if let voiceHint { return .hint(voiceHint) }
+        return nil
+    }
+
+    /// A neutral line, as the phone's: a hint is not a failure, and the red
+    /// notice line above it stays for what went wrong.
+    private func voiceLineView(_ line: VoiceLine) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: line == .silence ? "mic.slash" : "info.circle")
+                .foregroundStyle(line == .silence ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                .accessibilityHidden(true)
+            Group {
+                switch line {
+                case .silence:
+                    Text("We can't hear anything. Is the microphone muted?")
+                case .hint(let hint):
+                    Text(verbatim: hint.text)
+                }
+            }
+            .foregroundStyle(line == .silence ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+            .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if case .hint = line {
+                Button("Dismiss") { voiceHint = nil }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+            }
+        }
+        .font(.callout)
+    }
+
+    /// A hint stays a few seconds, or until the next one.
+    private func showVoiceHint(_ hint: RecordGesture.Hint) {
+        voiceHint = hint
+        let token = UUID()
+        voiceHintToken = token
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(6))
+            if voiceHintToken == token { voiceHint = nil }
+        }
+    }
+
+    /// The voice flow's half of the composer: what only this view knows and
+    /// can do. Closures over `@State` and the environment only — never the
+    /// chat's query, which a closure kept past an update may read stale.
+    ///
+    /// What the phone wires and the Mac does not: the hold's lock (there is
+    /// no hold), the coach mark, and the Undo window's two hand-offs — only a
+    /// released hold opens that window, so they cannot be reached; were one
+    /// ever to be, the default sends nothing and the note settles into a
+    /// "not sent" row (VoiceComposer.sendUndoNote), and Undo does the same.
+    private func wireVoice() {
+        var hooks = VoiceComposer.Hooks()
+        hooks.blocked = { slotBlocked }
+        hooks.chatID = { chatID }
+        hooks.takeReply = { takeReplyForVoice() }
+        hooks.restoreReply = { reply in
+            guard replyDraft == nil, let reply else { return }
+            replyDraft = reply
+        }
+        hooks.send = { recording, reply in sendVoiceNote(recording, replyTo: reply) }
+        hooks.review = { recording in stageRecording(recording) }
+        hooks.park = { recording in keepParked(recording, replyTo: replyDraft, caption: nil) }
+        hooks.reviewParked = { entry, _ in ParkedRecordings.shared.settle(entry) }
+        hooks.explain = { reason in
+            mediaNotice = .failed(reason.notice)
+            announce(reason.notice)
+        }
+        hooks.denied = { mediaNotice = Self.microphoneDeniedNotice }
+        hooks.hint = { hint in showVoiceHint(hint) }
+        hooks.startFailed = { failure in
+            mediaNotice = .failed(AudioRecorder.message(for: failure))
+        }
+        hooks.stoppedUnexpectedly = {
+            mediaNotice = .failed(String(localized: "The recording stopped unexpectedly."))
+        }
+        hooks.startedHandsFree = { composerFocused = false }
+        hooks.returnFocus = { composerFocused = true }
+        voice.hooks = hooks
+        // Minimising or closing THIS window stops its recording; another
+        // window's does not (S4, VoiceRecordingArbiter.windowWentAway).
+        let box = hostWindow
+        voice.window = { box.window }
+    }
+
+    /// The message field's binding: the person's own edits lift the slot's
+    /// activation guard; the composer's own writes to `draft` (a Send
+    /// clearing it, an edit giving it back, the clamp) do not (S1.1,
+    /// VoiceComposer.typedBinding).
+    private var typedDraft: Binding<String> {
+        VoiceComposer.typedBinding($draft) { voice.otherAction() }
+    }
+
+    /// The reply goes with a voice message that leaves (S2.5).
+    private func takeReplyForVoice() -> ReplyToDTO? {
+        let reply = replyDraft
+        replyDraft = nil
+        return reply
+    }
+
+    /// The Send arrow's note, to the outbox as it was recorded — the profile
+    /// already, so nothing is re-encoded — with the primed reply; the row is
+    /// written before the first byte (S2.5). If it cannot be queued it lands
+    /// in review with the error, never lost.
+    private func sendVoiceNote(_ recording: AudioRecorder.Recording, replyTo: ReplyToDTO?) -> Bool {
+        let prepared = MediaPrep.Prepared(
+            fileURL: recording.url,
+            mime: MediaPrep.audioMIME(for: recording.url),
+            kind: AttachmentDTO.Kind.audio,
+            durationMS: Int((recording.duration * 1000).rounded()),
+            name: nil)
+        // Declared at the door, like every other send here (`owesSendPin`).
+        owesSendPin = true
+        if coordinator.sendMedia([prepared], caption: "", replyTo: replyTo, mentions: nil, in: chatID) != nil {
+            return true
+        }
+        owesSendPin = false
+        if replyDraft == nil, let replyTo { replyDraft = replyTo }
+        stageRecording(recording, notice: String(localized: "Couldn't send that — try again."))
+        return false
+    }
+
+    /// The microphone's denial: the Mac's System Settings sentence, with
+    /// [Open System Settings] beside it (S2.2).
+    private static var microphoneDeniedNotice: Notice {
+        .failed(AudioRecorder.message(for: .microphoneDenied))
+    }
+
+    /// System Settings › Privacy & Security › Microphone (S2.2).
+    private func openMicrophoneSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Put a finished recording into review. The phone's `stageRecording`,
+    /// for the phone's reasons: the recorder's `fc-voice-*` file is deleted
+    /// once its upload copy is staged (#79), and a recording that cannot be
+    /// staged waits as "not sent" rather than being lost (S2.8).
+    private func stageRecording(_ recording: AudioRecorder.Recording, notice: String? = nil) {
+        let url = recording.url
         prepare {
             do {
                 // No name: a voice note's identity is its length, and the
@@ -2572,16 +2994,135 @@ struct MacConversationView: View {
                 // `fc-voice-<UUID>.m4a`. And a voice note: recorded to the
                 // profile already, so the audio rules for picked files do
                 // not apply to it.
-                stageIfWanted(try await MediaPrep.prepareAudio(
-                    from: url, limit: MediaPrep.sizeLimit, isVoiceNote: true))
-            } catch MediaPrep.PrepError.tooLargeAfterCompression {
-                preparationFailed(String(localized: "That file is over the 100 MB limit."))
+                let prepared = try await MediaPrep.prepareAudio(
+                    from: url, limit: MediaPrep.sizeLimit, isVoiceNote: true)
+                guard !Task.isCancelled else {
+                    // The chat was left while the copy was being made.
+                    MediaPrep.discard(prepared)
+                    keepParked(recording, replyTo: nil, caption: nil)
+                    return
+                }
+                guard StagedAttachment.canAdd(to: staged.count) else {
+                    // Ten items already wait; the note waits on its own.
+                    MediaPrep.discard(prepared)
+                    keepParked(recording, replyTo: replyDraft, caption: nil)
+                    mediaNotice = .failed(String(
+                        localized: "You can attach up to \(StagedAttachment.maxPerMessage) items."))
+                    return
+                }
                 try? FileManager.default.removeItem(at: url)
+                stageIfWanted(prepared, voiceNote: true)
+                if let notice { mediaNotice = .failed(notice) }
             } catch {
                 preparationFailed(String(localized: "Couldn't prepare that item."))
-                try? FileManager.default.removeItem(at: url)
+                keepParked(recording, replyTo: replyDraft, caption: nil)
             }
         }
+    }
+
+    // MARK: - Voice messages nobody finished deciding about (#79, Phase 0)
+
+    /// This chat's voice messages that were not sent — the phone's list,
+    /// which leaves out a note a released hold is carrying through its Undo
+    /// window. A Mac never opens one (it has no hold); asked the same way so
+    /// the two cannot drift.
+    private var notSentHere: [ParkedRecordings.Entry] {
+        ParkedRecordings.shared.waiting(for: chatID)
+    }
+
+    /// The chat is being left, or the app is quitting: a running recording
+    /// and every voice note still in review become "not sent", the first
+    /// note taking the words in the field as its caption (S2.8). Not after
+    /// a sign-out or a leave — the store was emptied for the session that
+    /// ended. The recording stops through the voice flow, the one way out
+    /// of the recorder (VoiceComposer) — idempotent, so a quit that already
+    /// parked it through the arbiter finds nothing left to stop.
+    private func parkOnLeaving() {
+        voice.interrupt()
+        guard LeavingChatDoor.parksReviewNotes(
+            signedIn: session.phase == .active, callInProgress: !calls.isIdle) else { return }
+        let notes = staged.filter(\.isVoiceNote)
+        guard !notes.isEmpty else { return }
+        // The composer's own words — not the message being rewritten, which
+        // an edit borrows the field for and gives back on its way out.
+        let caption = editTarget?.original ?? draft
+        var captionTaken = false
+        for note in notes {
+            let duration = Double(note.prepared.durationMS ?? 0) / 1000
+            let parked = ParkedRecordings.shared.park(
+                fileAt: note.prepared.fileURL,
+                duration: duration,
+                chatID: chatID,
+                replyTo: replyDraft,
+                caption: captionTaken ? nil : caption)
+            guard parked != nil else { continue }
+            captionTaken = true
+            staged.removeAll { $0.id == note.id }
+        }
+        if captionTaken, editTarget == nil { draft = "" }
+    }
+
+    /// Keep a recording in the store, or delete it when nobody is signed in
+    /// any more or the disk will not take it — saying so in the second case.
+    private func keepParked(_ recording: AudioRecorder.Recording, replyTo: ReplyToDTO?, caption: String?) {
+        guard session.phase == .active else {
+            try? FileManager.default.removeItem(at: recording.url)
+            return
+        }
+        if ParkedRecordings.shared.park(
+            fileAt: recording.url, duration: recording.duration, chatID: chatID,
+            replyTo: replyTo, caption: caption) == nil
+        {
+            try? FileManager.default.removeItem(at: recording.url)
+            mediaNotice = .failed(String(localized: "The recording stopped unexpectedly."))
+        }
+    }
+
+    /// The "not sent" row's Send: THAT note, with ITS reply and caption, and
+    /// nothing else (S2.8).
+    private func sendParked(_ entry: ParkedRecordings.Entry) {
+        let caption = entry.caption ?? ""
+        switch NotSentSendDoor.of(
+            caption: caption,
+            chatKind: chat?.kind,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt,
+            hasAssistant: AppSettings.assistantUserID != nil)
+        {
+        case .asksConsent:
+            afterAssistantConsent = { sendParked(entry) }
+            showAssistantConsent = true
+            return
+        case .withheld:
+            mediaNotice = .failed(AssistantConsent.unnamedProcessorNotice)
+            return
+        case .send:
+            break
+        }
+        // Declared at the door, like every other send here (`owesSendPin`).
+        owesSendPin = true
+        guard let prepared = ParkedRecordings.shared.prepared(for: entry),
+              coordinator.sendMedia(
+                  [prepared], caption: caption, replyTo: entry.replyTo,
+                  mentions: resolvedMentions(in: caption), in: chatID) != nil
+        else {
+            owesSendPin = false
+            mediaNotice = .failed(String(localized: "Couldn't send that."))
+            return
+        }
+        ParkedRecordings.shared.remove(entry)
+        announce(String(localized: "Voice message sent"))
+    }
+
+    /// The "not sent" row's ✕, once the row has asked where it must.
+    private func deleteParked(_ entry: ParkedRecordings.Entry) {
+        ParkedRecordings.shared.remove(entry)
+        announce(String(localized: "Recording deleted"))
+    }
+
+    /// A state change said out loud, politely (S6).
+    private func announce(_ sentence: String) {
+        AccessibilityNotification.Announcement(sentence).post()
     }
 
     /// Hold prepared media in the composer, APPENDING behind whatever is
@@ -2595,7 +3136,7 @@ struct MacConversationView: View {
     /// single-item doors (paste, the recorder) have nothing to do with the
     /// answer: the notice has already been shown.
     @discardableResult
-    private func stage(_ prepared: MediaPrep.Prepared) -> Bool {
+    private func stage(_ prepared: MediaPrep.Prepared, voiceNote: Bool = false) -> Bool {
         guard StagedAttachment.canAdd(to: staged.count) else {
             MediaPrep.discard(prepared)
             mediaNotice = .failed(String(
@@ -2603,7 +3144,7 @@ struct MacConversationView: View {
             return false
         }
         mediaNotice = nil
-        staged.append(StagedAttachment(prepared: prepared))
+        staged.append(StagedAttachment(prepared: prepared, isVoiceNote: voiceNote))
         composerFocused = true
         return true
     }
@@ -2664,19 +3205,6 @@ struct MacConversationView: View {
 
     /// Put the composer back when the send never happened — but never over
     /// something typed in the meantime.
-    /// Start a voice note, and say so if it does not start. Same reasoning
-    /// as the phone: the recorder recorded its failure and nobody read it,
-    /// so a denied microphone made this button silently inert.
-    ///
-    /// The Settings sentence differs by platform — a Mac has no Settings
-    /// app — so it names System Settings and where the switch lives.
-    private func startRecording() async {
-        await recorder.start()
-        if let failure = recorder.failure {
-            mediaNotice = .failed(AudioRecorder.message(for: failure))
-        }
-    }
-
     private func restoreComposer(caption: String, quote: ReplyToDTO?) {
         if draft.isEmpty { draft = caption }
         if replyDraft == nil { replyDraft = quote }

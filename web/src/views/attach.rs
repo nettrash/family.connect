@@ -1,5 +1,6 @@
 //! The ways something is attached, and what is waiting to be sent: the
-//! paperclip's menu, the staging strip, the recording bar, and the clipboard
+//! paperclip's menu, the staging strip — a voice note on it playable — the
+//! recording row, the voice messages that were not sent, and the clipboard
 //! and drag-and-drop readers behind the conversation's doors (the Mac's
 //! MacConversationView attach menu, StagedAttachment, ClipboardAttachment
 //! and DroppedAttachment).
@@ -10,13 +11,46 @@
 //! notices until a send fails.
 
 use fc_text::i18n::{t, t1};
-use fc_text::media;
+use fc_text::{media, record};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{DataTransfer, File, HtmlInputElement, Url};
+use web_sys::{Blob, DataTransfer, File, HtmlInputElement, HtmlMediaElement, Url};
 use yew::prelude::*;
 
+use crate::awake::ScreenAwake;
+use crate::recorder::{self, Meter};
 use crate::staged::Prepared;
+use crate::store::NotSent;
+use crate::views::dialog::Confirm;
+
+/// "You can play this after recording." — what a play control says while a
+/// voice message is being recorded, instead of playing (S1.7): nothing of
+/// the app's plays into a note.
+pub const PLAY_AFTER: &str = "You can play this after recording.";
+
+/// Everything playing on the page paused — a voice note in a bubble, a
+/// video, a staged note — but `except`: one thing plays at a time, and a
+/// recording starting pauses whatever does (S1.7, S2.2, S2.7).
+pub fn pause_all_playing(except: Option<&HtmlMediaElement>) {
+    let Some(found) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.query_selector_all("audio, video").ok())
+    else {
+        return;
+    };
+    for index in 0..found.length() {
+        let Some(player) = found
+            .item(index)
+            .and_then(|node| node.dyn_into::<HtmlMediaElement>().ok())
+        else {
+            continue;
+        };
+        if except.is_some_and(|keep| keep == &player) || player.paused() {
+            continue;
+        }
+        let _ = player.pause();
+    }
+}
 
 #[derive(Properties, PartialEq)]
 pub struct MenuProps {
@@ -31,6 +65,18 @@ pub struct MenuProps {
     pub on_poll: Callback<()>,
     /// Said instead of opening the menu when `busy`.
     pub on_busy: Callback<String>,
+    /// Why "Record Voice Message" cannot record right now — a call is on, or
+    /// a voice message that was not sent waits (the plan for #79, S1.5).
+    /// DIMMED, not disabled: it stays in the menu, focusable, carries the
+    /// reason, and is still chosen — `on_record` is what refuses, and says
+    /// why.
+    #[prop_or_default]
+    pub record_dimmed: Option<String>,
+    /// "Record Voice Message" is offered at all: never in the assistant's
+    /// chat, where every message is a consented model call that is only
+    /// ever shown `[voice note]` (S1.5, Decision 24).
+    #[prop_or(true)]
+    pub offers_record: bool,
     /// "Show the Assistant a Photo…" is offered — the assistant's chat, on
     /// a server that can see, in a family that allows it; ABSENT otherwise,
     /// never a door that lies (docs/protocol.md, "Pictures").
@@ -66,6 +112,33 @@ pub fn attach_menu(props: &MenuProps) -> Html {
             action.emit(());
         });
         html! { <button role="menuitem" {onclick}>{ label }</button> }
+    };
+    // "Record Voice Message", DIMMED where it cannot record — which it still
+    // says when chosen, through the same door: the recorder's start is what
+    // refuses, and the menu only shows that it will.
+    let dimmed_reason_id = use_memo((), |_| crate::views::dialog::fresh_id("dimmed-reason"));
+    let record = {
+        let open = open.clone();
+        let on_record = props.on_record.clone();
+        let onclick = Callback::from(move |_: MouseEvent| {
+            open.set(false);
+            on_record.emit(());
+        });
+        match props.record_dimmed.clone() {
+            _ if !props.offers_record => Html::default(),
+            None => {
+                html! { <button role="menuitem" {onclick}>{ t("Record Voice Message") }</button> }
+            }
+            Some(reason) => html! {
+                <>
+                    <button role="menuitem" class="is-dimmed" aria-disabled="true"
+                            aria-describedby={(*dimmed_reason_id).clone()} title={reason.clone()} {onclick}>
+                        { t("Record Voice Message") }
+                    </button>
+                    <span id={(*dimmed_reason_id).clone()} hidden=true>{ reason }</span>
+                </>
+            },
+        }
     };
     let pick = {
         let picker = picker.clone();
@@ -175,7 +248,7 @@ pub fn attach_menu(props: &MenuProps) -> Html {
                     }
                     { item(t("Attach a File…"), pick) }
                     { item(t("Paste"), props.on_paste.clone()) }
-                    { item(t("Record Audio"), props.on_record.clone()) }
+                    { record }
                     { item(t("Location"), props.on_location.clone()) }
                     if props.offers_poll {
                         { item(t("Poll"), props.on_poll.clone()) }
@@ -190,10 +263,18 @@ pub fn attach_menu(props: &MenuProps) -> Html {
 pub struct StripProps {
     pub items: Vec<Prepared>,
     pub on_remove: Callback<usize>,
+    /// A voice message is being recorded: a staged note's ▶ says so instead
+    /// of playing (S1.7).
+    #[prop_or_default]
+    pub recording: bool,
+    /// Where a play control says why it did not play.
+    #[prop_or_default]
+    pub on_explain: Callback<String>,
 }
 
 /// What is staged, each with its own ✕ — sent with whatever the box says
-/// as the caption, or with nothing (StagedAttachment).
+/// as the caption, or with nothing (StagedAttachment). A voice note can be
+/// listened to before it goes (the plan for #79, S2.7).
 #[function_component(StagingStrip)]
 pub fn staging_strip(props: &StripProps) -> Html {
     if props.items.is_empty() {
@@ -202,12 +283,23 @@ pub fn staging_strip(props: &StripProps) -> Html {
     html! {
         <div class="staging" aria-label={t("Attachments to send")}>
             { for props.items.iter().enumerate().map(|(index, item)| {
-                let remove = props.on_remove.reform(move |_: MouseEvent| index);
+                let remove = props.on_remove.reform(move |_: ()| index);
+                if item.is_voice_note() {
+                    return html! {
+                        <VoiceChip
+                            key={index}
+                            item={item.clone()}
+                            on_remove={remove}
+                            recording={props.recording}
+                            on_explain={props.on_explain.clone()}
+                        />
+                    };
+                }
                 html! {
                     <div class="staged" key={index}>
                         <Thumb item={item.clone()} />
                         <span class="staged-label">{ label(item) }</span>
-                        <button class="staged-remove" onclick={remove} aria-label={t1("Remove %@", &label(item))}>{ "✕" }</button>
+                        <button class="staged-remove" onclick={remove.reform(|_: MouseEvent| ())} aria-label={t1("Remove %@", &label(item))}>{ "✕" }</button>
                     </div>
                 }
             }) }
@@ -215,11 +307,229 @@ pub fn staging_strip(props: &StripProps) -> Html {
     }
 }
 
+#[derive(Properties, PartialEq)]
+struct VoiceChipProps {
+    item: Prepared,
+    on_remove: Callback<()>,
+    recording: bool,
+    on_explain: Callback<String>,
+}
+
+/// A voice note in review (S2.7): "[▶] Voice message · 0:42 [✕]", and while
+/// it plays "[❚❚] 0:12 / 0:42". ✕ — "Delete recording" — asks first at ten
+/// seconds or more.
+#[function_component(VoiceChip)]
+fn voice_chip(props: &VoiceChipProps) -> Html {
+    let playing = use_state(|| Option::<f64>::None);
+    let asking = use_state(|| false);
+    let duration_ms = props.item.duration_ms.unwrap_or(0).max(0);
+    let total = duration_ms as f64 / 1000.0;
+    let words = match *playing {
+        Some(at) => format!(
+            "{} / {}",
+            media::time_label(at.floor()),
+            media::time_label(total)
+        ),
+        None => label(&props.item),
+    };
+    let remove = {
+        let on_remove = props.on_remove.clone();
+        let asking = asking.clone();
+        let asks = duration_ms >= record::DELETE_ASKS_FROM_MS as i64;
+        Callback::from(move |_: MouseEvent| {
+            if asks {
+                asking.set(true);
+            } else {
+                on_remove.emit(());
+            }
+        })
+    };
+    html! {
+        <div class="staged is-voice">
+            <LocalAudio
+                blob={props.item.file.clone()}
+                dimmed={props.recording}
+                on_explain={props.on_explain.clone()}
+                on_progress={{
+                    let playing = playing.clone();
+                    Callback::from(move |at: Option<f64>| playing.set(at))
+                }}
+            />
+            <span class="staged-label">{ words }</span>
+            <button class="staged-remove" onclick={remove} aria-label={t("Delete recording")}>{ "✕" }</button>
+            if *asking {
+                <Confirm
+                    title={t("Delete this recording?")}
+                    confirm={t("Delete")}
+                    cancel={AttrValue::from(t("Keep"))}
+                    on_confirm={{
+                        let on_remove = props.on_remove.clone();
+                        let asking = asking.clone();
+                        Callback::from(move |_: ()| {
+                            asking.set(false);
+                            on_remove.emit(());
+                        })
+                    }}
+                    on_cancel={{
+                        let asking = asking.clone();
+                        Callback::from(move |_: ()| asking.set(false))
+                    }}
+                />
+            }
+        </div>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct LocalAudioProps {
+    /// The recording's own bytes, on this device.
+    pub blob: Option<Blob>,
+    /// A voice message is being recorded: say why instead of playing (S1.7).
+    #[prop_or_default]
+    pub dimmed: bool,
+    #[prop_or_default]
+    pub on_explain: Callback<String>,
+    /// Where it is while it plays, in seconds — None once it stops.
+    #[prop_or_default]
+    pub on_progress: Callback<Option<f64>>,
+}
+
+/// ▶ and ❚❚ for a recording that is still on this device — a voice note in
+/// review, one that was not sent (S2.7, S2.8). It plays the LOCAL bytes,
+/// pausing anything else that plays; and on a phone's browser it keeps the
+/// screen on while it plays, so the lock does not hide the tab halfway
+/// through a long note (S1.7).
+#[function_component(LocalAudio)]
+pub fn local_audio(props: &LocalAudioProps) -> Html {
+    let player = use_node_ref();
+    let playing = use_state(|| false);
+    let awake = use_mut_ref(|| Option::<ScreenAwake>::None);
+    let reason_id = use_memo((), |_| crate::views::dialog::fresh_id("play-reason"));
+    let url = use_memo(props.blob.clone(), |blob| {
+        blob.as_ref()
+            .and_then(|blob| Url::create_object_url_with_blob(blob).ok())
+    });
+    {
+        let url = url.clone();
+        use_effect_with(url, |url| {
+            let url = (**url).clone();
+            move || {
+                if let Some(url) = url {
+                    let _ = Url::revoke_object_url(&url);
+                }
+            }
+        });
+    }
+    let toggle = {
+        let player = player.clone();
+        let dimmed = props.dimmed;
+        let on_explain = props.on_explain.clone();
+        Callback::from(move |_: MouseEvent| {
+            if dimmed {
+                on_explain.emit(t(PLAY_AFTER).to_string());
+                return;
+            }
+            let Some(audio) = player.cast::<HtmlMediaElement>() else {
+                return;
+            };
+            // Asked of the player itself, not of the last drawing: a second
+            // press before its `play` has even been heard is a pause.
+            if !audio.paused() {
+                let _ = audio.pause();
+                return;
+            }
+            pause_all_playing(Some(&audio));
+            if audio.ended() {
+                audio.set_current_time(0.0);
+            }
+            if let Ok(started) = audio.play() {
+                wasm_bindgen_futures::spawn_local(async move {
+                    let _ = JsFuture::from(started).await;
+                });
+            }
+        })
+    };
+    let on_play = {
+        let playing = playing.clone();
+        let awake = awake.clone();
+        let on_progress = props.on_progress.clone();
+        Callback::from(move |event: Event| {
+            playing.set(true);
+            if phone_like() {
+                *awake.borrow_mut() = Some(ScreenAwake::hold());
+            }
+            if let Some(audio) = event
+                .target()
+                .and_then(|target| target.dyn_into::<HtmlMediaElement>().ok())
+            {
+                on_progress.emit(Some(audio.current_time()));
+            }
+        })
+    };
+    let on_time = {
+        let on_progress = props.on_progress.clone();
+        Callback::from(move |event: Event| {
+            if let Some(audio) = event
+                .target()
+                .and_then(|target| target.dyn_into::<HtmlMediaElement>().ok())
+            {
+                if !audio.paused() {
+                    on_progress.emit(Some(audio.current_time()));
+                }
+            }
+        })
+    };
+    let on_stopped = {
+        let playing = playing.clone();
+        let awake = awake.clone();
+        let on_progress = props.on_progress.clone();
+        Callback::from(move |_: Event| {
+            playing.set(false);
+            awake.borrow_mut().take();
+            on_progress.emit(None);
+        })
+    };
+    let (glyph, word) = if *playing {
+        ("❚❚", t("Pause"))
+    } else {
+        ("▶", t("Play"))
+    };
+    html! {
+        <>
+            <button
+                type="button"
+                class={classes!("local-play", props.dimmed.then_some("is-dimmed"))}
+                aria-label={word}
+                aria-disabled={props.dimmed.then_some("true")}
+                aria-describedby={props.dimmed.then(|| (*reason_id).clone())}
+                disabled={url.is_none()}
+                onclick={toggle}
+            >
+                <span aria-hidden="true">{ glyph }</span>
+            </button>
+            if props.dimmed {
+                <span id={(*reason_id).clone()} hidden=true>{ t(PLAY_AFTER) }</span>
+            }
+            <audio ref={player} src={(*url).clone().unwrap_or_default()} preload="auto"
+                   onplay={on_play} ontimeupdate={on_time} onpause={on_stopped.clone()}
+                   onended={on_stopped} />
+        </>
+    }
+}
+
+/// A phone's or a tablet's browser — a coarse pointer is what one has —
+/// where the screen is kept on while a recording plays (S1.7, S8.8).
+pub(crate) fn phone_like() -> bool {
+    web_sys::window()
+        .and_then(|window| window.match_media("(pointer: coarse)").ok().flatten())
+        .is_some_and(|query| query.matches())
+}
+
 /// What a staged item is called on its chip.
 pub fn label(item: &Prepared) -> String {
     match item.kind.as_str() {
         "audio" if item.name.is_none() => t1(
-            "Voice note · %@",
+            "Voice message · %@",
             &media::time_label(item.duration_ms.unwrap_or(0) as f64 / 1000.0),
         ),
         "location" => t("Location").to_string(),
@@ -280,63 +590,212 @@ fn thumb(props: &ThumbProps) -> Html {
 
 #[derive(Properties, PartialEq)]
 pub struct RecordingProps {
-    /// When it started, in wall-clock milliseconds.
+    /// When it started, by the recorder's clock (`recorder::now_ms`).
     pub started_ms: f64,
-    pub on_cancel: Callback<()>,
+    /// How loud it is — None for a recorder with no tap (the browser's own
+    /// `MediaRecorder`), which draws the dot only and warns of no silence
+    /// (S2.9).
+    #[prop_or_default]
+    pub meter: Option<Meter>,
+    /// Started with words typed or items staged: the slot is its Stop (S1.3
+    /// row 3), and the row draws no Stop of its own.
+    #[prop_or_default]
+    pub beside_draft: bool,
+    pub on_delete: Callback<()>,
     pub on_stop: Callback<()>,
+    /// Five minutes: the recorder stops itself, into review (S2.5).
+    pub on_cap: Callback<()>,
+    /// 4:30: "30 seconds left" is shown here — and said, once.
+    #[prop_or_default]
+    pub on_warning: Callback<()>,
+    /// Three seconds in with nothing heard above digital silence (`true`),
+    /// and sound at last after that (`false`).
+    #[prop_or_default]
+    pub on_silence: Callback<bool>,
 }
 
-/// A voice note being recorded: how long so far, Cancel, and Stop — which
-/// Return presses, and which the five-minute ceiling presses by itself. The
-/// clock ticks HERE, so a recording redraws this bar and not the chat.
-#[function_component(RecordingBar)]
-pub fn recording_bar(props: &RecordingProps) -> Html {
-    let stop = use_node_ref();
+/// How often the row looks at the clock and the meter — the apps' 200 ms.
+const ROW_TICK_MS: u32 = 200;
+
+/// The recording row (S2.4): it takes the field's place in the composer's
+/// own row, at the same height — Delete, a red dot, the time in monospaced
+/// digits and the level meter, Stop — before the slot, which is the Send
+/// arrow. The clock ticks HERE, so a recording redraws this row and not the
+/// chat. Esc, which is Stop, is the composer's to hear: focus is on the slot.
+#[function_component(RecordingRow)]
+pub fn recording_row(props: &RecordingProps) -> Html {
     let elapsed = use_state(|| 0.0_f64);
-    {
-        let stop = stop.clone();
-        use_effect_with((), move |_| {
-            if let Some(button) = stop.cast::<web_sys::HtmlElement>() {
-                let _ = button.focus();
-            }
-        });
-    }
+    let lit = use_state(|| 0usize);
     {
         let elapsed = elapsed.clone();
-        let on_stop = props.on_stop.clone();
+        let lit = lit.clone();
+        let meter = props.meter.clone();
+        let on_cap = props.on_cap.clone();
+        let on_warning = props.on_warning.clone();
+        let on_silence = props.on_silence.clone();
         let started = props.started_ms;
         use_effect_with(started, move |started| {
             let started = *started;
-            let stopped = std::cell::Cell::new(false);
-            let ticker = gloo_timers::callback::Interval::new(250, move || {
-                let now = js_sys::Date::now() - started;
-                if now >= f64::from(media::VOICE_MAX_SECONDS) * 1000.0 {
-                    if !stopped.replace(true) {
-                        on_stop.emit(());
+            let capped = std::cell::Cell::new(false);
+            let warned = std::cell::Cell::new(false);
+            let silent = std::cell::Cell::new(false);
+            let tick = move || {
+                let now = recorder::now_ms() - started;
+                elapsed.set(now.max(0.0));
+                if let Some(meter) = &meter {
+                    lit.set(recorder::lit_bars(meter.take_peak()));
+                    let quiet = now >= record::SILENCE_WARNING_AFTER_MS as f64 && !meter.heard();
+                    if quiet != silent.get() {
+                        silent.set(quiet);
+                        on_silence.emit(quiet);
                     }
-                    return;
                 }
-                elapsed.set(now);
-            });
+                if now >= record::VOICE_WARNING_MS as f64 && !warned.replace(true) {
+                    on_warning.emit(());
+                }
+                if now >= record::VOICE_CAP_MS as f64 && !capped.replace(true) {
+                    on_cap.emit(());
+                }
+            };
+            tick();
+            let ticker = gloo_timers::callback::Interval::new(ROW_TICK_MS, tick);
             move || drop(ticker)
         });
     }
-    let on_key = {
-        let on_cancel = props.on_cancel.clone();
-        Callback::from(move |event: KeyboardEvent| {
-            if event.key() == "Escape" {
-                on_cancel.emit(());
+    let warning = *elapsed >= record::VOICE_WARNING_MS as f64;
+    html! {
+        // A group with a name, not a live region: the clock changing every
+        // second is not news to announce every second.
+        <div class="recording" role="group" aria-label={t("Recording a voice message")}>
+            <button type="button" class="secondary recording-delete" aria-label={t("Delete recording")}
+                    title={t("Delete recording")} onclick={props.on_delete.reform(|_: MouseEvent| ())}>
+                { icon(TRASH) }
+                <span class="button-word">{ t("Delete") }</span>
+            </button>
+            <span class="recording-dot" aria-hidden="true"></span>
+            <span class={classes!("recording-time", warning.then_some("is-warning"))} aria-live="off">
+                { media::time_label((*elapsed / 1000.0).floor()) }
+            </span>
+            if warning {
+                // Words as well as colour (WCAG 1.4.1), in the meter's place.
+                <span class="recording-left">{ t("30 seconds left") }</span>
+            } else if props.meter.is_some() {
+                <span class="recording-meter" aria-hidden="true">
+                    { for (0..5).map(|bar| html! {
+                        <span class={classes!("bar", (bar < *lit).then_some("is-lit"))}></span>
+                    }) }
+                </span>
+            }
+            if !props.beside_draft {
+                <button type="button" class="secondary recording-stop" aria-label={t("Stop recording")}
+                        title={t("Stop recording")} onclick={props.on_stop.reform(|_: MouseEvent| ())}>
+                    { icon(STOP) }
+                    <span class="button-word">{ t("Stop") }</span>
+                </button>
+            }
+        </div>
+    }
+}
+
+/// The recording row's pictures, for the phone's width, where its buttons
+/// are icons with the same labels (S2.4).
+const TRASH: &str = "M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z";
+const STOP: &str = "M7 7h10v10H7z";
+
+fn icon(path: &'static str) -> Html {
+    html! {
+        <svg class="row-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path fill="currentColor" d={path} />
+        </svg>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct NotSentProps {
+    pub row: NotSent,
+    /// "Replying to Anna: Dinner?" — the reply it was recorded under, the
+    /// way the composer's banner says one; None when it has none, or the
+    /// message is not on screen.
+    #[prop_or_default]
+    pub quote: Option<String>,
+    pub on_send: Callback<NotSent>,
+    pub on_delete: Callback<NotSent>,
+    /// A voice message is being recorded: its ▶ says so instead of playing.
+    #[prop_or_default]
+    pub recording: bool,
+    #[prop_or_default]
+    pub on_explain: Callback<String>,
+}
+
+/// A voice message that was not sent (the plan for #79, S2.8): "Voice
+/// message not sent · 0:42", the reply it was recorded under and its
+/// caption, with its ▶ to listen to it first, its own Send — which sends it
+/// with THAT reply and caption and nothing else — and its own ✕, which asks
+/// first at ten seconds or more.
+#[function_component(NotSentRow)]
+pub fn not_sent_row(props: &NotSentProps) -> Html {
+    let asking = use_state(|| false);
+    let row = props.row.clone();
+    let label = t1(
+        "Voice message not sent · %@",
+        &media::time_label(row.duration_ms.max(0) as f64 / 1000.0),
+    );
+    let send = {
+        let on_send = props.on_send.clone();
+        let row = row.clone();
+        Callback::from(move |_: MouseEvent| on_send.emit(row.clone()))
+    };
+    let delete = {
+        let on_delete = props.on_delete.clone();
+        let asking = asking.clone();
+        let row = row.clone();
+        let asks = row.duration_ms >= fc_text::record::DELETE_ASKS_FROM_MS as i64;
+        Callback::from(move |_: MouseEvent| {
+            if asks {
+                asking.set(true);
+            } else {
+                on_delete.emit(row.clone());
             }
         })
     };
     html! {
-        // A group with a name, not a live region: the clock changing every
-        // second is not news to announce every second.
-        <div class="recording" role="group" aria-label={t("Recording a voice note")} onkeydown={on_key}>
-            <span class="recording-dot" aria-hidden="true">{ "●" }</span>
-            <span aria-live="off">{ t1("Recording %@", &media::time_label(*elapsed / 1000.0)) }</span>
-            <button class="secondary" onclick={props.on_cancel.reform(|_: MouseEvent| ())}>{ t("Cancel") }</button>
-            <button ref={stop} onclick={props.on_stop.reform(|_: MouseEvent| ())}>{ t("Stop") }</button>
+        <div class="not-sent" role="group" aria-label={label.clone()}>
+            <span class="not-sent-glyph" aria-hidden="true">{ "🎤" }</span>
+            <span class="not-sent-text">
+                <span class="not-sent-label">{ label }</span>
+                if let Some(quote) = props.quote.clone() {
+                    <span class="not-sent-quote">{ quote }</span>
+                }
+                if !row.caption.is_empty() {
+                    <span class="not-sent-caption">{ row.caption.clone() }</span>
+                }
+            </span>
+            <LocalAudio
+                blob={row.note.file.clone()}
+                dimmed={props.recording}
+                on_explain={props.on_explain.clone()}
+            />
+            <button class="link not-sent-send" aria-label={t("Send voice message")} onclick={send}>{ t("Send") }</button>
+            <button class="link not-sent-delete" aria-label={t("Delete recording")} onclick={delete}>{ "✕" }</button>
+            if *asking {
+                <Confirm
+                    title={t("Delete this recording?")}
+                    confirm={t("Delete")}
+                    cancel={AttrValue::from(t("Keep"))}
+                    on_confirm={{
+                        let on_delete = props.on_delete.clone();
+                        let asking = asking.clone();
+                        Callback::from(move |_: ()| {
+                            asking.set(false);
+                            on_delete.emit(row.clone());
+                        })
+                    }}
+                    on_cancel={{
+                        let asking = asking.clone();
+                        Callback::from(move |_: ()| asking.set(false))
+                    }}
+                />
+            }
         </div>
     }
 }
@@ -496,7 +955,9 @@ mod tests {
             duration_ms: Some(83_000),
             ..Prepared::default()
         };
-        assert_eq!(label(&voice), "Voice note · 1:23");
+        // "Voice message", as every client calls it (S10: renamed from
+        // "Voice note").
+        assert_eq!(label(&voice), "Voice message · 1:23");
         let track = Prepared {
             kind: "audio".into(),
             name: Some("song.mp3".into()),

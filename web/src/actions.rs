@@ -18,6 +18,7 @@ use crate::live::{Live, Opening, Panel, Viewing};
 use crate::media::{MediaLoader, Variant};
 use crate::model::{AiFailure, Attachment, Reaction};
 use crate::outbox::Wake;
+use crate::recorder::Handover;
 use crate::socket::ClientFrame;
 use crate::staged::Prepared;
 use crate::store::{self, Draft, OpenPolls, Thread, ThreadView};
@@ -43,6 +44,56 @@ pub enum Action {
     Unstage {
         chat_id: i64,
         index: usize,
+    },
+    /// A voice recording stopped by something other than the person — the
+    /// tab hidden, a call, its chat left, its microphone gone — kept as a
+    /// "Voice message not sent" with the reply it was recorded under, never
+    /// sent and never lost (the plan for #79, S2.8, S4). Shorter than a
+    /// second, it is deleted: there is nothing worth keeping. `session` is
+    /// the sign-in it was recorded in, which is the only one it may land in.
+    Park {
+        session: u64,
+        chat_id: i64,
+        recording: Handover,
+        reply_to_message_id: Option<i64>,
+    },
+    /// A recording the person stopped that cannot be staged: finished only
+    /// after its chat had been left — in review when they left — or with no
+    /// room left on the strip. Kept the same way (S2.8) rather than thrown
+    /// away, for a recording cannot be made again.
+    ParkStopped {
+        session: u64,
+        chat_id: i64,
+        note: Prepared,
+        duration_ms: i64,
+        reply_to_message_id: Option<i64>,
+    },
+    /// A voice message sent from the recorder — the Send slot pressed while
+    /// it recorded with the box empty (the plan for #79, S1.3 row 2, S2.5):
+    /// it goes alone, at once, with the reply the box was answering. Its
+    /// row joins the outbox before its first byte, like every media send
+    /// (docs/protocol.md, "Sending on an unreliable network"). Finished
+    /// after the press, it lands only in the sign-in it was recorded in —
+    /// in another chat if the chat was left meanwhile, since the person had
+    /// already decided, but never in somebody else's tab after a sign-out.
+    SendRecorded {
+        session: u64,
+        chat_id: i64,
+        note: Prepared,
+        reply_to_message_id: Option<i64>,
+    },
+    /// A not-sent voice message's own Send: it goes with ITS reply and
+    /// caption, and nothing else (S2.8). `mentions` are its caption's.
+    SendNotSent {
+        chat_id: i64,
+        id: u64,
+        mentions: Vec<crate::model::Mention>,
+    },
+    /// A not-sent voice message's ✕ — which asked first, at ten seconds or
+    /// more.
+    DeleteNotSent {
+        chat_id: i64,
+        id: u64,
     },
     SaveEdit {
         chat_id: i64,
@@ -149,9 +200,14 @@ pub enum Action {
     Typing {
         chat_id: i64,
     },
+    /// The words in a chat's box as its composer goes — which it does only
+    /// when the chat is left — and the reply the box was answering then. A
+    /// voice note still in review there is not sent from now on, and takes
+    /// the words along as its caption (the plan for #79, S2.8).
     SaveDraft {
         chat_id: i64,
         text: String,
+        reply_to_message_id: Option<i64>,
     },
     DismissNotice,
     /// The family board, in the main pane instead of a chat.
@@ -757,6 +813,121 @@ impl Actions {
                     }
                 });
             }
+            Action::Park {
+                session: recorded_in,
+                chat_id,
+                recording,
+                reply_to_message_id,
+            } => {
+                let Some(active) = recording.take() else {
+                    return;
+                };
+                // Recorded in a sign-in that has ended: it goes with it, and
+                // the microphone with it, here.
+                if recorded_in != session {
+                    return;
+                }
+                spawn_local(async move {
+                    // The microphone is let go of here, whatever comes of it.
+                    let Some(recorded) = active.stop().await else {
+                        return;
+                    };
+                    let duration_ms = recorded.duration_ms;
+                    match crate::prep::recording(recorded.blob, recorded.mime, duration_ms).await {
+                        Ok(note) => this.handle(Action::ParkStopped {
+                            session,
+                            chat_id,
+                            note,
+                            duration_ms,
+                            reply_to_message_id,
+                        }),
+                        // Too big for this server to take at all: it could
+                        // never be sent, and saying so is all there is.
+                        Err(error) => {
+                            live.update(session, |state| {
+                                state.failure = Some(error.message().to_string());
+                            });
+                        }
+                    }
+                });
+            }
+            Action::ParkStopped {
+                session: recorded_in,
+                chat_id,
+                note,
+                duration_ms,
+                reply_to_message_id,
+            } => {
+                // Under a second there is nothing worth keeping (S4).
+                if duration_ms < fc_text::record::SHORTEST_RECORDING_MS as i64 {
+                    return;
+                }
+                live.update(recorded_in, |state| {
+                    state.store.park(
+                        chat_id,
+                        note,
+                        duration_ms,
+                        reply_to_message_id,
+                        String::new(),
+                    );
+                });
+            }
+            Action::SendRecorded {
+                session: recorded_in,
+                chat_id,
+                note,
+                reply_to_message_id,
+            } => {
+                let queued = live
+                    .update(recorded_in, |state| {
+                        state.store.queue_send(
+                            chat_id,
+                            uuid::Uuid::new_v4().to_string(),
+                            Draft {
+                                reply_to_message_id,
+                                attachments: vec![note],
+                                ..Draft::default()
+                            },
+                        );
+                    })
+                    .is_some();
+                if queued {
+                    wake(&self.channels, Wake::Queued);
+                }
+            }
+            Action::SendNotSent {
+                chat_id,
+                id,
+                mentions,
+            } => {
+                let queued = live.now(|state| {
+                    let Some(row) = state.store.take_not_sent(chat_id, id) else {
+                        return false;
+                    };
+                    // Alone, with its own reply and caption — whatever the
+                    // box holds now, and whatever is staged, stays there.
+                    state.store.queue_send(
+                        chat_id,
+                        uuid::Uuid::new_v4().to_string(),
+                        Draft {
+                            body: row.caption,
+                            reply_to_message_id: row.reply_to_message_id,
+                            mentions,
+                            attachments: vec![row.note],
+                            ..Draft::default()
+                        },
+                    );
+                    true
+                });
+                if queued {
+                    wake(&self.channels, Wake::Queued);
+                }
+            }
+            Action::DeleteNotSent { chat_id, id } => {
+                live.now(|state| {
+                    state.store.take_not_sent(chat_id, id);
+                });
+            }
             Action::SaveEdit {
                 chat_id,
                 message_id,
@@ -1063,9 +1234,17 @@ impl Actions {
                 live.now(|state| state.store.discard(&client_msg_id));
             }
             Action::Typing { chat_id } => self.typing(chat_id),
-            Action::SaveDraft { chat_id, text } => {
+            Action::SaveDraft {
+                chat_id,
+                text,
+                reply_to_message_id,
+            } => {
                 live.now(|state| {
-                    if text.trim().is_empty() {
+                    // A voice note left in review takes the words with it,
+                    // and the box is left empty (S2.8): its caption never
+                    // leaves without it, and never twice.
+                    let taken = state.store.park_review(chat_id, &text, reply_to_message_id);
+                    if taken || text.trim().is_empty() {
                         state.store.drafts.remove(&chat_id);
                     } else {
                         state.store.drafts.insert(chat_id, text);
@@ -3180,6 +3359,305 @@ mod tests {
             },
         });
         assert_eq!(staged(&actions), 0, "what went is gone from the strip");
+    }
+
+    /// A voice note recorded here: audio with no name.
+    fn voice(duration_ms: i64) -> Prepared {
+        Prepared {
+            kind: "audio".into(),
+            mime: "audio/mp4".into(),
+            size: 3,
+            duration_ms: Some(duration_ms),
+            file: Some(web_sys::Blob::new().expect("a blob")),
+            ..Prepared::default()
+        }
+    }
+
+    fn not_sent(actions: &Actions) -> Vec<crate::store::NotSent> {
+        actions
+            .live
+            .read(|state| state.store.not_sent.get(&42).cloned().unwrap_or_default())
+    }
+
+    /// A VOICE NOTE LEFT IN REVIEW is not sent from then on (the plan for
+    /// #79, S2.8): the chat left with it staged, it gets a row of its own,
+    /// with the reply the box was answering and the box's words as its
+    /// caption — and the box is left empty. Whatever else was staged stays
+    /// staged, as it always has in this tab; and where nothing was in
+    /// review, the words are kept as they always were.
+    #[wasm_bindgen_test]
+    fn a_voice_note_left_in_review_is_not_sent_and_takes_the_words_along() {
+        let actions = actions();
+        actions.handle(Action::Stage {
+            chat_id: 42,
+            item: photo(),
+        });
+        actions.handle(Action::Stage {
+            chat_id: 42,
+            item: voice(42_000),
+        });
+        actions.handle(Action::Stage {
+            chat_id: 42,
+            item: voice(7_000),
+        });
+        actions.handle(Action::SaveDraft {
+            chat_id: 42,
+            text: "  for you  ".into(),
+            reply_to_message_id: Some(100),
+        });
+        let rows = not_sent(&actions);
+        assert_eq!(rows.len(), 2, "each note its own row");
+        assert_eq!(
+            (rows[0].duration_ms, rows[0].caption.as_str()),
+            (42_000, "for you")
+        );
+        assert_eq!(
+            (rows[1].duration_ms, rows[1].caption.as_str()),
+            (7_000, ""),
+            "the words go once"
+        );
+        assert!(rows
+            .iter()
+            .all(|row| row.reply_to_message_id == Some(100) && row.note.is_voice_note()));
+        assert_ne!(rows[0].id, rows[1].id);
+        actions.live.read(|state| {
+            let left: Vec<&str> = state.store.staged[&42]
+                .iter()
+                .map(|item| item.kind.as_str())
+                .collect();
+            assert_eq!(left, vec!["photo"], "the photo stays staged");
+            assert!(
+                !state.store.drafts.contains_key(&42),
+                "the box is left empty"
+            );
+        });
+
+        actions.handle(Action::SaveDraft {
+            chat_id: 42,
+            text: "half a thought".into(),
+            reply_to_message_id: None,
+        });
+        actions.live.read(|state| {
+            assert_eq!(
+                state.store.drafts.get(&42).map(String::as_str),
+                Some("half a thought")
+            );
+        });
+        assert_eq!(not_sent(&actions).len(), 2);
+    }
+
+    /// A NOT-SENT VOICE MESSAGE goes by its own Send ALONE, with ITS reply
+    /// and caption (S2.8): never with what is staged, never twice.
+    #[wasm_bindgen_test]
+    fn a_not_sent_voice_message_goes_alone_with_its_own_reply_and_caption() {
+        let actions = actions();
+        let id = actions.live.now(|state| {
+            state
+                .store
+                .park(42, voice(12_000), 12_000, Some(100), "hi Anna".into())
+        });
+        actions.handle(Action::Stage {
+            chat_id: 42,
+            item: photo(),
+        });
+        let anna = crate::model::Mention {
+            user_id: ANNA,
+            name: "Anna".into(),
+        };
+        actions.handle(Action::SendNotSent {
+            chat_id: 42,
+            id,
+            mentions: vec![anna.clone()],
+        });
+        actions.live.read(|state| {
+            assert!(!state.store.not_sent.contains_key(&42), "its row is gone");
+            assert_eq!(state.store.outbox.len(), 1);
+            let row = &state.store.outbox[0];
+            assert_eq!(row.body, "hi Anna");
+            assert_eq!(row.reply_to_message_id, Some(100));
+            assert_eq!(row.mentions, vec![anna.clone()]);
+            assert_eq!(row.items.len(), 1, "alone");
+            assert_eq!(
+                (row.items[0].kind.as_str(), row.items[0].duration_ms),
+                ("audio", Some(12_000))
+            );
+        });
+        assert_eq!(staged(&actions), 1, "what is staged stays staged");
+        actions.handle(Action::SendNotSent {
+            chat_id: 42,
+            id,
+            mentions: Vec::new(),
+        });
+        actions
+            .live
+            .read(|state| assert_eq!(state.store.outbox.len(), 1, "and only once"));
+    }
+
+    #[wasm_bindgen_test]
+    fn deleting_a_not_sent_voice_message_takes_only_it() {
+        let actions = actions();
+        let first = actions.live.now(|state| {
+            state
+                .store
+                .park(42, voice(3_000), 3_000, None, String::new())
+        });
+        let second = actions.live.now(|state| {
+            state
+                .store
+                .park(42, voice(4_000), 4_000, None, String::new())
+        });
+        actions.handle(Action::DeleteNotSent {
+            chat_id: 42,
+            id: first,
+        });
+        let rows = not_sent(&actions);
+        assert_eq!(
+            rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec![second]
+        );
+        actions
+            .live
+            .read(|state| assert!(state.store.outbox.is_empty()));
+    }
+
+    /// A VOICE MESSAGE SENT FROM THE RECORDER (the plan for #79, S2.5) goes
+    /// alone, with the reply the box was answering — whatever is staged stays
+    /// staged — and only in the sign-in it was recorded in.
+    #[wasm_bindgen_test]
+    fn a_voice_message_sent_from_the_recorder_goes_alone_in_its_own_sign_in() {
+        let actions = actions();
+        actions.handle(Action::Stage {
+            chat_id: 42,
+            item: photo(),
+        });
+        let session = actions.live.session();
+        actions.handle(Action::SendRecorded {
+            session,
+            chat_id: 42,
+            note: voice(4_000),
+            reply_to_message_id: Some(100),
+        });
+        actions.live.read(|state| {
+            assert_eq!(state.store.outbox.len(), 1);
+            let row = &state.store.outbox[0];
+            assert_eq!(row.body, "");
+            assert_eq!(row.reply_to_message_id, Some(100));
+            assert_eq!(row.items.len(), 1, "alone");
+            assert_eq!(
+                (row.items[0].kind.as_str(), row.items[0].duration_ms),
+                ("audio", Some(4_000))
+            );
+        });
+        assert_eq!(staged(&actions), 1, "what is staged stays staged");
+
+        actions.live.end_session();
+        actions
+            .live
+            .now(|state| state.token = Some("theirs".into()));
+        actions.handle(Action::SendRecorded {
+            session,
+            chat_id: 42,
+            note: voice(4_000),
+            reply_to_message_id: None,
+        });
+        actions
+            .live
+            .read(|state| assert!(state.store.outbox.is_empty(), "not in the next sign-in"));
+    }
+
+    /// A note finished after its pane went is kept from a second up, and
+    /// only in the sign-in it was recorded in: one landing after a sign-out
+    /// and somebody else's sign-in must not appear in their composer.
+    #[wasm_bindgen_test]
+    fn a_stopped_note_is_kept_from_a_second_and_only_in_its_own_sign_in() {
+        let actions = actions();
+        let first = actions.live.session();
+        actions.live.end_session();
+        actions
+            .live
+            .now(|state| state.token = Some("theirs".into()));
+        let keep = |session: u64, duration_ms: i64| {
+            actions.handle(Action::ParkStopped {
+                session,
+                chat_id: 42,
+                note: voice(duration_ms),
+                duration_ms,
+                reply_to_message_id: Some(100),
+            })
+        };
+        keep(first, 5_000);
+        assert!(not_sent(&actions).is_empty(), "not in the next sign-in");
+        let second = actions.live.session();
+        keep(second, 900);
+        assert!(
+            not_sent(&actions).is_empty(),
+            "under a second: nothing to keep"
+        );
+        keep(second, 5_000);
+        let rows = not_sent(&actions);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].duration_ms, rows[0].reply_to_message_id),
+            (5_000, Some(100))
+        );
+    }
+
+    /// THE KEEPING, with a real microphone (the fake one webdriver.json
+    /// starts the browser with): a recording handed on is finished — its
+    /// microphone let go of — and kept as not sent with the reply it was
+    /// recorded under; under a second it is deleted; recorded in another
+    /// sign-in, it is dropped there and then.
+    #[wasm_bindgen_test]
+    async fn an_interrupted_recording_is_finished_and_kept_as_not_sent() {
+        use crate::recorder::{in_progress, Handover, Listening, Recording};
+        use gloo_timers::future::TimeoutFuture;
+        let actions = actions();
+        let session = actions.live.session();
+        let park = |recording: Recording, session: u64, reply: Option<i64>| {
+            actions.handle(Action::Park {
+                session,
+                chat_id: 42,
+                recording: Handover::of(recording),
+                reply_to_message_id: reply,
+            })
+        };
+        let started = || async {
+            Recording::start(Listening::in_the_click())
+                .await
+                .expect("recording starts")
+        };
+
+        let recording = started().await;
+        TimeoutFuture::new(1_200).await;
+        park(recording, session, Some(100));
+        for _ in 0..250 {
+            if !not_sent(&actions).is_empty() {
+                break;
+            }
+            TimeoutFuture::new(20).await;
+        }
+        let rows = not_sent(&actions);
+        assert_eq!(rows.len(), 1, "kept");
+        assert_eq!(rows[0].note.kind, "audio");
+        assert!(rows[0].duration_ms >= 1_000, "{} ms", rows[0].duration_ms);
+        assert_eq!(rows[0].note.duration_ms, Some(rows[0].duration_ms));
+        assert_eq!(rows[0].reply_to_message_id, Some(100));
+        assert_eq!(rows[0].caption, "");
+        assert!(!in_progress(), "its microphone let go of");
+
+        let recording = started().await;
+        TimeoutFuture::new(300).await;
+        park(recording, session, None);
+        TimeoutFuture::new(1_500).await;
+        assert_eq!(not_sent(&actions).len(), 1, "under a second: deleted");
+        assert!(!in_progress());
+
+        let recording = started().await;
+        TimeoutFuture::new(1_200).await;
+        park(recording, session + 1, None);
+        assert!(!in_progress(), "another sign-in's: let go of at once");
+        TimeoutFuture::new(1_500).await;
+        assert_eq!(not_sent(&actions).len(), 1);
     }
 
     fn roster(next_owner: Option<i64>) -> crate::model::Roster {

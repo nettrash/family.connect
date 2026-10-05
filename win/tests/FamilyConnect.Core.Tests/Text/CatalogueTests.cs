@@ -42,7 +42,7 @@ public class CatalogueTests
 
     /// <summary>The five sentences nobody has translated yet, named rather than pretended.</summary>
     private static readonly string[] EnglishForNow =
-        ["%@ — %@", "%@ — %@ mentioned you", "Chat", "New note", "Voice message",
+        ["%@ — %@", "%@ — %@ mentioned you", "Chat", "New note",
          "%@ GB", "%@ KB", "%@ MB", "%lld byte", "%lld bytes", "Zero KB",
          "Delete the family?", "Leave and Delete", "The server is busy. Try again in a moment.",
          "Tell me when a message arrives", "What hasn't been sent yet is lost.",
@@ -61,7 +61,6 @@ public class CatalogueTests
          "Zoom out",
          "Finding your location…",
          "Position",
-         "Recording %@",
          "Event",
          "Only the person who wrote a note can change it.",
          "Pick when it ends, or turn the end off.",
@@ -74,7 +73,6 @@ public class CatalogueTests
          "You're not in a family, so there is no board.",
          "Add Event",
          "Couldn't send your answer.",
-         "Keep",
          "A photo is still being pinned. Add the next one when it is on the board.",
          "Couldn't move the note.",
          "Pinning…",

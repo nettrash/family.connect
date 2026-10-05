@@ -634,6 +634,34 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.outlineVariant,
             )
 
+            // -- Voice messages (#79, S9) ------------------------------------
+            // Where a release can send — a held microphone let go opens a
+            // five-second Undo window — this is its "turn off" (WCAG 2.2.1):
+            // per device, never on the wire, off by default.
+            Text(
+                text = stringResource(R.string.s_voice_messages),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
+            )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.s_review_before_sending)) },
+                supportingContent = { Text(stringResource(R.string.s_review_before_sending_explanation)) },
+                trailingContent = {
+                    Switch(
+                        checked = state.reviewBeforeSending,
+                        onCheckedChange = viewModel::setReviewBeforeSending,
+                    )
+                },
+                modifier = Modifier.clickable {
+                    viewModel.setReviewBeforeSending(!state.reviewBeforeSending)
+                },
+            )
+            HorizontalDivider(
+                modifier = Modifier.padding(start = 16.dp),
+                color = MaterialTheme.colorScheme.outlineVariant,
+            )
+
             // -- Session ----------------------------------------------------
             Spacer(Modifier.height(8.dp))
             ListItem(

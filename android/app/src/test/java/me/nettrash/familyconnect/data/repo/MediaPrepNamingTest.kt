@@ -131,6 +131,44 @@ class MediaPrepNamingTest {
     }
 
     /**
+     * A voice note travels with NO name (#79, Decision 35). The server drops
+     * an audio upload's name anyway, and until the echo arrived the sender's
+     * own chat list showed the recorder's "voice-<ms>.m4a" — this device's
+     * business, not the family's. A sound file picked from disk keeps its
+     * title; only a recording is told apart, by its flag.
+     */
+    @Test
+    fun `a voice note carries no name, and says it is one`(): Unit = runBlocking {
+        val recording = java.io.File(context.cacheDir, "voice-1786795200000.m4a").apply {
+            writeBytes(byteArrayOf(0, 0, 0, 0x20) + "ftypM4A ".toByteArray() + ByteArray(2048) { 5 })
+        }
+
+        val prepared = mediaPrep.prepareAudio(Uri.fromFile(recording), voiceNote = true)
+
+        assertThat(prepared.kind).isEqualTo(AttachmentDto.KIND_AUDIO)
+        assertThat(prepared.mime).isEqualTo("audio/mp4")
+        assertThat(prepared.name).isNull()
+        assertThat(prepared.voiceNote).isTrue()
+        prepared.file.delete()
+        recording.delete()
+    }
+
+    /** …while the same bytes picked from disk keep the name they were picked by. */
+    @Test
+    fun `a picked sound file keeps its name and is no voice note`(): Unit = runBlocking {
+        val track = java.io.File(context.cacheDir, "Lullaby.m4a").apply {
+            writeBytes(byteArrayOf(0, 0, 0, 0x20) + "ftypM4A ".toByteArray() + ByteArray(2048) { 5 })
+        }
+
+        val prepared = mediaPrep.prepareAudio(Uri.fromFile(track))
+
+        assertThat(prepared.name).isEqualTo("Lullaby.m4a")
+        assertThat(prepared.voiceNote).isFalse()
+        prepared.file.delete()
+        track.delete()
+    }
+
+    /**
      * One ceiling for everything, pasted or picked — and the same failure,
      * so the message the composer shows is one that is already translated.
      */

@@ -22,6 +22,17 @@ public sealed partial class MainWindow : Window
     private readonly TrayIcon? tray;
     private bool quitting;
 
+    /// <summary>
+    /// What a desktop has instead of "the app went to the background" — the session locking, the screen saver, sleep — and
+    /// the window minimised: each stops a recording and keeps it as "not sent" (docs/audio-video-messages-2026-10-04.md, S4).
+    /// And a real close: whether it is keeping what was recorded right now, and whether it has, so the close that follows
+    /// goes through.
+    /// </summary>
+    private readonly SessionWatch? sessionWatch;
+    private bool minimised;
+    private bool keepingForClose;
+    private bool keptForClose;
+
     /// <summary>A share waiting for the chats to exist, and whether the reader is choosing where one goes right now.</summary>
     private bool sharePending;
     private bool choosingShare;
@@ -70,6 +81,17 @@ public sealed partial class MainWindow : Window
             Diagnostics.Write($"the notification area icon: {e.GetType().Name}");
         }
         AppWindow.Closing += OnClosing;
+        AppWindow.Changed += OnWindowChanged;
+        // Which API a packaged app hears a lock through is trial T7's to settle; without it a lock simply goes unheard.
+        try
+        {
+            sessionWatch = new SessionWatch();
+            sessionWatch.Away += () => _ = chats?.Interrupt(RecordingEnd.SessionLocked);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"the session watch: {e.GetType().Name}");
+        }
         WindowIcon.Apply(AppWindow);
         BuildRail();
         callMedia = new Services.WebViewCallMedia(CallMediaView);
@@ -205,7 +227,8 @@ public sealed partial class MainWindow : Window
         var member = gate is Gate.Member or Gate.Owner;
         if (!member)
         {
-            chats?.Detach();
+            // The session ended — or the family did: what was recorded and not sent goes with it (S4).
+            chats?.Detach(keep: false);
             chats = null;
         }
         // The rail's places are a family's: before there is one, the door or the sign-in fills the window.
@@ -404,6 +427,9 @@ public sealed partial class MainWindow : Window
             BackToChats();
             return;
         }
+        // The rail is leaving the chat: what is being recorded stops and waits there as "not sent", and so does a voice note
+        // still in review (S4).
+        _ = chats.Interrupt(RecordingEnd.LeftChat);
         try
         {
             Screen.Content = build(current);
@@ -432,7 +458,7 @@ public sealed partial class MainWindow : Window
             calls = null;
         }
         callCard.Attach(null, null);
-        chats?.Detach();
+        chats?.Detach(keep: true);
         chats = null;
         shown = null;
         attention?.Dispose();
@@ -498,6 +524,7 @@ public sealed partial class MainWindow : Window
         {
             AppWindow.Show();
         }
+        services.WindowAway = minimised;
         Activate();
     }
 
@@ -604,15 +631,75 @@ public sealed partial class MainWindow : Window
     /// The title bar's close, Alt+F4, the taskbar's Close window: hidden, still listening — unless the reader turned that
     /// off, or there is no icon to come back from.
     /// </summary>
+    /// <remarks>
+    /// Either way a recording stops (S4). Hidden, it waits as "not sent" and a note in review stays where it is. A REAL
+    /// close takes the app with it, and nothing awaited after the window goes would finish — so the close is held back
+    /// while what is being recorded, and any voice note still in review, is kept as "not sent", and then made again.
+    /// </remarks>
     private void OnClosing(Microsoft.UI.Windowing.AppWindow sender, Microsoft.UI.Windowing.AppWindowClosingEventArgs args)
     {
-        if (quitting || tray is not { Shown: true } || !KeepRunningSetting.Enabled)
+        if (!quitting && tray is { Shown: true } && KeepRunningSetting.Enabled)
         {
+            args.Cancel = true;
+            services.WindowAway = true;
+            _ = chats?.Interrupt(RecordingEnd.WindowHidden);
+            placement.Save();
+            sender.Hide();
             return;
         }
-        args.Cancel = true;
-        placement.Save();
-        sender.Hide();
+        if (keepingForClose)
+        {
+            // Already on its way out, once what was recorded is kept: a second click must not cut that short.
+            args.Cancel = true;
+            return;
+        }
+        if (!keptForClose && chats is { HoldsRecordings: true })
+        {
+            args.Cancel = true;
+            _ = CloseAfterKeepingAsync();
+        }
+    }
+
+    /// <summary>
+    /// The real close, once what was recorded is kept — bounded, because a recorder that never answers must not leave a
+    /// close button that does nothing.
+    /// </summary>
+    private async Task CloseAfterKeepingAsync()
+    {
+        keepingForClose = true;
+        try
+        {
+            if (chats is { } view)
+            {
+                await Task.WhenAny(view.Interrupt(RecordingEnd.WindowClosed), Task.Delay(TimeSpan.FromSeconds(5)));
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"keeping recordings before closing: {e.GetType().Name}");
+        }
+        keepingForClose = false;
+        keptForClose = true;
+        quitting = true;
+        Close();
+    }
+
+    /// <summary>
+    /// Minimised is not running in front: a recording stops and waits as "not sent" (S4) — once, as the window goes down,
+    /// not on every change while it is down.
+    /// </summary>
+    private void OnWindowChanged(Microsoft.UI.Windowing.AppWindow sender, Microsoft.UI.Windowing.AppWindowChangedEventArgs args)
+    {
+        var down = sender.Presenter is Microsoft.UI.Windowing.OverlappedPresenter
+        {
+            State: Microsoft.UI.Windowing.OverlappedPresenterState.Minimized,
+        };
+        if (down && !minimised)
+        {
+            _ = chats?.Interrupt(RecordingEnd.WindowHidden);
+        }
+        minimised = down;
+        services.WindowAway = down || !sender.IsVisible;
     }
 
     /// <summary>A step nobody awaits, whose failure is written down rather than lost with its task.</summary>
@@ -652,6 +739,7 @@ public sealed partial class MainWindow : Window
     {
         placement.Save();
         tray?.Dispose();
+        sessionWatch?.Dispose();
         flushTimer.Stop();
         Detach();
         Toasts.Badge(0);

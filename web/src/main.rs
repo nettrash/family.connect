@@ -19,6 +19,7 @@
 
 mod actions;
 mod api;
+mod awake;
 mod board;
 mod calls;
 mod encode;
@@ -45,6 +46,10 @@ mod webcodecs;
 mod fake_server;
 #[cfg(test)]
 mod layout_tests;
+#[cfg(test)]
+mod recording_tests;
+#[cfg(test)]
+mod voice_tests;
 
 use fc_text::i18n::{t, t1, tn};
 use std::collections::HashMap;
@@ -70,6 +75,7 @@ use views::family::FamilyPane;
 use views::gate::{FamilyGate, PendingApproval};
 use views::login::Login;
 use views::open_polls::OpenPollsPanel;
+use views::quiet::{LiveRegion, QuietRoot};
 use views::settings::SettingsPane;
 use views::stickers::StickerView;
 use views::thread_panel::ThreadPanel;
@@ -178,32 +184,14 @@ fn app() -> Html {
 
     // Closing the tab with something still unsent loses it — the session,
     // and its outbox, go with the tab — so the browser asks first. A reload
-    // asks too (a page cannot tell the two apart), and loses nothing.
+    // asks too (a page cannot tell the two apart): it keeps the outbox's
+    // rows and nothing else — not what is staged, not a voice message that
+    // was not sent, not one being recorded (the plan for #79, S2.8). A
+    // phone's browser may close a tab without asking at all, and loses them
+    // then.
     {
         let live = live.clone();
-        use_effect_with((), move |_| {
-            let guard = Closure::<dyn Fn(web_sys::BeforeUnloadEvent)>::new(
-                move |event: web_sys::BeforeUnloadEvent| {
-                    // Something unsent, or something staged to send: both
-                    // live in this tab only.
-                    if live.read(|state| {
-                        !state.store.outbox.is_empty() || !state.store.staged.is_empty()
-                    }) {
-                        event.prevent_default();
-                        event.set_return_value("unsent");
-                    }
-                },
-            );
-            let window = web_sys::window().expect("a window");
-            let _ = window
-                .add_event_listener_with_callback("beforeunload", guard.as_ref().unchecked_ref());
-            move || {
-                let _ = window.remove_event_listener_with_callback(
-                    "beforeunload",
-                    guard.as_ref().unchecked_ref(),
-                );
-            }
-        });
+        use_effect_with((), move |_| ask_before_leaving(live));
     }
 
     // The call goes with the tab — but only once the tab is really going.
@@ -565,13 +553,16 @@ fn app() -> Html {
     html! {
         <ContextProvider<Calls> context={calls.clone()}>
         <ContextProvider<MediaLoader> context={media}>
+        // Quiet while a voice message is being recorded: nothing of the
+        // app's is spoken into a note (the plan for #79, S6).
+        <QuietRoot>
         <div class="app">
             <header class="bar">
                 <span class="brand">{ BRAND }</span>
                 // Live updates are paused, and the bar says so. Sending is
                 // not: that goes over REST whether the socket is up or not.
                 if !state.connected {
-                    <span class="status" role="status">{ t("Connecting…") }</span>
+                    <LiveRegion tag="span" class="status" role="status">{ t("Connecting…") }</LiveRegion>
                 }
                 <span class="bar-actions">
                     { board_button.unwrap_or_default() }
@@ -593,15 +584,15 @@ fn app() -> Html {
                 />
             }
             if let Some(message) = state.failure.clone() {
-                <p class="error" role="alert">
+                <LiveRegion class="error" role="alert">
                     { message }
                     <button class="link" onclick={dismiss.clone()} aria-label={t("Dismiss")}>{ "✕" }</button>
-                </p>
+                </LiveRegion>
             } else if let Some(message) = state.notice.clone() {
-                <p class="notice" role="status">
+                <LiveRegion class="notice" role="status">
                     { message }
                     <button class="link" onclick={dismiss} aria-label={t("Dismiss")}>{ "✕" }</button>
-                </p>
+                </LiveRegion>
             }
             <div class={classes!("split", (store.thread_view.is_some() || store.open_polls.is_some()).then_some("with-panel"))}>
                 <ChatList
@@ -669,6 +660,8 @@ fn app() -> Html {
                         unanswered_polls={store.unanswered_polls(item.chat.id)}
                         draft={store.drafts.get(&item.chat.id).cloned().unwrap_or_default()}
                         staged={store.staged.get(&item.chat.id).cloned().unwrap_or_default()}
+                        not_sent={store.not_sent.get(&item.chat.id).cloned().unwrap_or_default()}
+                        session={state.session}
                         family={store.family.clone()}
                         support_contact={store.support_contact.clone()}
                         stickers={(store.pack.is_offered() && store.family.is_some()).then(|| store.pack.panel())}
@@ -690,7 +683,7 @@ fn app() -> Html {
             if *confirming_sign_out {
                 <Confirm
                     title={t("Log out?")}
-                    message={sign_out_message(!store.outbox.is_empty() || !store.staged.is_empty())}
+                    message={sign_out_message(leaving_loses_something(&state))}
                     confirm={t("Log Out")}
                     on_confirm={{
                         let confirming = confirming_sign_out.clone();
@@ -707,8 +700,35 @@ fn app() -> Html {
                 />
             }
         </div>
+        </QuietRoot>
         </ContextProvider<MediaLoader>>
         </ContextProvider<Calls>>
+    }
+}
+
+/// Whether this tab's end — closed, reloaded, signed out — would lose
+/// something only it holds: a message not sent yet, something staged, a
+/// voice message that was not sent, or one being recorded or finished.
+fn leaving_loses_something(state: &AppState) -> bool {
+    state.store.holds_unsent() || recorder::in_progress()
+}
+
+/// The browser's own question before the tab closes or reloads, asked
+/// whenever leaving would lose something — and what takes it away again.
+fn ask_before_leaving(live: Live) -> impl FnOnce() {
+    let guard = Closure::<dyn Fn(web_sys::BeforeUnloadEvent)>::new(
+        move |event: web_sys::BeforeUnloadEvent| {
+            if live.read(leaving_loses_something) {
+                event.prevent_default();
+                event.set_return_value("unsent");
+            }
+        },
+    );
+    let window = web_sys::window().expect("a window");
+    let _ = window.add_event_listener_with_callback("beforeunload", guard.as_ref().unchecked_ref());
+    move || {
+        let _ = window
+            .remove_event_listener_with_callback("beforeunload", guard.as_ref().unchecked_ref());
     }
 }
 

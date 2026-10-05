@@ -3,18 +3,186 @@
 //! offers the roster, who a text names when Send is pressed, the `@ai` and
 //! `/draw` buttons, the 4,000-character limit, and the reply and edit
 //! banners.
+//!
+//! In a conversation its trailing button is the Send SLOT of the plan for
+//! #79 (docs/audio-video-messages-2026-10-04.md, S1.3): one fixed icon
+//! button that is Send when there is something to send and a microphone
+//! when there is not, whose every state is fc_text::record::composer_slot's.
+//! A click, Enter or Space on it records hands-free; a touch acts on its
+//! `pointerup` (S8.8); a right-click, Shift+F10 or the Menu key opens its
+//! menu (S1.6, S8.7). A thread's box is not changed: today's Send.
 
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use fc_text::assistant_pictures::{self, Candidate, MentionNotice, Switches};
 use fc_text::i18n::{t, t1};
+use fc_text::record::{self, Slot};
 use fc_text::{assistant, assistant_consent, composer, media, mentions};
-use web_sys::{File, HtmlTextAreaElement};
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
+use web_sys::{File, HtmlElement, HtmlTextAreaElement};
 use yew::prelude::*;
 
 use crate::model::{Assistant, Member, Mention};
+use crate::recorder::now_ms;
 use crate::store::Draft;
 use crate::views::consent::AssistantConsentBar;
+use crate::views::quiet::LiveRegion;
+
+/// How long after a touch's `pointerup` — on which the slot has already
+/// acted (S8.8) — the `click` a browser may send after it is swallowed.
+const TOUCH_CLICK_MS: f64 = 800.0;
+
+/// A press on the slot, from the moment it went down.
+struct Press {
+    /// What made it: "touch", "mouse", "pen" — or "key", for Enter and Space.
+    kind: String,
+    /// When it came up, by `recorder::now_ms`.
+    up_ms: Option<f64>,
+    /// It went down while the slot ignored activation, so it is ignored
+    /// whole (S1.1): come up after the guard, it is still neither a click
+    /// nor a tap.
+    ignored: bool,
+    /// What it became is decided — or it came up off the slot, where no
+    /// click on the slot follows.
+    spent: bool,
+}
+
+impl Press {
+    fn down(kind: String, ignored: bool) -> Press {
+        Press {
+            kind,
+            up_ms: None,
+            ignored,
+            spent: false,
+        }
+    }
+
+    /// The activation it ends, decided once: whether it is ignored.
+    fn spend(&mut self) -> bool {
+        !std::mem::replace(&mut self.spent, true) && self.ignored
+    }
+}
+
+/// What the Send slot needs to be the plan's (S1.3) — given only by the
+/// conversation, for its own box, and never by a thread, whose composer the
+/// plan leaves as it is. An edit in the conversation's box keeps the slot
+/// Save (row 4), never a microphone.
+#[derive(Clone, PartialEq)]
+pub struct Records {
+    /// The voice recording the slot is showing.
+    pub recording: record::Recording,
+    /// The recording row (S2.4), drawn in place of the field — and of the
+    /// paperclip, the sticker and `@ai` buttons — while one runs.
+    pub row: Html,
+    /// A call in any phase but ended (S1.2 **call**).
+    pub call: bool,
+    /// The chat holds a voice message that was not sent (S2.8).
+    pub not_sent: bool,
+    /// This page can record at all — a secure context (S1.2).
+    pub can_record: bool,
+    /// The microphone is being asked for: a Send waits for the answer.
+    pub starting: bool,
+    /// The slot activated as a microphone, or as the recording's Send arrow
+    /// or Stop square (rows 2, 3, 7–10) — in the click or the touch's
+    /// `pointerup` itself, which is what lets the page's audio start.
+    pub on_slot: Callback<()>,
+    /// The microphone's menu chose "Record Voice Message".
+    pub on_record: Callback<()>,
+    /// Esc while a recording runs: Stop, never Delete (S2.4, S8.7).
+    pub on_stop: Callback<()>,
+    /// The slot's own Send or Save just emptied the box.
+    pub on_emptied: Callback<()>,
+    /// The person changed what the box holds — typed, deleted, took a
+    /// suggestion, pasted, added `@ai` or `/draw` — which lifts the guard
+    /// (S1.1). The conversation says the same of what it stages.
+    pub on_changed: Callback<()>,
+    /// Until when the slot ignores activation (S1.1), by `recorder::now_ms`.
+    pub guard_until: Callback<(), u64>,
+    /// Whether the words in the box are blank, each time that changes — for
+    /// a recording started beside them (row 3).
+    pub on_blank: Callback<bool>,
+    /// Moves each time the five-minute limit stops a recording into review:
+    /// the cursor goes back into the box only if the focus is still the
+    /// composer's, or nobody's (S2.4, S2.7). An ending by the person moves
+    /// the box's own `focus`; an interruption moves neither (S4).
+    pub refocus: u32,
+}
+
+/// The slot's pictures (S1.3's glyphs, drawn inline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Glyph {
+    Microphone,
+    Send,
+    Stop,
+    Save,
+}
+
+impl Glyph {
+    fn name(self) -> &'static str {
+        match self {
+            Glyph::Microphone => "microphone",
+            Glyph::Send => "send",
+            Glyph::Stop => "stop",
+            Glyph::Save => "save",
+        }
+    }
+
+    fn path(self) -> &'static str {
+        match self {
+            Glyph::Microphone => {
+                "M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 \
+                 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"
+            }
+            Glyph::Send => "M12 4 5 11l1.41 1.41L11 7.83V20h2V7.83l4.59 4.58L19 11z",
+            Glyph::Stop => "M7 7h10v10H7z",
+            Glyph::Save => "M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z",
+        }
+    }
+
+    /// Keyed by what it shows, so a change draws it anew — and the
+    /// stylesheet's fade, the slot's cross-fade (S1.3), runs again.
+    fn draw(self) -> Html {
+        html! {
+            <svg key={self.name()} class="slot-icon" viewBox="0 0 24 24"
+                 aria-hidden="true" focusable="false">
+                <path fill="currentColor" d={self.path()} />
+            </svg>
+        }
+    }
+}
+
+/// What the slot says it is, in the reader's language: its accessibility
+/// label and the word it keeps as visually hidden text (S6, S8.7) — the
+/// English of each is fc_text::record's `Slot::label`.
+fn slot_word(slot: Slot) -> &'static str {
+    match slot {
+        Slot::Recorder => "",
+        Slot::HeldMicrophone | Slot::SendVoice => t("Send voice message"),
+        Slot::StopRecording => t("Stop recording"),
+        Slot::Save { .. } => t("Save"),
+        Slot::Send | Slot::SendDisabled => t("Send"),
+        Slot::Dimmed(_) | Slot::Microphone => t("Record voice message"),
+    }
+}
+
+/// Whether the slot's activation guard covers a press now (S1.1): the
+/// slot's own last activation was under 600 ms ago. A change the person made
+/// since — words typed or deleted, a suggestion, a paste, something staged —
+/// is never guarded, and has lifted it (`Records::on_changed`), so "ok" sent
+/// at once still goes.
+fn guarded(records: Option<&Records>) -> bool {
+    records.is_some_and(|records| now_ms() < records.guard_until.emit(()) as f64)
+}
+
+/// The person changed what the box holds: said to the slot's rules, for
+/// whom such a change is never guarded.
+fn changed(records: &Option<Records>) {
+    if let Some(records) = records {
+        records.on_changed.emit(());
+    }
+}
 
 /// The most members one message may name — the server refuses more with
 /// `validation`, and neither app caps, so theirs would fail. Here the
@@ -153,6 +321,10 @@ pub struct ComposerProps {
     /// "Reply" on a surface whose every send is already a reply.
     #[prop_or_default]
     pub focus: u32,
+    /// The Send slot of the plan for #79 — see [`Records`]. None: today's
+    /// Send, as a thread keeps it.
+    #[prop_or_default]
+    pub records: Option<Records>,
 }
 
 /// Who the text names, resolved against the whole live roster at send —
@@ -192,6 +364,8 @@ pub fn composer(props: &ComposerProps) -> Html {
     // What is in the box, for the unmount below to hand back.
     let latest = use_mut_ref(String::new);
     *latest.borrow_mut() = (*text).clone();
+    let slot_ref = use_node_ref();
+    let wrap_ref = use_node_ref();
 
     {
         let text = text.clone();
@@ -230,23 +404,43 @@ pub fn composer(props: &ComposerProps) -> Html {
             }
         });
     }
-    // The reply banner puts the cursor where the answer goes — and so does
-    // a surface asking for it.
+    // The reply banner puts the cursor where the answer goes — when a reply
+    // is primed, never when one is taken away: a recording that carries the
+    // reply off, interrupted by a call, must leave the focus where the call
+    // put it (the plan for #79, S4).
     {
         let area = area.clone();
         use_effect_with(
-            (
-                props.replying.as_ref().map(|reply| reply.message_id),
-                props.focus,
-            ),
-            move |(replying, focus)| {
-                if replying.is_some() || *focus > 0 {
-                    if let Some(area) = area.cast::<HtmlTextAreaElement>() {
-                        let _ = area.focus();
-                    }
+            props.replying.as_ref().map(|reply| reply.message_id),
+            move |replying| {
+                if replying.is_some() {
+                    focus_the_box(&area);
                 }
             },
         );
+    }
+    // And so does a surface asking for it, each time it asks.
+    {
+        let area = area.clone();
+        use_effect_with(props.focus, move |focus| {
+            if *focus > 0 {
+                focus_the_box(&area);
+            }
+        });
+    }
+    // The five-minute limit stopping a recording into review gives the
+    // cursor back to the box only if the focus is still the composer's — on
+    // its slot, in its row — or nobody's: anywhere else, the person or the
+    // app put it there, and it stays (S2.4, S2.7).
+    {
+        let area = area.clone();
+        let wrap_ref = wrap_ref.clone();
+        let refocus = props.records.as_ref().map_or(0, |records| records.refocus);
+        use_effect_with(refocus, move |refocus| {
+            if *refocus > 0 && focus_is_within(&wrap_ref) {
+                focus_the_box(&area);
+            }
+        });
     }
 
     let editing = props.editing.clone();
@@ -284,7 +478,9 @@ pub fn composer(props: &ComposerProps) -> Html {
     let accept = {
         let text = text.clone();
         let area = area.clone();
+        let records = props.records.clone();
         Callback::from(move |name: String| {
+            changed(&records);
             text.set(mentions::accept(&text, &name));
             if let Some(area) = area.cast::<HtmlTextAreaElement>() {
                 let _ = area.focus();
@@ -299,6 +495,7 @@ pub fn composer(props: &ComposerProps) -> Html {
         let notice = notice.clone();
         let area = area.clone();
         let latest = latest.clone();
+        let records = props.records.clone();
         use_effect_with(props.append.clone(), move |(count, addition)| {
             if *count == 0 || addition.is_empty() {
                 return;
@@ -308,6 +505,7 @@ pub fn composer(props: &ComposerProps) -> Html {
             notice.set(outcome.notice().map(|notice| notice.said()));
             match outcome {
                 composer::Paste::Appended(updated) | composer::Paste::Truncated(updated) => {
+                    changed(&records);
                     text.set(updated)
                 }
                 composer::Paste::Full => {}
@@ -384,8 +582,18 @@ pub fn composer(props: &ComposerProps) -> Html {
         let agreed = props.agreed_to_assistant;
         let has_assistant = props.assistant.is_some();
         let processor = processor.clone();
+        let records = props.records.clone();
+        let starting = props
+            .records
+            .as_ref()
+            .is_some_and(|records| records.starting);
         Callback::from(move |_: ()| {
-            if busy {
+            if busy || starting {
+                return;
+            }
+            // A second press of what was a moment ago the slot's Stop square
+            // or Send arrow must not send what it staged (S1.1).
+            if guarded(records.as_ref()) {
                 return;
             }
             let body = match composer::trimmed_for_send(&text) {
@@ -395,6 +603,13 @@ pub fn composer(props: &ComposerProps) -> Html {
                 None => return,
             };
             notice.set(None);
+            // What the box held is going: the slot that takes its place —
+            // a microphone, as likely as not — waits out the guard.
+            let emptied = || {
+                if let Some(records) = &records {
+                    records.on_emptied.emit(());
+                }
+            };
             if let Some(edit) = &editing {
                 // Saving what was already there is done at once: nothing to
                 // send, and nothing to stay in edit mode for.
@@ -403,6 +618,7 @@ pub fn composer(props: &ComposerProps) -> Html {
                 } else {
                     on_save_edit.emit((edit.message_id, body));
                 }
+                emptied();
                 return;
             }
             // Nothing reaches the model unasked. The server refuses this
@@ -435,6 +651,7 @@ pub fn composer(props: &ComposerProps) -> Html {
                 mentions: mentioned,
                 ..Draft::default()
             });
+            emptied();
         })
     };
 
@@ -443,7 +660,9 @@ pub fn composer(props: &ComposerProps) -> Html {
         let notice = notice.clone();
         let on_typing = props.on_typing.clone();
         let active = active.clone();
+        let records = props.records.clone();
         Callback::from(move |event: InputEvent| {
+            changed(&records);
             let area: HtmlTextAreaElement = event.target_unchecked_into();
             let value = area.value();
             // Over the limit — a paste, usually — is cut between Characters
@@ -513,11 +732,19 @@ pub fn composer(props: &ComposerProps) -> Html {
 
     let ask_assistant = {
         let text = text.clone();
-        Callback::from(move |_: MouseEvent| text.set(assistant::with_assistant_mention(&text)))
+        let records = props.records.clone();
+        Callback::from(move |_: MouseEvent| {
+            changed(&records);
+            text.set(assistant::with_assistant_mention(&text))
+        })
     };
     let ask_picture = {
         let text = text.clone();
-        Callback::from(move |_: MouseEvent| text.set(assistant::with_draw_token(&text)))
+        let records = props.records.clone();
+        Callback::from(move |_: MouseEvent| {
+            changed(&records);
+            text.set(assistant::with_draw_token(&text))
+        })
     };
     let cancel = {
         let on_cancel = props.on_cancel.clone();
@@ -542,6 +769,373 @@ pub fn composer(props: &ComposerProps) -> Html {
     let offers_ai = props.is_family_chat && has_assistant && editing.is_none();
     let empty =
         composer::trimmed_for_send(&text).is_none() && (props.staged == 0 || editing.is_some());
+
+    // --- The Send slot (the plan for #79, S1.3) ------------------------------
+    let records = props.records.clone();
+    let blank = composer::trimmed_for_send(&text).is_none();
+    let slot = records.as_ref().map(|records| {
+        record::composer_slot(&record::SlotInputs {
+            recorder_open: false,
+            recording: records.recording,
+            editing: editing.is_some(),
+            draft_blank: blank,
+            staged: props.staged > 0,
+            assistant_chat: props.is_ai_chat,
+            can_record: records.can_record,
+            call: records.call,
+            busy: props.busy,
+            not_sent: records.not_sent,
+        })
+    });
+    // A recording runs: the row takes the field's place (S2.4).
+    let recording_now = matches!(
+        slot,
+        Some(Slot::SendVoice | Slot::StopRecording | Slot::HeldMicrophone)
+    );
+    let is_microphone = slot.is_some_and(Slot::is_microphone);
+    {
+        let on_blank = records.as_ref().map(|records| records.on_blank.clone());
+        use_effect_with(blank, move |blank| {
+            if let Some(on_blank) = on_blank {
+                on_blank.emit(*blank);
+            }
+        });
+    }
+    // Focus goes to the slot as a recording starts, and stays there while it
+    // runs (S2.4): Return is the slot, Esc is Stop. It comes back to the box
+    // when the recording ends — the conversation moves `focus` for that.
+    {
+        let slot_ref = slot_ref.clone();
+        use_effect_with(recording_now, move |recording| {
+            if *recording {
+                if let Some(button) = slot_ref.cast::<HtmlElement>() {
+                    let _ = button.focus();
+                }
+            }
+        });
+    }
+    // What activating the slot does, row by row.
+    let act = {
+        let send = send.clone();
+        let on_slot = records.as_ref().map(|records| records.on_slot.clone());
+        Callback::from(move |_: ()| match slot {
+            Some(Slot::Send | Slot::Save { .. }) => send.emit(()),
+            Some(Slot::SendDisabled | Slot::Recorder) | None => {}
+            Some(_) => {
+                if let Some(on_slot) = &on_slot {
+                    on_slot.emit(());
+                }
+            }
+        })
+    };
+    // The last press on the slot (see [`Press`]) — and the `click` to
+    // swallow after a touch acted on its `pointerup` (S8.8).
+    let pressed = use_mut_ref(|| Option::<Press>::None);
+    let swallow_until = use_mut_ref(|| 0.0f64);
+    let menu_open = use_state(|| false);
+    let reason_id = use_memo((), |_| crate::views::dialog::fresh_id("slot-reason"));
+    // Whether a press going down NOW goes down while the slot ignores
+    // activation: inside its 600 ms guard (S1.1), or while the microphone is
+    // being asked for, when the slot is a microphone that ignores clicks.
+    let ignores_now = {
+        let records = records.clone();
+        Rc::new(move || {
+            records.as_ref().is_some_and(|records| records.starting) || guarded(records.as_ref())
+        })
+    };
+    let on_slot_down = {
+        let pressed = pressed.clone();
+        let swallow_until = swallow_until.clone();
+        let ignores_now = ignores_now.clone();
+        Callback::from(move |event: PointerEvent| {
+            let kind = event.pointer_type();
+            // A mouse or a pen going down starts a click of its own: no
+            // touch's `click` is still to come.
+            if kind != "touch" {
+                *swallow_until.borrow_mut() = 0.0;
+            }
+            *pressed.borrow_mut() = Some(Press::down(kind, ignores_now()));
+        })
+    };
+    // A TOUCH acts on its `pointerup` inside the button — which is user
+    // activation where the `pointerdown` is not, and comes whether or not
+    // the browser sends a `click` after a long press. A mouse, a pen and
+    // the keyboard keep `click`.
+    let on_slot_up = {
+        let pressed = pressed.clone();
+        let swallow_until = swallow_until.clone();
+        let slot_ref = slot_ref.clone();
+        let act = act.clone();
+        Callback::from(move |event: PointerEvent| {
+            let touch = event.pointer_type() == "touch";
+            // A touch acts now or never: whatever follows is not this press.
+            let ignored = pressed.borrow_mut().as_mut().is_some_and(|press| {
+                press.up_ms = Some(now_ms());
+                touch && press.spend()
+            });
+            if !touch {
+                return;
+            }
+            let inside = slot_ref.cast::<web_sys::Element>().is_some_and(|button| {
+                let rect = button.get_bounding_client_rect();
+                let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
+                x >= rect.left() && x <= rect.right() && y >= rect.top() && y <= rect.bottom()
+            });
+            if inside {
+                *swallow_until.borrow_mut() = now_ms() + TOUCH_CLICK_MS;
+                if !ignored {
+                    act.emit(());
+                }
+            }
+        })
+    };
+    let on_slot_click = {
+        let swallow_until = swallow_until.clone();
+        let pressed = pressed.clone();
+        let act = act.clone();
+        Callback::from(move |_: MouseEvent| {
+            if now_ms() < *swallow_until.borrow() {
+                *swallow_until.borrow_mut() = 0.0;
+                return;
+            }
+            // The press this click ends: one that went down while the slot
+            // ignored activation is ignored whole, however long after the
+            // guard it comes up (S1.1).
+            let ignored = pressed.borrow_mut().as_mut().is_some_and(Press::spend);
+            if !ignored {
+                act.emit(());
+            }
+        })
+    };
+    // A press that comes up anywhere but on the slot was no click on it: it
+    // is spent, so that no later activation — one that comes with no press
+    // of its own, an assistive technology's — is taken for it.
+    {
+        let pressed = pressed.clone();
+        let slot_ref = slot_ref.clone();
+        use_effect_with((), move |_| {
+            let listener = Closure::<dyn Fn(web_sys::Event)>::new(move |event: web_sys::Event| {
+                let on_slot = slot_ref.cast::<web_sys::Node>().is_some_and(|slot| {
+                    event
+                        .target()
+                        .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
+                        .is_some_and(|target| slot.contains(Some(&target)))
+                });
+                if !on_slot {
+                    if let Some(press) = pressed.borrow_mut().as_mut() {
+                        press.spent = true;
+                    }
+                }
+            });
+            let document = web_sys::window().and_then(|window| window.document());
+            if let Some(document) = &document {
+                let _ = document.add_event_listener_with_callback_and_bool(
+                    "pointerup",
+                    listener.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
+            move || {
+                if let Some(document) = document {
+                    let _ = document.remove_event_listener_with_callback_and_bool(
+                        "pointerup",
+                        listener.as_ref().unchecked_ref(),
+                        true,
+                    );
+                }
+            }
+        });
+    }
+    // THE MICROPHONE'S MENU: a right-click, Shift+F10 or the Menu key — and
+    // never a touch held down, which on a phone's browser would be the
+    // browser's own menu or callout, on every layout (S1.6, S8.7, S8.8).
+    let on_slot_menu = {
+        let pressed = pressed.clone();
+        let menu_open = menu_open.clone();
+        Callback::from(move |event: MouseEvent| {
+            let said_touch = js_sys::Reflect::get(&event, &"pointerType".into())
+                .ok()
+                .and_then(|kind| kind.as_string())
+                .is_some_and(|kind| kind == "touch");
+            let touching = pressed.borrow().as_ref().is_some_and(|press| {
+                press.kind == "touch" && press.up_ms.is_none_or(|up| now_ms() - up < TOUCH_CLICK_MS)
+            });
+            if said_touch || touching {
+                event.prevent_default();
+                return;
+            }
+            if is_microphone {
+                event.prevent_default();
+                menu_open.set(true);
+            }
+        })
+    };
+    let on_slot_key = {
+        let menu_open = menu_open.clone();
+        let pressed = pressed.clone();
+        let ignores_now = ignores_now.clone();
+        Callback::from(move |event: KeyboardEvent| {
+            let key = event.key();
+            if key == "ContextMenu" || (key == "F10" && event.shift_key()) {
+                event.prevent_default();
+                if is_microphone {
+                    menu_open.set(true);
+                }
+            } else if key == "Enter" || key == " " {
+                if event.repeat() {
+                    // A key held down is one press: its repeats click
+                    // nothing — not the Send arrow of the recording the
+                    // first one started.
+                    if key == "Enter" {
+                        event.prevent_default();
+                    }
+                } else {
+                    // Enter and Space are presses too; Space clicks only as
+                    // it comes up.
+                    *pressed.borrow_mut() = Some(Press::down("key".into(), ignores_now()));
+                }
+            }
+        })
+    };
+    // Opened, the menu takes the focus, so Esc and Enter reach it.
+    {
+        let open = *menu_open && is_microphone;
+        use_effect_with(open, move |open| {
+            if *open {
+                if let Some(item) = web_sys::window()
+                    .and_then(|window| window.document())
+                    .and_then(|document| {
+                        document
+                            .query_selector(".slot-menu [role=menuitem]")
+                            .ok()
+                            .flatten()
+                    })
+                    .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+                {
+                    let _ = item.focus();
+                }
+            }
+        });
+    }
+    let close_menu = {
+        let menu_open = menu_open.clone();
+        let slot_ref = slot_ref.clone();
+        Callback::from(move |back: bool| {
+            menu_open.set(false);
+            if back {
+                if let Some(button) = slot_ref.cast::<HtmlElement>() {
+                    let _ = button.focus();
+                }
+            }
+        })
+    };
+    // Esc while a recording runs is STOP — never Delete (S2.4, S8.7).
+    let on_row_key = {
+        let on_stop = records.as_ref().map(|records| records.on_stop.clone());
+        Callback::from(move |event: KeyboardEvent| {
+            if recording_now && event.key() == "Escape" {
+                event.prevent_default();
+                if let Some(on_stop) = &on_stop {
+                    on_stop.emit(());
+                }
+            }
+        })
+    };
+    let slot_html = match slot {
+        // A thread: today's Send, unchanged.
+        None => html! {
+            <button
+                onclick={let send = send.clone(); Callback::from(move |_: MouseEvent| send.emit(()))}
+                disabled={empty || props.busy}
+            >
+                { if editing.is_some() { t("Save") } else { t("Send") } }
+            </button>
+        },
+        Some(slot) => {
+            let starting = records.as_ref().is_some_and(|records| records.starting);
+            let (glyph, title, disabled) = match slot {
+                Slot::Recorder => (Glyph::Microphone, None, true),
+                Slot::HeldMicrophone | Slot::SendVoice => {
+                    (Glyph::Send, Some(t("Send voice message")), false)
+                }
+                Slot::StopRecording => (Glyph::Stop, Some(t("Stop recording")), false),
+                Slot::Save { enabled } => (Glyph::Save, None, !enabled || props.busy),
+                Slot::Send => (Glyph::Send, None, props.busy || starting),
+                Slot::SendDisabled => (Glyph::Send, None, true),
+                Slot::Dimmed(_) | Slot::Microphone => {
+                    (Glyph::Microphone, Some(t("Record a voice message")), false)
+                }
+            };
+            // DIMMED, NOT DISABLED (S1.3, S1.7): it looks unavailable, stays
+            // focusable and clickable, carries its reason, and says it when
+            // activated. The slot is never `disabled` while it records.
+            let reason = slot.notice().map(t);
+            let word = slot_word(slot);
+            let menu_item_dimmed = reason.is_some();
+            html! {
+                <div class="slot-wrap">
+                    <button
+                        ref={slot_ref.clone()}
+                        type="button"
+                        class={classes!(
+                            "slot",
+                            format!("is-{}", glyph.name()),
+                            reason.is_some().then_some("is-dimmed"),
+                        )}
+                        aria-label={word}
+                        title={title}
+                        aria-disabled={reason.is_some().then_some("true")}
+                        aria-describedby={reason.is_some().then(|| (*reason_id).clone())}
+                        {disabled}
+                        onclick={on_slot_click}
+                        onpointerdown={on_slot_down}
+                        onpointerup={on_slot_up}
+                        oncontextmenu={on_slot_menu}
+                        onkeydown={on_slot_key}
+                    >
+                        { glyph.draw() }
+                        <span class="visually-hidden">{ word }</span>
+                    </button>
+                    if let Some(reason) = reason {
+                        <span id={(*reason_id).clone()} hidden=true>{ reason }</span>
+                    }
+                    if *menu_open && is_microphone {
+                        <div class="menu-backdrop" aria-hidden="true"
+                             onclick={close_menu.reform(|_: MouseEvent| false)}></div>
+                        <div class="menu slot-menu" role="menu"
+                             onkeydown={{
+                                 let close_menu = close_menu.clone();
+                                 Callback::from(move |event: KeyboardEvent| {
+                                     if event.key() == "Escape" {
+                                         event.prevent_default();
+                                         close_menu.emit(true);
+                                     }
+                                 })
+                             }}>
+                            <button
+                                role="menuitem"
+                                class={classes!(menu_item_dimmed.then_some("is-dimmed"))}
+                                aria-disabled={menu_item_dimmed.then_some("true")}
+                                aria-describedby={menu_item_dimmed.then(|| (*reason_id).clone())}
+                                onclick={{
+                                    let close_menu = close_menu.clone();
+                                    let on_record = records.as_ref().map(|records| records.on_record.clone());
+                                    Callback::from(move |_: MouseEvent| {
+                                        close_menu.emit(false);
+                                        if let Some(on_record) = &on_record {
+                                            on_record.emit(());
+                                        }
+                                    })
+                                }}
+                            >
+                                { t("Record Voice Message") }
+                            </button>
+                        </div>
+                    }
+                </div>
+            }
+        }
+    };
     // Files pasted into the box are staged; words stay the box's own.
     let on_paste = {
         let on_files = props.on_files.clone();
@@ -573,7 +1167,7 @@ pub fn composer(props: &ComposerProps) -> Html {
     };
 
     html! {
-        <div class="composer-wrap">
+        <div class="composer-wrap" ref={wrap_ref}>
             if let Some(reply) = props.replying.clone() {
                 <div class="composer-banner">
                     <span class="banner-text">
@@ -590,7 +1184,7 @@ pub fn composer(props: &ComposerProps) -> Html {
                 </div>
             }
             if let Some(message) = (*notice).clone() {
-                <p class="composer-notice" role="status">{ message }</p>
+                <LiveRegion class="composer-notice" role="status">{ message }</LiveRegion>
             }
             if let Some(sentence) = props.pictures.notice(&text, props.is_ai_chat, props.is_family_chat).filter(|_| editing.is_none()) {
                 <p class="picture-notice" role="note"><span aria-hidden="true">{ "👁 " }</span>{ sentence }</p>
@@ -598,7 +1192,7 @@ pub fn composer(props: &ComposerProps) -> Html {
             // While a picture is being asked for: the image model's filter
             // refuses real names and brands (docs/protocol.md, "Pictures").
             if assistant_pictures::shows_picture_hint(chat_kind, &text, editing.is_some(), server_draws) {
-                <p class="picture-notice picture-hint" role="status">{ assistant_pictures::picture_hint() }</p>
+                <LiveRegion class="picture-notice picture-hint" role="status">{ assistant_pictures::picture_hint() }</LiveRegion>
             }
             if editing.is_none() && assistant_consent::is_required(chat_kind, &text, processor.as_deref(), props.agreed_to_assistant) {
                 <AssistantConsentBar
@@ -638,32 +1232,62 @@ pub fn composer(props: &ComposerProps) -> Html {
                     }) }
                 </div>
             }
-            <div class="composer">
-                { props.attach.clone() }
-                if offers_ai {
-                    <button class="tool" title={t("Ask the assistant")} aria-label={t("Ask the assistant")} onclick={ask_assistant}>{ "✨" }</button>
+            <div class="composer" onkeydown={on_row_key}>
+                if recording_now {
+                    // The recording row takes the field's place, and the
+                    // paperclip's, the sticker's and `@ai`'s, at the same
+                    // height (S2.4).
+                    { records.as_ref().map(|records| records.row.clone()).unwrap_or_default() }
+                } else {
+                    { props.attach.clone() }
+                    if offers_ai {
+                        <button class="tool" title={t("Ask the assistant")} aria-label={t("Ask the assistant")} onclick={ask_assistant}>{ "✨" }</button>
+                    }
+                    if can_draw && editing.is_none() {
+                        <button class="tool" title={t("Ask for a picture")} aria-label={t("Ask for a picture")} onclick={ask_picture}>{ "🎨" }</button>
+                    }
                 }
-                if can_draw && editing.is_none() {
-                    <button class="tool" title={t("Ask for a picture")} aria-label={t("Ask for a picture")} onclick={ask_picture}>{ "🎨" }</button>
-                }
+                // Kept while a recording hides it, words and all: they are
+                // the box's own, and come back with it.
                 <textarea
                     ref={area}
                     aria-label={t("Message")}
                     rows="1"
+                    hidden={recording_now}
                     value={(*text).clone()}
                     oninput={on_input}
                     onkeydown={on_key}
                     onpaste={on_paste}
                 />
-                <button
-                    onclick={let send = send.clone(); Callback::from(move |_: MouseEvent| send.emit(()))}
-                    disabled={empty || props.busy}
-                >
-                    { if editing.is_some() { t("Save") } else { t("Send") } }
-                </button>
+                { slot_html }
             </div>
         </div>
     }
+}
+
+/// The cursor into the box.
+fn focus_the_box(area: &NodeRef) {
+    if let Some(area) = area.cast::<HtmlTextAreaElement>() {
+        let _ = area.focus();
+    }
+}
+
+/// Whether the focus is inside `wrap` — or on nothing at all, the page
+/// itself, where a control that had it went away under it.
+fn focus_is_within(wrap: &NodeRef) -> bool {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return false;
+    };
+    let Some(active) = document.active_element() else {
+        return true;
+    };
+    let on_the_page = document
+        .body()
+        .is_some_and(|body| body.unchecked_ref::<web_sys::Element>() == &active);
+    on_the_page
+        || wrap
+            .cast::<web_sys::Node>()
+            .is_some_and(|wrap| wrap.contains(Some(&active)))
 }
 
 /// A textarea as tall as what it holds, inside the ceiling the stylesheet
@@ -691,6 +1315,28 @@ mod tests {
             role: Some("member".into()),
             deleted: false,
             ..Default::default()
+        }
+    }
+
+    /// The Send slot the way a conversation gives it, counting the times
+    /// it was activated as a microphone (or as the recording's Send arrow
+    /// or Stop square).
+    fn slot_records(activated: std::rc::Rc<std::cell::Cell<u32>>) -> Records {
+        Records {
+            recording: record::Recording::None,
+            row: Html::default(),
+            call: false,
+            not_sent: false,
+            can_record: true,
+            starting: false,
+            on_slot: Callback::from(move |_: ()| activated.set(activated.get() + 1)),
+            on_record: Callback::noop(),
+            on_stop: Callback::noop(),
+            on_emptied: Callback::noop(),
+            on_changed: Callback::noop(),
+            guard_until: Callback::from(|_: ()| 0),
+            on_blank: Callback::noop(),
+            refocus: 0,
         }
     }
 
@@ -778,17 +1424,28 @@ mod tests {
             on_files: Callback::noop(),
             takes_files: false,
             pictures: Pictures::default(),
+            records: Some(slot_records(Rc::new(Cell::new(0)))),
         };
         let document = web_sys::window().unwrap().document().unwrap();
         let root = document.create_element("div").unwrap();
         document.body().unwrap().append_child(&root).unwrap();
         let handle = yew::Renderer::<Composer>::with_root_and_props(root.clone(), props).render();
         gloo_timers::future::TimeoutFuture::new(20).await;
-        let save = || {
+        // The slot keeps its word as hidden text, so "Save" is still what
+        // it reads (S8.7) — and an edit is never a microphone (S1.3 row 4).
+        let slot = || {
             let buttons = root.query_selector_all(".composer button").unwrap();
-            let last = buttons.item(buttons.length() - 1).unwrap();
+            buttons
+                .item(buttons.length() - 1)
+                .unwrap()
+                .dyn_into::<HtmlElement>()
+                .unwrap()
+        };
+        let save = || {
+            let last = slot();
             assert_eq!(last.text_content().unwrap_or_default(), "Save");
-            last.dyn_into::<HtmlElement>().unwrap().click();
+            assert_eq!(last.get_attribute("aria-label").as_deref(), Some("Save"));
+            last.click();
         };
 
         save();
@@ -802,9 +1459,18 @@ mod tests {
             .unwrap()
             .dyn_into()
             .unwrap();
-        area.set_value("hello!");
         let init = web_sys::EventInit::new();
         init.set_bubbles(true);
+        area.set_value("");
+        area.dispatch_event(&web_sys::Event::new_with_event_init_dict("input", &init).unwrap())
+            .unwrap();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(slot().get_attribute("aria-label").as_deref(), Some("Save"));
+        assert!(
+            slot().has_attribute("disabled"),
+            "Save waits for words, as it always has"
+        );
+        area.set_value("hello!");
         area.dispatch_event(&web_sys::Event::new_with_event_init_dict("input", &init).unwrap())
             .unwrap();
         gloo_timers::future::TimeoutFuture::new(20).await;
@@ -933,6 +1599,7 @@ mod tests {
                 on_files: Callback::noop(),
                 takes_files: true,
                 pictures: Pictures::default(),
+                records: Some(slot_records(Rc::new(Cell::new(0)))),
             };
             let document = web_sys::window().unwrap().document().unwrap();
             let root = document.create_element("div").unwrap();
@@ -948,12 +1615,15 @@ mod tests {
                 "the strip, for {body:?}"
             );
             let buttons = root.query_selector_all(".composer button").unwrap();
-            buttons
+            let send = buttons
                 .item(buttons.length() - 1)
                 .unwrap()
                 .dyn_into::<HtmlElement>()
-                .unwrap()
-                .click();
+                .unwrap();
+            // With words in the box the slot is Send (S1.3 row 5) — in the
+            // assistant's chat too, where it is never a microphone.
+            assert_eq!(send.get_attribute("aria-label").as_deref(), Some("Send"));
+            send.click();
             gloo_timers::future::TimeoutFuture::new(20).await;
             if asks {
                 assert_eq!(sent.borrow().len(), 0, "nothing was sent for {body:?}");
@@ -978,16 +1648,18 @@ mod tests {
     }
 
     /// With something staged, Send goes with no words at all — a photo
-    /// needs no caption — and without, an empty box sends nothing.
+    /// needs no caption — and without, an empty box sends nothing: its slot
+    /// is the microphone then (S1.3 row 10), which asks to RECORD.
     #[wasm_bindgen_test]
     async fn staged_attachments_send_with_no_caption() {
-        use std::cell::RefCell;
+        use std::cell::{Cell, RefCell};
         use std::rc::Rc;
         use wasm_bindgen::JsCast;
         use web_sys::HtmlElement;
 
         for (staged, expect) in [(1usize, 1usize), (0, 0)] {
             let sent = Rc::new(RefCell::new(Vec::new()));
+            let recorded = Rc::new(Cell::new(0));
             let props = ComposerProps {
                 chat_id: 42,
                 is_family_chat: true,
@@ -1020,6 +1692,7 @@ mod tests {
                 on_files: Callback::noop(),
                 takes_files: true,
                 pictures: Pictures::default(),
+                records: Some(slot_records(recorded.clone())),
             };
             let document = web_sys::window().unwrap().document().unwrap();
             let root = document.create_element("div").unwrap();
@@ -1028,17 +1701,28 @@ mod tests {
                 yew::Renderer::<Composer>::with_root_and_props(root.clone(), props).render();
             gloo_timers::future::TimeoutFuture::new(20).await;
             let buttons = root.query_selector_all(".composer button").unwrap();
-            buttons
+            let last = buttons
                 .item(buttons.length() - 1)
                 .unwrap()
                 .dyn_into::<HtmlElement>()
-                .unwrap()
-                .click();
+                .unwrap();
+            let label = if staged > 0 {
+                "Send"
+            } else {
+                "Record voice message"
+            };
+            assert_eq!(last.get_attribute("aria-label").as_deref(), Some(label));
+            last.click();
             gloo_timers::future::TimeoutFuture::new(20).await;
             assert_eq!(sent.borrow().len(), expect, "staged {staged}");
             if let Some(draft) = sent.borrow().first() {
                 assert_eq!(draft.body, "");
             }
+            assert_eq!(
+                recorded.get(),
+                u32::from(staged == 0),
+                "the microphone asks to record, and only the microphone"
+            );
             handle.destroy();
             root.remove();
         }
@@ -1104,6 +1788,7 @@ mod tests {
                 on_files: Callback::noop(),
                 takes_files: true,
                 pictures: Pictures::default(),
+                records: None,
             };
             let document = web_sys::window().unwrap().document().unwrap();
             let root = document.create_element("div").unwrap();
@@ -1157,5 +1842,935 @@ mod tests {
             handle.destroy();
             root.remove();
         }
+    }
+
+    // --- The Send slot (the plan for #79, S1.3, S1.6, S1.7, S6, S8.7, S8.8) ---
+
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use wasm_bindgen::JsCast;
+
+    /// What a slot test hears from the box.
+    #[derive(Default)]
+    struct Heard {
+        sent: RefCell<Vec<Draft>>,
+        activated: Cell<u32>,
+        recorded: Cell<u32>,
+        stopped: Cell<u32>,
+        emptied: Cell<u32>,
+        changed: Cell<u32>,
+    }
+
+    fn slot_props(heard: &Rc<Heard>, records: Option<Records>) -> ComposerProps {
+        ComposerProps {
+            chat_id: 42,
+            is_family_chat: true,
+            is_ai_chat: false,
+            my_user_id: 7,
+            members: Vec::new(),
+            blocked: HashSet::new(),
+            assistant: None,
+            agreed_to_assistant: true,
+            on_review_consent: Callback::noop(),
+            replying: None,
+            editing: None,
+            initial: String::new(),
+            on_send: {
+                let heard = heard.clone();
+                Callback::from(move |draft: Draft| heard.sent.borrow_mut().push(draft))
+            },
+            on_save_edit: Callback::noop(),
+            on_cancel: Callback::noop(),
+            on_typing: Callback::noop(),
+            on_draft: Callback::noop(),
+            in_thread: false,
+            focus: 0,
+            attach: Html::default(),
+            staged: 0,
+            busy: false,
+            append: (0, String::new()),
+            take: 0,
+            on_take: Callback::noop(),
+            on_files: Callback::noop(),
+            takes_files: true,
+            pictures: Pictures::default(),
+            records,
+        }
+    }
+
+    /// The slot as a conversation gives it, every callback heard.
+    fn heard_records(heard: &Rc<Heard>) -> Records {
+        let on = |count: fn(&Heard) -> &Cell<u32>| {
+            let heard = heard.clone();
+            Callback::from(move |_: ()| {
+                let cell = count(&heard);
+                cell.set(cell.get() + 1);
+            })
+        };
+        Records {
+            recording: record::Recording::None,
+            row: html! { <div class="test-row"><button>{ "Row" }</button></div> },
+            call: false,
+            not_sent: false,
+            can_record: true,
+            starting: false,
+            on_slot: on(|heard| &heard.activated),
+            on_record: on(|heard| &heard.recorded),
+            on_stop: on(|heard| &heard.stopped),
+            on_emptied: on(|heard| &heard.emptied),
+            on_changed: on(|heard| &heard.changed),
+            guard_until: Callback::from(|_: ()| 0),
+            on_blank: Callback::noop(),
+            refocus: 0,
+        }
+    }
+
+    struct Mounted {
+        root: web_sys::Element,
+        handle: yew::AppHandle<Composer>,
+    }
+
+    impl Mounted {
+        async fn with(props: ComposerProps) -> Mounted {
+            let document = web_sys::window().unwrap().document().unwrap();
+            let root = document.create_element("div").unwrap();
+            document.body().unwrap().append_child(&root).unwrap();
+            let handle =
+                yew::Renderer::<Composer>::with_root_and_props(root.clone(), props).render();
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            Mounted { root, handle }
+        }
+
+        fn slot(&self) -> HtmlElement {
+            self.root
+                .query_selector(".composer button.slot, .composer > button")
+                .unwrap()
+                .expect("the trailing button")
+                .dyn_into()
+                .unwrap()
+        }
+
+        /// Its reason, read the way a screen reader reads it.
+        fn reason(&self) -> Option<String> {
+            let id = self.slot().get_attribute("aria-describedby")?;
+            self.root
+                .query_selector(&format!("#{id}"))
+                .ok()
+                .flatten()?
+                .text_content()
+        }
+
+        fn menu(&self) -> Option<web_sys::Element> {
+            self.root.query_selector(".slot-menu").unwrap()
+        }
+
+        async fn type_in(&self, words: &str) {
+            let area: HtmlTextAreaElement = self
+                .root
+                .query_selector("textarea")
+                .unwrap()
+                .unwrap()
+                .dyn_into()
+                .unwrap();
+            area.set_value(words);
+            let init = web_sys::EventInit::new();
+            init.set_bubbles(true);
+            area.dispatch_event(&web_sys::Event::new_with_event_init_dict("input", &init).unwrap())
+                .unwrap();
+            gloo_timers::future::TimeoutFuture::new(20).await;
+        }
+
+        fn gone(self) {
+            self.handle.destroy();
+            self.root.remove();
+        }
+    }
+
+    /// What the slot is, as a person and a screen reader meet it.
+    #[derive(Debug, PartialEq)]
+    struct Seen {
+        label: String,
+        word: String,
+        glyph: String,
+        disabled: bool,
+        dimmed: bool,
+        reason: Option<String>,
+        title: Option<String>,
+    }
+
+    fn seen(mounted: &Mounted) -> Seen {
+        let slot = mounted.slot();
+        let class = slot.get_attribute("class").unwrap_or_default();
+        Seen {
+            label: slot.get_attribute("aria-label").unwrap_or_default(),
+            word: slot.text_content().unwrap_or_default(),
+            glyph: class
+                .split(' ')
+                .find_map(|class| class.strip_prefix("is-"))
+                .filter(|glyph| *glyph != "dimmed")
+                .unwrap_or_default()
+                .to_string(),
+            disabled: slot.has_attribute("disabled"),
+            dimmed: slot.get_attribute("aria-disabled").as_deref() == Some("true")
+                && class.contains("is-dimmed"),
+            reason: mounted.reason(),
+            title: slot.get_attribute("title"),
+        }
+    }
+
+    /// EVERY ROW OF S1.3, as the web draws it: one fixed icon button whose
+    /// label is fc_text::record's, which keeps its word as visually hidden
+    /// text (S8.7), and which is never `disabled` while it is the
+    /// recording's control — dimmed, it carries its reason (S6) and stays
+    /// clickable (S1.7).
+    #[wasm_bindgen_test]
+    async fn the_slot_is_the_plans_row_by_row() {
+        let heard = Rc::new(Heard::default());
+        let microphone = |reason: Option<&str>| Seen {
+            label: "Record voice message".into(),
+            word: "Record voice message".into(),
+            glyph: "microphone".into(),
+            disabled: false,
+            dimmed: reason.is_some(),
+            reason: reason.map(str::to_string),
+            title: Some("Record a voice message".into()),
+        };
+        let send = |disabled: bool| Seen {
+            label: "Send".into(),
+            word: "Send".into(),
+            glyph: "send".into(),
+            disabled,
+            dimmed: false,
+            reason: None,
+            title: None,
+        };
+        let records = || heard_records(&heard);
+        type Shape = (
+            &'static str,
+            Option<Records>,
+            Box<dyn Fn(&mut ComposerProps)>,
+            Seen,
+        );
+        let cases: Vec<Shape> = vec![
+            (
+                "row 10: the microphone",
+                Some(records()),
+                Box::new(|_| {}),
+                microphone(None),
+            ),
+            (
+                "row 7: a call",
+                Some(Records {
+                    call: true,
+                    ..records()
+                }),
+                Box::new(|_| {}),
+                microphone(Some("You can record a message after the call.")),
+            ),
+            (
+                "row 8: busy",
+                Some(records()),
+                Box::new(|props| props.busy = true),
+                microphone(Some("Wait until the current attachment is done.")),
+            ),
+            (
+                "row 9: not sent",
+                Some(Records {
+                    not_sent: true,
+                    ..records()
+                }),
+                Box::new(|_| {}),
+                microphone(Some(
+                    "Send or delete the voice message that wasn't sent first.",
+                )),
+            ),
+            (
+                "a call before everything else",
+                Some(Records {
+                    call: true,
+                    not_sent: true,
+                    ..records()
+                }),
+                Box::new(|props| props.busy = true),
+                microphone(Some("You can record a message after the call.")),
+            ),
+            (
+                "row 6: the assistant's chat",
+                Some(records()),
+                Box::new(|props| {
+                    props.is_ai_chat = true;
+                    props.is_family_chat = false;
+                }),
+                send(true),
+            ),
+            (
+                "row 6: a page that cannot record",
+                Some(Records {
+                    can_record: false,
+                    ..records()
+                }),
+                Box::new(|_| {}),
+                send(true),
+            ),
+            (
+                "row 5: words",
+                Some(records()),
+                Box::new(|props| props.initial = "dinner?".into()),
+                send(false),
+            ),
+            (
+                "row 5: something staged",
+                Some(Records {
+                    call: true,
+                    ..records()
+                }),
+                Box::new(|props| props.staged = 1),
+                send(false),
+            ),
+            (
+                "row 5 waits for an attachment being prepared, as Send always has",
+                Some(records()),
+                Box::new(|props| {
+                    props.initial = "dinner?".into();
+                    props.busy = true;
+                }),
+                send(true),
+            ),
+            (
+                "row 2: recording an empty box",
+                Some(Records {
+                    recording: record::Recording::HandsFree,
+                    ..records()
+                }),
+                Box::new(|props| props.busy = true),
+                Seen {
+                    label: "Send voice message".into(),
+                    word: "Send voice message".into(),
+                    glyph: "send".into(),
+                    disabled: false,
+                    dimmed: false,
+                    reason: None,
+                    title: Some("Send voice message".into()),
+                },
+            ),
+            (
+                "row 3: recording beside words",
+                Some(Records {
+                    recording: record::Recording::HandsFreeBesideDraft,
+                    call: true,
+                    ..records()
+                }),
+                Box::new(|props| props.initial = "dinner?".into()),
+                Seen {
+                    label: "Stop recording".into(),
+                    word: "Stop recording".into(),
+                    glyph: "stop".into(),
+                    disabled: false,
+                    dimmed: false,
+                    reason: None,
+                    title: Some("Stop recording".into()),
+                },
+            ),
+            (
+                "row 4: an edit, never a microphone",
+                Some(records()),
+                Box::new(|props| {
+                    props.editing = Some(Editing {
+                        message_id: 5,
+                        body: "hello".into(),
+                    })
+                }),
+                Seen {
+                    label: "Save".into(),
+                    word: "Save".into(),
+                    glyph: "save".into(),
+                    disabled: false,
+                    dimmed: false,
+                    reason: None,
+                    title: None,
+                },
+            ),
+        ];
+        for (name, records, shape, expected) in cases {
+            let mut props = slot_props(&heard, records);
+            shape(&mut props);
+            let mounted = Mounted::with(props).await;
+            assert_eq!(seen(&mounted), expected, "{name}");
+            mounted.gone();
+        }
+
+        // A thread's box is not changed (S1.3): today's Send, a word.
+        let mounted = Mounted::with(slot_props(&heard, None)).await;
+        let button = mounted.slot();
+        assert!(!button.class_list().contains("slot"));
+        assert_eq!(button.text_content().as_deref(), Some("Send"));
+        assert!(button.has_attribute("disabled"));
+        assert!(button.get_attribute("aria-label").is_none());
+        mounted.gone();
+    }
+
+    /// The label each row says is fc_text::record's — the one every port is
+    /// held to by the vectors — in the reader's language.
+    #[wasm_bindgen_test]
+    fn the_slots_words_are_the_shared_rules() {
+        use record::Dimmed;
+        for slot in [
+            Slot::HeldMicrophone,
+            Slot::SendVoice,
+            Slot::StopRecording,
+            Slot::Save { enabled: true },
+            Slot::Send,
+            Slot::SendDisabled,
+            Slot::Dimmed(Dimmed::Call),
+            Slot::Dimmed(Dimmed::Busy),
+            Slot::Dimmed(Dimmed::NotSent),
+            Slot::Microphone,
+        ] {
+            assert_eq!(Some(slot_word(slot)), slot.label(), "{slot:?}");
+        }
+    }
+
+    /// ACTIVATING THE SLOT: a microphone — dimmed or not — and the
+    /// recording's arrow and square are the conversation's to decide (the
+    /// shared reducer explains a dimmed one); Send sends; a disabled Send
+    /// does nothing.
+    #[wasm_bindgen_test]
+    async fn the_slot_hands_a_microphone_to_the_recorder_and_sends_words() {
+        for (records, initial, activated, sent) in [
+            (Records::default_for_tests(), "", 1, 0),
+            (
+                Records {
+                    not_sent: true,
+                    ..Records::default_for_tests()
+                },
+                "",
+                1,
+                0,
+            ),
+            (
+                Records {
+                    recording: record::Recording::HandsFree,
+                    ..Records::default_for_tests()
+                },
+                "",
+                1,
+                0,
+            ),
+            (Records::default_for_tests(), "dinner?", 0, 1),
+        ] {
+            let heard = Rc::new(Heard::default());
+            let records = Records {
+                on_slot: {
+                    let heard = heard.clone();
+                    Callback::from(move |_: ()| heard.activated.set(heard.activated.get() + 1))
+                },
+                ..records
+            };
+            let mut props = slot_props(&heard, Some(records));
+            props.initial = initial.into();
+            let mounted = Mounted::with(props).await;
+            mounted.slot().click();
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            assert_eq!(heard.activated.get(), activated, "{initial:?}");
+            assert_eq!(heard.sent.borrow().len(), sent, "{initial:?}");
+            mounted.gone();
+        }
+    }
+
+    impl Records {
+        fn default_for_tests() -> Records {
+            Records {
+                recording: record::Recording::None,
+                row: Html::default(),
+                call: false,
+                not_sent: false,
+                can_record: true,
+                starting: false,
+                on_slot: Callback::noop(),
+                on_record: Callback::noop(),
+                on_stop: Callback::noop(),
+                on_emptied: Callback::noop(),
+                on_changed: Callback::noop(),
+                guard_until: Callback::from(|_: ()| 0),
+                on_blank: Callback::noop(),
+                refocus: 0,
+            }
+        }
+    }
+
+    fn pointer(kind: &str, name: &str, at: &HtmlElement, inside: bool) -> web_sys::PointerEvent {
+        let rect = at.get_bounding_client_rect();
+        let init = web_sys::PointerEventInit::new();
+        init.set_pointer_type(kind);
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        let (x, y) = if inside {
+            (
+                rect.left() + rect.width() / 2.0,
+                rect.top() + rect.height() / 2.0,
+            )
+        } else {
+            (rect.right() + 60.0, rect.top() - 60.0)
+        };
+        init.set_client_x(x as i32);
+        init.set_client_y(y as i32);
+        if name == "pointerdown" && kind == "mouse" {
+            init.set_button(2);
+        }
+        let event = web_sys::PointerEvent::new_with_event_init_dict(name, &init).unwrap();
+        at.dispatch_event(&event).unwrap();
+        event
+    }
+
+    fn context_menu(at: &HtmlElement) -> web_sys::MouseEvent {
+        let init = web_sys::MouseEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_button(2);
+        let event =
+            web_sys::MouseEvent::new_with_mouse_event_init_dict("contextmenu", &init).unwrap();
+        at.dispatch_event(&event).unwrap();
+        event
+    }
+
+    fn key(at: &HtmlElement, key: &str, shift: bool) -> web_sys::KeyboardEvent {
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key(key);
+        init.set_shift_key(shift);
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        let event =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        at.dispatch_event(&event).unwrap();
+        event
+    }
+
+    /// A TOUCH ACTS ON ITS `pointerup` inside the button — user activation,
+    /// where its `pointerdown` is not — and the `click` a browser may send
+    /// after it is swallowed, so one tap is one activation (S8.8). Lifted
+    /// outside, it does nothing. A mouse keeps `click`.
+    #[wasm_bindgen_test]
+    async fn a_touch_acts_on_its_pointerup_and_the_click_after_it_is_swallowed() {
+        let heard = Rc::new(Heard::default());
+        let mounted = Mounted::with(slot_props(&heard, Some(heard_records(&heard)))).await;
+        let slot = mounted.slot();
+
+        pointer("touch", "pointerdown", &slot, true);
+        assert_eq!(heard.activated.get(), 0, "never on the way down");
+        pointer("touch", "pointerup", &slot, true);
+        assert_eq!(heard.activated.get(), 1, "on the way up");
+        slot.click();
+        assert_eq!(heard.activated.get(), 1, "the click after it is swallowed");
+
+        // A long press the browser sends no click after: the next real
+        // click, later, is a click.
+        pointer("touch", "pointerdown", &slot, true);
+        pointer("touch", "pointerup", &slot, true);
+        assert_eq!(heard.activated.get(), 2);
+        let mut later = crate::recorder::testing::ClockAhead::by(TOUCH_CLICK_MS + 50.0);
+        slot.click();
+        assert_eq!(heard.activated.get(), 3);
+        later.more(1_000.0);
+
+        // Lifted outside the button: nothing.
+        pointer("touch", "pointerdown", &slot, true);
+        pointer("touch", "pointerup", &slot, false);
+        assert_eq!(heard.activated.get(), 3, "lifted outside");
+
+        // A mouse is a click, not its pointerup — even one that comes at
+        // once after a touch: it went down itself.
+        pointer("touch", "pointerdown", &slot, true);
+        pointer("touch", "pointerup", &slot, true);
+        assert_eq!(heard.activated.get(), 4);
+        pointer("mouse", "pointerdown", &slot, true);
+        pointer("mouse", "pointerup", &slot, true);
+        assert_eq!(heard.activated.get(), 4);
+        slot.click();
+        assert_eq!(heard.activated.get(), 5);
+        drop(later);
+        mounted.gone();
+    }
+
+    /// THE MICROPHONE'S MENU (S1.6, S8.7): a right-click, the Menu key or
+    /// Shift+F10 opens it — "Record Voice Message", which records — and a
+    /// touch held down never does, on any layout: its `contextmenu` is
+    /// prevented, and with it the browser's own menu and callout. Esc
+    /// closes it, back to the slot. On Send there is none of it.
+    #[wasm_bindgen_test]
+    async fn the_microphones_menu_opens_for_a_right_click_or_a_key_and_never_a_touch() {
+        let heard = Rc::new(Heard::default());
+        let mounted = Mounted::with(slot_props(&heard, Some(heard_records(&heard)))).await;
+        let slot = mounted.slot();
+
+        pointer("touch", "pointerdown", &slot, true);
+        let held = context_menu(&slot);
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert!(
+            held.default_prevented(),
+            "the browser's own menu is held back"
+        );
+        assert!(mounted.menu().is_none(), "and a touch hold opens none");
+        pointer("touch", "pointerup", &slot, false);
+        // (Lifted outside: no tap either.)
+        assert_eq!(heard.activated.get(), 0);
+
+        // A right-click well after that touch.
+        let later = crate::recorder::testing::ClockAhead::by(TOUCH_CLICK_MS + 50.0);
+        pointer("mouse", "pointerdown", &slot, true);
+        let right = context_menu(&slot);
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        drop(later);
+        assert!(right.default_prevented());
+        let menu = mounted.menu().expect("a right-click opens the menu");
+        assert_eq!(menu.get_attribute("role").as_deref(), Some("menu"));
+        let item: HtmlElement = menu
+            .query_selector("[role=menuitem]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert_eq!(item.text_content().as_deref(), Some("Record Voice Message"));
+        let active = web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .active_element();
+        assert_eq!(
+            active.as_ref(),
+            Some(item.unchecked_ref::<web_sys::Element>()),
+            "it takes the focus"
+        );
+        item.click();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(heard.recorded.get(), 1, "Record Voice Message records");
+        assert!(mounted.menu().is_none(), "and the menu goes");
+
+        // The keyboard: the Menu key, and Shift+F10. Esc closes, back to
+        // the slot.
+        for (pressed, shift) in [("ContextMenu", false), ("F10", true)] {
+            let event = key(&slot, pressed, shift);
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            assert!(event.default_prevented());
+            let menu = mounted
+                .menu()
+                .unwrap_or_else(|| panic!("{pressed} opens the menu"));
+            key(&menu.dyn_into::<HtmlElement>().unwrap(), "Escape", false);
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            assert!(mounted.menu().is_none());
+            let active = web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element();
+            assert_eq!(
+                active.as_ref(),
+                Some(slot.unchecked_ref::<web_sys::Element>()),
+                "back to the slot"
+            );
+        }
+        assert_eq!(heard.recorded.get(), 1);
+        mounted.gone();
+
+        // Dimmed, its item is dimmed too and carries the same reason — and
+        // is still chosen: the recorder is what refuses, and says why.
+        let heard = Rc::new(Heard::default());
+        let mounted = Mounted::with(slot_props(
+            &heard,
+            Some(Records {
+                call: true,
+                ..heard_records(&heard)
+            }),
+        ))
+        .await;
+        context_menu(&mounted.slot());
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        let item: HtmlElement = mounted
+            .menu()
+            .expect("a dimmed microphone has its menu")
+            .query_selector("[role=menuitem]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert_eq!(item.get_attribute("aria-disabled").as_deref(), Some("true"));
+        assert_eq!(
+            item.get_attribute("aria-describedby"),
+            mounted.slot().get_attribute("aria-describedby")
+        );
+        item.click();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(heard.recorded.get(), 1);
+        mounted.gone();
+
+        // On Send — words in the box — the browser keeps its menu.
+        let heard = Rc::new(Heard::default());
+        let mut props = slot_props(&heard, Some(heard_records(&heard)));
+        props.initial = "dinner?".into();
+        let mounted = Mounted::with(props).await;
+        let right = context_menu(&mounted.slot());
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert!(!right.default_prevented());
+        assert!(mounted.menu().is_none());
+        mounted.gone();
+    }
+
+    /// THE ACTIVATION GUARD (S1.1): a Send pressed while the slot's own
+    /// last activation is under 600 ms old — the Stop square a moment ago,
+    /// say, which staged a note — sends nothing; words typed since are
+    /// never guarded — the box tells the rules, which lift the guard — so
+    /// "ok" sent at once still goes. A send that empties the box says so,
+    /// for the microphone it turns into to be guarded.
+    #[wasm_bindgen_test]
+    async fn a_send_inside_the_guard_sends_nothing_unless_words_were_typed_since() {
+        let heard = Rc::new(Heard::default());
+        let guard = Rc::new(Cell::new(0u64));
+        let records = Records {
+            guard_until: {
+                let guard = guard.clone();
+                Callback::from(move |_: ()| guard.get())
+            },
+            // The rules, as fc_text::record has them: the person's change
+            // lifts the guard (HoldEvent::OtherAction).
+            on_changed: {
+                let heard = heard.clone();
+                let guard = guard.clone();
+                Callback::from(move |_: ()| {
+                    heard.changed.set(heard.changed.get() + 1);
+                    guard.set(0);
+                })
+            },
+            ..heard_records(&heard)
+        };
+        let mut props = slot_props(&heard, Some(records));
+        props.staged = 1;
+        let mounted = Mounted::with(props).await;
+        guard.set(now_ms() as u64 + record::ACTIVATION_GUARD_MS);
+        mounted.slot().click();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert!(heard.sent.borrow().is_empty(), "guarded");
+        assert_eq!(heard.emptied.get(), 0);
+        // Enter in the box is the same Send.
+        let area: HtmlElement = mounted
+            .root
+            .query_selector("textarea")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        key(&area, "Enter", false);
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert!(heard.sent.borrow().is_empty(), "Enter, guarded too");
+        assert_eq!(heard.changed.get(), 0, "nothing typed yet");
+
+        mounted.type_in("ok").await;
+        assert!(heard.changed.get() > 0, "typing is said to the rules");
+        mounted.slot().click();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(heard.sent.borrow().len(), 1, "typed since: not guarded");
+        assert_eq!(heard.sent.borrow()[0].body, "ok");
+        assert_eq!(heard.emptied.get(), 1, "the box emptied, said");
+        mounted.gone();
+
+        // Once the guard has run out, a Send goes.
+        let heard = Rc::new(Heard::default());
+        let until = now_ms() as u64 + record::ACTIVATION_GUARD_MS;
+        let records = Records {
+            guard_until: Callback::from(move |_: ()| until),
+            ..heard_records(&heard)
+        };
+        let mut props = slot_props(&heard, Some(records));
+        props.staged = 1;
+        let mounted = Mounted::with(props).await;
+        {
+            let _later =
+                crate::recorder::testing::ClockAhead::by(record::ACTIVATION_GUARD_MS as f64 + 1.0);
+            mounted.slot().click();
+        }
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(heard.sent.borrow().len(), 1);
+        mounted.gone();
+    }
+
+    #[derive(Properties, PartialEq)]
+    struct QuietComposerProps {
+        recording: bool,
+    }
+
+    #[function_component(Recording)]
+    fn recording(props: &QuietComposerProps) -> Html {
+        crate::views::quiet::use_quiet_while(props.recording);
+        Html::default()
+    }
+
+    /// A thread's box, a picture being asked for in it, beside a recording
+    /// somewhere in the app.
+    #[function_component(QuietComposer)]
+    fn quiet_composer(props: &QuietComposerProps) -> Html {
+        use crate::views::quiet::QuietRoot;
+        let heard = Rc::new(Heard::default());
+        let mut asked = slot_props(&heard, None);
+        asked.assistant = Some(Assistant {
+            user_id: 2,
+            display_name: "Assistant".into(),
+            mention: Some("@ai".into()),
+            draw: Some("/draw".into()),
+            vision: false,
+            transcribe: false,
+            transcribe_max_bytes: None,
+            lookups: Vec::new(),
+            greeting_weather: false,
+            images: true,
+            processor: Some("Microsoft — Azure OpenAI".into()),
+        });
+        asked.initial = "@ai /draw a cat".into();
+        html! {
+            <QuietRoot>
+                <Recording recording={props.recording} />
+                <Composer ..asked />
+            </QuietRoot>
+        }
+    }
+
+    /// The box's own notices — the picture hint, the words cut at the limit —
+    /// are live regions of the app's: quiet while a voice message is being
+    /// recorded (the plan for #79, S6).
+    #[wasm_bindgen_test]
+    async fn the_boxs_notices_are_quiet_while_a_voice_message_is_recorded() {
+        for recording in [false, true] {
+            let document = web_sys::window().unwrap().document().unwrap();
+            let root = document.create_element("div").unwrap();
+            document.body().unwrap().append_child(&root).unwrap();
+            let handle = yew::Renderer::<QuietComposer>::with_root_and_props(
+                root.clone(),
+                QuietComposerProps { recording },
+            )
+            .render();
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            let expected = if recording {
+                (None, Some("off".to_string()))
+            } else {
+                (Some("status".to_string()), None)
+            };
+            let hint = root
+                .query_selector(".picture-hint")
+                .unwrap()
+                .expect("the picture hint");
+            assert_eq!(
+                (hint.get_attribute("role"), hint.get_attribute("aria-live")),
+                expected,
+                "the hint, recording={recording}"
+            );
+            let area: HtmlTextAreaElement = root
+                .query_selector("textarea")
+                .unwrap()
+                .unwrap()
+                .dyn_into()
+                .unwrap();
+            area.set_value(&"a".repeat(composer::BODY_LIMIT + 1));
+            let init = web_sys::EventInit::new();
+            init.set_bubbles(true);
+            area.dispatch_event(&web_sys::Event::new_with_event_init_dict("input", &init).unwrap())
+                .unwrap();
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            let notice = root
+                .query_selector(".composer-notice")
+                .unwrap()
+                .expect("the box says it cut the words");
+            assert_eq!(
+                (
+                    notice.get_attribute("role"),
+                    notice.get_attribute("aria-live")
+                ),
+                expected,
+                "the notice, recording={recording}"
+            );
+            handle.destroy();
+            root.remove();
+        }
+    }
+
+    /// A KEY HELD DOWN ON THE SLOT is one press (S1.1): Enter's repeats click
+    /// nothing — not the Send arrow of the recording its first press started
+    /// — while the first Enter, and the menu's keys, act as they always do.
+    #[wasm_bindgen_test]
+    async fn a_key_held_on_the_slot_is_one_press() {
+        let heard = Rc::new(Heard::default());
+        let mounted = Mounted::with(slot_props(&heard, Some(heard_records(&heard)))).await;
+        let slot = mounted.slot();
+        let held = |repeat: bool, key: &str| {
+            let init = web_sys::KeyboardEventInit::new();
+            init.set_key(key);
+            init.set_repeat(repeat);
+            init.set_bubbles(true);
+            init.set_cancelable(true);
+            let event = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
+                .unwrap();
+            slot.dispatch_event(&event).unwrap();
+            event.default_prevented()
+        };
+        assert!(!held(false, "Enter"), "the first Enter is the button's own");
+        assert!(held(true, "Enter"), "its repeats click nothing");
+        assert!(held(true, "Enter"));
+        assert!(!held(false, " "), "Space, as ever");
+        mounted.gone();
+    }
+
+    /// WHILE A RECORDING RUNS the row takes the field's place — and the
+    /// paperclip's — at the same height (S2.4); the words wait hidden; focus
+    /// goes to the slot; and Esc is Stop, never Delete (S8.7).
+    #[wasm_bindgen_test]
+    async fn while_recording_the_row_has_the_fields_place_and_esc_is_stop() {
+        let heard = Rc::new(Heard::default());
+        let mut props = slot_props(&heard, Some(heard_records(&heard)));
+        props.attach = html! { <button class="tool paperclip">{ "📎" }</button> };
+        props.initial = "dinner?".into();
+        let mut mounted = Mounted::with(props).await;
+        assert!(mounted.root.query_selector(".paperclip").unwrap().is_some());
+        assert!(mounted.root.query_selector(".test-row").unwrap().is_none());
+
+        let mut recording = slot_props(
+            &heard,
+            Some(Records {
+                recording: record::Recording::HandsFreeBesideDraft,
+                ..heard_records(&heard)
+            }),
+        );
+        recording.attach = html! { <button class="tool paperclip">{ "📎" }</button> };
+        recording.initial = "dinner?".into();
+        mounted.handle.update(recording);
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        assert!(
+            mounted.root.query_selector(".test-row").unwrap().is_some(),
+            "the row"
+        );
+        assert!(
+            mounted.root.query_selector(".paperclip").unwrap().is_none(),
+            "in the paperclip's place"
+        );
+        let area: HtmlTextAreaElement = mounted
+            .root
+            .query_selector("textarea")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert!(area.hidden(), "the field hidden behind it");
+        assert_eq!(area.value(), "dinner?", "its words kept");
+        let active = web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .active_element();
+        assert_eq!(
+            active.as_ref(),
+            Some(mounted.slot().unchecked_ref::<web_sys::Element>()),
+            "focus on the slot"
+        );
+
+        key(&mounted.slot(), "Escape", false);
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(heard.stopped.get(), 1, "Esc is Stop");
+        assert_eq!(heard.activated.get(), 0, "and nothing else");
+        mounted.gone();
     }
 }

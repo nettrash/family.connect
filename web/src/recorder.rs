@@ -29,15 +29,29 @@
 //! it is kept only for a browser with no worklet.
 //!
 //! Five minutes at most; the conversation stops it there. What comes out is
-//! staged, like the Mac's, so a caption can be added and a recording made
-//! by accident can still be thrown away.
+//! sent from the recorder, or staged when the member stops it to listen or
+//! add words (docs/protocol.md, "A browser is a client too") — which of the
+//! two is the Send slot's rule (fc_text::record, and views::voice here).
+//!
+//! A recording keeps the screen on for as long as it lives (crate::awake),
+//! says when its microphone stops being one ([`Recording::on_lost`]), and is
+//! counted while it lives ([`in_progress`]) — what a tab closing or a sign-out
+//! would lose (the plan for #79, docs/audio-video-messages-2026-10-04.md,
+//! S1.7, S2.8, S4).
+//!
+//! It is timed on a MONOTONIC clock ([`now_ms`]), not the wall clock a
+//! machine setting its time would move, and where the samples pass through
+//! this page — the first and third ways — it says how loud they are
+//! ([`Recording::meter`]): the level meter and the silence warning of the
+//! plan's S2.9. The browser's own recorder hands over nothing until it
+//! stops, so it has neither.
 
 use fc_text::i18n::t;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use fc_text::media_plan::VOICE_NOTE_BITRATE;
-use fc_text::{media, wav};
+use fc_text::{media, record, wav};
 use futures::channel::oneshot;
 use futures::future::select;
 use gloo_timers::future::TimeoutFuture;
@@ -51,7 +65,245 @@ use web_sys::{
     Url,
 };
 
+use crate::awake::ScreenAwake;
 use crate::{encode, webcodecs};
+
+thread_local! {
+    /// How many recordings are alive in this tab: a microphone open, or a
+    /// note it heard still being finished.
+    static RUNNING: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Whether a voice note is being recorded — or finished — anywhere in this
+/// tab: something a tab closing or a sign-out would lose (the plan's S2.8).
+pub fn in_progress() -> bool {
+    RUNNING.get() > 0
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How far a test has moved [`now_ms`] on (`testing::ClockAhead`).
+    static AHEAD: Cell<f64> = const { Cell::new(0.0) };
+}
+
+/// Now, in milliseconds, on the clock a voice message is timed by: the
+/// page's monotonic one (`performance.now()`), which nothing but time moves
+/// — the timer the person sees, the five-minute limit, the activation guard
+/// (the plan's S2.9, S1.1). The wall clock only where a page has no
+/// `performance`, which none this runs in lacks.
+pub fn now_ms() -> f64 {
+    let now = web_sys::window()
+        .and_then(|window| window.performance())
+        .map(|performance| performance.now())
+        .unwrap_or_else(js_sys::Date::now);
+    #[cfg(test)]
+    let now = now + AHEAD.get();
+    now
+}
+
+/// Whether this page can record sound at all — the slot's "can record"
+/// (S1.2): `navigator.mediaDevices` exists, which it does only in a secure
+/// context. Looked up rather than bound: an http:// page has no such
+/// property, and a binding would hand back `undefined` as if it were one.
+pub fn can_record() -> bool {
+    web_sys::window()
+        .map(|window| window.navigator())
+        .and_then(|navigator| {
+            js_sys::Reflect::get(&navigator, &JsValue::from_str("mediaDevices")).ok()
+        })
+        .is_some_and(|devices| !devices.is_undefined() && !devices.is_null())
+}
+
+/// How loud the microphone has been, as a tap hears it: the loudest sample
+/// since the meter last looked, and whether any sample since the recording
+/// began rose above digital silence — a magnitude of 0.001, −60 dBFS
+/// (fc_text::record::SILENCE_SAMPLE_MAGNITUDE): a muted microphone, not a
+/// quiet room (the plan's S1.1, S2.9).
+#[derive(Default)]
+struct Level {
+    peak: Cell<f32>,
+    heard: Cell<bool>,
+}
+
+impl Level {
+    fn hear(&self, block: &[f32]) {
+        let loudest = block
+            .iter()
+            .fold(0f32, |peak, sample| peak.max(sample.abs()));
+        if loudest > self.peak.get() {
+            self.peak.set(loudest);
+        }
+        // Compared as the samples are: in single precision, where 0.001 is
+        // the silence level itself and not a hair above it.
+        if loudest > record::SILENCE_SAMPLE_MAGNITUDE as f32 {
+            self.heard.set(true);
+        }
+    }
+}
+
+/// A recording's level, for the meter that draws it (S2.9).
+#[derive(Clone)]
+pub struct Meter(Rc<Level>);
+
+impl Meter {
+    /// The loudest sample since the last look, from 0 to 1 — and the next
+    /// look starts again from silence.
+    pub fn take_peak(&self) -> f32 {
+        self.0.peak.replace(0.0)
+    }
+
+    /// Whether anything louder than digital silence has been heard since
+    /// the recording began.
+    pub fn heard(&self) -> bool {
+        self.0.heard.get()
+    }
+}
+
+/// The same meter, not an equal one.
+impl PartialEq for Meter {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for Meter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Meter(heard: {})", self.heard())
+    }
+}
+
+/// How many of the meter's five bars a peak lights: one at each of −50,
+/// −40, −30, −20 and −10 dBFS it reaches — the PEAK level, the measure the
+/// silence check reads, so the bars light alike on every client (S2.9).
+pub fn lit_bars(peak: f32) -> usize {
+    if peak.is_nan() || peak <= 0.0 {
+        return 0;
+    }
+    let dbfs = 20.0 * f64::from(peak).log10();
+    [-50.0, -40.0, -30.0, -20.0, -10.0]
+        .iter()
+        .filter(|&&threshold| dbfs >= threshold)
+        .count()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The stream of the recording started last — the one handle a test has
+    /// on the microphone of a recording a view holds out of its reach.
+    static LAST_STREAM: RefCell<Option<MediaStream>> = const { RefCell::new(None) };
+}
+
+/// The microphone of the recording started last (see `LAST_STREAM`).
+#[cfg(test)]
+pub fn last_stream() -> Option<MediaStream> {
+    LAST_STREAM.with(|last| Clone::clone(&*last.borrow()))
+}
+
+#[cfg(test)]
+pub mod testing {
+    /// [`super::now_ms`] moved on by however much a test asks, for as long
+    /// as this lives — four and a half minutes of a recording, in a test
+    /// that takes a second. Everything a voice message times is timed by
+    /// that clock, so everything moves together: the recording's length, the
+    /// row's timer, the activation guard.
+    pub struct ClockAhead(f64);
+
+    impl ClockAhead {
+        pub fn by(ms: f64) -> ClockAhead {
+            super::AHEAD.set(super::AHEAD.get() + ms);
+            ClockAhead(ms)
+        }
+
+        /// Further on still, undone with the rest when this goes.
+        pub fn more(&mut self, ms: f64) {
+            super::AHEAD.set(super::AHEAD.get() + ms);
+            self.0 += ms;
+        }
+    }
+
+    impl Drop for ClockAhead {
+        fn drop(&mut self) {
+            super::AHEAD.set(super::AHEAD.get() - self.0);
+        }
+    }
+
+    thread_local! {
+        static STOPS_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// A stopped recording is not finished into a note for as long as this
+    /// lives — the seconds a long note takes to encode, made as long as a
+    /// test needs, so what the composer does meanwhile can be asked of it.
+    pub struct StopsHeld;
+
+    impl StopsHeld {
+        pub fn new() -> StopsHeld {
+            STOPS_HELD.set(true);
+            StopsHeld
+        }
+    }
+
+    impl Drop for StopsHeld {
+        fn drop(&mut self) {
+            STOPS_HELD.set(false);
+        }
+    }
+
+    pub(super) async fn while_stops_held() {
+        while STOPS_HELD.get() {
+            gloo_timers::future::TimeoutFuture::new(10).await;
+        }
+    }
+}
+
+/// Why a microphone stopped being this recording's, as the browser tells it
+/// on the track (the Media Capture spec's `ended` and `mute`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lost {
+    /// The device went away or the permission was taken back: it will not
+    /// come back. The plan's S4 "the recorder fails": "The recording stopped
+    /// unexpectedly."
+    Ended,
+    /// The system took it for something else for a while — a phone call, an
+    /// assistant, another app using it exclusively: S4's "Siri, an alarm or
+    /// another app takes the microphone".
+    Muted,
+}
+
+/// A recording on its way from the pane that held it to what finishes it —
+/// stopped by something other than the person, it is kept rather than lost
+/// (the plan's S2.8). One owner at a time: whoever takes it out has it, and
+/// one nobody takes is dropped with the last handle, the microphone with it.
+#[derive(Clone)]
+pub struct Handover(Rc<RefCell<Option<Recording>>>);
+
+impl Handover {
+    pub fn of(recording: Recording) -> Handover {
+        Handover(Rc::new(RefCell::new(Some(recording))))
+    }
+
+    pub fn take(&self) -> Option<Recording> {
+        self.0.borrow_mut().take()
+    }
+}
+
+/// The same handover, not an equal one: a recording is not a value.
+impl PartialEq for Handover {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for Handover {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let held = if self.0.borrow().is_some() {
+            "a recording"
+        } else {
+            "nothing"
+        };
+        write!(f, "Handover({held})")
+    }
+}
 
 /// Why recording did not start, with what to say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,12 +375,15 @@ enum Tap {
         /// Fires when the worklet has handed over its last, part-filled
         /// block.
         drained: oneshot::Receiver<()>,
+        /// How loud the blocks have been.
+        level: Rc<Level>,
         _on_block: Closure<dyn FnMut(MessageEvent)>,
     },
     /// A `ScriptProcessorNode`, on the page's own thread — for a browser
     /// with no worklet. What arrives while the page is busy is lost.
     Script {
         processor: ScriptProcessorNode,
+        level: Rc<Level>,
         _on_audio: Closure<dyn FnMut(AudioProcessingEvent)>,
     },
 }
@@ -138,6 +393,12 @@ enum Tap {
 const DRAIN_MS: u32 = 500;
 
 impl Tap {
+    fn level(&self) -> &Rc<Level> {
+        match self {
+            Tap::Worklet { level, .. } | Tap::Script { level, .. } => level,
+        }
+    }
+
     /// Stop listening without keeping what is still on its way. The
     /// handler goes FIRST: an event arriving after its closure was dropped
     /// throws, every time, for as long as the thing keeps running.
@@ -195,18 +456,34 @@ impl Engine {
 /// A recording in progress. However it ends — stopped, cancelled, or
 /// simply dropped because whatever held it went away — the microphone is
 /// let go of: a live microphone nothing can reach is a microphone left on.
+/// And the screen with it: it stays on for as long as the recording lives.
 pub struct Recording {
     stream: MediaStream,
     engine: Option<Engine>,
+    /// When it started, by [`now_ms`].
     started: f64,
+    /// The listeners [`Recording::on_lost`] put on the microphone's tracks.
+    watching: Vec<Watch>,
+    _awake: ScreenAwake,
+}
+
+/// One listener on one track.
+struct Watch {
+    track: web_sys::MediaStreamTrack,
+    event: &'static str,
+    listener: Closure<dyn FnMut()>,
 }
 
 impl Drop for Recording {
     fn drop(&mut self) {
+        // The listeners FIRST: nothing this recording does on its way out
+        // is news to anybody.
+        self.unwatch();
         if let Some(engine) = self.engine.take() {
             engine.abandon();
         }
         stop_tracks(&self.stream);
+        RUNNING.set(RUNNING.get().saturating_sub(1));
     }
 }
 
@@ -280,11 +557,7 @@ impl Recording {
         };
         let engine = engine(&stream, listening.0.take()).await;
         match engine {
-            Some(engine) => Ok(Recording {
-                stream,
-                engine: Some(engine),
-                started: js_sys::Date::now(),
-            }),
+            Some(engine) => Ok(Recording::begun(stream, engine)),
             None => {
                 stop_tracks(&stream);
                 Err(Failure::CouldNotStart)
@@ -292,15 +565,87 @@ impl Recording {
         }
     }
 
+    /// A recording that has started: counted, and keeping the screen on.
+    fn begun(stream: MediaStream, engine: Engine) -> Recording {
+        RUNNING.set(RUNNING.get() + 1);
+        #[cfg(test)]
+        LAST_STREAM.with(|last| *last.borrow_mut() = Some(Clone::clone(&stream)));
+        Recording {
+            stream,
+            engine: Some(engine),
+            started: now_ms(),
+            watching: Vec::new(),
+            _awake: ScreenAwake::hold(),
+        }
+    }
+
+    /// When it started, by [`now_ms`] — where the timer the person sees
+    /// counts from.
+    pub fn started_ms(&self) -> f64 {
+        self.started
+    }
+
+    /// How loud it is, for the level meter and the silence warning (S2.9) —
+    /// None for the browser's own recorder, which hands nothing over until
+    /// it stops and so has no level to give: it draws the dot only.
+    pub fn meter(&self) -> Option<Meter> {
+        match &self.engine {
+            Some(Engine::Pcm { tap, .. }) => Some(Meter(tap.level().clone())),
+            _ => None,
+        }
+    }
+
+    /// Say to `heard` when the microphone stops being this recording's — the
+    /// device gone, the permission taken back, the system taking it for a
+    /// call — for as long as the recording runs. Called again, it replaces
+    /// the last listener. Said from inside the track's own event: whoever
+    /// hears it and hands the recording on must not end it there and then.
+    pub fn on_lost(&mut self, heard: impl Fn(Lost) + 'static) {
+        self.unwatch();
+        let heard = Rc::new(heard);
+        for track in self.stream.get_audio_tracks().iter() {
+            let Ok(track) = track.dyn_into::<web_sys::MediaStreamTrack>() else {
+                continue;
+            };
+            for (event, lost) in [("ended", Lost::Ended), ("mute", Lost::Muted)] {
+                let heard = heard.clone();
+                let listener = Closure::<dyn FnMut()>::new(move || heard(lost));
+                let _ = track
+                    .add_event_listener_with_callback(event, listener.as_ref().unchecked_ref());
+                self.watching.push(Watch {
+                    // Rust's clone — the same track. `track.clone()` is the
+                    // DOM's, which makes a new track of its own.
+                    track: Clone::clone(&track),
+                    event,
+                    listener,
+                });
+            }
+        }
+    }
+
+    fn unwatch(&mut self) {
+        for watch in self.watching.drain(..) {
+            let _ = watch.track.remove_event_listener_with_callback(
+                watch.event,
+                watch.listener.as_ref().unchecked_ref(),
+            );
+        }
+    }
+
     /// How long it has been going, in milliseconds.
     pub fn elapsed_ms(&self) -> f64 {
-        js_sys::Date::now() - self.started
+        now_ms() - self.started
     }
 
     /// Stop and hand over what was recorded — None when it is too short to
     /// be anything (ios AudioRecorder: 1024 bytes or less).
     pub async fn stop(mut self) -> Option<Recorded> {
+        // Stopped is stopped: a microphone that goes away while the note is
+        // being finished is not news.
+        self.unwatch();
         let duration_ms = self.elapsed_ms().round() as i64;
+        #[cfg(test)]
+        testing::while_stops_held().await;
         let recorded = match self.engine.take()? {
             Engine::Mp4 {
                 recorder,
@@ -498,9 +843,10 @@ async fn running(context: &AudioContext) -> bool {
 
 async fn pcm(stream: &MediaStream, context: AudioContext, aac: bool) -> Option<Engine> {
     let samples: Samples = Rc::new(js_sys::Array::new());
-    let tap = match worklet_tap(stream, &context, &samples).await {
+    let level = Rc::new(Level::default());
+    let tap = match worklet_tap(stream, &context, &samples, &level).await {
         Some(tap) => Some(tap),
-        None => script_tap(stream, &context, &samples),
+        None => script_tap(stream, &context, &samples, &level),
     };
     let Some(tap) = tap else {
         let _ = context.close();
@@ -581,6 +927,7 @@ async fn worklet_tap(
     stream: &MediaStream,
     context: &AudioContext,
     samples: &Samples,
+    level: &Rc<Level>,
 ) -> Option<Tap> {
     let source = js_sys::Array::of1(&JsValue::from_str(&tap_source()));
     let options = BlobPropertyBag::new();
@@ -613,6 +960,7 @@ async fn worklet_tap(
     let sender = RefCell::new(Some(sender));
     let on_block = {
         let samples = samples.clone();
+        let level = level.clone();
         Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
             let data = event.data();
             if data.is_null() {
@@ -621,6 +969,7 @@ async fn worklet_tap(
                 }
             } else if data.is_instance_of::<js_sys::Float32Array>() {
                 samples.push(&data);
+                level.hear(&data.unchecked_ref::<js_sys::Float32Array>().to_vec());
             }
         })
     };
@@ -641,11 +990,17 @@ async fn worklet_tap(
     Some(Tap::Worklet {
         node,
         drained,
+        level: level.clone(),
         _on_block: on_block,
     })
 }
 
-fn script_tap(stream: &MediaStream, context: &AudioContext, samples: &Samples) -> Option<Tap> {
+fn script_tap(
+    stream: &MediaStream,
+    context: &AudioContext,
+    samples: &Samples,
+    level: &Rc<Level>,
+) -> Option<Tap> {
     let source = context.create_media_stream_source(stream).ok()?;
     // One input channel: a stereo microphone is mixed down by the browser,
     // and a voice note is mono whatever it was recorded with.
@@ -654,10 +1009,12 @@ fn script_tap(stream: &MediaStream, context: &AudioContext, samples: &Samples) -
         .ok()?;
     let on_audio = {
         let samples = samples.clone();
+        let level = level.clone();
         Closure::<dyn FnMut(AudioProcessingEvent)>::new(move |event: AudioProcessingEvent| {
             if let Ok(buffer) = event.input_buffer() {
                 if let Ok(channel) = buffer.get_channel_data(0) {
                     samples.push(&js_sys::Float32Array::from(channel.as_slice()));
+                    level.hear(&channel);
                 }
             }
         })
@@ -671,6 +1028,7 @@ fn script_tap(stream: &MediaStream, context: &AudioContext, samples: &Samples) -
         .ok()?;
     Some(Tap::Script {
         processor,
+        level: level.clone(),
         _on_audio: on_audio,
     })
 }
@@ -1224,6 +1582,239 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(staged.kind, "audio");
+    }
+
+    /// A recording is COUNTED for as long as it lives — what a closing tab or
+    /// a sign-out asks about — and keeps the SCREEN ON (the plan for #79,
+    /// S1.7, S2.8), letting both go however it ends: cancelled, or stopped
+    /// and finished.
+    #[wasm_bindgen_test]
+    async fn a_recording_is_counted_and_keeps_the_screen_on_until_it_ends() {
+        let screen = crate::awake::testing::FakeWakeLock::install();
+        assert!(!in_progress(), "nothing records before");
+        let recording = Recording::start(Listening::in_the_click())
+            .await
+            .expect("recording starts");
+        assert!(in_progress(), "counted while it lives");
+        sleep(50).await;
+        assert_eq!(
+            (screen.asked(), screen.released()),
+            (1, 0),
+            "the screen kept on"
+        );
+        recording.cancel();
+        sleep(50).await;
+        assert!(!in_progress(), "not once it is cancelled");
+        assert_eq!(screen.released(), 1, "the screen let go of with it");
+
+        let recording = Recording::start(Listening::in_the_click())
+            .await
+            .expect("recording starts");
+        sleep(300).await;
+        let _ = recording.stop().await;
+        sleep(50).await;
+        assert!(!in_progress(), "nor once it is finished");
+        assert_eq!((screen.asked(), screen.released()), (2, 2));
+    }
+
+    /// A microphone that stops being the recording's — the device gone, the
+    /// system taking it for a call — is HEARD (the plan for #79, S4). A
+    /// listener set again replaces the last, and once the recording has
+    /// ended nothing is listening: a listener left behind would call into a
+    /// closure that has gone, which throws in the page.
+    #[wasm_bindgen_test]
+    async fn a_lost_microphone_is_heard_while_the_recording_lives() {
+        let mut recording = Recording::start(Listening::in_the_click())
+            .await
+            .expect("recording starts");
+        let track: web_sys::MediaStreamTrack = recording
+            .stream
+            .get_audio_tracks()
+            .get(0)
+            .dyn_into()
+            .expect("an audio track");
+        let fire = |name: &str| {
+            track
+                .dispatch_event(&web_sys::Event::new(name).unwrap())
+                .unwrap();
+        };
+        let replaced = Rc::new(RefCell::new(Vec::new()));
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        {
+            let replaced = replaced.clone();
+            recording.on_lost(move |lost| replaced.borrow_mut().push(lost));
+        }
+        {
+            let heard = heard.clone();
+            recording.on_lost(move |lost| heard.borrow_mut().push(lost));
+        }
+        fire("mute");
+        fire("ended");
+        assert!(
+            replaced.borrow().is_empty(),
+            "set again, it replaced the first"
+        );
+        assert_eq!(*heard.borrow(), vec![Lost::Muted, Lost::Ended]);
+
+        let thrown = Rc::new(Cell::new(0));
+        let on_error = {
+            let thrown = thrown.clone();
+            Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
+                thrown.set(thrown.get() + 1)
+            })
+        };
+        let window = web_sys::window().unwrap();
+        window
+            .add_event_listener_with_callback("error", on_error.as_ref().unchecked_ref())
+            .unwrap();
+        recording.cancel();
+        fire("ended");
+        fire("mute");
+        window
+            .remove_event_listener_with_callback("error", on_error.as_ref().unchecked_ref())
+            .unwrap();
+        assert_eq!(heard.borrow().len(), 2, "nothing heard once it has ended");
+        assert_eq!(thrown.get(), 0, "and nothing left listening");
+    }
+
+    /// Stopped is stopped: a microphone that goes away while the note is
+    /// still being finished is news to nobody — and the note is finished
+    /// all the same.
+    #[wasm_bindgen_test]
+    async fn a_microphone_lost_while_the_note_is_finished_is_not_news() {
+        let mut recording = Recording::start(Listening::in_the_click())
+            .await
+            .expect("recording starts");
+        let track: web_sys::MediaStreamTrack = recording
+            .stream
+            .get_audio_tracks()
+            .get(0)
+            .dyn_into()
+            .expect("an audio track");
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        {
+            let heard = heard.clone();
+            recording.on_lost(move |lost| heard.borrow_mut().push(lost));
+        }
+        // Long enough to be a note, not "too short".
+        sleep(1_200).await;
+        let (done, finished) = oneshot::channel();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = done.send(recording.stop().await.is_some());
+        });
+        // One turn, so the stop has begun — it is waiting on the worklet's
+        // last block — when the microphone goes.
+        let _ = JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL)).await;
+        track
+            .dispatch_event(&web_sys::Event::new("ended").unwrap())
+            .unwrap();
+        assert!(finished.await.unwrap(), "the note is finished");
+        assert!(heard.borrow().is_empty(), "and the loss was news to nobody");
+    }
+
+    /// THE METER'S FIVE BARS (the plan for #79, S2.9): one at each of −50,
+    /// −40, −30, −20 and −10 dBFS of the PEAK, the measure the silence check
+    /// reads — so they light alike on every client.
+    #[wasm_bindgen_test]
+    fn the_meter_lights_a_bar_at_every_ten_decibels_from_minus_fifty() {
+        let at = |dbfs: f64| 10f64.powf(dbfs / 20.0) as f32;
+        assert_eq!(lit_bars(0.0), 0);
+        assert_eq!(lit_bars(f32::NAN), 0);
+        assert_eq!(lit_bars(-0.5), 0, "a peak is a magnitude");
+        assert_eq!(lit_bars(at(-60.0)), 0, "digital silence lights nothing");
+        assert_eq!(lit_bars(at(-50.5)), 0);
+        assert_eq!(lit_bars(at(-49.9)), 1);
+        assert_eq!(lit_bars(at(-39.9)), 2);
+        assert_eq!(lit_bars(at(-29.9)), 3);
+        assert_eq!(lit_bars(at(-19.9)), 4);
+        assert_eq!(lit_bars(at(-10.5)), 4);
+        assert_eq!(lit_bars(at(-9.9)), 5);
+        assert_eq!(lit_bars(1.0), 5);
+    }
+
+    /// HEARD is anything above digital silence — a sample magnitude over
+    /// 0.001, −60 dBFS (S1.1): a muted microphone, not a quiet room. The
+    /// meter takes the loudest sample since it last looked, and starts again.
+    #[wasm_bindgen_test]
+    fn heard_is_anything_above_digital_silence() {
+        let level = Rc::new(Level::default());
+        let meter = Meter(level.clone());
+        level.hear(&[0.0, -0.001, 0.0005, 0.001]);
+        assert!(!meter.heard(), "at the silence level is silence");
+        assert_eq!(meter.take_peak(), 0.001);
+        assert_eq!(meter.take_peak(), 0.0, "each look starts again");
+        level.hear(&[0.0, -0.0011]);
+        assert!(meter.heard());
+        level.hear(&[0.0]);
+        assert!(meter.heard(), "once heard, heard");
+        level.hear(&[0.25, -0.5, 0.1]);
+        level.hear(&[0.2]);
+        assert_eq!(meter.take_peak(), 0.5, "the loudest since the last look");
+    }
+
+    /// The recorder's clock is the page's monotonic one, which a test can
+    /// move on — and a recording's length is measured on it. (A tone stands
+    /// in for the microphone here and below: the test browser's fake one is
+    /// a single device whose own settings outlive a recording ended a moment
+    /// after its beep, and the tests that listen for its beep come after.)
+    #[wasm_bindgen_test]
+    async fn a_recording_is_timed_on_the_monotonic_clock() {
+        let performance = web_sys::window().unwrap().performance().unwrap();
+        assert!(
+            (now_ms() - performance.now()).abs() < 50.0,
+            "performance.now()"
+        );
+        let (playing, stream) = tone();
+        let chosen = engine(&stream, None).await.expect("an engine");
+        let recording = Recording::begun(Clone::clone(&stream), chosen);
+        assert!((recording.started_ms() - now_ms()).abs() < 1_000.0);
+        let before = recording.elapsed_ms();
+        {
+            let _later = testing::ClockAhead::by(270_000.0);
+            assert!(recording.elapsed_ms() >= before + 270_000.0);
+        }
+        assert!(recording.elapsed_ms() < before + 1_000.0, "and back");
+        recording.cancel();
+        let _ = playing.close();
+        assert!(can_record(), "a secure page can record");
+    }
+
+    /// The meter is the tap's: there with the encoder's worklet, hearing what
+    /// it is given — and absent from the browser's own recorder, which hands
+    /// nothing over until it stops (S2.9).
+    #[wasm_bindgen_test]
+    async fn the_meter_is_the_taps_and_the_browsers_recorder_has_none() {
+        let (playing, stream) = tone();
+        let chosen = engine(&stream, None).await.expect("an engine");
+        assert!(matches!(
+            chosen,
+            Engine::Pcm {
+                tap: Tap::Worklet { .. },
+                ..
+            }
+        ));
+        let recording = Recording::begun(Clone::clone(&stream), chosen);
+        let meter = recording.meter().expect("the worklet's meter");
+        assert!(recording.meter() == Some(meter.clone()), "the same one");
+        for _ in 0..80 {
+            if meter.heard() {
+                break;
+            }
+            sleep(25).await;
+        }
+        assert!(meter.heard(), "the tone is heard");
+        assert!(meter.take_peak() > 0.5, "at the tone's own level");
+        recording.cancel();
+        let _ = playing.close();
+
+        let _no_encoder = refusing("AudioEncoder");
+        let (playing, stream) = tone();
+        let chosen = engine(&stream, None).await.expect("an engine");
+        assert!(matches!(chosen, Engine::Mp4 { .. }));
+        let recording = Recording::begun(Clone::clone(&stream), chosen);
+        assert!(recording.meter().is_none());
+        recording.cancel();
+        let _ = playing.close();
     }
 
     /// A recording given up — or simply dropped with whatever held it —

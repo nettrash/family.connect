@@ -75,6 +75,9 @@ internal sealed class Connection : IAsyncDisposable
             PeerReads.Clear();
             Answers.Clear();
             Transcripts.Clear();
+            // Everything recorded and not sent goes with the session, as the outbox goes with the cache
+            // (docs/audio-video-messages-2026-10-04.md, S4's sign-out row): a recording belongs to whoever made it.
+            ParkedRecordings.WipeAll(AppFolders.ParkedPath);
         };
     }
 

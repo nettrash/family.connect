@@ -105,19 +105,9 @@
                     <TextBlock x:Name="ConsentText" VerticalAlignment="Center" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     <HyperlinkButton x:Name="ConsentReview" VerticalAlignment="Center" Visibility="Collapsed" />
                 </StackPanel>
-                <!-- A voice note being recorded: how long so far, Cancel, and Stop — which five minutes presses by itself. -->
-                <Grid x:Name="RecordingBar" Margin="0,6,0,0" ColumnSpacing="10" Visibility="Collapsed">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <Ellipse Width="10" Height="10" VerticalAlignment="Center" Fill="{ThemeResource SystemFillColorCriticalBrush}" />
-                    <TextBlock x:Name="RecordingText" Grid.Column="1" VerticalAlignment="Center" />
-                    <Button x:Name="RecordingCancel" Grid.Column="2" />
-                    <Button x:Name="RecordingStop" Grid.Column="3" Style="{StaticResource AccentButtonStyle}" />
-                </Grid>
+                <!-- Voice messages that were not sent: a row each, with Send and a cross (DrawNotSent). Something other than -->
+                <!-- the person stopped them, and they wait here, never carried by another Send. -->
+                <StackPanel x:Name="NotSentPanel" Margin="0,6,0,0" Spacing="6" Visibility="Collapsed" />
                 <!-- Looking for where this device is: said while it looks, so the pause is not a dead menu item. -->
                 <StackPanel x:Name="LocationBar" Margin="0,6,0,0" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
                     <ProgressRing x:Name="LocationRing" Width="16" Height="16" IsActive="False" />
@@ -159,7 +149,7 @@
                         <StackPanel x:Name="SuggestionStrip" Orientation="Horizontal" Spacing="6" />
                     </ScrollViewer>
                     <!-- One door for everything a message can carry: its menu is built from what this chat allows. -->
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" VerticalAlignment="Bottom">
+                    <StackPanel x:Name="ComposerTools" Grid.Row="2" Orientation="Horizontal" VerticalAlignment="Bottom">
                         <Button x:Name="AttachButton" Background="Transparent" BorderThickness="0" Padding="8">
                             <SymbolIcon Symbol="Add" />
                         </Button>
@@ -174,10 +164,65 @@
                         <Button x:Name="AskPictureButton" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed" />
                     </StackPanel>
                     <TextBox x:Name="ComposerBox" Grid.Row="2" Grid.Column="1" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" VerticalAlignment="Center" />
-                    <Button x:Name="SendButton" Grid.Row="2" Grid.Column="2" VerticalAlignment="Bottom" Style="{StaticResource AccentButtonStyle}" />
+                    <!--
+                        A voice message being recorded, IN the input row (docs/audio-video-messages-2026-10-04.md, S2.4, S8.6): it
+                        takes the place of the field and the buttons beside it, at the height they had, and the slot stays where it
+                        is. Delete, the red dot and the clock, "30 seconds left" from 4:30, and Stop — which is not drawn when the
+                        recording began beside words or staged items, because then the slot itself is Stop.
+                    -->
+                    <Grid x:Name="RecordingRow" Grid.Row="2" Grid.ColumnSpan="2" Visibility="Collapsed">
+                        <Grid Height="44" VerticalAlignment="Bottom" ColumnSpacing="10" Padding="4,0,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="RecordingDelete" VerticalAlignment="Center" />
+                            <Ellipse x:Name="RecordingDot" Grid.Column="1" Width="8" Height="8" VerticalAlignment="Center" Fill="{ThemeResource SystemFillColorCriticalBrush}" AutomationProperties.AccessibilityView="Raw" />
+                            <TextBlock x:Name="RecordingTime" Grid.Column="2" VerticalAlignment="Center" Typography.NumeralAlignment="Tabular" />
+                            <TextBlock x:Name="RecordingWarning" Grid.Column="3" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource SystemFillColorCautionBrush}" Visibility="Collapsed" />
+                            <Button x:Name="RecordingStop" Grid.Column="4" VerticalAlignment="Center" />
+                        </Grid>
+                    </Grid>
+                    <!--
+                        The trailing slot (S1.3, S8.6): Send, Save, the microphone, the recording's Send or Stop — one fixed 40-epx
+                        accent disc in a 44-epx target, so the Auto column never jumps. Its glyph, name and tooltip are set per state
+                        from code (ComposerButton.Face); a press of any length with any input clicks, and holding is off.
+                    -->
+                    <Button
+                        x:Name="SendButton"
+                        Grid.Row="2"
+                        Grid.Column="2"
+                        VerticalAlignment="Bottom"
+                        Width="44"
+                        Height="44"
+                        Padding="0"
+                        CornerRadius="22"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        IsHoldingEnabled="False">
+                        <!-- Disabled is drawn on the disc itself (DrawSlot): no grey ring around it. -->
+                        <Button.Resources>
+                            <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="Transparent" />
+                        </Button.Resources>
+                        <Grid x:Name="SlotLook" Width="40" Height="40">
+                            <Ellipse Fill="{ThemeResource AccentFillColorDefaultBrush}" />
+                            <FontIcon x:Name="SlotGlyphLeaving" FontSize="16" Opacity="0" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                            <FontIcon x:Name="SlotGlyph" Glyph="&#xE724;" FontSize="16" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                        </Grid>
+                    </Button>
+                    <!--
+                        What the recording does, said to a screen reader and never drawn (S6): "Recording", "Recording deleted",
+                        "Voice message sent", "Ready to review, 0:42", "30 seconds left". A polite live region under the field, taking
+                        no room of its own — the composer's notice line says what has to be SEEN.
+                    -->
+                    <TextBlock x:Name="RecordingStatus" Grid.Row="2" Grid.Column="1" Opacity="0" IsHitTestVisible="False" VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite" />
                 </Grid>
             </Border>
-            <TextBlock x:Name="ComposerError" Grid.Row="5" Margin="24,0,24,8" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Visibility="Collapsed" />
+            <!-- The composer's notice line: a polite live region, so what a recording's end says is heard as well as seen. -->
+            <TextBlock x:Name="ComposerError" Grid.Row="5" Margin="24,0,24,8" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" AutomationProperties.LiveSetting="Polite" Visibility="Collapsed" />
         </Grid>
 
         <!-- A chain of replies, beside the conversation: the root at the top, the replies below, a composer that answers the root. -->

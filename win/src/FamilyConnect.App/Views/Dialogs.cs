@@ -76,6 +76,20 @@ internal static class Dialogs
     }
 
     /// <summary>
+    /// The question before a recording of ten seconds or more is deleted (docs/audio-video-messages-2026-10-04.md, S2.5,
+    /// S2.8): "Delete this recording?" [Delete] [Keep]. Keep is the default, so a reflex Enter keeps what cannot be
+    /// recorded again. Handed back unshown, so whoever asks can take the question away again when something else ends it.
+    /// </summary>
+    public static ContentDialog DeleteRecording(XamlRoot root, IStringCatalog say)
+    {
+        var dialog = Create(root, say.Get("Delete this recording?"), string.Empty);
+        dialog.PrimaryButtonText = say.Get("Delete");
+        dialog.CloseButtonText = say.Get("Keep");
+        dialog.DefaultButton = ContentDialogButton.Close;
+        return dialog;
+    }
+
+    /// <summary>
     /// A birthday: a month and a day, no year. <paramref name="name"/> is null for the reader's own and
     /// names the member for an owner setting somebody else's. Answers whether anything changed.
     /// </summary>

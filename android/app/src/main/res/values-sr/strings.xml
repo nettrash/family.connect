@@ -119,15 +119,12 @@
         <item quantity="few">%1$d снимка у текст</item>
         <item quantity="other">%1$d снимака у текст</item>
     </plurals>
-    <string name="s_record_audio">Сними аудио</string>
-    <string name="s_stop">Заустави</string>
     <string name="s_audio">Аудио</string>
     <string name="s_play">Пусти</string>
     <string name="s_pause">Пауза</string>
     <string name="e_record_failed">Снимање није могло да почне.</string>
     <string name="e_recording_too_short">Снимак је прекратак.</string>
     <string name="e_microphone_permission">Family треба дозволу за коришћење микрофона.</string>
-    <string name="s_record_video">Сними видео</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Додај поруку или пошаљи овако.</string>
     <string name="s_remove_attachment">Уклони прилог</string>
     <string name="s_photo_or_video">Фотографија или видео</string>
@@ -666,4 +663,44 @@
     <string name="s_greeting_weather_remove_place">Уклони место</string>
     <string name="s_greeting_weather_limit">Највише 3 места.</string>
     <string name="s_greeting_weather_footer">Дневни поздрав ће поменути и данашњу временску прогнозу за ова места. Сервису Open-Meteo шаљу се само називи места да би се преузела прогноза. Ништа друго се не шаље.</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">Гласовна порука није послата · %1$s</string>
+    <string name="s_send_voice_message">Пошаљи гласовну поруку</string>
+    <string name="s_delete_recording">Обриши снимак</string>
+    <string name="s_keep">Задржи</string>
+    <string name="s_delete_this_recording">Обрисати овај снимак?</string>
+    <string name="e_record_after_the_call">Поруку можеш да снимиш после позива.</string>
+    <string name="e_send_or_delete_the_unsent_first">Прво пошаљи или обриши гласовну поруку која није послата.</string>
+    <string name="s_recording_stopped_at_five_minutes">Снимање је заустављено после пет минута.</string>
+    <string name="e_recording_stopped_unexpectedly">Снимање је неочекивано прекинуто.</string>
+    <string name="s_voice_message_with_length">Гласовна порука · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">Сними гласовну поруку</string>
+    <string name="s_take_video">Направи видео</string>
+    <string name="s_undo">Опозови</string>
+    <string name="s_open_settings">Отвори Подешавања</string>
+    <string name="s_stop_recording">Заустави снимање</string>
+    <string name="s_stop_and_listen_first">Заустави и прво преслушај</string>
+    <string name="s_start_recording_action">започни снимање</string>
+    <string name="s_sending_voice_message">Слање гласовне поруке · %1$s</string>
+    <string name="s_sending_in">Слање за %1$d</string>
+    <string name="s_slide_to_cancel">Превуци за отказивање</string>
+    <string name="s_release_to_cancel">Пусти за отказивање</string>
+    <string name="s_still_recording_tap_send">Снимање се наставља. Додирни „Пошаљи“ кад завршиш.</string>
+    <string name="s_next_time_letting_go_sends">Следећи пут ће се послати чим пустиш.</string>
+    <string name="s_hold_the_microphone_coach">Можеш и да држиш микрофон док говориш.</string>
+    <string name="s_play_after_recording">Ово можеш да пустиш после снимања.</string>
+    <string name="s_thirty_seconds_left">Још 30 секунди</string>
+    <string name="s_voice_messages">Гласовне поруке</string>
+    <string name="s_review_before_sending">Провера пре слања</string>
+    <string name="s_review_before_sending_explanation">Кад држиш микрофон док говориш, порука се после пуштања не шаље, већ остаје да је провериш.</string>
+    <string name="s_you_can_record_now">Сада можеш да снимаш.</string>
+    <string name="s_we_didnt_hear_anything">Ништа се није чуло.</string>
+    <string name="s_cant_hear_microphone_muted">Ништа се не чује. Да ли је микрофон искључен?</string>
+    <string name="s_announce_recording">Снимање у току</string>
+    <string name="s_announce_recording_locked">Снимање закључано</string>
+    <string name="s_announce_recording_deleted">Снимак обрисан</string>
+    <string name="s_announce_voice_message_sent">Гласовна порука послата</string>
+    <string name="s_announce_ready_to_review">Спремно за проверу, %1$s</string>
+    <string name="e_wait_for_the_attachment">Сачекај да се тренутни прилог заврши.</string>
 </resources>

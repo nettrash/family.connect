@@ -185,15 +185,12 @@
         <item quantity="one">%1$d recording as text</item>
         <item quantity="other">%1$d recordings as text</item>
     </plurals>
-    <string name="s_record_audio">Record audio</string>
-    <string name="s_stop">Stop</string>
     <string name="s_audio">Audio</string>
     <string name="s_play">Play</string>
     <string name="s_pause">Pause</string>
     <string name="e_record_failed">Couldn\'t start recording.</string>
     <string name="e_recording_too_short">That recording was too short.</string>
     <string name="e_microphone_permission">Family needs permission to use the microphone.</string>
-    <string name="s_record_video">Record video</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Add a message, or send it on its own.</string>
     <string name="s_remove_attachment">Remove attachment</string>
     <string name="s_photo_or_video">Photo or video</string>
@@ -710,4 +707,44 @@
     <string name="s_greeting_weather_remove_place">Remove place</string>
     <string name="s_greeting_weather_limit">Up to 3 places.</string>
     <string name="s_greeting_weather_footer">The daily greeting will also mention today\'s weather in these places. Only the place names are sent to Open-Meteo to fetch the forecast. Nothing else is sent.</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">Voice message not sent · %1$s</string>
+    <string name="s_send_voice_message">Send voice message</string>
+    <string name="s_delete_recording">Delete recording</string>
+    <string name="s_keep">Keep</string>
+    <string name="s_delete_this_recording">Delete this recording?</string>
+    <string name="e_record_after_the_call">You can record a message after the call.</string>
+    <string name="e_send_or_delete_the_unsent_first">Send or delete the voice message that wasn\'t sent first.</string>
+    <string name="s_recording_stopped_at_five_minutes">Recording stopped at five minutes.</string>
+    <string name="e_recording_stopped_unexpectedly">The recording stopped unexpectedly.</string>
+    <string name="s_voice_message_with_length">Voice message · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">Record voice message</string>
+    <string name="s_take_video">Take video</string>
+    <string name="s_undo">Undo</string>
+    <string name="s_open_settings">Open Settings</string>
+    <string name="s_stop_recording">Stop recording</string>
+    <string name="s_stop_and_listen_first">Stop and listen first</string>
+    <string name="s_start_recording_action">start recording</string>
+    <string name="s_sending_voice_message">Sending voice message · %1$s</string>
+    <string name="s_sending_in">Sending in %1$d</string>
+    <string name="s_slide_to_cancel">Slide to cancel</string>
+    <string name="s_release_to_cancel">Release to cancel</string>
+    <string name="s_still_recording_tap_send">Still recording. Tap Send when you\'re done.</string>
+    <string name="s_next_time_letting_go_sends">Next time, letting go will send it.</string>
+    <string name="s_hold_the_microphone_coach">You can also hold the microphone while you talk.</string>
+    <string name="s_play_after_recording">You can play this after recording.</string>
+    <string name="s_thirty_seconds_left">30 seconds left</string>
+    <string name="s_voice_messages">Voice messages</string>
+    <string name="s_review_before_sending">Review before sending</string>
+    <string name="s_review_before_sending_explanation">When you hold the microphone to talk, letting go keeps the message for you to check instead of sending it.</string>
+    <string name="s_you_can_record_now">You can record now.</string>
+    <string name="s_we_didnt_hear_anything">We didn\'t hear anything.</string>
+    <string name="s_cant_hear_microphone_muted">We can\'t hear anything. Is the microphone muted?</string>
+    <string name="s_announce_recording">Recording</string>
+    <string name="s_announce_recording_locked">Recording locked</string>
+    <string name="s_announce_recording_deleted">Recording deleted</string>
+    <string name="s_announce_voice_message_sent">Voice message sent</string>
+    <string name="s_announce_ready_to_review">Ready to review, %1$s</string>
+    <string name="e_wait_for_the_attachment">Wait until the current attachment is done.</string>
 </resources>

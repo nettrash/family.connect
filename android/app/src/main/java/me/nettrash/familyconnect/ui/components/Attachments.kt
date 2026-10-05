@@ -55,6 +55,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Spacer
 import android.media.MediaPlayer
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -986,10 +987,25 @@ private fun AudioPlayerRow(
     var positionMs by remember(attachment.id) { mutableIntStateOf(0) }
     var scrubbing by remember(attachment.id) { mutableStateOf(false) }
 
+    // #79, S1.7 and S5.3, in a chat: one thing plays at a time, and nothing
+    // plays over a recording — starting one pauses this, and while it runs
+    // the play button is dimmed and says why. Outside a chat (a thread)
+    // there is no coordinator, and the row plays as it always has.
+    val coordinator = me.nettrash.familyconnect.ui.chat.LocalPlaybackCoordinator.current
+    val gate = me.nettrash.familyconnect.ui.chat.LocalRecordingGate.current
+    val pauseThis: () -> Unit = remember(attachment.id) {
+        {
+            player?.runCatching { if (isPlaying) pause() }
+            isPlaying = false
+        }
+    }
+    LaunchedEffect(gate.recording) { if (gate.recording && isPlaying) pauseThis() }
+
     // Release with the composable, or a scrolled-away bubble keeps the
     // decoder and the socket open.
     DisposableEffect(attachment.id) {
         onDispose {
+            coordinator?.stopped(pauseThis)
             player?.runCatching { release() }
             player = null
         }
@@ -1017,18 +1033,26 @@ private fun AudioPlayerRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        val waitsForTheRecording = stringResource(R.string.s_play_after_recording)
         IconButton(
             onClick = {
+                // Dimmed, not disabled: it says why (S1.7).
+                if (gate.recording) {
+                    gate.explain()
+                    return@IconButton
+                }
                 val active = player
                 if (isPlaying && active != null) {
                     active.pause()
                     isPlaying = false
+                    coordinator?.stopped(pauseThis)
                     return@IconButton
                 }
                 scope.launch {
                     val ready = active ?: createPlayer(context, attachment, streamUrl) {
                         isPlaying = false
                         positionMs = totalMs
+                        coordinator?.stopped(pauseThis)
                     }
                     if (ready == null) return@launch
                     player = ready
@@ -1040,15 +1064,17 @@ private fun AudioPlayerRow(
                     }
                     ready.start()
                     isPlaying = true
+                    coordinator?.started(pauseThis)
                 }
             },
+            modifier = Modifier.semantics { if (gate.recording) stateDescription = waitsForTheRecording },
         ) {
             Icon(
                 imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                 contentDescription = stringResource(
                     if (isPlaying) R.string.s_pause else R.string.s_play,
                 ),
-                tint = ink,
+                tint = ink.copy(alpha = if (gate.recording) 0.38f else 1f),
             )
         }
         Column(modifier = Modifier.weight(1f)) {

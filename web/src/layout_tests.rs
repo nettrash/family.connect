@@ -64,7 +64,7 @@ fn fixed_root(style: &str) -> HtmlElement {
     root
 }
 
-trait IntoHtml {
+pub(crate) trait IntoHtml {
     fn dyn_into_html(self) -> HtmlElement;
 }
 
@@ -75,7 +75,7 @@ impl IntoHtml for Element {
     }
 }
 
-fn query(root: &Element, selector: &str) -> Element {
+pub(crate) fn query(root: &Element, selector: &str) -> Element {
     root.query_selector(selector)
         .expect("a valid selector")
         .unwrap_or_else(|| panic!("{selector} is on the page"))
@@ -202,7 +202,7 @@ async fn the_page_never_scrolls_only_the_two_panes_do() {
     root.remove();
 }
 
-fn message(id: i64) -> Message {
+pub(crate) fn message(id: i64) -> Message {
     Message {
         id,
         chat_id: 42,
@@ -226,7 +226,7 @@ fn props(count: i64) -> ConversationProps {
 }
 
 /// What the view asked of the app, in order.
-fn recorder() -> (Rc<RefCell<Vec<Action>>>, Callback<Action>) {
+pub(crate) fn recorder() -> (Rc<RefCell<Vec<Action>>>, Callback<Action>) {
     let log = Rc::new(RefCell::new(Vec::new()));
     let sink = log.clone();
     (
@@ -253,7 +253,7 @@ fn scroll_to(messages: &Element, top: i32) {
         .expect("dispatching the scroll");
 }
 
-fn pane() -> HtmlElement {
+pub(crate) fn pane() -> HtmlElement {
     install_stylesheet();
     fixed_root(
         "position:fixed;top:0;left:0;width:600px;height:320px;\
@@ -275,7 +275,7 @@ fn type_into(field: &Element, value: &str) {
     field.dispatch_event(&event).expect("dispatching the input");
 }
 
-fn click_labelled(root: &Element, selector: &str, label: &str) {
+pub(crate) fn click_labelled(root: &Element, selector: &str, label: &str) {
     let found = root.query_selector_all(selector).expect("a valid selector");
     for index in 0..found.length() {
         let element = found.item(index).expect("an element");
@@ -290,7 +290,7 @@ fn click_labelled(root: &Element, selector: &str, label: &str) {
     panic!("no {selector} reading {label:?}");
 }
 
-fn props_with(
+pub(crate) fn props_with(
     messages: Vec<Message>,
     opening: Option<Opening>,
     on_action: Callback<Action>,
@@ -324,6 +324,8 @@ fn props_with(
         revealed_quotes: Default::default(),
         opening,
         staged: Vec::new(),
+        not_sent: Vec::new(),
+        session: 0,
         family: None,
         failed: Default::default(),
         ai_failed: Default::default(),
@@ -869,6 +871,14 @@ async fn a_send_carries_what_is_staged() {
     TimeoutFuture::new(50).await;
     type_into(&query(&root, "textarea"), "Look");
     TimeoutFuture::new(20).await;
+    // The slot is an icon now (#79, S8.7); "Send" is the word it keeps as
+    // visually hidden text, which is what is read — and clicked — here.
+    let slot = query(&root, ".composer .slot");
+    assert!(slot.query_selector("svg").unwrap().is_some(), "an icon");
+    assert_eq!(
+        query(&slot, ".visually-hidden").text_content().as_deref(),
+        Some("Send")
+    );
     click_labelled(&root, ".composer button", "Send");
     TimeoutFuture::new(20).await;
     let sent = log
@@ -975,7 +985,14 @@ async fn a_russian_reader_reads_the_page_in_russian() {
     let label = query(&root, "textarea")
         .get_attribute("aria-label")
         .unwrap_or_default();
-    let send = query(&root, ".composer button:not(.tool):not(.link)")
+    // An empty box's slot is the microphone (#79, S1.3), named for it.
+    let microphone = query(&root, ".composer .slot")
+        .get_attribute("aria-label")
+        .unwrap_or_default();
+    type_into(&query(&root, "textarea"), "Привет");
+    TimeoutFuture::new(20).await;
+    // With words it is Send, and keeps the word as visually hidden text.
+    let send = query(&root, ".composer .slot")
         .text_content()
         .unwrap_or_default();
     // Back to English BEFORE the assertions: every other test here reads
@@ -984,6 +1001,7 @@ async fn a_russian_reader_reads_the_page_in_russian() {
     handle.destroy();
     root.remove();
     assert_eq!(label, "Сообщение");
+    assert_eq!(microphone, "Записать голосовое сообщение");
     assert_eq!(send.trim(), "Отправить");
 }
 
@@ -1001,12 +1019,14 @@ async fn the_message_box_is_as_tall_as_the_buttons_beside_it() {
         yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), props(3)).render();
     TimeoutFuture::new(50).await;
     let area = query(&root, ".composer textarea");
-    let send = query(&root, ".composer button:not(.tool):not(.link)");
+    // The Send slot: a fixed icon button now (#79, S1.3), the same height
+    // whichever it shows — the microphone of an empty box, here.
+    let send = query(&root, ".composer .slot");
     let empty = area.get_bounding_client_rect().height();
     let button = send.get_bounding_client_rect().height();
     assert!(
         (empty - button).abs() <= 2.0,
-        "an empty box is the height of the Send button: {empty} vs {button}"
+        "an empty box is the height of the Send slot: {empty} vs {button}"
     );
 
     // One line stays one line; five lines is five lines tall.

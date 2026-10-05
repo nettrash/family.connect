@@ -110,12 +110,18 @@ struct StickerComposerButton: View {
     let side: CGFloat
     /// The glyph's point size, which differs between the two composers.
     let glyph: CGFloat
+    /// The panel is opening: "any other action" to a voice composer, so a
+    /// released note in its Undo window goes now (#79, S2.6 names "a
+    /// sticker" — the tap that opens the panel, not only the one that
+    /// sends from it).
+    var onOpen: () -> Void = {}
     let onPick: (PackItemSnapshot) -> Void
 
     @State private var showsPanel = false
 
     var body: some View {
         Button {
+            onOpen()
             showsPanel = true
         } label: {
             Image(systemName: "face.smiling")

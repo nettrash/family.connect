@@ -17,6 +17,12 @@ internal static class AppFolders
     /// <summary>A send's files while the send is under way, one folder each (<see cref="App.Logic.FolderMediaStore"/>).</summary>
     public static string StagingPath => Path.Combine(Root, "outgoing");
 
+    /// <summary>
+    /// Voice messages that were not sent, one folder per account on a server (<see cref="App.Logic.ParkedRecordings"/>) —
+    /// the app's own storage the plan calls LocalState, here for the reason above.
+    /// </summary>
+    public static string ParkedPath => Path.Combine(Root, "parked");
+
     /// <summary>The SQLite cache: history, the board, and the outbox this device still owes.</summary>
     public static string CachePath
     {

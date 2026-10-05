@@ -326,6 +326,34 @@ pub struct OpenPolls {
     pub messages: Vec<Message>,
 }
 
+/// A voice message that was not sent (the plan for #79,
+/// docs/audio-video-messages-2026-10-04.md, S2.8): a recording stopped by
+/// something other than the person — a call, a hidden tab, the chat left,
+/// the microphone going away — or still in review when its chat was left.
+///
+/// It waits in a row of its own above the box, with the reply it was
+/// recorded under and the caption it was given, and leaves only by its own
+/// Send — never carried by another, so a recording nobody finished deciding
+/// about cannot ride out with the next message, and its caption never leaves
+/// without it. Kept for the life of the tab and written nowhere: this client
+/// keeps nothing a person said or wrote past the tab (docs/protocol.md, "A
+/// browser is a client too"), which asks before closing while one waits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NotSent {
+    /// This tab's own number for it — what its row is keyed by and its
+    /// buttons name. Never sent anywhere.
+    pub id: u64,
+    /// The recording, as it would have been staged.
+    pub note: Prepared,
+    /// How long it is, as the recorder measured it — said on its row
+    /// whatever the note turned out to be.
+    pub duration_ms: i64,
+    /// The message it was recorded in answer to.
+    pub reply_to_message_id: Option<i64>,
+    /// The words that go with it; empty for none.
+    pub caption: String,
+}
+
 /// Everything the signed-in app knows.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Store {
@@ -389,6 +417,11 @@ pub struct Store {
     pub last_provisional: i64,
     /// chat → what the composer has staged there and not sent yet.
     pub staged: HashMap<i64, Vec<Prepared>>,
+    /// chat → its voice messages that were not sent, oldest first. Memory
+    /// only, like the staged ones; see [`NotSent`].
+    pub not_sent: HashMap<i64, Vec<NotSent>>,
+    /// The last [`NotSent::id`] handed out.
+    pub last_not_sent: u64,
     /// The server's id → the provisional one its bubble drew under, so a
     /// bubble that has just been acked draws from the same bytes rather
     /// than fetching back what this device uploaded.
@@ -613,6 +646,7 @@ impl Store {
         self.open_polls = None;
         self.drafts.retain(|chat_id, _| theirs.contains(chat_id));
         self.staged.retain(|chat_id, _| theirs.contains(chat_id));
+        self.not_sent.retain(|chat_id, _| theirs.contains(chat_id));
         self.revealed.clear();
         self.revealed_quotes.clear();
         self.ai_failed.clear();
@@ -1258,6 +1292,88 @@ impl Store {
     fn next_provisional(&mut self) -> i64 {
         self.last_provisional = self.last_provisional.min(0) - 1;
         self.last_provisional
+    }
+
+    /// A voice message kept as not sent in `chat_id` (the plan's S2.8), at
+    /// the end of that chat's rows. Returns its number.
+    pub fn park(
+        &mut self,
+        chat_id: i64,
+        note: Prepared,
+        duration_ms: i64,
+        reply_to_message_id: Option<i64>,
+        caption: String,
+    ) -> u64 {
+        self.last_not_sent += 1;
+        let id = self.last_not_sent;
+        self.not_sent.entry(chat_id).or_default().push(NotSent {
+            id,
+            note,
+            duration_ms,
+            reply_to_message_id,
+            caption,
+        });
+        id
+    }
+
+    /// The not-sent voice message `id` of `chat_id`, taken out — to be sent
+    /// by its own Send, or deleted by its ✕.
+    pub fn take_not_sent(&mut self, chat_id: i64, id: u64) -> Option<NotSent> {
+        let rows = self.not_sent.get_mut(&chat_id)?;
+        let at = rows.iter().position(|row| row.id == id)?;
+        let taken = rows.remove(at);
+        if rows.is_empty() {
+            self.not_sent.remove(&chat_id);
+        }
+        Some(taken)
+    }
+
+    /// `chat_id` has been left with `draft` in its box and the composer
+    /// answering `reply_to_message_id`: every voice note still in review
+    /// there — staged, and not sent — becomes not sent (the plan's S2.8),
+    /// and the first takes the words along as its caption. Whatever else is
+    /// staged stays staged, as it always has in this tab. Returns whether
+    /// anything was kept so, which is whether the box's words went too.
+    pub fn park_review(
+        &mut self,
+        chat_id: i64,
+        draft: &str,
+        reply_to_message_id: Option<i64>,
+    ) -> bool {
+        let Some(staged) = self.staged.get_mut(&chat_id) else {
+            return false;
+        };
+        let (notes, rest): (Vec<Prepared>, Vec<Prepared>) =
+            staged.drain(..).partition(Prepared::is_voice_note);
+        *staged = rest;
+        if staged.is_empty() {
+            self.staged.remove(&chat_id);
+        }
+        let mut caption = fc_text::composer::trimmed_for_send(draft)
+            .unwrap_or("")
+            .to_string();
+        let parked = !notes.is_empty();
+        for note in notes {
+            let duration_ms = note.duration_ms.unwrap_or(0);
+            self.park(
+                chat_id,
+                note,
+                duration_ms,
+                reply_to_message_id,
+                std::mem::take(&mut caption),
+            );
+        }
+        parked
+    }
+
+    /// Whether this tab holds something nobody else has and the tab's end
+    /// would lose: a message not sent yet, something staged, a voice message
+    /// that was not sent. A recording in progress is the recorder's to say
+    /// (`recorder::in_progress`).
+    pub fn holds_unsent(&self) -> bool {
+        !self.outbox.is_empty()
+            || self.staged.values().any(|items| !items.is_empty())
+            || self.not_sent.values().any(|rows| !rows.is_empty())
     }
 
     /// A row into the outbox, and its bubble into the thread.
@@ -3349,6 +3465,13 @@ mod tests {
         store.queue_send(50, "ai".into(), text("to the assistant"));
         store.drafts.insert(42, "half a thought".into());
         store.drafts.insert(50, "a question".into());
+        let voice = || Prepared {
+            kind: "audio".into(),
+            duration_ms: Some(3_000),
+            ..Prepared::default()
+        };
+        store.park(42, voice(), 3_000, None, String::new());
+        store.park(50, voice(), 3_000, None, String::new());
         assert!(store.apply_me(&account(None, false)), "a change");
         let rows: Vec<&str> = store
             .outbox
@@ -3363,6 +3486,9 @@ mod tests {
             Some("a question")
         );
         assert!(!store.drafts.contains_key(&42));
+        // A voice message that was not sent goes with its chat too (#79).
+        assert!(!store.not_sent.contains_key(&42));
+        assert_eq!(store.not_sent.get(&50).map(Vec::len), Some(1));
     }
 
     /// The roster is fresher than `/me` about this account's own role — and
