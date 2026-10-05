@@ -4286,4 +4286,92 @@ class ChatViewModelTest {
         assertThat(viewModel.announcement.value?.text)
             .isEqualTo(app.getString(R.string.s_announce_ready_to_review, "0:42"))
     }
+
+    // -- Video messages (#79, Phase 3) ----------------------------------------------
+    //
+    // The chat's side of the video recorder: whether it may open from here
+    // (S1.3 rows 7–9, S1.4, S1.5), one recording at a time (S1.7), and the
+    // reply a sent video message spends (S1.5).
+
+    @Test
+    fun theRecorderOpensFromAFamilyOrADirectChat() = recordingTest {
+        assertThat(newViewModel(kind = "family").also { runCurrent() }.mayOpenVideoRecorder()).isTrue()
+        assertThat(newViewModel(kind = "direct").also { runCurrent() }.mayOpenVideoRecorder()).isTrue()
+    }
+
+    @Test
+    fun theRecorderNeverOpensFromTheAssistantsChat() = recordingTest {
+        val viewModel = newViewModel(kind = "ai")
+        runCurrent()
+        assertThat(viewModel.mayOpenVideoRecorder()).isFalse()
+        assertThat(notice(viewModel)).isNull()
+    }
+
+    /** Row 7: dimmed, and it says why (S1.3, S1.4). */
+    @Test
+    fun theRecorderSaysWhyDuringACall() = recordingTest {
+        callState.value = CallState.Incoming(callId = "c1", chatId = CHAT, peerUserId = PEER)
+        val viewModel = newViewModel()
+        runCurrent()
+        assertThat(viewModel.mayOpenVideoRecorder()).isFalse()
+        assertThat(notice(viewModel)).isEqualTo(app.getString(R.string.e_record_after_the_call))
+    }
+
+    /** Row 9 is about voice: a waiting not-sent voice message does not keep the camera shut. */
+    @Test
+    fun aNotSentVoiceMessageDoesNotStopTheRecorder() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        parkedNote(4_000)
+        viewModel.awaitNotSent()
+        assertThat(viewModel.mayOpenVideoRecorder()).isTrue()
+    }
+
+    /** One recording at a time (S1.7): a voice recording here is stopped and kept as "not sent". */
+    @Test
+    fun openingTheRecorderParksAVoiceRecording() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recording(viewModel, 3_000)
+
+        assertThat(viewModel.mayOpenVideoRecorder()).isTrue()
+        runCurrent()
+
+        assertThat(viewModel.recordingMs.value).isNull()
+        assertThat(viewModel.awaitNotSent().single().durationMs).isEqualTo(3_000)
+    }
+
+    /** The sticker's rule (S1.5): the video carried the reply, so the composer's is spent — not another one. */
+    @Test
+    fun aSentVideoMessageSpendsTheReplyItCarried() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        viewModel.beginReply(aQuote)
+        viewModel.videoMessageSent(anotherQuote.messageId)
+        assertThat(viewModel.replyDraft.value).isEqualTo(aQuote)
+        viewModel.videoMessageSent(null)
+        assertThat(viewModel.replyDraft.value).isEqualTo(aQuote)
+        viewModel.videoMessageSent(aQuote.messageId)
+        assertThat(viewModel.replyDraft.value).isNull()
+    }
+
+    /** The recorder's last words are said in the composer's live region once it has gone (S6). */
+    @Test
+    fun theRecordersAnnouncementIsSaidHere() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        viewModel.announceFromRecorder(R.string.s_announce_video_message_sent)
+        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.s_announce_video_message_sent))
+    }
+
+    /** A server's keys are the whole capability check (S1.2). */
+    @Test
+    fun videoMessagesAreOfferedOnlyAgainstAServerThatHasThem() = recordingTest {
+        val viewModel = newViewModel(kind = "family")
+        runCurrent()
+        assertThat(viewModel.roundVideoOffered.value).isFalse()
+        settings.setRoundVideoLimits(60_000, 12_582_912)
+        runCurrent()
+        assertThat(viewModel.roundVideoOffered.value).isTrue()
+    }
 }

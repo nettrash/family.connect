@@ -60,6 +60,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.ui.chat.RoundRecorderRules
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
@@ -286,6 +287,88 @@ class MediaPrep @Inject constructor(
 
     /** The bytes a prepare settled on, and the type they go up as. */
     private data class Chosen(val file: File, val mime: String)
+
+    // -- Video messages (#79) ------------------------------------------------
+
+    /**
+     * What [prepareRoundVideo] made: the clip as it will be sent, whether it
+     * is the profile's square ([squared] — false when the pass failed and it
+     * goes as recorded), and every file it left, for a discard.
+     */
+    data class RoundPrepared(val prepared: Prepared, val squared: Boolean, val files: List<File>)
+
+    /**
+     * A video message CameraX has just written (#79, S8.4, "The recording
+     * profile for a round video") — RECORDED TO THE PROFILE AND NEVER
+     * RE-PLANNED: MediaPlan does not see it, so an encoder overshooting by
+     * more than Rule A's margin, or a camera dropping to 20 fps in the dark,
+     * cannot trigger a pointless second encode.
+     *
+     * Only when the probe finds it is not EXACTLY 480 × 480 H.264 + AAC at
+     * rotation 0 does it take the Media3 pass ([TranscodeSettings.forRoundVideo]):
+     * the centre square, scaled to 480, any rotation baked into the pixels.
+     * Then `moov` first, and the metadata and poster read from the file
+     * itself. Its type is DECLARED "video/mp4": a `file://` Uri has no
+     * provider to ask (MediaProbe.essence would read an empty type).
+     *
+     * Null when nothing readable came out; [file] is then gone too.
+     */
+    suspend fun prepareRoundVideo(file: File): RoundPrepared? {
+        if (!file.exists() || file.length() == 0L) {
+            file.delete()
+            return null
+        }
+        val facts = withContext(Dispatchers.IO) { MediaProbe.roundClip(file) }
+        if (facts.videoMime == null) {
+            file.delete()
+            return null
+        }
+        var chosen = file
+        var squared = true
+        if (RoundRecorderRules.needsSquarePass(facts)) {
+            val square = transcodeOrNull(
+                Uri.fromFile(file),
+                TranscodeSettings.forRoundVideo(
+                    edge = RoundRecorderRules.EDGE,
+                    videoBitrate = RoundRecorderRules.VIDEO_BITRATE,
+                    audioBitrate = RoundRecorderRules.AUDIO_BITRATE,
+                    frameRate = ROUND_FRAME_RATE,
+                ),
+            )
+            if (square != null) {
+                file.delete()
+                chosen = square
+            } else {
+                // S3.6: "Couldn't make it round." It goes as recorded, as a
+                // regular video — moov first all the same.
+                squared = false
+                withContext(Dispatchers.IO) { faststart(file) }
+            }
+        } else {
+            withContext(Dispatchers.IO) { faststart(file) }
+        }
+        return try {
+            withContext(Dispatchers.IO) {
+                val meta = readVideoMetadata(chosen)
+                RoundPrepared(
+                    prepared = Prepared(
+                        file = chosen,
+                        mime = RoundSend.MIME,
+                        kind = AttachmentDto.KIND_VIDEO,
+                        width = meta.width,
+                        height = meta.height,
+                        durationMs = meta.durationMs,
+                        previewJpeg = meta.poster,
+                    ),
+                    squared = squared,
+                    files = listOf(chosen),
+                )
+            }
+        } catch (e: CancellationException) {
+            chosen.delete()
+            throw e
+        }
+    }
 
     /**
      * Rule C: the original when it can go as it is, and otherwise
@@ -1077,6 +1160,9 @@ class MediaPrep @Inject constructor(
          * but never above the source's).
          */
         const val COMPRESSED_SHORT_SIDE = 720
+
+        /** A video message's frame rate at most (the recording profile). */
+        const val ROUND_FRAME_RATE = 30
 
         /** Poster candidates, in order: half a second in, then the start. */
         val POSTER_TIMES_US = listOf(500_000L, 0L, 2_000_000L)

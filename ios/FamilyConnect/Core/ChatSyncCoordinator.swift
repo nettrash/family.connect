@@ -1701,6 +1701,35 @@ final class ChatSyncCoordinator {
         return localID
     }
 
+    /// Send a recorded clip as a VIDEO MESSAGE (#79, docs/protocol.md,
+    /// "Video messages"): the ordinary media outbox with one flag, as a
+    /// sticker is — so it waits in the queue with no network, resumes after
+    /// a relaunch still round, and the pending bubble draws the circle at
+    /// once from the clip's own poster (S5.6).
+    ///
+    /// The clip goes up AS RECORDED: it was made to the profile, and the
+    /// planner's rules are for a picked file (protocol.md, "Preparing media
+    /// before upload"). No caption — a circle has no balloon to hold one.
+    ///
+    /// Whether the server takes video messages at all (`max_round_video_ms`
+    /// on `GET /families/mine`) is the CALLER's door: an old server would
+    /// ignore the flag and deliver a square video.
+    @discardableResult
+    func sendRoundVideo(
+        _ prepared: MediaPrep.Prepared, replyTo: ReplyToDTO? = nil, in chatID: Int64
+    ) -> String? {
+        guard prepared.kind == AttachmentDTO.Kind.video else { return nil }
+        guard let localID = sendMedia(
+            [prepared], caption: "", replyTo: replyTo, in: chatID, round: true)
+        else { return nil }
+        // `enqueue` wrote the empty body, which reads as a blank row.
+        if let chat = fetchChat(chatID) {
+            chat.lastMessagePreview = String(localized: "Video message")
+            saveContext()
+        }
+        return localID
+    }
+
     /// The members a note's text names (docs/protocol.md, "Board").
     ///
     /// Resolved HERE rather than in each board view, because both of them
@@ -2688,7 +2717,11 @@ final class ChatSyncCoordinator {
         /// The set is ONE picture going as a sticker (`sendSticker` is the
         /// only caller that says so). It rides on the item row, so a send
         /// resumed after a relaunch still says `sticker: true`.
-        sticker: Bool = false
+        sticker: Bool = false,
+        /// The set is ONE square video going as a VIDEO MESSAGE
+        /// (`sendRoundVideo` is the only caller that says so; #79). Held on
+        /// the item row for the sticker's reason.
+        round: Bool = false
     ) -> String? {
         guard !prepared.isEmpty else { return nil }
         guard let localID = enqueue(
@@ -2723,7 +2756,8 @@ final class ChatSyncCoordinator {
                 height: item.height,
                 durationMS: item.durationMS,
                 name: item.name,
-                sticker: sticker))
+                sticker: sticker,
+                isRound: round))
             staged += 1
         }
         guard staged > 0 else {
@@ -3259,6 +3293,11 @@ final class ChatSyncCoordinator {
         // one"). Before the video arm only for reading order: a sticker is
         // always a photo.
         if attachment.sticker { return String(localized: "Sticker") }
+        // A video message says so, BEFORE the plain video's word — the
+        // same word the server puts in its push (#79, S5.7). Only here,
+        // past the plural arm and the caption: S5.1's test is one
+        // attachment and no body, and both are already settled.
+        if attachment.isVideo, attachment.isRound { return String(localized: "Video message") }
         if attachment.isVideo { return String(localized: "Video") }
         if attachment.isAudio {
             return attachment.name.flatMap { $0.isEmpty ? nil : $0 }
@@ -3430,6 +3469,16 @@ final class ChatSyncCoordinator {
             guard list.count == 1, let only = list.first, only.sticker else { return nil }
             return only.id
         }()
+        // A video message, read off the row for the same reason (#79): a
+        // retry must still say `round: true`, or the clip arrives as a
+        // square video. One video and nothing else — the server's own test.
+        let roundID: Int64? = {
+            let list = row.attachmentList
+            guard stickerID == nil, list.count == 1, let only = list.first,
+                  only.isRound, only.isVideo
+            else { return nil }
+            return only.id
+        }()
         row.state = .pending
         saveContext()
 
@@ -3442,6 +3491,12 @@ final class ChatSyncCoordinator {
                     clientMsgID: clientMsgID,
                     replyToMessageID: replyToMessageID,
                     attachmentID: stickerID))
+            } else if let roundID {
+                try await socket.send(.sendRound(
+                    chatID: chatID,
+                    clientMsgID: clientMsgID,
+                    replyToMessageID: replyToMessageID,
+                    attachmentID: roundID))
             } else {
                 try await socket.send(.send(
                     chatID: chatID,
@@ -3471,7 +3526,8 @@ final class ChatSyncCoordinator {
                 attachmentIDs: attachmentIDs,
                 pollOptions: pollOptions,
                 mentions: mentions,
-                sticker: stickerID != nil)
+                sticker: stickerID != nil,
+                round: roundID != nil)
             _ = upsert(dto, bumpUnread: false, live: true)
         } catch APIError.unauthorized {
             session?.handleUnauthorized()
@@ -3732,6 +3788,12 @@ final class ChatSyncCoordinator {
             // (protocol.md, "What old clients and old servers do").
             AppSettings.packMaxItems = mine.maxPackItems
             AppSettings.packMaxItemBytes = mine.maxPackItemBytes
+            // Video messages: the two discovery keys, which double as the
+            // capability check — nil takes the video button, the paperclip
+            // item and the menu items away (#79, S1.2, "Discovery and
+            // limits").
+            AppSettings.roundVideoMaxMS = mine.maxRoundVideoMS
+            AppSettings.roundVideoMaxBytes = mine.maxRoundVideoBytes
         }
 
         // 3. Chat list: server unread wins; direct chats the server

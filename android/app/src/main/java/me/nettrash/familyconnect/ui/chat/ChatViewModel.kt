@@ -133,6 +133,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.repo.roundVideoLimits
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -1906,6 +1907,14 @@ class ChatViewModel @Inject constructor(
     private val _coachMark = MutableStateFlow(false)
     val coachMark: StateFlow<Boolean> = _coachMark
 
+    /**
+     * The server has video messages: it sent `max_round_video_ms` and
+     * `max_round_video_bytes` on `GET /families/mine` (#79). Without them no
+     * video entry is offered anywhere (S1.2's **round available**).
+     */
+    val roundVideoOffered: StateFlow<Boolean> = settings.state.map { it.roundVideoLimits != null }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     /** S9's switch: a held release goes to review. */
     val reviewBeforeSending: StateFlow<Boolean> = settings.state.map { it.reviewBeforeSending }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -2116,6 +2125,47 @@ class ChatViewModel @Inject constructor(
     /** A play control tapped while recording: what it says instead (S1.7). */
     fun explainPlaybackWhileRecording() {
         notice(R.string.s_play_after_recording)
+    }
+
+    // -- Video messages (#79, Phase 3) ----------------------------------------
+
+    /**
+     * Whether the video recorder may open from this composer now — asked by
+     * every way in (S3.1): the video button, the paperclip, the microphone's
+     * menu and its TalkBack action. Family and direct chats only, never
+     * mid-edit. During a call (row 7) or while an attachment is busy (row 8)
+     * it SAYS why instead, in the composer's notice line — dimmed is not
+     * disabled (S1.3, S1.4, S1.6). Row 9 (a voice message not sent) opens it:
+     * that rule is about voice. And one recording at a time (S1.7): a voice
+     * recording running here is stopped and kept as "not sent" first.
+     */
+    fun mayOpenVideoRecorder(): Boolean {
+        val kind = chat.value?.kind
+        if ((kind != "family" && kind != "direct") || _editTarget.value != null) return false
+        if (callLive.value) {
+            notice(R.string.e_record_after_the_call)
+            return false
+        }
+        if (_mediaState.value.isBusy) {
+            notice(R.string.e_wait_for_the_attachment)
+            return false
+        }
+        if (_hold.value.recording != ComposerSlot.Recording.NONE) interruptRecording()
+        return true
+    }
+
+    /**
+     * The recorder sent a video message carrying [replyId]: the composer's
+     * reply is spent — the sticker's rule (S1.5). A reply primed since, to
+     * another message, stays.
+     */
+    fun videoMessageSent(replyId: Long?) {
+        if (replyId != null && _replyDraft.value?.messageId == replyId) _replyDraft.value = null
+    }
+
+    /** What the recorder says once it has closed — "Video message sent", "Camera turned off" (S6). */
+    fun announceFromRecorder(@StringRes text: Int) {
+        say(appContext.getString(text))
     }
 
     /**

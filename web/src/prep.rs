@@ -696,6 +696,34 @@ pub async fn recording(blob: Blob, mime: &str, duration_ms: i64) -> Result<Prepa
     })
 }
 
+/// A video message, recorded here (round_video): sent EXACTLY as recorded —
+/// it is the profile already, and never meets the planner (the plan for #79,
+/// "The recording profile for a round video") — with its square poster from
+/// 0.5 s in, else the start, else 2 s, as every video's is: 480 × 480, the
+/// clip's own size, which is inside the 600 a preview may be.
+pub async fn round_video(blob: Blob, duration_ms: i64) -> Prepared {
+    let edge = i64::from(crate::encode::ROUND_EDGE);
+    let mut prepared = Prepared {
+        kind: "video".into(),
+        mime: "video/mp4".into(),
+        size: blob.size() as i64,
+        width: Some(edge),
+        height: Some(edge),
+        duration_ms: Some(duration_ms),
+        file: Some(blob.clone()),
+        ..Prepared::default()
+    };
+    if let Some((element, url)) = media_element("video", &blob) {
+        let video: HtmlVideoElement = element.clone().unchecked_into();
+        if wait_for(&element, "loadedmetadata", 10_000).await {
+            prepared.preview = poster(&video, element.duration()).await;
+        }
+        element.set_src("");
+        let _ = Url::revoke_object_url(&url);
+    }
+    prepared
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

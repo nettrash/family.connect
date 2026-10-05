@@ -33,6 +33,13 @@ public sealed partial class MainWindow : Window
     private bool keepingForClose;
     private bool keptForClose;
 
+    /// <summary>
+    /// A real close over a video message being recorded or in REVIEW (docs/audio-video-messages-2026-10-04.md, S4, S8.6): the
+    /// question is up, and — once the person chose Delete — the close that follows is not asked about again.
+    /// </summary>
+    private bool askingOverClip;
+    private bool askedOverClip;
+
     /// <summary>A share waiting for the chats to exist, and whether the reader is choosing where one goes right now.</summary>
     private bool sharePending;
     private bool choosingShare;
@@ -479,6 +486,15 @@ public sealed partial class MainWindow : Window
     private ChatsView NewChats(Connection current)
     {
         var view = new ChatsView(services, current);
+        // The video-message recorder lies over the rail and the page, and while it does the window under it takes nothing:
+        // no pointer, no Tab (S3.3). A share that arrived meanwhile is asked about once it has gone (S4).
+        view.UseRecorderHost(RecorderHost, covered => Nav.IsEnabled = !covered, () =>
+        {
+            if (sharePending)
+            {
+                ReceiveShared();
+            }
+        });
         view.CallRequested += (chatId, peerUserId, video) => _ = calls?.PlaceAsync(chatId, peerUserId, video);
         view.ShowCallBusy(calls?.Busy == true);
         return view;
@@ -538,7 +554,7 @@ public sealed partial class MainWindow : Window
         {
             return;
         }
-        if (connection is null || chats is null || shown is not (Gate.Member or Gate.Owner))
+        if (connection is null || chats is null || shown is not (Gate.Member or Gate.Owner) || chats.RecorderOpen)
         {
             sharePending = true;
             return;
@@ -653,10 +669,74 @@ public sealed partial class MainWindow : Window
             args.Cancel = true;
             return;
         }
+        if (!askedOverClip && chats is { HoldsRoundClip: true } recording)
+        {
+            // Over a video message being recorded or waiting in REVIEW: "Delete video message?" — Keep cancels the close.
+            args.Cancel = true;
+            _ = AskOverClipAsync(recording);
+            return;
+        }
         if (!keptForClose && chats is { HoldsRecordings: true })
         {
             args.Cancel = true;
             _ = CloseAfterKeepingAsync();
+        }
+    }
+
+    /// <summary>
+    /// The question over a video message before a real close (S4): Delete closes after all; Keep leaves the window — and the
+    /// app — where they were, a Quit from the notification area included.
+    /// </summary>
+    private async Task AskOverClipAsync(ChatsView view)
+    {
+        // Asked in this window, so this window comes forward first: a Quit from the notification area over a window hidden
+        // there — or a close of a minimised one — would otherwise put the question where nobody can see it, and every
+        // later Quit would seem to do nothing. A second Quit while it is up only brings it forward again.
+        ShowForQuestion();
+        if (askingOverClip)
+        {
+            return;
+        }
+        askingOverClip = true;
+        var close = false;
+        try
+        {
+            close = await view.AskBeforeClosingAsync();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"asking about a video message before closing: {e.GetType().Name}");
+        }
+        finally
+        {
+            askingOverClip = false;
+        }
+        if (!close)
+        {
+            quitting = false;
+            return;
+        }
+        askedOverClip = true;
+        Close();
+    }
+
+    /// <summary>Out of the notification area, up from the taskbar, and in front — for a question that must be seen.</summary>
+    private void ShowForQuestion()
+    {
+        try
+        {
+            if (AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter
+                {
+                    State: Microsoft.UI.Windowing.OverlappedPresenterState.Minimized,
+                } presenter)
+            {
+                presenter.Restore();
+            }
+            BringForward();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"bringing the window forward to ask: {e.GetType().Name}");
         }
     }
 
@@ -726,6 +806,11 @@ public sealed partial class MainWindow : Window
     private void OnActivated(object sender, WindowActivatedEventArgs args)
     {
         services.Foreground = args.WindowActivationState != WindowActivationState.Deactivated;
+        if (!services.Foreground)
+        {
+            // Still visible, only not in front: the video recorder's PREVIEW closes, a take goes on (S4).
+            chats?.WindowDeactivated();
+        }
         if (services.Foreground)
         {
             Flush(SendRules.FlushTrigger.WindowActivated);

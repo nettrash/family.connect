@@ -728,4 +728,35 @@
     <string name="s_announce_voice_message_sent">Голосовое сообщение отправлено</string>
     <string name="s_announce_ready_to_review">Готово к проверке, %1$s</string>
     <string name="e_wait_for_the_attachment">Подожди, пока текущее вложение будет готово.</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">Видеосообщение</string>
+    <string name="s_video_message_a11y">Видеосообщение, %1$s</string>
+    <string name="s_not_played">Не просмотрено</string>
+    <string name="s_open_full_screen">Открыть на весь экран</string>
+    <string name="s_couldnt_load_video_tap">Не удалось загрузить видео. Нажми, чтобы повторить.</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">Записать видеосообщение</string>
+    <string name="s_send_video_message">Отправить видеосообщение</string>
+    <string name="s_retake">Переснять</string>
+    <string name="s_record">Записать</string>
+    <string name="s_switch_camera">Сменить камеру</string>
+    <string name="s_video_message_with_length">Видеосообщение · %1$s</string>
+    <string name="s_not_recording">Запись не идёт</string>
+    <string name="s_only_you_can_see_this">Пока ты не начнёшь запись, это видишь только ты.</string>
+    <string name="s_starting_camera">Камера включается…</string>
+    <string name="s_cant_see_anything">Ничего не видно. Может, камера выключена или закрыта?</string>
+    <string name="s_ten_seconds_left">Осталось 10 секунд</string>
+    <string name="s_recording_stopped_at_one_minute">Запись остановлена: прошла минута.</string>
+    <string name="s_video_too_short">Видео слишком короткое.</string>
+    <string name="s_delete_video_message">Удалить видеосообщение?</string>
+    <string name="s_video_messages_need_camera_and_microphone">Для видеосообщений нужны камера и микрофон.</string>
+    <string name="e_camera_permission_settings">Family нужно разрешение на доступ к камере. Включи его в Настройках.</string>
+    <string name="s_camera_in_use_by_another_app">Камера занята другим приложением.</string>
+    <string name="s_couldnt_make_it_round">Не удалось сделать видео круглым. Оно будет отправлено как обычное видео.</string>
+    <string name="s_too_big_for_video_message">Слишком большое для видеосообщения. Будет отправлено как обычное видео.</string>
+    <string name="s_announce_camera_ready">Камера готова</string>
+    <string name="s_announce_recording_video">Идёт видеозапись</string>
+    <string name="s_announce_video_message_sent">Видеосообщение отправлено</string>
+    <string name="s_announce_camera_turned_off">Камера выключена</string>
+    <string name="s_record_voice_message_instead">Записать голосовое сообщение вместо видео</string>
 </resources>

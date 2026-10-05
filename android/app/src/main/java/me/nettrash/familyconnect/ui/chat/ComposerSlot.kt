@@ -21,9 +21,10 @@
  * resource IS the key. Nothing here touches Android, so a plain JUnit test
  * pins it.
  *
- * The video button's rule is here already, so that Phase 3 only wires it:
- * this build records no round video, so it passes `recordsRoundVideo =
- * false` and the door stays shut (Decision 40).
+ * The video button's rule came first (Phase 1), so that Phase 3 only had to
+ * wire it: since Phase 3 this build records round video (VideoMessageRecorder,
+ * CameraX), so it passes `recordsRoundVideo = true` and the door opens
+ * wherever the server and the device allow (Decision 40).
  *
  * iOS counterpart: ios/FamilyConnect/Models/ComposerSlot.swift
  */
@@ -263,10 +264,11 @@ object ComposerSlot {
     const val VIDEO_DOOR_TOOLTIP = "Record a video message"
 
     /**
-     * Whether THIS build records round video on Android — its Phase 3. Not
-     * yet: so no video entry is drawn anywhere (Decision 40).
+     * Whether THIS build records round video on Android — its Phase 3, which
+     * it does (VideoMessageRecorder). A build that could only receive circles
+     * would draw no video entry anywhere (Decision 40).
      */
-    const val RECORDS_ROUND_VIDEO = false
+    const val RECORDS_ROUND_VIDEO = true
 
     /** What the video button needs to know besides the slot. */
     data class DoorInputs(

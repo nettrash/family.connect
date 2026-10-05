@@ -698,6 +698,85 @@ impl Recording {
     }
 }
 
+/// The microphone's raw samples, tapped the way a voice note's are — off
+/// the page's thread where the browser has a worklet — for a VIDEO MESSAGE's
+/// sound, which crate::round_video encodes beside its picture. Whatever
+/// becomes of it, the tap is taken off and the context closed: dropped
+/// unfinished, it keeps nothing.
+pub struct RawSound {
+    context: Option<AudioContext>,
+    tap: Option<Tap>,
+    samples: Samples,
+    /// When the tap began to hear, by [`now_ms`].
+    began: f64,
+}
+
+impl RawSound {
+    /// `stream`'s sound, through the context made in the click that asked
+    /// for it (`listening`) — one at a rate the profile names wherever the
+    /// browser makes one. None where the context will not run or nothing can
+    /// tap it.
+    pub async fn start(stream: &MediaStream, mut listening: Listening) -> Option<RawSound> {
+        let context = listening.0.take().or_else(voice_context)?;
+        if !running(&context).await {
+            let _ = context.close();
+            return None;
+        }
+        let samples: Samples = Rc::new(js_sys::Array::new());
+        let level = Rc::new(Level::default());
+        let tap = match worklet_tap(stream, &context, &samples, &level).await {
+            Some(tap) => Some(tap),
+            None => script_tap(stream, &context, &samples, &level),
+        };
+        let Some(tap) = tap else {
+            let _ = context.close();
+            return None;
+        };
+        Some(RawSound {
+            context: Some(context),
+            tap: Some(tap),
+            samples,
+            began: now_ms(),
+        })
+    }
+
+    /// Samples a second.
+    pub fn rate(&self) -> u32 {
+        self.context
+            .as_ref()
+            .map_or(0, |context| context.sample_rate() as u32)
+    }
+
+    /// When the tap began to hear, by [`now_ms`].
+    pub fn began_ms(&self) -> f64 {
+        self.began
+    }
+
+    /// Stop hearing, once what was heard has all arrived: the blocks of mono
+    /// samples, in order, and their rate.
+    pub async fn finish(mut self) -> (js_sys::Array, u32) {
+        let rate = self.rate();
+        if let Some(tap) = self.tap.take() {
+            tap.finish().await;
+        }
+        if let Some(context) = self.context.take() {
+            let _ = context.close();
+        }
+        (Clone::clone(&*self.samples), rate)
+    }
+}
+
+impl Drop for RawSound {
+    fn drop(&mut self) {
+        if let Some(tap) = self.tap.take() {
+            tap.detach();
+        }
+        if let Some(context) = self.context.take() {
+            let _ = context.close();
+        }
+    }
+}
+
 fn stop_tracks(stream: &MediaStream) {
     for track in stream.get_tracks().iter() {
         if let Ok(track) = track.dyn_into::<web_sys::MediaStreamTrack>() {

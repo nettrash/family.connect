@@ -8,7 +8,10 @@
  * deleted, and the sentences for a call, a waiting recording, the cap and a
  * failed recorder. Phase 1: the slot's labels and actions, the hold, recording
  * and Undo rows, the teaching lines, the warnings, the announcements, the
- * setting, and the paperclip's two renames. Lint's MissingTranslation is a
+ * setting, and the paperclip's two renames. Phase 2: a received video
+ * message — its chat-list words, its TalkBack label and state, "Open full
+ * screen", and the failed line. Phase 3: recording one — the entries, the
+ * recorder's controls, status lines, notices and announcements. Lint's MissingTranslation is a
  * warning here, not a gate, so this is the gate — and each sentence takes
  * exactly the arguments it is given.
  *
@@ -72,6 +75,37 @@ class VoiceMessageStringsTest {
         "s_announce_voice_message_sent" to emptyList(),
         "s_announce_ready_to_review" to listOf("%1\$s"),
         "e_wait_for_the_attachment" to emptyList(),
+        // Phase 2: video messages received (S5, S6).
+        "s_video_message" to emptyList(),
+        "s_video_message_a11y" to listOf("%1\$s"),
+        "s_not_played" to emptyList(),
+        "s_open_full_screen" to emptyList(),
+        "s_couldnt_load_video_tap" to emptyList(),
+        // Phase 3: recording a video message (S1.4–S1.6, S3, S4, S6).
+        "s_record_video_message" to emptyList(),
+        "s_send_video_message" to emptyList(),
+        "s_retake" to emptyList(),
+        "s_record" to emptyList(),
+        "s_switch_camera" to emptyList(),
+        "s_video_message_with_length" to listOf("%1\$s"),
+        "s_not_recording" to emptyList(),
+        "s_only_you_can_see_this" to emptyList(),
+        "s_starting_camera" to emptyList(),
+        "s_cant_see_anything" to emptyList(),
+        "s_ten_seconds_left" to emptyList(),
+        "s_recording_stopped_at_one_minute" to emptyList(),
+        "s_video_too_short" to emptyList(),
+        "s_delete_video_message" to emptyList(),
+        "s_video_messages_need_camera_and_microphone" to emptyList(),
+        "e_camera_permission_settings" to emptyList(),
+        "s_camera_in_use_by_another_app" to emptyList(),
+        "s_couldnt_make_it_round" to emptyList(),
+        "s_too_big_for_video_message" to emptyList(),
+        "s_announce_camera_ready" to emptyList(),
+        "s_announce_recording_video" to emptyList(),
+        "s_announce_video_message_sent" to emptyList(),
+        "s_announce_camera_turned_off" to emptyList(),
+        "s_record_voice_message_instead" to emptyList(),
     )
 
     private val placeholder = Regex("""%(\d+\$)?[a-z]""")
@@ -141,5 +175,7 @@ class VoiceMessageStringsTest {
         assertWithMessage("settings section").that(english["s_voice_messages"]).isEqualTo("Voice messages")
         assertWithMessage("settings switch").that(english["s_review_before_sending"]).isEqualTo("Review before sending")
         assertWithMessage("system camera").that(english["s_take_video"]).isEqualTo("Take video")
+        assertWithMessage("message menu").that(english["s_open_full_screen"]).isEqualTo("Open full screen")
+        assertWithMessage("video menu item").that(english["s_record_video_message"]).isEqualTo("Record video message")
     }
 }

@@ -676,6 +676,33 @@ public class ApiClientTests
         Assert.DoesNotContain("sticker", handler.Bodies[1], StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ARestSendSaysRoundOnlyWhenItIsAVideoMessage()
+    {
+        const string Answer =
+            """
+            {"message": {"id": 1341, "chat_id": 42, "sender_id": 7, "client_msg_id": "k", "body": "",
+             "created_at": "2026-10-05T10:00:00Z",
+             "attachments": [{"id": 91, "kind": "video", "mime": "video/mp4", "size": 1649700, "width": 480,
+                              "height": 480, "duration_ms": 23400, "has_preview": true, "round": true}]}}
+            """;
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.Created, Answer)
+            .Then(HttpStatusCode.Created, Answer));
+
+        var sent = await client.SendMessage(42, "k", "", replyToMessageId: 41, attachmentIds: [91], round: true);
+        await client.SendMessage(42, "k2", "", attachmentIds: [91]);
+
+        Assert.True(sent.Value!.Message.Media[0].Round);
+        Assert.Equal(91, sent.Value.Message.RoundVideo!.Id);
+        Assert.Equal(
+            """{"client_msg_id":"k","body":"","reply_to_message_id":41,"attachment_ids":[91],"round":true}""",
+            handler.Bodies[0]);
+        // Absent otherwise — never false — so a server that predates video messages reads what it always read.
+        Assert.DoesNotContain("round", handler.Bodies[1], StringComparison.Ordinal);
+        Assert.DoesNotContain("sticker", handler.Bodies[0], StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// The family's own document: the pack's mark, omitted while the pack is untouched, and its
     /// two ceilings — whose ABSENCE is how a client knows the server predates packs.
@@ -705,6 +732,49 @@ public class ApiClientTests
         var older = (await client.Family()).Value!;
         Assert.Null(older.MaxPackItems);
         Assert.Null(older.MaxPackItemBytes);
+    }
+
+    /// <summary>
+    /// The video message's two limits on the family's document (docs/protocol.md, "Video messages"): read as numbers, and
+    /// their ABSENCE — an older server — read as nothing to record with.
+    /// </summary>
+    [Fact]
+    public async Task TheFamilysDocumentCarriesTheVideoMessagesLimitsOrNeither()
+    {
+        var (client, _) = Client(new Fake()
+            .Then(HttpStatusCode.OK,
+                """
+                {"family": {"id": 3, "name": "The Smiths"}, "members": [],
+                 "max_round_video_ms": 60000, "max_round_video_bytes": 4194304}
+                """)
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths"}, "members": []}"""));
+
+        var current = (await client.Family()).Value!;
+        Assert.Equal(60_000, current.MaxRoundVideoMs);
+        Assert.Equal(4_194_304, current.MaxRoundVideoBytes);
+        Assert.Equal(new RoundVideoLimits(60_000, 4_194_304), RoundVideoLimits.Of(current));
+
+        var older = (await client.Family()).Value!;
+        Assert.Null(older.MaxRoundVideoMs);
+        Assert.Null(older.MaxRoundVideoBytes);
+        Assert.Null(RoundVideoLimits.Of(older));
+    }
+
+    /// <summary>
+    /// Both keys, or nothing: one alone — or a number no server sends — is a server this client cannot record for, and a
+    /// video entry that ends in a refusal is worse than none.
+    /// </summary>
+    [Theory]
+    [InlineData(60_000L, null)]
+    [InlineData(null, 12_582_912L)]
+    [InlineData(0L, 12_582_912L)]
+    [InlineData(60_000L, 0L)]
+    [InlineData(-1L, 12_582_912L)]
+    [InlineData(60_000L, -5L)]
+    public void TheLimitsAreBothOrNothing(long? ms, long? bytes)
+    {
+        var family = new FamilyResponse(new FamilyDto(3, "The Smiths"), MaxRoundVideoMs: ms, MaxRoundVideoBytes: bytes);
+        Assert.Null(RoundVideoLimits.Of(family));
     }
 
     // ---- transcripts on request (#62) -------------------------------------------------------------

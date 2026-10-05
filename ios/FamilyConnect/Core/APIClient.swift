@@ -797,6 +797,10 @@ actor APIClient {
         /// `false` — on every ordinary message, which keeps an ordinary
         /// send byte-identical to what it has always been.
         let sticker: Bool?
+        /// `true` sends the message's one video as a VIDEO MESSAGE
+        /// (docs/protocol.md, "Video messages", #79). Absent, never
+        /// `false`, on everything else — the sticker's rule.
+        let round: Bool?
         enum CodingKeys: String, CodingKey {
             case clientMsgID = "client_msg_id"
             case body
@@ -805,6 +809,7 @@ actor APIClient {
             case poll
             case mentions
             case sticker
+            case round
         }
     }
 
@@ -829,7 +834,8 @@ actor APIClient {
         attachmentIDs: [Int64]? = nil,
         pollOptions: [String]? = nil,
         mentions: [MentionDTO]? = nil,
-        sticker: Bool = false
+        sticker: Bool = false,
+        round: Bool = false
     ) async throws -> MessageDTO {
         let response: MessageResponse = try await request(
             "POST", "/chats/\(chatID)/messages",
@@ -840,7 +846,8 @@ actor APIClient {
                 attachmentIDs: attachmentIDs,
                 poll: pollOptions.map { NewPollRequest(options: $0) },
                 mentions: mentions,
-                sticker: sticker ? true : nil))
+                sticker: sticker ? true : nil,
+                round: round ? true : nil))
         return response.message
     }
 

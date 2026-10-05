@@ -1049,6 +1049,8 @@ struct MessageBubbleView: View {
     private func attachmentBlock(_ attachments: [AttachmentDTO]) -> some View {
         if isSticker, let attachment = attachments.first {
             stickerTile(attachment)
+        } else if isRoundVideo, let attachment = attachments.first {
+            roundTile(attachment)
         } else if attachments.count == 1, let attachment = attachments.first {
             AttachmentView(
                 attachment: attachment,
@@ -1129,6 +1131,27 @@ struct MessageBubbleView: View {
             .accessibilityAction { onOpenAttachment(attachment) }
     }
 
+    /// A video message: the circle alone, with no balloon, and "Show text"
+    /// under it, outside its gestures (#79, S5.2, S5.5). The sticker branch
+    /// skips the transcript footer; this one adds its own, in the colour
+    /// that reads on the chat background.
+    ///
+    /// A tap plays it in place with sound (RoundVideoTile), a double tap
+    /// hearts, a long press opens the menu — where "Open Full Screen" is, as
+    /// is the expand control while it plays.
+    private func roundTile(_ attachment: AttachmentDTO) -> some View {
+        VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
+            RoundVideoTile(
+                attachment: attachment,
+                isMine: isMine,
+                upload: .of(message, isMine: isMine),
+                onDoubleTap: { toggleQuickHeart() },
+                onLongPress: { onLongPress() },
+                onOpenFullScreen: { onOpenAttachment(attachment) })
+            TranscriptSection(attachment: attachment, subject: transcriptSubject, isMine: false)
+        }
+    }
+
     /// One tap on a link run. First fire: schedule the open after the
     /// double-tap window. Second fire inside the window: the user is
     /// double-tapping link glyphs — cancel the open and heart instead
@@ -1187,12 +1210,18 @@ struct MessageBubbleView: View {
     /// other bare treatment. The rule, and why files, audio and places
     /// are not in it, lives in MessagePresentation.isMediaOnly.
     private var isMediaOnly: Bool {
-        // A sticker is bare on its own terms, quote or no quote.
-        isSticker || MessagePresentation.isMediaOnly(message, isStreaming: isStreaming)
+        // A sticker is bare on its own terms, quote or no quote — and so is
+        // a video message (#79, S5.2).
+        isSticker || isRoundVideo
+            || MessagePresentation.isMediaOnly(message, isStreaming: isStreaming)
     }
 
     /// True when the message is a sticker — one flagged picture, no words.
     private var isSticker: Bool { MessagePresentation.isSticker(message) }
+
+    /// True when the message is a video message — one flagged square video,
+    /// no words — drawn as a circle (MessagePresentation.isRoundVideo).
+    private var isRoundVideo: Bool { MessagePresentation.isRoundVideo(message) }
 
     /// True when the balloon draws with no fill — an emoji-only body or a
     /// media-only message. Everything that adapts to "nothing behind me"

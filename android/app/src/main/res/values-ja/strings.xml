@@ -674,4 +674,35 @@
     <string name="s_announce_voice_message_sent">ボイスメッセージを送信しました</string>
     <string name="s_announce_ready_to_review">確認できます、%1$s</string>
     <string name="e_wait_for_the_attachment">今の添付が終わるまで待ってください。</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">ビデオメッセージ</string>
+    <string name="s_video_message_a11y">ビデオメッセージ、%1$s</string>
+    <string name="s_not_played">未再生</string>
+    <string name="s_open_full_screen">フルスクリーンで開く</string>
+    <string name="s_couldnt_load_video_tap">ビデオを読み込めませんでした。タップして再試行。</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">ビデオメッセージを録画</string>
+    <string name="s_send_video_message">ビデオメッセージを送信</string>
+    <string name="s_retake">撮り直す</string>
+    <string name="s_record">録音</string>
+    <string name="s_switch_camera">カメラを切り替える</string>
+    <string name="s_video_message_with_length">ビデオメッセージ · %1$s</string>
+    <string name="s_not_recording">録画していません</string>
+    <string name="s_only_you_can_see_this">録画を始めるまで、これはあなたにしか見えません。</string>
+    <string name="s_starting_camera">カメラを起動中…</string>
+    <string name="s_cant_see_anything">何も映っていません。カメラがオフになっているか、ふさがれていませんか？</string>
+    <string name="s_ten_seconds_left">残り10秒</string>
+    <string name="s_recording_stopped_at_one_minute">1分に達したため録画を停止しました。</string>
+    <string name="s_video_too_short">ビデオが短すぎます。</string>
+    <string name="s_delete_video_message">ビデオメッセージを削除しますか？</string>
+    <string name="s_video_messages_need_camera_and_microphone">ビデオメッセージにはカメラとマイクが必要です。</string>
+    <string name="e_camera_permission_settings">Family がカメラを使う許可が必要です。「設定」でオンにしてください。</string>
+    <string name="s_camera_in_use_by_another_app">カメラはほかのアプリで使用中です。</string>
+    <string name="s_couldnt_make_it_round">円形にできませんでした。通常のビデオとして送信されます。</string>
+    <string name="s_too_big_for_video_message">ビデオメッセージには大きすぎます。通常のビデオとして送信されます。</string>
+    <string name="s_announce_camera_ready">カメラの準備ができました</string>
+    <string name="s_announce_recording_video">録画中</string>
+    <string name="s_announce_video_message_sent">ビデオメッセージを送信しました</string>
+    <string name="s_announce_camera_turned_off">カメラをオフにしました</string>
+    <string name="s_record_voice_message_instead">代わりにボイスメッセージを録音</string>
 </resources>

@@ -59,6 +59,15 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
         }
     }
 
+    // MARK: - Quitting over a video message (#79, S4, S8.3)
+
+    /// ⌘Q over a clip in REVIEW asks "Delete video message?" — Keep cancels
+    /// the quit, Delete quits after all (`VideoMessagePresenter.proceed`).
+    /// A take still RECORDING stops into REVIEW first and asks then.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        VideoMessagePresenter.appShouldQuit() ? .terminateNow : .terminateCancel
+    }
+
     // MARK: - APNs token
 
     func application(

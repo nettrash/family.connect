@@ -54,7 +54,9 @@ use js_sys::{Array, Float32Array, Object, Promise, Reflect, Uint8Array};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
-use web_sys::{Blob, BlobPropertyBag, CanvasRenderingContext2d, HtmlCanvasElement};
+use web_sys::{
+    Blob, BlobPropertyBag, CanvasRenderingContext2d, HtmlCanvasElement, HtmlVideoElement,
+};
 
 use crate::webcodecs::{
     self, aac_config, bytes_of, decoder_config_field, object, AudioData, AudioDecoder,
@@ -1147,6 +1149,7 @@ async fn picture_codecs(movie: &Movie, target: &VideoTarget) -> Option<Codecs> {
         target.height,
         target.frame_rate,
         target.video_bitrate,
+        webcodecs::Latency::Quality,
     )
     .await?;
     Some(Codecs { decoder, encoder })
@@ -1426,6 +1429,347 @@ fn colour(space: &JsValue) -> Option<mp4::Colour> {
         matrix,
         full_range,
     })
+}
+
+// --- a video message, recorded live -------------------------------------------------------------
+
+/// A video message's picture is this many pixels on a side — the centre
+/// square of the 640 × 480 a front camera offers, so nothing is scaled up
+/// (the plan for #79, "The recording profile for a round video").
+pub const ROUND_EDGE: u32 = 480;
+
+/// At most this many frames a second; a camera delivering fewer is kept as
+/// it is.
+pub const ROUND_FRAME_RATE: f64 = 30.0;
+
+/// How early, in microseconds, a frame may come for its turn at
+/// [`ROUND_FRAME_RATE`] and still be kept: a 30 fps camera's frames come a
+/// few milliseconds either side of their time, and none of them may be lost
+/// for it — while a 60 fps camera's every other frame, 16.7 ms early, is.
+const ROUND_FRAME_EARLY_US: f64 = 8_000.0;
+
+/// The profile's picture bitrate for 480 × 480 at the 30 fps target.
+pub const ROUND_BITRATE: u64 = 500_000;
+
+/// Ticks a second of a video message's picture track: a camera's frames
+/// come at whatever times it gives them, and 90 kHz counts any of them to
+/// the nearest 11 µs.
+const ROUND_TIMESCALE: u32 = 90_000;
+
+/// A video message's picture, encoded AS IT IS RECORDED: each frame the
+/// camera shows is cut to its centre square, drawn at 480 × 480 the true way
+/// round (the preview's mirror is the stylesheet's, never the file's), and
+/// handed to the browser's H.264 encoder — or dropped, when the encoder is
+/// already [`QUEUE`] frames behind: a frame lost is a frame of a few
+/// thousand; a queue that keeps growing is a recording that ends minutes
+/// after Stop, or a tab that runs out of memory. A key frame at most every
+/// [`KEYFRAME_SECONDS`].
+///
+/// Never `MediaRecorder`: what it writes is its own business — WebM in
+/// Chrome, which the server refuses, and a fragmented MP4 elsewhere — where
+/// this writes exactly the profile, its index first.
+pub struct LivePicture {
+    encoder: Codec<VideoEncoder>,
+    sink: Rc<RefCell<PictureSink>>,
+    /// What the encoder's callbacks say — kept, so a failure is heard.
+    events: mpsc::UnboundedReceiver<Event>,
+    canvas: HtmlCanvasElement,
+    context: CanvasRenderingContext2d,
+    /// When the first kept frame was captured, on the camera's own clock.
+    first: Option<f64>,
+    /// The last frame's time, in microseconds from the first.
+    last_shown: f64,
+    /// When the next frame is due at [`ROUND_FRAME_RATE`], in microseconds
+    /// from the first: a camera that delivers more is thinned to it, one
+    /// that delivers fewer is kept as it is (the profile's "30 fps at
+    /// most").
+    due: f64,
+    last_key: f64,
+    kept: usize,
+    dropped: usize,
+}
+
+/// What became of one frame offered to [`LivePicture::frame`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Offered {
+    /// Encoded.
+    Kept,
+    /// Left out: the encoder is behind, the camera has no picture yet, the
+    /// frame came no later than the last, or before its turn at 30 fps.
+    Dropped,
+    /// The encoder refused it: the recording cannot go on.
+    Failed,
+}
+
+impl LivePicture {
+    /// An encoder configured with `config` — the one the probe asked about
+    /// (`webcodecs::h264_config(480, 480, 30, 500 000, Realtime)`) — and the
+    /// canvas its frames are drawn on. None if the browser refuses either.
+    pub fn start(config: &Object) -> Option<Self> {
+        let document = web_sys::window()?.document()?;
+        let canvas: HtmlCanvasElement = document.create_element("canvas").ok()?.dyn_into().ok()?;
+        canvas.set_width(ROUND_EDGE);
+        canvas.set_height(ROUND_EDGE);
+        let context: CanvasRenderingContext2d = canvas.get_context("2d").ok()??.dyn_into().ok()?;
+        let (wake, events) = mpsc::unbounded();
+        let sink = Rc::new(RefCell::new(PictureSink::default()));
+        let encoder = {
+            let sink = sink.clone();
+            let (init, output, failure) = callbacks(
+                move |chunk: JsValue, metadata: JsValue| {
+                    let chunk: EncodedVideoChunk = chunk.unchecked_into();
+                    let bytes = Uint8Array::new_with_length(chunk.byte_length());
+                    let mut sink = sink.borrow_mut();
+                    if chunk.copy_to(&bytes).is_err() {
+                        sink.failed = true;
+                    }
+                    sink.chunks
+                        .push((bytes, chunk.timestamp(), chunk.kind() == "key"));
+                    if sink.avcc.is_none() {
+                        sink.avcc = decoder_config_field(&metadata, "description")
+                            .and_then(|description| bytes_of(&description))
+                            .filter(|avcc| !avcc.is_empty());
+                    }
+                    if sink.colour.is_none() {
+                        sink.colour = decoder_config_field(&metadata, "colorSpace");
+                    }
+                },
+                &wake,
+            );
+            Codec {
+                codec: VideoEncoder::new(&init).ok()?,
+                _output: output,
+                _failure: failure,
+            }
+        };
+        encoder.codec.configure(config).ok()?;
+        Some(LivePicture {
+            encoder,
+            sink,
+            events,
+            canvas,
+            context,
+            first: None,
+            last_shown: f64::NEG_INFINITY,
+            due: 0.0,
+            last_key: f64::NEG_INFINITY,
+            kept: 0,
+            dropped: 0,
+        })
+    }
+
+    /// Frames encoded, and frames left out, so far.
+    #[cfg(test)]
+    pub fn counts(&self) -> (usize, usize) {
+        (self.kept, self.dropped)
+    }
+
+    /// Frames the encoder has been given and not yet handed back.
+    #[cfg(test)]
+    pub fn queued(&self) -> u32 {
+        self.encoder.codec.encode_queue_size()
+    }
+
+    /// When the first kept frame was captured, on the camera's clock — where
+    /// the clip begins.
+    pub fn first_ms(&self) -> Option<f64> {
+        self.first
+    }
+
+    /// Whether the encoder has said it failed.
+    fn failed(&mut self) -> bool {
+        while let Ok(event) = self.events.try_recv() {
+            if matches!(event, Event::Failed) {
+                self.sink.borrow_mut().failed = true;
+            }
+        }
+        self.sink.borrow().failed
+    }
+
+    /// The frame `source` is showing, captured at `at_ms` on the camera's
+    /// clock (`requestVideoFrameCallback`'s), into the clip.
+    pub fn frame(&mut self, source: &HtmlVideoElement, at_ms: f64) -> Offered {
+        if self.failed() {
+            return Offered::Failed;
+        }
+        let (width, height) = (source.video_width(), source.video_height());
+        if width == 0 || height == 0 || !at_ms.is_finite() {
+            self.dropped += 1;
+            return Offered::Dropped;
+        }
+        let first = *self.first.get_or_insert(at_ms);
+        let shown = ((at_ms - first) * 1000.0).round();
+        if shown <= self.last_shown
+            || shown < self.due - ROUND_FRAME_EARLY_US
+            || self.encoder.codec.encode_queue_size() >= QUEUE
+        {
+            if self.kept == 0 {
+                self.first = None;
+            }
+            self.dropped += 1;
+            return Offered::Dropped;
+        }
+        let (sx, sy, side) = centre_square(width, height);
+        if self
+            .context
+            .draw_image_with_html_video_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+                source,
+                sx,
+                sy,
+                side,
+                side,
+                0.0,
+                0.0,
+                f64::from(ROUND_EDGE),
+                f64::from(ROUND_EDGE),
+            )
+            .is_err()
+        {
+            self.dropped += 1;
+            return Offered::Dropped;
+        }
+        let Ok(frame) = VideoFrame::new_from_image(
+            self.canvas.as_ref(),
+            &object(&[
+                ("timestamp", JsValue::from(shown)),
+                ("alpha", JsValue::from_str("discard")),
+            ]),
+        ) else {
+            return Offered::Failed;
+        };
+        let frame = Frame(frame);
+        let key = shown - self.last_key >= KEYFRAME_SECONDS * 1e6;
+        if self
+            .encoder
+            .codec
+            .encode(&frame.0, &object(&[("keyFrame", JsValue::from(key))]))
+            .is_err()
+        {
+            return Offered::Failed;
+        }
+        if key {
+            self.last_key = shown;
+        }
+        self.last_shown = shown;
+        // The next turn on the 30 fps grid — moved on only by a frame later
+        // than its turn could allow, so a late frame costs the next none.
+        self.due = self.due.max(shown - ROUND_FRAME_EARLY_US) + 1e6 / ROUND_FRAME_RATE;
+        self.kept += 1;
+        Offered::Kept
+    }
+
+    /// Everything encoded, as the picture track of a video message and its
+    /// samples — None when the encoder failed, made a different number of
+    /// frames than it was given, did not start with a key frame, or never
+    /// said how to decode what it made.
+    pub async fn finish(mut self) -> Option<(mp4::Track, Vec<JsValue>)> {
+        if self.kept == 0 || !settled(self.encoder.codec.flush()).await || self.failed() {
+            return None;
+        }
+        let sink = std::mem::take(&mut *self.sink.borrow_mut());
+        if sink.failed || sink.chunks.len() != self.kept || !sink.chunks[0].2 {
+            log::warn!(
+                "A live video encoder made {} frames of {}; not used",
+                sink.chunks.len(),
+                self.kept
+            );
+            return None;
+        }
+        let avcc = sink.avcc?;
+        let colour = match sink.colour.as_ref().map(colour) {
+            Some(Some(colour)) if matches!(colour.transfer, 16 | 18) => return None,
+            Some(colour) => colour,
+            None => None,
+        };
+        let pts: Vec<i64> = sink
+            .chunks
+            .iter()
+            .map(|(_, shown, _)| (shown * f64::from(ROUND_TIMESCALE) / 1e6).round() as i64)
+            .collect();
+        // The last frame lasts as long as one frame at 30 fps.
+        let last = (f64::from(ROUND_TIMESCALE) / ROUND_FRAME_RATE).round() as u32;
+        let samples = mp4::decode_timeline(&pts, last)
+            .into_iter()
+            .zip(&sink.chunks)
+            .map(
+                |((duration, composition_offset), (bytes, _, key))| mp4::Sample {
+                    size: bytes.length(),
+                    duration,
+                    composition_offset,
+                    sync: *key,
+                },
+            )
+            .collect();
+        let edge = u16::try_from(ROUND_EDGE).ok()?;
+        let track = mp4::Track {
+            timescale: ROUND_TIMESCALE,
+            media: Media::Video {
+                width: edge,
+                height: edge,
+                avcc,
+                colour,
+            },
+            samples,
+            skip: 0,
+            lead: 0,
+        };
+        let parts = sink
+            .chunks
+            .into_iter()
+            .map(|(bytes, _, _)| bytes.into())
+            .collect();
+        Some((track, parts))
+    }
+}
+
+/// The largest centred square of a `width × height` picture, as where it
+/// starts across, where it starts down, and its side: the part of a 640 × 480
+/// camera a video message keeps is the 480 × 480 in its middle — a face,
+/// not a strip of wall either side of it.
+pub fn centre_square(width: u32, height: u32) -> (f64, f64, f64) {
+    let side = width.min(height);
+    (
+        f64::from((width - side) / 2),
+        f64::from((height - side) / 2),
+        f64::from(side),
+    )
+}
+
+/// How long `track` lasts, in milliseconds.
+pub fn track_ms(track: &mp4::Track) -> i64 {
+    if track.timescale == 0 {
+        return 0;
+    }
+    let ticks: u64 = track
+        .samples
+        .iter()
+        .map(|sample| u64::from(sample.duration))
+        .sum();
+    (ticks as f64 * 1000.0 / f64::from(track.timescale)).round() as i64
+}
+
+/// A video message's file: `picture`, and `sound` — AAC, starting `lead`
+/// milliseconds after the picture does, which is what the later of the two
+/// says with an empty edit in front of it (`mp4::Track::lead`) — as an MP4
+/// with its index first.
+pub fn round_clip(picture: (mp4::Track, Vec<JsValue>), sound: Option<(&Aac, u32)>) -> Option<Blob> {
+    let (picture, frames) = picture;
+    let mut tracks = vec![picture];
+    let mut parts = vec![frames];
+    if let Some((aac, lead)) = sound {
+        tracks.push(aac.track(0, lead));
+        parts.push(aac.parts());
+    }
+    let layout = mp4::layout(&tracks, Brand::Mp4);
+    let blob = assemble(
+        &layout.header,
+        layout
+            .order
+            .iter()
+            .map(|&(track, sample)| parts[track][sample].clone()),
+        "video/mp4",
+    )?;
+    (blob.size() as u64 == layout.total_len).then_some(blob)
 }
 
 // --- a recording's sound, for its text ----------------------------------------------------------
@@ -1752,9 +2096,15 @@ pub mod testing {
             canvas.get_context("2d").unwrap().unwrap().unchecked_into();
         let ticks = times.last().unwrap() + i64::from(last);
         let length = ticks as f64 / f64::from(timescale);
-        let config = webcodecs::h264_config(width, height, times.len() as f64 / length, bitrate)
-            .await
-            .expect("the test browser encodes H.264");
+        let config = webcodecs::h264_config(
+            width,
+            height,
+            times.len() as f64 / length,
+            bitrate,
+            webcodecs::Latency::Quality,
+        )
+        .await
+        .expect("the test browser encodes H.264");
         let (wake, mut events) = mpsc::unbounded();
         let sink = Rc::new(RefCell::new(PictureSink::default()));
         let encoder = {

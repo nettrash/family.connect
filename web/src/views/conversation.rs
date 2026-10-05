@@ -26,12 +26,16 @@ use crate::views::attach::{
     NotSentRow, RecordingRow, StagingStrip, PLAY_AFTER,
 };
 use crate::views::bubble::Bubble;
-use crate::views::composer::{resolve_mentions, Composer, Editing, Pictures, Records, Replying};
+use crate::views::composer::{
+    cannot_record_video, resolve_mentions, Composer, Editing, Pictures, Records, Replying,
+    VideoEntry,
+};
 use crate::views::consent::AssistantConsentDialog;
 use crate::views::dialog::Confirm;
 use crate::views::poll::PollComposer;
 use crate::views::quiet::{use_quiet_reason, use_quiet_while};
 use crate::views::report::{AssistantReportDialog, ReportDialog, ReportTarget};
+use crate::views::round_recorder::RoundRecorder;
 use crate::views::stickers::StickerMenu;
 use crate::views::voice::{self, use_voice};
 use fc_text::assistant_pictures::{self, Candidate};
@@ -114,6 +118,11 @@ pub struct ConversationProps {
     pub on_action: Callback<Action>,
     /// Wall-clock now, for the day pills.
     pub now_ms: f64,
+    /// How long and how big a video message may be on this server — None on
+    /// a server without video messages, which is offered no video entry at
+    /// all (docs/protocol.md, "Video messages").
+    #[prop_or_default]
+    pub round: Option<crate::round_video::RoundLimits>,
 }
 
 /// How close to the bottom still counts as "reading the newest", in
@@ -142,6 +151,18 @@ pub fn row_key(message: &Message, my_user_id: i64) -> String {
         Some(client_msg_id) if message.sender_id == my_user_id => format!("c{client_msg_id}"),
         _ => format!("m{}", message.id),
     }
+}
+
+/// Whether `message` answers a video message among `held` — its quote then
+/// says "Video message", having no words of its own to show (the plan for
+/// #79, S5.7). A quoted message this client does not hold says what the
+/// server's excerpt says.
+pub fn quotes_round(message: &Message, held: &[Message]) -> bool {
+    message.reply_to.as_ref().is_some_and(|quote| {
+        held.iter().any(|other| {
+            other.id == quote.message_id && other.id != 0 && other.round_video().is_some()
+        })
+    })
 }
 
 #[function_component(Conversation)]
@@ -209,6 +230,18 @@ pub fn conversation(props: &ConversationProps) -> Html {
     let poll_open = use_state(|| false);
     let highlight = use_state(|| Option::<i64>::None);
     let at_newest = use_state(|| true);
+    // THE VIDEO MESSAGE (the plan for #79, S3): what this browser can do,
+    // asked once a page, and whether the recorder is open.
+    let probe = use_state(|| Option::<crate::round_video::Probe>::None);
+    {
+        let probe = probe.clone();
+        use_effect_with((), move |_| {
+            spawn_local(async move { probe.set(Some(crate::round_video::probe().await)) });
+        });
+    }
+    let recorder_open = use_state(|| false);
+    let round_said = use_state(|| (0u32, String::new()));
+    let pane = use_node_ref();
 
     // OPENING: at the unread divider when there is one, otherwise at the
     // newest — once, after the rows are in the DOM. Then, and only then,
@@ -431,6 +464,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
                 .unwrap_or_else(|| t("Someone").to_string()),
             excerpt: if hidden {
                 String::new()
+            } else if message.round_video().is_some() {
+                // No words to quote: what it is (S5.7).
+                t("Video message").to_string()
             } else {
                 crate::store::excerpt(&message.body)
             },
@@ -538,6 +574,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
     let recording_on = voice.active();
     // While it records, the app's other live regions are quiet too (S6).
     use_quiet_while(recording_on);
+    // What plays — one thing at a time, paused for a hidden tab, a call and
+    // headphones pulled, stopped when this chat closes (S4, S5.3).
+    crate::now_playing::use_now_playing(props.on_call);
 
     // Which busy it is, because the two have different ways out
     // (MacConversationView.composerBusyNotice).
@@ -1031,8 +1070,44 @@ pub fn conversation(props: &ConversationProps) -> Html {
         let staged = props.staged.len();
         Callback::from(move |_: ()| record.emit(!*draft_blank.borrow() || staged > 0))
     };
+    // THE WAYS INTO THE VIDEO RECORDER (S1.4–S1.6): offered in a family or
+    // a direct chat, on a server with video messages, on a device with a
+    // camera — and in a browser that cannot record one, the menus say so
+    // instead of opening (S8.7). None of them opens it during a call or
+    // while the composer is busy; a voice message that was not sent does not
+    // stop it — that rule is about voice.
+    let probed = *probe;
+    let offers_video = props.round.is_some() && !is_ai && probed.is_some_and(|probe| probe.camera);
+    let records_video = probed.is_some_and(|probe| probe.records);
+    let open_recorder = {
+        let recorder_open = recorder_open.clone();
+        let notice = notice.clone();
+        let on_call = props.on_call;
+        let busy = busy_reason.clone();
+        Callback::from(move |_: ()| {
+            if on_call {
+                notice.emit(t(Dimmed::Call.notice()).to_string());
+            } else if let Some(reason) = busy.clone() {
+                notice.emit(reason);
+            } else if !records_video {
+                notice.emit(cannot_record_video().to_string());
+            } else {
+                recorder_open.set(true);
+            }
+        })
+    };
+    let video_dimmed = if props.on_call {
+        Some(t(Dimmed::Call.notice()).to_string())
+    } else if !records_video {
+        Some(cannot_record_video().to_string())
+    } else {
+        None
+    };
     let attach_menu = html! {
         <AttachMenu
+            offers_video={offers_video}
+            video_dimmed={video_dimmed}
+            on_video={open_recorder.clone()}
             offers_pictures={assistant_pictures::offers_picture_attach(is_ai, server_can_see, family_allows)}
             on_pictures={ingest.clone()}
             offers_poll={is_family}
@@ -1355,6 +1430,75 @@ pub fn conversation(props: &ConversationProps) -> Html {
             Callback::from(move |blank: bool| *draft_blank.borrow_mut() = blank)
         },
         refocus: voice.refocus,
+        recorder_open: *recorder_open,
+        video: offers_video.then(|| VideoEntry {
+            records: records_video,
+            on_open: open_recorder.clone(),
+            on_explain: notice.clone(),
+        }),
+    };
+    // THE RECORDER (S3), over the whole window while it is open.
+    let recorder = match (props.round, *recorder_open) {
+        (Some(limits), true) => {
+            let on_send = {
+                let on_action = props.on_action.clone();
+                let replying = replying.clone();
+                let replying_now = replying_now.clone();
+                let pinned = pinned.clone();
+                Callback::from(move |(clip, round): (Prepared, bool)| {
+                    // Alone, as a video message always travels: the words
+                    // and whatever is staged stay in the composer, and the
+                    // primed reply goes with it (S1.5).
+                    let reply_to_message_id = *replying_now.borrow();
+                    replying.set(None);
+                    *pinned.borrow_mut() = true;
+                    on_action.emit(Action::Send {
+                        chat_id,
+                        draft: Draft {
+                            reply_to_message_id,
+                            attachments: vec![clip],
+                            round,
+                            ..Draft::default()
+                        },
+                    });
+                })
+            };
+            let on_close = {
+                let recorder_open = recorder_open.clone();
+                let round_said = round_said.clone();
+                Callback::from(move |said: Option<String>| {
+                    recorder_open.set(false);
+                    if let Some(said) = said {
+                        round_said.set((round_said.0 + 1, said));
+                    }
+                })
+            };
+            let on_voice = {
+                // "Record a voice message instead" (S3.4): hands-free, beside
+                // whatever the box holds — in the click that asked for it.
+                let record = voice.record.clone();
+                let draft_blank = draft_blank.clone();
+                let staged = props.staged.len();
+                Callback::from(move |_: ()| record.emit(!*draft_blank.borrow() || staged > 0))
+            };
+            html! {
+                <RoundRecorder
+                    {limits}
+                    on_call={props.on_call}
+                    replying={replying_to.clone()}
+                    on_drop_reply={{
+                        let replying = replying.clone();
+                        Callback::from(move |_: ()| replying.set(None))
+                    }}
+                    not_sent={!props.not_sent.is_empty()}
+                    {on_voice}
+                    {on_send}
+                    {on_close}
+                    pane={pane.clone()}
+                />
+            }
+        }
+        _ => Html::default(),
     };
     // Words the announcement node is saying already — "That recording was
     // too short.", "Recording stopped at five minutes." — are shown on the
@@ -1384,6 +1528,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
 
     html! {
         <section
+            ref={pane.clone()}
             class={classes!("conversation", dropping.then_some("is-drop-target"))}
             ondragenter={on_drag_enter}
             ondragover={on_drag_over}
@@ -1466,6 +1611,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                                     blocked={props.blocked.clone()}
                                     {quote_revealed}
                                     {parent_revealed}
+                                    quote_round={quotes_round(message, &props.messages)}
                                     hidden={row.hidden && !revealed}
                                     shows_sender={row.shows_sender || (row.hidden && revealed && is_family)}
                                     sender_avatar_version={avatar_versions.get(&message.sender_id).copied().unwrap_or(0)}
@@ -1624,6 +1770,15 @@ pub fn conversation(props: &ConversationProps) -> Html {
                     <span key={voice.announcement.0}>{ voice.announcement.1.clone() }</span>
                 }
             </div>
+            // What the video recorder says as it closes — "Video message
+            // sent", "Camera turned off" — once the page is no longer inert
+            // under it; while it is open it speaks through its own (S6).
+            <div class="visually-hidden round-said" aria-live="polite" aria-atomic="true">
+                if round_said.0 > 0 {
+                    <span key={round_said.0}>{ round_said.1.clone() }</span>
+                }
+            </div>
+            { recorder }
             { poll_dialog.unwrap_or_default() }
             { report_dialog.unwrap_or_default() }
             { assistant_report_dialog.unwrap_or_default() }

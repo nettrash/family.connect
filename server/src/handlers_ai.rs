@@ -4060,6 +4060,7 @@ mod tests {
             longitude: None,
             accuracy_m: None,
             sticker: false,
+            round: false,
         }
     }
 

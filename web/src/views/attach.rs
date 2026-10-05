@@ -77,6 +77,17 @@ pub struct MenuProps {
     /// ever shown `[voice note]` (S1.5, Decision 24).
     #[prop_or(true)]
     pub offers_record: bool,
+    /// "Record Video Message" is offered, right below "Record Voice
+    /// Message": a family or a direct chat, on a server with video messages,
+    /// on a device with a camera (S1.5).
+    #[prop_or_default]
+    pub offers_video: bool,
+    /// Why it cannot open the recorder right now — a call, or a browser that
+    /// cannot record one. Dimmed, not disabled: chosen, it says so.
+    #[prop_or_default]
+    pub video_dimmed: Option<String>,
+    #[prop_or_default]
+    pub on_video: Callback<()>,
     /// "Show the Assistant a Photo…" is offered — the assistant's chat, on
     /// a server that can see, in a family that allows it; ABSENT otherwise,
     /// never a door that lies (docs/protocol.md, "Pictures").
@@ -136,6 +147,30 @@ pub fn attach_menu(props: &MenuProps) -> Html {
                         { t("Record Voice Message") }
                     </button>
                     <span id={(*dimmed_reason_id).clone()} hidden=true>{ reason }</span>
+                </>
+            },
+        }
+    };
+    let video_reason_id = use_memo((), |_| crate::views::dialog::fresh_id("video-reason"));
+    let video = {
+        let open = open.clone();
+        let on_video = props.on_video.clone();
+        let onclick = Callback::from(move |_: MouseEvent| {
+            open.set(false);
+            on_video.emit(());
+        });
+        match props.video_dimmed.clone() {
+            _ if !props.offers_video => Html::default(),
+            None => {
+                html! { <button role="menuitem" {onclick}>{ t("Record Video Message") }</button> }
+            }
+            Some(reason) => html! {
+                <>
+                    <button role="menuitem" class="is-dimmed" aria-disabled="true"
+                            aria-describedby={(*video_reason_id).clone()} title={reason.clone()} {onclick}>
+                        { t("Record Video Message") }
+                    </button>
+                    <span id={(*video_reason_id).clone()} hidden=true>{ reason }</span>
                 </>
             },
         }
@@ -249,6 +284,7 @@ pub fn attach_menu(props: &MenuProps) -> Html {
                     { item(t("Attach a File…"), pick) }
                     { item(t("Paste"), props.on_paste.clone()) }
                     { record }
+                    { video }
                     { item(t("Location"), props.on_location.clone()) }
                     if props.offers_poll {
                         { item(t("Poll"), props.on_poll.clone()) }
@@ -511,6 +547,7 @@ pub fn local_audio(props: &LocalAudioProps) -> Html {
                 <span id={(*reason_id).clone()} hidden=true>{ t(PLAY_AFTER) }</span>
             }
             <audio ref={player} src={(*url).clone().unwrap_or_default()} preload="auto"
+                   data-playback="true"
                    onplay={on_play} ontimeupdate={on_time} onpause={on_stopped.clone()}
                    onended={on_stopped} />
         </>

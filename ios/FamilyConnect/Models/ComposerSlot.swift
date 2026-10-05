@@ -279,11 +279,11 @@ nonisolated enum ComposerSlot: Equatable, Sendable {
 
 /// The video button inside the empty field (S1.4).
 ///
-/// THE RULE ONLY, until Phase 3. No Apple build records round video yet, so
-/// every composer passes `recordsRoundVideo: VideoDoor.thisBuildRecords`
-/// (false) and the door stays hidden — Decision 40: a build that can only
-/// receive circles shows no video entry at all. The rule is written here so
-/// that the phase which records only has to wire it.
+/// Phase 3a turned it on for Apple: this build records round video
+/// (`VideoMessageRecorder`), so the door is Shown wherever the rest of S1.4
+/// allows — a server that sends `max_round_video_ms` and a device with a
+/// camera. Decision 40 still holds through `recordsRoundVideo`: a build that
+/// can only receive circles shows no video entry at all.
 nonisolated enum VideoDoor: Equatable, Sendable {
     /// Not drawn — the field gets its width back.
     case hidden
@@ -292,14 +292,17 @@ nonisolated enum VideoDoor: Equatable, Sendable {
     /// Drawn; activating it opens the recorder (S3).
     case shown
 
-    /// Whether THIS build records round video on this platform. Phase 3a
-    /// turns it on for Apple.
-    static let thisBuildRecords = false
+    /// Whether THIS build records round video on this platform — Phase 3a,
+    /// iPhone, iPad and the Mac.
+    static let thisBuildRecords = true
 
-    /// Its label and its pointer tooltip, as the catalogue will key them.
-    /// No localized twin yet: nothing draws the button before Phase 3.
+    /// Its label and its pointer tooltip, as the catalogue keys them.
     static let labelKey = "Record video message"
     static let tooltipKey = "Record a video message"
+
+    /// The same two, localized — literals, so `check-strings.py` sees them.
+    static var label: String { String(localized: "Record video message") }
+    static var tooltip: String { String(localized: "Record a video message") }
 
     /// What the button needs to know besides the slot.
     nonisolated struct Inputs: Equatable, Sendable {

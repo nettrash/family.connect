@@ -123,6 +123,15 @@ nonisolated enum AppSettings {
         /// time, letting go will send it.", S2.3, S7). Per device, kept
         /// across sign-outs: it is about the hands, not the account.
         static let voiceFirstReleaseTaught = "v1.voice.firstReleaseTaught"
+        /// Video messages (#79, Phase 3): the two limits `GET /families/mine`
+        /// last reported. A MISSING `max_round_video_ms` is the answer "this
+        /// server predates video messages" — no video entry at all.
+        static let roundVideoMaxMS = "v1.round.maxMS"
+        static let roundVideoMaxBytes = "v1.round.maxBytes"
+        /// The camera "Choose camera" picked on this device (S3.5).
+        static let videoMessageCameraID = "v1.round.cameraID"
+        /// The recorder's first-time line has led to a recording (S7.5).
+        static let videoMessagePreviewTaught = "v1.round.previewTaught"
     }
 
     /// The server URL compiled into this build, or nil for the generic
@@ -227,6 +236,50 @@ nonisolated enum AppSettings {
     static var voiceFirstReleaseTaught: Bool {
         get { defaults.bool(forKey: Key.voiceFirstReleaseTaught) }
         set { defaults.set(newValue, forKey: Key.voiceFirstReleaseTaught) }
+    }
+
+    /// `max_round_video_ms` as `GET /families/mine` last reported it, or
+    /// nil when this server takes no video messages (docs/protocol.md,
+    /// "Video messages"). NIL IS THE CAPABILITY CHECK, as the pack's limits
+    /// are: no video entry against a server that would deliver a square.
+    static var roundVideoMaxMS: UInt64? {
+        get { (defaults.object(forKey: Key.roundVideoMaxMS) as? NSNumber)?.uint64Value }
+        set {
+            if let newValue {
+                defaults.set(NSNumber(value: newValue), forKey: Key.roundVideoMaxMS)
+            } else {
+                defaults.removeObject(forKey: Key.roundVideoMaxMS)
+            }
+        }
+    }
+
+    /// `max_round_video_bytes`: a clip over it goes as a regular video (S3.6).
+    static var roundVideoMaxBytes: Int? {
+        get { defaults.object(forKey: Key.roundVideoMaxBytes) as? Int }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.roundVideoMaxBytes)
+            } else {
+                defaults.removeObject(forKey: Key.roundVideoMaxBytes)
+            }
+        }
+    }
+
+    /// Whether this server takes video messages at all.
+    static var offersRoundVideo: Bool { roundVideoMaxMS != nil }
+
+    /// The camera chosen on this device, by `uniqueID` — a device's own
+    /// business, kept across sign-outs like any other preference of it.
+    static var videoMessageCameraID: String? {
+        get { defaults.string(forKey: Key.videoMessageCameraID) }
+        set { defaults.set(newValue, forKey: Key.videoMessageCameraID) }
+    }
+
+    /// "Only you can see this until you start recording." is shown until
+    /// the first recording on this device (S3.4, S7.5).
+    static var videoMessagePreviewTaught: Bool {
+        get { defaults.bool(forKey: Key.videoMessagePreviewTaught) }
+        set { defaults.set(newValue, forKey: Key.videoMessagePreviewTaught) }
     }
 
     /// The APNs token (lowercase hex) most recently accepted by
@@ -571,6 +624,10 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.packMaxItems)
         defaults.removeObject(forKey: Key.packMaxItemBytes)
         defaults.removeObject(forKey: Key.packRecents)
+        // Video messages are a fact about THIS server, like the pack's
+        // limits: a different server must not inherit the door.
+        defaults.removeObject(forKey: Key.roundVideoMaxMS)
+        defaults.removeObject(forKey: Key.roundVideoMaxBytes)
         // Member ↔ contact links name user ids of THIS server's family.
         defaults.removeObject(forKey: ContactLinks.key)
     }

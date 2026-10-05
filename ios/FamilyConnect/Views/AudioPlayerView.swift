@@ -54,6 +54,10 @@ struct AudioPlayerView: View {
     /// "You can play this after recording." — said for a tap that came
     /// while a recording runs (S1.7).
     @State private var saysAfterRecording = false
+    /// Whether this row took the audio session for playback and still owes
+    /// it back — so a pause, the end and leaving each give it back exactly
+    /// once (S5.3).
+    @State private var holdsSession = false
 
     /// A voice recording runs somewhere in the app: no app sound plays, and
     /// the play control is dimmed (S1.7).
@@ -185,6 +189,7 @@ struct AudioPlayerView: View {
                         isPlaying = false
                         elapsed = total
                         NowPlaying.shared.release(playToken)
+                        giveSession()
                     }
                 }
             }
@@ -198,15 +203,31 @@ struct AudioPlayerView: View {
         stream.player?.pause()
         isPlaying = false
         NowPlaying.shared.release(playToken)
+        giveSession()
     }
 
     /// One thing plays at a time: whoever played before is paused, and a
     /// recording starting pauses this one (#79, S1.7, S5.3).
+    ///
+    /// Then `.playback`, heard with the silent switch on and never while a
+    /// call holds the session (S5.3, Decision 23) — AFTER the claim, so the
+    /// outgoing player's giving back cannot land after this taking.
     private func claimPlayback() {
-        NowPlaying.shared.claim(playToken) {
+        NowPlaying.shared.claim(playToken, kind: .voice) {
             stream.player?.pause()
             isPlaying = false
+            giveSession()
         }
+        if !holdsSession {
+            holdsSession = true
+            PlaybackSessionControl.system.begin()
+        }
+    }
+
+    private func giveSession() {
+        guard holdsSession else { return }
+        holdsSession = false
+        PlaybackSessionControl.system.end()
     }
 
     private func seek(to seconds: TimeInterval) {
@@ -227,5 +248,6 @@ struct AudioPlayerView: View {
         observer = nil
         isPlaying = false
         NowPlaying.shared.release(playToken)
+        giveSession()
     }
 }

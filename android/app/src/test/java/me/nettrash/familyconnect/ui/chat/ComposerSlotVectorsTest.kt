@@ -32,6 +32,10 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import me.nettrash.familyconnect.data.db.MessageEntity
+import me.nettrash.familyconnect.data.db.MessageStatus
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import me.nettrash.familyconnect.ui.chat.ComposerSlot.Dimmed
 import me.nettrash.familyconnect.ui.chat.ComposerSlot.Door
 import me.nettrash.familyconnect.ui.chat.ComposerSlot.Recording
@@ -236,23 +240,28 @@ class ComposerSlotVectorsTest {
         }
     }
 
-    /** This build records no round video, so no door ever opens — whatever the rest says. */
+    /**
+     * Since Phase 3 this build records round video (Decision 40), so the door
+     * opens where the server and the device allow — and a build that did
+     * not would still keep it shut, whatever the rest says.
+     */
     @Test
-    fun noVideoEntryInABuildThatDoesNotRecordRoundVideo() {
-        assertThat(ComposerSlot.RECORDS_ROUND_VIDEO).isFalse()
+    fun theVideoEntryFollowsWhetherThisBuildRecordsRoundVideo() {
+        assertThat(ComposerSlot.RECORDS_ROUND_VIDEO).isTrue()
         val microphone = ComposerSlot.SlotInputs(
             recorderOpen = false, recording = Recording.NONE, editing = false, draftBlank = true,
             staged = false, assistantChat = false, canRecord = true, call = false, busy = false,
             notSent = false,
         )
-        val door = ComposerSlot.videoDoor(
+        fun door(records: Boolean) = ComposerSlot.videoDoor(
             ComposerSlot.DoorInputs(
                 slot = microphone, familyOrDirectChat = true, undoWindow = false,
                 serverOffersRound = true, hasCamera = true, encoderProbePasses = true,
-                recordsRoundVideo = ComposerSlot.RECORDS_ROUND_VIDEO,
+                recordsRoundVideo = records,
             ),
         )
-        assertThat(door).isEqualTo(Door.Hidden)
+        assertThat(door(ComposerSlot.RECORDS_ROUND_VIDEO)).isEqualTo(Door.Shown)
+        assertThat(door(false)).isEqualTo(Door.Hidden)
     }
 
     @Test
@@ -291,6 +300,43 @@ class ComposerSlotVectorsTest {
             }
             assertWithMessage(case.str("name"))
                 .that(ComposerSlot.isRound(input.str("body"), attachments))
+                .isEqualTo(case.obj("expected").bool("round"))
+        }
+    }
+
+    /**
+     * The THREAD's test — [roundOf], which draws the circle, quotes it and
+     * withholds Edit — over the same cases, through a stored row: the vectors
+     * pin what the thread does, not only the helper beside it.
+     */
+    @Test
+    fun theThreadDrawsACircleExactlyWhenTheReferenceSaysSo() {
+        for (case in casesOf("is_round")) {
+            val input = case.obj("input")
+            val attachments = input.getValue("attachments").jsonArray.mapIndexed { index, element ->
+                val attachment = element.jsonObject
+                AttachmentDto(
+                    id = index + 1L,
+                    kind = attachment.str("kind"),
+                    mime = "video/mp4",
+                    size = 1,
+                    width = 480,
+                    height = 480,
+                    round = if (attachment.bool("round")) true else null,
+                )
+            }
+            val row = MessageEntity(
+                clientMsgId = "vector",
+                serverId = 1,
+                chatId = 42,
+                senderId = 9,
+                body = input.str("body"),
+                createdAt = 1_700_000_000_000,
+                status = MessageStatus.SENT,
+                attachmentsJson = AttachmentsCodec.encode(attachments).takeIf { attachments.isNotEmpty() },
+            )
+            assertWithMessage(case.str("name"))
+                .that(roundOf(row) != null)
                 .isEqualTo(case.obj("expected").bool("round"))
         }
     }

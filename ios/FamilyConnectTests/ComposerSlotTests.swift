@@ -111,13 +111,18 @@ struct ComposerSlotTests {
         #expect(RecordGesture.saturatingSub(501, 500) == 1)
     }
 
-    @Test("no Apple build shows a video entry yet")
-    func noVideoDoorBeforePhaseThree() {
-        #expect(VideoDoor.thisBuildRecords == false)
+    @Test("Phase 3: this Apple build records, so the door opens where all else allows")
+    func videoDoorOpensInPhaseThree() {
+        #expect(VideoDoor.thisBuildRecords == true)
         let everythingElse = VideoDoor.Inputs(
             slot: ComposerSlot.Inputs(), familyOrDirectChat: true, undoWindow: false,
             serverOffersRound: true, hasCamera: true, encoderProbePasses: true)
-        #expect(VideoDoor.of(everythingElse) == .hidden)
+        #expect(VideoDoor.of(everythingElse) == .shown)
+        // Decision 40 still holds through the input: a build that only
+        // receives shows nothing.
+        var receivesOnly = everythingElse
+        receivesOnly.recordsRoundVideo = false
+        #expect(VideoDoor.of(receivesOnly) == .hidden)
     }
 }
 

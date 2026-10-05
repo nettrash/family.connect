@@ -751,8 +751,75 @@ nonisolated enum MessagePresentation {
     /// phone's menu asked only "mine, and delivered"; the Mac's happened to
     /// be right because it also wants a body to edit, which a sticker never
     /// has — right by accident is the kind that the next change undoes.
+    ///
+    /// Nor on a VIDEO MESSAGE (docs/protocol.md, "Video messages"): a circle
+    /// has no balloon either, and `PATCH` on one is `validation` too.
     static func offersEdit(_ message: MessageSnapshot, currentUserID: Int64) -> Bool {
         message.serverID != nil && message.senderID == currentUserID && !isSticker(message)
+            && !isRoundVideo(message)
+    }
+
+    /// True when a message IS a video message, drawn as a circle with no
+    /// balloon (#79, docs/audio-video-messages-2026-10-04.md, S5.1;
+    /// docs/protocol.md, "How it is drawn").
+    ///
+    /// The shared rule, `RoundVideo.isRound` — held to `fc_text::record`'s
+    /// `is_round` by the record vectors, so every client draws the same
+    /// message the same way: exactly ONE attachment, `kind = video`,
+    /// carrying `round: true`, and no body. Anything else — two attachments,
+    /// the flag on a photo, words beside it — is the ordinary message it
+    /// otherwise is.
+    ///
+    /// Beside `isSticker`, and bare on the same terms: a video message may
+    /// be a reply, and its quote then sits on the chat's own background
+    /// above the circle.
+    static func isRoundVideo(_ message: MessageSnapshot) -> Bool {
+        RoundVideo.isRound(
+            body: message.body,
+            attachments: message.attachments.map {
+                RoundVideo.AttachmentFlags(kind: $0.kind, round: $0.isRound)
+            })
+    }
+
+    /// The server ids of the video messages among `messages` — what a quote
+    /// of one is recognised by (`namingRoundQuotes`).
+    static func roundMessageIDs(_ messages: [MessageSnapshot]) -> Set<Int64> {
+        Set(messages.lazy.filter(isRoundVideo).compactMap(\.serverID))
+    }
+
+    /// A reply quoting a video message says "Video message" (S5.7;
+    /// docs/protocol.md, "How it is drawn").
+    ///
+    /// The quote carries only the server's excerpt, a cut of the BODY — and
+    /// a video message has none, so the excerpt is "". Which message it
+    /// quotes is the one thing the quote does say, so a quoted message this
+    /// device holds and knows to be round names itself; an excerpt that has
+    /// words keeps them, and a quoted message out of the cache stays as the
+    /// server sent it.
+    static func quoteWord(excerpt: String, messageID: Int64, roundIDs: Set<Int64>) -> String {
+        guard excerpt.isEmpty, roundIDs.contains(messageID) else { return excerpt }
+        return String(localized: "Video message")
+    }
+
+    /// The message with both levels of its quote named by `quoteWord`.
+    static func namingRoundQuotes(
+        _ message: MessageSnapshot, roundIDs: Set<Int64>
+    ) -> MessageSnapshot {
+        guard !roundIDs.isEmpty, let quote = message.replyTo else { return message }
+        var named = message
+        named.replyTo = ReplyToSnapshot(
+            messageID: quote.messageID,
+            senderID: quote.senderID,
+            excerpt: quoteWord(
+                excerpt: quote.excerpt, messageID: quote.messageID, roundIDs: roundIDs),
+            parent: quote.parent.map {
+                QuotedParentSnapshot(
+                    messageID: $0.messageID,
+                    senderID: $0.senderID,
+                    excerpt: quoteWord(
+                        excerpt: $0.excerpt, messageID: $0.messageID, roundIDs: roundIDs))
+            })
+        return named
     }
 
     /// Whether a lone photo/video tile draws its hairline.

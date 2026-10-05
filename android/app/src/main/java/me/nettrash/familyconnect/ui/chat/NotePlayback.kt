@@ -13,12 +13,13 @@
  *    while it runs every play control is dimmed and says "You can play this
  *    after recording." ([RecordingGate]).
  *
- * Both live with the chat screen, provided through composition locals so the
- * bubbles' audio rows (ui/components/Attachments.kt) take part without
- * threading parameters through every bubble. This is the smallest honest
- * version of S5.3's rule: Phase 2's now-playing owner, living outside the
- * activity, replaces the coordinator — and adds audio focus and "becoming
- * noisy" for received notes.
+ * Both are provided through composition locals so the bubbles' audio rows
+ * (ui/components/Attachments.kt) take part without threading parameters
+ * through every bubble. From Phase 2 the coordinator the app provides is the
+ * NOW-PLAYING OWNER ([NowPlaying]), which lives outside the activity, asks
+ * for transient audio focus while anything plays and pauses when it goes or
+ * the headphones come out (S4), and keeps the round videos' players
+ * (RoundVideoPlayback.kt).
  *
  * The player plays the LOCAL file — what was recorded is what is heard,
  * before anything has left the device.
@@ -46,9 +47,23 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** One thing of this chat's plays at a time (S5.3), and a recording pauses it (S1.7). */
+/**
+ * One thing of the app's plays at a time (S5.3), a recording pauses it
+ * (S1.7), and so does anything S4 says pauses playback — another app taking
+ * the audio focus, the headphones coming out ([interruptions]).
+ *
+ * Also the keeper of the round videos' players ([round]): a circle's player
+ * belongs to its attachment, not to the composable drawing it, so a rotation
+ * or a fold that rebuilds the activity leaves it playing (S4's last column).
+ * Open so the app's own [NowPlaying] can be one, built with the system's
+ * focus and the device's played-videos store; a test builds this directly.
+ */
 @Stable
-internal class PlaybackCoordinator {
+open class PlaybackCoordinator(
+    private val interruptions: AudioInterruptions = AudioInterruptions.NONE,
+    /** What THIS DEVICE has played (S5.2's dot) — in memory unless the app hands in its store. */
+    val played: PlayedRoundVideos = PlayedRoundVideos.InMemory(),
+) {
 
     private var current: (() -> Unit)? = null
 
@@ -57,22 +72,72 @@ internal class PlaybackCoordinator {
         val previous = current
         current = pause
         if (previous != null && previous !== pause) previous()
+        // Held for as long as anything plays; asked again for nothing.
+        interruptions.begin(onLost = ::pauseAll)
     }
 
     /** [pause]'s player stopped on its own, or went away. */
     fun stopped(pause: () -> Unit) {
-        if (current === pause) current = null
+        if (current === pause) {
+            current = null
+            interruptions.end()
+        }
     }
 
-    /** A recording starts: nothing the app plays runs over it. */
+    /**
+     * A recording starts, a call takes the audio, the headphones come out,
+     * the app goes to the background: nothing the app plays runs on.
+     */
     fun pauseAll() {
         val playing = current
         current = null
+        interruptions.end()
         playing?.invoke()
     }
+
+    // -- Round videos --------------------------------------------------------
+
+    private val rounds = HashMap<Long, RoundVideoPlayback>()
+
+    /**
+     * The one player of [attachmentId]'s circle, made by [factory] when this
+     * is its first sight — or the one a rebuilt activity left behind, still
+     * playing.
+     */
+    fun round(attachmentId: Long, factory: VideoPlayerFactory): RoundVideoPlayback =
+        rounds.getOrPut(attachmentId) { RoundVideoPlayback(attachmentId, this, factory) }
+
+    /** The circle went for good — scrolled away, its chat closed: its player goes too (S5.3). */
+    fun release(playback: RoundVideoPlayback) {
+        if (rounds[playback.attachmentId] === playback) rounds.remove(playback.attachmentId)
+        playback.release()
+    }
+
+    /**
+     * Leaving the chat (S4): everything stops, and every circle's player that
+     * nothing draws any more is let go.
+     *
+     * A circle still DRAWN is not the closing chat's: the next chat's circles
+     * compose — and register here — before the last chat's screen leaves and
+     * calls this, so they keep their players (and a rotation after a chat
+     * switch still finds the one playing). The closing chat's own circles
+     * let theirs go as their bubbles leave (RoundVideoPlayback.unbind, not a
+     * rebuild); what this sweeps up is one a rebuild left unbound.
+     */
+    fun stopAll() {
+        pauseAll()
+        rounds.values.filterNot(RoundVideoPlayback::bound).forEach(::release)
+    }
+
+    /** The circles holding a player right now — for the tests. */
+    internal val roundCount: Int get() = rounds.size
 }
 
-/** The chat's coordinator, or null outside a chat (a thread plays as it always has). */
+/**
+ * The app's coordinator — the now-playing owner from Phase 2 on, provided at
+ * the root by MainActivity, so threads and chats share it — or null in a
+ * preview or a test that provides none (each chat then makes its own).
+ */
 internal val LocalPlaybackCoordinator = staticCompositionLocalOf<PlaybackCoordinator?> { null }
 
 /**

@@ -131,12 +131,17 @@ struct MessageContextMenu: View {
     let onShare: () -> Void
     /// Open the chain this message belongs to (docs/protocol.md, "Threads").
     var onViewThread: () -> Void = {}
+    /// The existing viewer, with scrubbing — offered on a video message,
+    /// which a tap plays in place instead (#79, S5.4).
+    var onOpenFullScreen: () -> Void = {}
     /// Reply needs a server id to quote, so it is hidden on a message that
     /// has not been acked yet rather than shown and doing nothing. The
     /// menu's height follows, since the overlay places it by size.
     var canReply: Bool = true
     /// A message that is in a chain — a reply, or a root somebody answered.
     var canViewThread: Bool = false
+    /// The message is a video message (`MessagePresentation.isRoundVideo`).
+    var canOpenFullScreen: Bool = false
     /// Only the author may edit, and only once the message has an id.
     var canEdit: Bool = false
     /// A photo sent without a caption has nothing to copy.
@@ -176,7 +181,9 @@ struct MessageContextMenu: View {
     /// `(n - 1)` hairline term was exact only by that accident. Appending
     /// anything after Share broke it two ways at once, a missing divider
     /// (1pt, invisible) and a stale row count (45pt, not).
-    private enum Item: Hashable { case reply, thread, edit, copy, share, safety, back, report, block, unblock }
+    private enum Item: Hashable {
+        case reply, thread, fullScreen, edit, copy, share, safety, back, report, block, unblock
+    }
 
     /// Which page the menu is showing.
     ///
@@ -188,8 +195,8 @@ struct MessageContextMenu: View {
     enum Page: Hashable { case main, safety }
 
     private static func items(
-        canReply: Bool, canViewThread: Bool, canEdit: Bool, canCopy: Bool, canReport: Bool,
-        blockState: BlockState?, page: Page
+        canReply: Bool, canViewThread: Bool, canOpenFullScreen: Bool, canEdit: Bool,
+        canCopy: Bool, canReport: Bool, blockState: BlockState?, page: Page
     ) -> [Item] {
         let hasSafety = canReport || blockState != nil
         switch page {
@@ -197,6 +204,7 @@ struct MessageContextMenu: View {
             var items: [Item] = []
             if canReply { items.append(.reply) }
             if canViewThread { items.append(.thread) }
+            if canOpenFullScreen { items.append(.fullScreen) }
             if canEdit { items.append(.edit) }
             if canCopy { items.append(.copy) }
             items.append(.share)
@@ -227,10 +235,12 @@ struct MessageContextMenu: View {
     ///
     /// The maximum is SIX rows: `canEdit` requires the message to be the
     /// reader's own and `canReport`/`blockState` require it not to be, so
-    /// Edit can never coexist with Report or Block.
+    /// Edit can never coexist with Report or Block — and a video message,
+    /// the one that offers Open Full Screen, offers neither Edit nor Copy.
     static func size(
         canReply: Bool,
         canViewThread: Bool = false,
+        canOpenFullScreen: Bool = false,
         canEdit: Bool = false,
         canCopy: Bool = true,
         canReport: Bool = false,
@@ -239,7 +249,8 @@ struct MessageContextMenu: View {
     ) -> CGSize {
         let n = CGFloat(
             items(
-                canReply: canReply, canViewThread: canViewThread, canEdit: canEdit,
+                canReply: canReply, canViewThread: canViewThread,
+                canOpenFullScreen: canOpenFullScreen, canEdit: canEdit,
                 canCopy: canCopy, canReport: canReport, blockState: blockState, page: page
             ).count)
         return CGSize(width: menuWidth, height: rowHeight * n + (n - 1))
@@ -247,7 +258,8 @@ struct MessageContextMenu: View {
 
     var body: some View {
         let items = Self.items(
-            canReply: canReply, canViewThread: canViewThread, canEdit: canEdit,
+            canReply: canReply, canViewThread: canViewThread,
+            canOpenFullScreen: canOpenFullScreen, canEdit: canEdit,
             canCopy: canCopy, canReport: canReport, blockState: blockState, page: page)
         return VStack(spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element) { index, item in
@@ -275,6 +287,10 @@ struct MessageContextMenu: View {
             row("Reply", systemImage: "arrowshape.turn.up.left", action: onReply)
         case .thread:
             row("View thread", systemImage: "text.bubble", action: onViewThread)
+        case .fullScreen:
+            row(
+                "Open Full Screen", systemImage: "arrow.up.left.and.arrow.down.right",
+                action: onOpenFullScreen)
         case .edit:
             row("Edit", systemImage: "pencil", action: onEdit)
         case .copy:

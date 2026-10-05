@@ -66,6 +66,9 @@ struct MacConversationView: View {
     /// one in front of the user — one of the three facts that make a chat
     /// READ (ChatPresence), and on its own not enough to read anything.
     @Environment(\.controlActiveState) private var windowActivation
+    /// The window's round-video recorder (#79, Phase 3), over the window's
+    /// root — the sidebar included (S8.3).
+    @Environment(VideoMessagePresenter.self) private var videoRecorder: VideoMessagePresenter?
     @Query private var messages: [MessageEntity]
     @Query private var chats: [ChatEntity]
     @Query private var members: [MemberEntity]
@@ -148,6 +151,11 @@ struct MacConversationView: View {
     /// (VoiceRecordingArbiter), stable for the life of the view: one
     /// recording at a time across every window.
     @State private var voice = VoiceComposer()
+    /// Where this conversation lies in the window, for the video recorder
+    /// (S3.3).
+    @State private var conversationFrame: CGRect?
+    /// When the video button last appeared (S1.1, S1.4).
+    @State private var videoDoorShownAtMS: UInt64 = 0
     /// A line the voice flow shows — "That recording was too short.",
     /// "Recording stopped at five minutes." (S2.5) — and when it goes again.
     @State private var voiceHint: RecordGesture.Hint?
@@ -600,8 +608,9 @@ struct MacConversationView: View {
                     }
                     .help("Call \(chat?.title ?? "")")
                     // Nor while a voice message is being recorded in any
-                    // window: no recording during a call (#79, S1.7).
-                    .disabled(!calls.isIdle || VoiceRecordingArbiter.shared.isRecording)
+                    // window: no recording during a call (#79, S1.7) — nor
+                    // while this window's video recorder is open (S8.3).
+                    .disabled(!calls.isIdle || VoiceRecordingArbiter.shared.isRecording || recorderOpen)
                 }
                 // Beside the phone button, behind its own server switch
                 // (`video_calls_enabled`, docs/protocol.md, "Video").
@@ -614,7 +623,7 @@ struct MacConversationView: View {
                         }
                         .accessibilityLabel("Video Call")
                         .help("Video call \(chat?.title ?? "")")
-                        .disabled(!calls.isIdle || VoiceRecordingArbiter.shared.isRecording)
+                        .disabled(!calls.isIdle || VoiceRecordingArbiter.shared.isRecording || recorderOpen)
                     }
                 }
             }
@@ -656,6 +665,7 @@ struct MacConversationView: View {
                     // VoiceOver, in the value below.
                     .help("Open polls")
                     .accessibilityValue(openPollsToAnswer > 0 ? Text("\(openPollsToAnswer) to answer") : Text(""))
+                    .disabled(recorderOpen)
                 }
             }
         }
@@ -704,7 +714,11 @@ struct MacConversationView: View {
         // (S8.3, MacVoiceCommands).
         .focusedSceneValue(\.macVoiceMessage, MacVoiceMessageTarget(
             isEnabled: MacVoiceMenu.isEnabled(slotInputs),
-            record: { recordVoiceMessage() }))
+            record: { recordVoiceMessage() },
+            offersVideo: roundAvailable,
+            videoIsEnabled: MacVoiceMenu.videoIsEnabled(slotInputs, roundAvailable: roundAvailable),
+            recordVideo: { openVideoRecorder() }))
+        .modifier(VideoPaneReporter(frame: $conversationFrame, presenter: videoRecorder))
         .background(MacHostWindowReader(box: hostWindow))
         .onDisappear {
             coordinator.releasePresence(chatID: chatID)
@@ -787,10 +801,23 @@ struct MacConversationView: View {
     /// way would show the same conversation with different breaks in it.
     /// The unread divider's placement rides along for the same reason.
     private var sections: [DaySection] {
-        // The closure spelling is deliberate — see the phone's twin.
-        MessagePresentation.daySections(
-            visibleMessages.map { MessageSnapshot($0) },
+        // The closure spelling is deliberate — see the phone's twin. So is
+        // the quote naming: a reply to a video message says so (#79, S5.7).
+        let snapshots = visibleMessages.map { MessageSnapshot($0) }
+        let roundIDs = MessagePresentation.roundMessageIDs(snapshots)
+        return MessagePresentation.daySections(
+            snapshots.map { MessagePresentation.namingRoundQuotes($0, roundIDs: roundIDs) },
             firstUnreadID: unreadDividerServerID)
+    }
+
+    /// What the composer's reply banner says the quoted message was — the
+    /// phone's rule.
+    private func quoteWord(_ quote: ReplyToDTO) -> String {
+        guard quote.excerpt.isEmpty,
+              let quoted = messages.first(where: { $0.serverID == quote.messageID }),
+              MessagePresentation.isRoundVideo(MessageSnapshot(quoted))
+        else { return quote.excerpt }
+        return String(localized: "Video message")
     }
 
     /// Did this open deliberately land the reader in history? Read by
@@ -976,7 +1003,16 @@ struct MacConversationView: View {
                                 onTapQuote: { jumpToMessage($0, proxy: proxy) },
                                 onTapMention: { openMember($0) },
                                 onOpenAttachment: { attachment in
-                                    if MessagePresentation.isSticker(row.message) {
+                                    if MessagePresentation.isRoundVideo(row.message) {
+                                        // A click plays a circle in place;
+                                        // this is its "Open Full Screen"
+                                        // (#79, S5.4), and what plays in
+                                        // place lets go first.
+                                        NowPlaying.shared.pauseAll()
+                                        openWindow(
+                                            id: MacWindow.attachment,
+                                            value: AttachmentAlbum(items: [attachment], index: 0))
+                                    } else if MessagePresentation.isSticker(row.message) {
                                         // Shown larger on a small sheet of
                                         // its own, not in the photo
                                         // window: a sticker has one thing
@@ -1584,7 +1620,7 @@ struct MacConversationView: View {
                 MacComposerBanner(
                     icon: "arrowshape.turn.up.left",
                     title: String(localized: "Replying to \(quoteAuthorName(replyDraft.senderID))"),
-                    text: replyDraft.excerpt,
+                    text: quoteWord(replyDraft),
                     cancelLabel: String(localized: "Cancel reply"),
                     onCancel: { self.replyDraft = nil })
             }
@@ -1786,6 +1822,15 @@ struct MacConversationView: View {
                     // menu's own guard already covers an edit and a send
                     // in flight.
                     .disabled(slotInputs.blocked != nil)
+                    // Right below it, where round video is available (S1.5).
+                    if roundAvailable {
+                        Button {
+                            openVideoRecorder()
+                        } label: {
+                            Label("Record Video Message", systemImage: "video.circle")
+                        }
+                        .disabled(slotInputs.call)
+                    }
                 }
                 Button {
                     shareLocation()
@@ -1902,6 +1947,13 @@ struct MacConversationView: View {
                         replyDraft = nil
                     }
                 }
+            // The video button, at the field's trailing edge (S1.4).
+            if videoDoor != .hidden {
+                videoDoorButton
+            }
+        }
+        .onChange(of: videoDoor == .hidden, initial: true) { _, hidden in
+            if !hidden { videoDoorShownAtMS = VoiceComposer.uptimeMS() }
         }
     }
 
@@ -2716,6 +2768,7 @@ struct MacConversationView: View {
     /// is S1.3's row 4, which comes first.
     private var slotInputs: ComposerSlot.Inputs {
         ComposerSlot.Inputs(
+            recorderOpen: videoRecorder?.isOpen ?? false,
             recording: voice.state.recording,
             editing: editTarget != nil,
             draftBlank: draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -2750,6 +2803,8 @@ struct MacConversationView: View {
             focusRequest: voice.slotFocusRequest,
             onActivate: { activateSlot() },
             onRecordFromMenu: { recordVoiceMessage() },
+            offersVideo: roundAvailable,
+            onRecordVideo: { openVideoRecorder() },
             onStopAndListen: { voice.stop() },
             onDelete: { voice.delete() },
             onEscape: { _ = voice.escape() })
@@ -2789,6 +2844,93 @@ struct MacConversationView: View {
         let press = NSApp.currentEvent.flatMap { $0.type == .keyDown ? $0.timestamp : nil }
         guard returnKey.acts(onPressAt: press, slot: slot, canSend: canSend) else { return }
         activateSlot()
+    }
+
+    // MARK: - Video messages (#79, Phase 3)
+
+    /// The key window's recorder is open (S8.3): the toolbar items are
+    /// disabled, and no sheet opens over it.
+    private var recorderOpen: Bool { videoRecorder?.isOpen ?? false }
+
+    /// S1.2's **round available**, in a family or a direct chat.
+    private var roundAvailable: Bool {
+        !isAssistantChat && videoRecorder != nil && videoDoorInputs.roundAvailable
+    }
+
+    private var videoDoorInputs: VideoDoor.Inputs {
+        VideoDoor.Inputs(
+            slot: slotInputs,
+            familyOrDirectChat: !isAssistantChat,
+            undoWindow: voice.inUndoWindow,
+            serverOffersRound: AppSettings.offersRoundVideo,
+            hasCamera: VideoMessageRecorder.hasCamera,
+            encoderProbePasses: true)
+    }
+
+    private var videoDoor: VideoDoor {
+        guard videoRecorder != nil else { return .hidden }
+        return VideoDoor.of(videoDoorInputs)
+    }
+
+    private var videoDoorButton: some View {
+        Button {
+            let now = VoiceComposer.uptimeMS()
+            guard now >= videoDoorShownAtMS + RecordRules.activationGuardMS else { return }
+            openVideoRecorder()
+        } label: {
+            Image(systemName: "video.circle")
+                .font(.system(size: 18))
+                .foregroundStyle(videoDoor == .shown ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                .frame(width: composerControl, height: composerControl)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel(Text(verbatim: VideoDoor.label))
+        .accessibilityValue(videoDoor.noticeKey == nil ? Text("") : Text(verbatim: slotBlocked?.notice ?? ""))
+        .help(Text(verbatim: VideoDoor.tooltip))
+    }
+
+    /// The video button, the paperclip's and the File menu's Record Video
+    /// Message, the microphone's menu and its accessibility action (S3.1).
+    /// Rows 7 and 8 say why instead; row 9 opens (S1.4, S1.6).
+    private func openVideoRecorder() {
+        guard let videoRecorder, roundAvailable, !videoRecorder.isOpen else { return }
+        if let reason = slotBlocked, reason != .notSent {
+            mediaNotice = .failed(reason.notice)
+            announce(reason.notice)
+            return
+        }
+        guard editTarget == nil, !isSending, !voice.isRecording else { return }
+        voice.otherAction()
+        composerFocused = false
+        let reply = replyDraft
+        videoRecorder.paneFrame = conversationFrame
+        videoRecorder.open(VideoMessageSession.Request(
+            chatID: chatID,
+            reply: reply,
+            replyTitle: reply.map { String(localized: "Replying to \(quoteAuthorName($0.senderID))") },
+            replyText: reply.map { quoteWord($0) },
+            maxRoundVideoMS: AppSettings.roundVideoMaxMS ?? RecordRules.defaultMaxRoundVideoMS,
+            maxRoundVideoBytes: AppSettings.roundVideoMaxBytes,
+            notSent: { !ParkedRecordings.shared.waiting(for: chatID).isEmpty },
+            send: { prepared, quote, round in sendVideoMessage(prepared, replyTo: quote, round: round) },
+            dropReply: { replyDraft = nil },
+            startVoice: { voice.record(besideDraft: !slotInputs.isEmpty) },
+            closed: { composerFocused = true }))
+    }
+
+    /// The recorder's Send: the Phase 2 path with `round: true`, or over
+    /// `max_round_video_bytes` an ordinary video (S3.6).
+    private func sendVideoMessage(_ prepared: MediaPrep.Prepared, replyTo: ReplyToDTO?, round: Bool) -> Bool {
+        let queued = round
+            ? coordinator.sendRoundVideo(prepared, replyTo: replyTo, in: chatID)
+            : coordinator.sendMedia([prepared], caption: "", replyTo: replyTo, in: chatID)
+        if queued == nil {
+            mediaNotice = .failed(String(localized: "Couldn't send that — try again."))
+        } else {
+            owesSendPin = true
+        }
+        return queued != nil
     }
 
     /// Record Voice Message — the paperclip, the microphone's menu, File ▸

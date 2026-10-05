@@ -156,6 +156,10 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(voiceCoachMarkShown = true)
     }
 
+    override suspend fun setRoundPreviewTaught() {
+        _state.value = _state.value.copy(roundPreviewTaught = true)
+    }
+
     override suspend fun setBlockedUserIds(ids: Collection<Long>) {
         val next = ids.toSet()
         blockedWrites += next
@@ -221,6 +225,14 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(
             packMaxItems = maxItems ?: 0,
             packMaxItemBytes = maxItemBytes ?: 0L,
+        )
+    }
+
+    override suspend fun setRoundVideoLimits(maxMs: Long?, maxBytes: Long?) {
+        val limits = me.nettrash.familyconnect.data.repo.RoundVideoLimits.of(maxMs, maxBytes)
+        _state.value = _state.value.copy(
+            roundVideoMaxMs = limits?.maxMs ?: 0L,
+            roundVideoMaxBytes = limits?.maxBytes ?: 0L,
         )
     }
 
@@ -604,6 +616,9 @@ class FakeChatApi : ChatApi {
     /** Every `sticker` flag a REST send carried, in order (null = an ordinary message). */
     val postedStickerFlags = mutableListOf<Boolean?>()
 
+    /** Every send's `round` flag, in order — null when the key was omitted (#79). */
+    val postedRoundFlags = mutableListOf<Boolean?>()
+
     override suspend fun postMessage(
         chatId: Long,
         clientMsgId: String,
@@ -613,8 +628,10 @@ class FakeChatApi : ChatApi {
         poll: NewPollDto?,
         mentions: List<MentionDto>?,
         sticker: Boolean?,
+        round: Boolean?,
     ): ApiResult<MessageResponse> {
         postedStickerFlags += sticker
+        postedRoundFlags += round
         postedMessages += Triple(chatId, clientMsgId, body)
         postedReplyTargets += replyToMessageId
         postedAttachmentIds += attachmentIds

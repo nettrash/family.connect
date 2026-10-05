@@ -64,6 +64,14 @@ struct ChatListView: View {
     @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(CallManager.self) private var calls
+    /// The window's video recorder (#79): while it is open, a notification
+    /// tap or a shared item waits.
+    @Environment(VideoMessagePresenter.self) private var videoRecorder: VideoMessagePresenter?
+    /// A call request that needs a sheet or an alert, held while the video
+    /// recorder covers the window, and what a call placed under it had to
+    /// say (#79, S3.3, S4) — both handled once the recorder closes.
+    @State private var callRequestAfterRecorder: CallRequest?
+    @State private var callProblemAfterRecorder: String?
     @Query private var chats: [ChatEntity]
     /// The roster, purely to resolve a direct chat's peer to their
     /// profile-picture version — one query for the list rather than one
@@ -180,10 +188,32 @@ struct ChatListView: View {
         .onChange(of: session.pendingPushRoute) { _, _ in
             consumePendingRoute() // arrived while the list is up (warm tap)
         }
+        // A notification tap or a shared item that arrived while the video
+        // recorder covered the window waited for it to close (#79, S4:
+        // "the conversation cannot change underneath it").
+        .onChange(of: videoRecorder?.isOpen ?? false) { _, open in
+            guard !open else { return }
+            if let problem = callProblemAfterRecorder {
+                callProblemAfterRecorder = nil
+                callRequestError = problem
+            }
+            if let request = callRequestAfterRecorder {
+                callRequestAfterRecorder = nil
+                session.pendingCallRequest = request
+            }
+            consumePendingRoute()
+            if session.pendingShareImport != nil {
+                showsNewChat = false
+                showsSettings = false
+                showsJoinRequests = false
+                showsBoard = false
+                showsShareTarget = true
+            }
+        }
         .onChange(of: session.pendingShareImport) { _, pending in
             // A share arrived while the app is up: everything else steps
             // aside so the picker is what the person sees.
-            guard pending != nil else { return }
+            guard pending != nil, videoRecorder?.isOpen != true else { return }
             showsNewChat = false
             showsSettings = false
             showsJoinRequests = false
@@ -540,7 +570,7 @@ struct ChatListView: View {
         // mid-call is refused out loud, not dropped — the manager would
         // only have returned false.
         guard calls.isIdle else {
-            callRequestError = String(localized: "You're already on a call.", comment: "Alert shown when the Phone app or Siri asked Family to call somebody while a call is already in progress.")
+            sayCallProblem(String(localized: "You're already on a call.", comment: "Alert shown when the Phone app or Siri asked Family to call somebody while a call is already in progress."))
             return
         }
         let links = ContactLinks.shared
@@ -559,7 +589,15 @@ struct ChatListView: View {
             linkedMember: { links.userID(linkedTo: $0) },
             memberByPhone: { links.userID(matchingPhone: $0) },
             memberByEmail: { links.userID(matchingEmail: $0) })
-        switch CallRequestRouter.resolve(request, in: directory) {
+        let resolution = CallRequestRouter.resolve(request, in: directory)
+        switch CallRequestRouter.underRecorder(resolution, recorderOpen: videoRecorder?.isOpen == true) {
+        case .act, .ringInPlace:
+            break
+        case .waitForRecorder:
+            callRequestAfterRecorder = request
+            return
+        }
+        switch resolution {
         case .member(let userID):
             place(callTo: userID, video: request.video)
         case .needsChoice(let contactIdentifier, let contactName):
@@ -582,22 +620,35 @@ struct ChatListView: View {
 
     /// Open (or create) the direct chat and ring: what the conversation's
     /// own call button does, from outside.
+    ///
+    /// Under the video recorder it rings without opening the thread: the
+    /// conversation the recorder was opened over stays beneath it (S3.3).
     private func place(callTo userID: Int64, video: Bool) {
         guard session.callsEnabled else {
-            callRequestError = String(localized: "Calls are off on this server.")
+            sayCallProblem(String(localized: "Calls are off on this server."))
             return
         }
-        dismissSheets()
+        if videoRecorder?.isOpen != true { dismissSheets() }
         Task {
             do {
                 let chatID = try await coordinator.openDirectChat(with: userID)
-                path = [chatID]
+                if videoRecorder?.isOpen != true { path = [chatID] }
                 if !calls.startCall(chatID: chatID, peerUserID: userID, video: video) {
-                    callRequestError = String(localized: "You're already on a call.")
+                    sayCallProblem(String(localized: "You're already on a call."))
                 }
             } catch {
-                callRequestError = String(localized: "The server couldn't open a chat with them. Try again.")
+                sayCallProblem(String(localized: "The server couldn't open a chat with them. Try again."))
             }
+        }
+    }
+
+    /// A call request's alert — kept until the video recorder closes when
+    /// it covers the window, whose content cannot be used beneath it.
+    private func sayCallProblem(_ problem: String) {
+        if videoRecorder?.isOpen == true {
+            callProblemAfterRecorder = problem
+        } else {
+            callRequestError = problem
         }
     }
 
@@ -640,6 +691,8 @@ struct ChatListView: View {
 
     /// Act on a parked notification tap, then clear it so it fires once.
     private func consumePendingRoute() {
+        // Not under the video recorder: it is consumed when that closes.
+        guard videoRecorder?.isOpen != true else { return }
         guard let route = session.pendingPushRoute else { return }
         session.pendingPushRoute = nil
         switch route {

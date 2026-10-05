@@ -76,6 +76,14 @@ public sealed class AttachmentCache(ApiClient api, IBlobStore blobs)
         blobs.Write(KeyFor(attachment.Id, preview: false), bytes);
 
     /// <summary>
+    /// Keep a PREVIEW this device made and just sent — a video message's square poster — under the attachment's id, so
+    /// the circle it becomes is drawn at once rather than downloaded back (S5.6). Kept under the preview's own key,
+    /// which a later read asks for once the message says <c>has_preview</c>; an id never names different bytes.
+    /// </summary>
+    public void RememberPreview(AttachmentDto attachment, ReadOnlyMemory<byte> jpeg) =>
+        blobs.Write(KeyFor(attachment.Id, preview: true), jpeg);
+
+    /// <summary>
     /// Whether these bytes are already here — what a view asks before it decides to show a
     /// spinner.
     /// </summary>

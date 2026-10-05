@@ -38,10 +38,10 @@ public class DatabaseTests : IDisposable
     {
         using var database = Database.Open(Path_("fresh.db"));
         Assert.Equal(Database.SchemaVersion, database.UserVersion);
-        Assert.Equal(5, Database.SchemaVersion);
+        Assert.Equal(6, Database.SchemaVersion);
         Assert.Equal(
             ["blocked", "chats", "gone", "members", "messages", "meta", "notes", "outbox",
-             "pack_gone", "pack_items", "pack_recents", "transcripts"],
+             "pack_gone", "pack_items", "pack_recents", "played_rounds", "transcripts"],
             database.Tables());
     }
 
@@ -193,6 +193,47 @@ public class DatabaseTests : IDisposable
         Assert.Single(new PackStore(migrated).Items());
         Assert.True(Assert.Single(new OutboxStore(migrated).All()).Sticker);
         Assert.Null(new TranscriptStore(migrated).Find(34));
+    }
+
+    /// <summary>
+    /// STEP 6 ADDS VIDEO MESSAGES AND READS NOTHING AGAIN. A version-5 cache keeps its messages, its kept text and its
+    /// outbox — every send already queued in it is what it always was: not a circle, and a sticker still a sticker — and
+    /// no circle has been played on it yet.
+    /// </summary>
+    [Fact]
+    public void AVersionFiveCacheGainsVideoMessagesAndLosesNothing()
+    {
+        var path = Path_("five.db");
+        using (var five = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}"))
+        {
+            five.Open();
+            foreach (var statement in Migrations.All.Take(5).SelectMany(step => step)
+                         .Append("INSERT INTO chats (chat_id, kind, title) VALUES (42, 'family', 'The Smiths')")
+                         .Append("INSERT INTO messages (message_id, chat_id, sender_id, body, created_at, sequenced) VALUES (20, 42, 9, 'hi', 0, 1)")
+                         .Append("INSERT INTO transcripts (attachment_id, text) VALUES (34, 'Back at six')")
+                         .Append("INSERT INTO outbox (client_msg_id, chat_id, body, queued_at) VALUES ('k', 42, 'Dinner at 7?', 0)")
+                         .Append("INSERT INTO outbox (client_msg_id, chat_id, body, queued_at, sticker) VALUES ('s', 42, '', 1, 1)")
+                         .Append("PRAGMA user_version = 5"))
+            {
+                using var command = five.CreateCommand();
+                command.CommandText = statement;
+                command.ExecuteNonQuery();
+            }
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+        using var migrated = Database.Open(path);
+        Assert.Equal(Database.SchemaVersion, migrated.UserVersion);
+        Assert.Equal("hi", Assert.Single(new ChatStore(migrated).Messages(42)).Body);
+        Assert.Equal("Back at six", new TranscriptStore(migrated).Find(34)!.Text);
+        var queued = new OutboxStore(migrated).All();
+        Assert.Equal(2, queued.Count);
+        Assert.All(queued, row => Assert.False(row.Round));
+        Assert.False(queued[0].Sticker);
+        Assert.True(queued[1].Sticker);
+        var played = new PlayedRoundStore(migrated);
+        Assert.Equal(0, played.Count);
+        Assert.False(played.Played(91));
     }
 
     /// <summary>

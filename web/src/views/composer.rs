@@ -108,7 +108,35 @@ pub struct Records {
     /// composer's, or nobody's (S2.4, S2.7). An ending by the person moves
     /// the box's own `focus`; an interruption moves neither (S4).
     pub refocus: u32,
+    /// The video recorder is open, and owns the row (S1.3 row 1).
+    pub recorder_open: bool,
+    /// Video messages — where this server has them and this device has a
+    /// camera, in a family or a direct chat (S1.2, S1.4–S1.6). None: no
+    /// video entry at all.
+    pub video: Option<VideoEntry>,
 }
+
+/// The ways into the video recorder the composer draws: the video button in
+/// the field, and "Record Video Message" in the microphone's menu.
+#[derive(Clone, PartialEq)]
+pub struct VideoEntry {
+    /// This browser can record one (the probe, S8.7). Where it cannot, the
+    /// button is not drawn and the menu item says why instead of opening.
+    pub records: bool,
+    /// Open the recorder.
+    pub on_open: Callback<()>,
+    /// Say why it does not open, on the conversation's notice line.
+    pub on_explain: Callback<String>,
+}
+
+/// "This browser can't record video messages. Voice messages work." — what
+/// a way into the recorder says in a browser whose probe fails (S1.5).
+pub fn cannot_record_video() -> &'static str {
+    t("This browser can't record video messages. Voice messages work.")
+}
+
+/// The video button's picture: a video camera in a circle (S1.4).
+const DOOR_PATH: &str = "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 1.8a8.2 8.2 0 1 1 0 16.4 8.2 8.2 0 0 1 0-16.4zM7.5 9h6a1 1 0 0 1 1 1v.9l2.5-1.6v5.4l-2.5-1.6v.9a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1z";
 
 /// The slot's pictures (S1.3's glyphs, drawn inline).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -775,7 +803,7 @@ pub fn composer(props: &ComposerProps) -> Html {
     let blank = composer::trimmed_for_send(&text).is_none();
     let slot = records.as_ref().map(|records| {
         record::composer_slot(&record::SlotInputs {
-            recorder_open: false,
+            recorder_open: records.recorder_open,
             recording: records.recording,
             editing: editing.is_some(),
             draft_blank: blank,
@@ -793,6 +821,87 @@ pub fn composer(props: &ComposerProps) -> Html {
         Some(Slot::SendVoice | Slot::StopRecording | Slot::HeldMicrophone)
     );
     let is_microphone = slot.is_some_and(Slot::is_microphone);
+    // THE VIDEO BUTTON (S1.4), inside the field while it is empty: the
+    // shared rule decides whether it is drawn, dimmed or shown.
+    let video = records.as_ref().and_then(|records| records.video.clone());
+    let door = match (records.as_ref(), video.as_ref()) {
+        (Some(records), Some(video)) => record::video_door(&record::DoorInputs {
+            slot: record::SlotInputs {
+                recorder_open: records.recorder_open,
+                recording: records.recording,
+                editing: editing.is_some(),
+                draft_blank: blank,
+                staged: props.staged > 0,
+                assistant_chat: props.is_ai_chat,
+                can_record: records.can_record,
+                call: records.call,
+                busy: props.busy,
+                not_sent: records.not_sent,
+            },
+            family_or_direct_chat: !props.is_ai_chat,
+            undo_window: false,
+            server_offers_round: true,
+            has_camera: true,
+            encoder_probe_passes: video.records,
+            records_round_video: true,
+        }),
+        _ => record::Door::Hidden,
+    };
+    // It ignores activation for 600 ms after it appears (S1.1): it comes up
+    // beside the slot the moment a Send empties the field, and a second tap
+    // that drifts must not turn the camera on.
+    let door_since = use_mut_ref(|| Option::<f64>::None);
+    let door_reason_id = use_memo((), |_| crate::views::dialog::fresh_id("door-reason"));
+    {
+        let mut since = door_since.borrow_mut();
+        match door {
+            record::Door::Hidden => *since = None,
+            _ if since.is_none() => *since = Some(now_ms()),
+            _ => {}
+        }
+    }
+    let door_html = match (door.label(), video.clone()) {
+        // The shared rule's words (`record::VIDEO_DOOR_LABEL`, `…_TOOLTIP`),
+        // written out so that the catalogue's scan finds them.
+        (Some(_), Some(video)) => {
+            let reason = door.notice().map(t);
+            let onclick = {
+                let door_since = door_since.clone();
+                let reason = reason.map(str::to_string);
+                Callback::from(move |_: MouseEvent| {
+                    let appeared = door_since.borrow().unwrap_or(0.0);
+                    if now_ms() - appeared < record::ACTIVATION_GUARD_MS as f64 {
+                        return;
+                    }
+                    match &reason {
+                        Some(reason) => video.on_explain.emit(reason.clone()),
+                        None => video.on_open.emit(()),
+                    }
+                })
+            };
+            let dimmed = door.notice().is_some();
+            html! {
+                <button
+                    type="button"
+                    class={classes!("video-door", dimmed.then_some("is-dimmed"))}
+                    aria-label={t("Record video message")}
+                    title={t("Record a video message")}
+                    aria-disabled={dimmed.then_some("true")}
+                    aria-describedby={dimmed.then(|| (*door_reason_id).clone())}
+                    {onclick}
+                >
+                    <svg class="door-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d={DOOR_PATH} />
+                    </svg>
+                    if let Some(reason) = door.notice() {
+                        <span id={(*door_reason_id).clone()} hidden=true>{ t(reason) }</span>
+                    }
+                </button>
+            }
+        }
+        _ => Html::default(),
+    };
+    let door_shown = door != record::Door::Hidden;
     {
         let on_blank = records.as_ref().map(|records| records.on_blank.clone());
         use_effect_with(blank, move |blank| {
@@ -834,6 +943,7 @@ pub fn composer(props: &ComposerProps) -> Html {
     let swallow_until = use_mut_ref(|| 0.0f64);
     let menu_open = use_state(|| false);
     let reason_id = use_memo((), |_| crate::views::dialog::fresh_id("slot-reason"));
+    let video_reason_id = use_memo((), |_| crate::views::dialog::fresh_id("video-reason"));
     // Whether a press going down NOW goes down while the slot ignores
     // activation: inside its 600 ms guard (S1.1), or while the microphone is
     // being asked for, when the slot is a microphone that ignores clicks.
@@ -1130,6 +1240,9 @@ pub fn composer(props: &ComposerProps) -> Html {
                             >
                                 { t("Record Voice Message") }
                             </button>
+                            if let Some(video) = video.clone() {
+                                { video_menu_item(slot, video, close_menu.clone(), &video_reason_id) }
+                            }
                         </div>
                     }
                 </div>
@@ -1251,6 +1364,7 @@ pub fn composer(props: &ComposerProps) -> Html {
                 // the box's own, and come back with it.
                 <textarea
                     ref={area}
+                    class={classes!(door_shown.then_some("has-door"))}
                     aria-label={t("Message")}
                     rows="1"
                     hidden={recording_now}
@@ -1259,9 +1373,57 @@ pub fn composer(props: &ComposerProps) -> Html {
                     onkeydown={on_key}
                     onpaste={on_paste}
                 />
+                // Inside the field, at its trailing edge (S1.4).
+                { door_html }
                 { slot_html }
             </div>
         </div>
+    }
+}
+
+/// "Record Video Message" in the microphone's menu (S1.6): it opens the
+/// recorder — in row 9 too, since the not-sent rule is about voice — and in
+/// rows 7 and 8, or in a browser that cannot record one, it says why
+/// instead.
+fn video_menu_item(
+    slot: Slot,
+    video: VideoEntry,
+    close_menu: Callback<bool>,
+    reason_id: &str,
+) -> Html {
+    let reason = match slot {
+        Slot::Dimmed(reason @ (record::Dimmed::Call | record::Dimmed::Busy)) => {
+            Some(t(reason.notice()))
+        }
+        _ if !video.records => Some(cannot_record_video()),
+        _ => None,
+    };
+    let onclick = {
+        let reason = reason.map(str::to_string);
+        Callback::from(move |_: MouseEvent| {
+            close_menu.emit(false);
+            match &reason {
+                Some(reason) => video.on_explain.emit(reason.clone()),
+                None => video.on_open.emit(()),
+            }
+        })
+    };
+    let dimmed = reason.is_some();
+    html! {
+        <>
+            <button
+                role="menuitem"
+                class={classes!(dimmed.then_some("is-dimmed"))}
+                aria-disabled={dimmed.then_some("true")}
+                aria-describedby={dimmed.then(|| reason_id.to_string())}
+                {onclick}
+            >
+                { t("Record Video Message") }
+            </button>
+            if let Some(reason) = reason {
+                <span id={reason_id.to_string()} hidden=true>{ reason }</span>
+            }
+        </>
     }
 }
 
@@ -1337,6 +1499,8 @@ mod tests {
             guard_until: Callback::from(|_: ()| 0),
             on_blank: Callback::noop(),
             refocus: 0,
+            recorder_open: false,
+            video: None,
         }
     }
 
@@ -1922,6 +2086,8 @@ mod tests {
             guard_until: Callback::from(|_: ()| 0),
             on_blank: Callback::noop(),
             refocus: 0,
+            recorder_open: false,
+            video: None,
         }
     }
 
@@ -2294,6 +2460,8 @@ mod tests {
                 guard_until: Callback::from(|_: ()| 0),
                 on_blank: Callback::noop(),
                 refocus: 0,
+                recorder_open: false,
+                video: None,
             }
         }
     }

@@ -266,6 +266,115 @@ async fn the_0038_check_keeps_faces_off_while_pictures_are() {
     );
 }
 
+/// 0052's two CHECKs (protocol.md, "Video messages"), at the level they are
+/// enforced: `round` only ever on a video, and never beside `sticker`.
+///
+/// No request can reach either — the send refuses `round` with `sticker`
+/// before any id is read, and the claim writes `round = ($6 AND kind =
+/// 'video')`; round_flow.rs proves every wrong-kind send is a 400. This is
+/// the half no request path can reach: a write that bypasses the claim
+/// meets the constraint rather than a row the protocol forbids. And the
+/// column's default is the truth about the past: nothing uploaded is round.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_0052_checks_keep_round_on_videos_and_off_stickers() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+
+    let upload = |query: &'static str, mime: &'static str, bytes: Vec<u8>| {
+        let ts = &ts;
+        let owner = owner.clone();
+        async move {
+            let response = ts
+                .put_bytes_method(
+                    "POST",
+                    &owner,
+                    &format!("/attachments?{query}"),
+                    mime,
+                    bytes,
+                )
+                .await;
+            assert_eq!(response.status(), 201, "uploading {query}");
+            let body: serde_json::Value = response.json().await.expect("JSON");
+            body["attachment"]["id"].as_i64().expect("id")
+        }
+    };
+    let mut mp4 = vec![0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p'];
+    mp4.extend_from_slice(b"isom");
+    mp4.resize(256, 0x01);
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0];
+    jpeg.resize(256, 0x02);
+    let mut audio = mp4.clone();
+    audio.resize(256, 0x03);
+    let mut file = mp4.clone();
+    file.resize(256, 0x04);
+
+    let video = upload(
+        "kind=video&width=480&height=480&duration_ms=1000",
+        "video/mp4",
+        mp4,
+    )
+    .await;
+    let others = [
+        upload("kind=photo", "image/jpeg", jpeg).await,
+        upload("kind=audio&duration_ms=1000", "audio/mp4", audio).await,
+        upload("kind=file&name=clip.mp4", "video/mp4", file).await,
+        upload(
+            "kind=location&latitude=55.7558&longitude=37.6173",
+            "",
+            Vec::new(),
+        )
+        .await,
+    ];
+
+    let unflagged: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments WHERE round")
+        .fetch_one(&ts.state.pool)
+        .await
+        .expect("counting");
+    assert_eq!(
+        unflagged, 0,
+        "NOT NULL DEFAULT false: no upload starts round"
+    );
+
+    let constraint_of = |result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>| match result {
+        Err(sqlx::Error::Database(error)) => error.constraint().map(str::to_string),
+        Ok(_) => None,
+        Err(other) => panic!("not a constraint refusal: {other}"),
+    };
+
+    // On anything that is not a video: refused by the schema.
+    for id in others {
+        let refused = sqlx::query("UPDATE attachments SET round = true WHERE id = $1")
+            .bind(id)
+            .execute(&ts.state.pool)
+            .await;
+        assert_eq!(
+            constraint_of(refused).as_deref(),
+            Some("attachments_round_is_video"),
+            "attachment {id}"
+        );
+    }
+
+    // Beside `sticker` on a video — which 0048 leaves free to carry the
+    // sticker flag — refused by the second CHECK.
+    let refused = sqlx::query("UPDATE attachments SET round = true, sticker = true WHERE id = $1")
+        .bind(video)
+        .execute(&ts.state.pool)
+        .await;
+    assert_eq!(
+        constraint_of(refused).as_deref(),
+        Some("attachments_round_not_sticker")
+    );
+
+    // On a video alone: the state the rules allow.
+    sqlx::query("UPDATE attachments SET round = true WHERE id = $1")
+        .bind(video)
+        .execute(&ts.state.pool)
+        .await
+        .expect("round on a video is the allowed state");
+}
+
 /// 0039's backfill, run as its own text against a table put back in its
 /// pre-0039 shape: every reply that existed before threads did gets the
 /// root of its chain, however deep — walked over the surviving links, which

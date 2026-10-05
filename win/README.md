@@ -51,6 +51,8 @@ win/
                                 it goes, and the voice messages that were not sent, kept per account
                 ComposerButton — the Send slot (Send, Save, the microphone, a recording's Send or Stop), the video
                                 button's rule, the round video's arithmetic, and which press opens the slot's menu
+                RoundVideoRules, RoundRecorder — recording a video message: the switch, the square, the camera and its
+                                mode, the encodes, what is sent, and the recorder's three states as a machine
   src/FamilyConnect.App/               the WinUI 3 window: structure + code-behind, no decisions
                 Services/ Connection (one server, wired), LockerTokenStore (the credential
                           locker), AppServices, AppFolders, the settings files, Toasts and
@@ -58,10 +60,11 @@ win/
                           ShareInbox, WindowPlacement, WebViewCallMedia, VoiceRecorder,
                           MediaPreparing, LocationFinder, StickerImaging, KeepAwake (the
                           screen on while recording), SessionWatch (lock, screen saver, sleep),
-                          ScreenReader (whether one runs, so the microphone waits for it)
+                          ScreenReader (whether one runs, so the microphone waits for it),
+                          VideoMessageRecorder + RoundVideoSetting (a video message's camera, switched off)
                 Views/    ServerView, SignInView, DoorView, PendingView, OfflineView, ChatsView,
                           BoardView + NoteSheet, FamilyView, SettingsView, CallCardView, and the
-                          sheets and cards they open (polls, emoji, dialogs)
+                          sheets and cards they open (polls, emoji, dialogs, RoundRecorderLayer)
   i18n/                                generate.py + win.json (the port's own strings)
   store/                               the Microsoft Store submission: listing.md (every text, the certification
                                        notes, the checklist), images/, count.ps1 (the listing against Partner
@@ -418,9 +421,61 @@ With a screen reader running, "Recording" is said a second before the microphone
 recording does is said on a hidden polite line. **None of it has run on Windows** (trial T7, and T4 for a touch or pen hold
 on a button with holding off): that a long touch press clicks rather than opening the menu, that a pen's barrel tap reaches
 the menu, that Ctrl+Shift+R reaches an accelerator on the composer while the field has focus, the cross-fade and the pulse,
-and what Narrator reads in every state (T5). There is no video button yet: Windows records no round video before Phase 3d,
-and a camera button with nothing behind it is never drawn (decision 40); its rule is written and tested, and that phase
-only wires it.
+and what Narrator reads in every state (T5). The video button is wired but not drawn — see the next paragraph.
+
+**Recording a video message is built and switched off** (docs/audio-video-messages-2026-10-04.md, Phase 3d; Blocked 1,
+Decision 28). `RoundVideoRules.RecordingEnabled` is `false`, and while it is, no build draws a way in: no video button in
+the empty field, no "Record Video Message" in the paperclip's menu or the microphone's, no "Press Shift+F10 for a video
+message." hint for Narrator — and nothing enumerates or opens a camera. A build that can only RECEIVE circles shows no way
+of recording one (Decision 40). Behind the switch is the whole recorder: the video button (Segoe E714 inside the empty
+field, its own 600 ms guard), the two menu items, and `RoundRecorderLayer` over the rail and the page (under the call card)
+— the circle, its status line, the reply it carries and a control row on the composer's own row with the slot on the Send
+button; PREVIEW (mirrored, "Not recording", Record dimmed until the first frame, "Choose camera" with more than one,
+"Record a voice message instead", a minute untouched turns it off), RECORDING (the ring filling red, "10 seconds left" at
+50 s, stopped at 59.5 s into REVIEW, Delete asking from ten seconds) and REVIEW (the clip as it will be sent, Space plays
+and pauses wherever focus is, Delete, Retake, Send); `RoundRecorder` decides every step and is tested on any OS.
+`VideoMessageRecorder` opens the front-panel camera (else the chosen or first one) through `MediaCapture` for
+`AudioAndVideo`, shows it through `MediaPlayerElement` + `MediaSource.CreateFromMediaFrameSource` mirrored with
+`ScaleX = -1`, refuses a camera whose only formats leave that preview blank (#9756: RGB24, UYVY, I420 — "Video messages
+can't be recorded with this camera."), and writes the take to a temporary MP4 at the camera's size;
+`MediaPreparing.RoundAsync` makes the square through the existing `MediaTranscoder` path with a required
+`VideoTransformEffectDefinition` (centre `CropRectangle`, `OutputSize` 480 × 480) into H.264 High 500 kbit/s and AAC-LC
+mono 64 000 (96 000 where the encoder refuses it), reads it back, checks its bytes (`MediaPrep.MatchesMagic`), puts `moov`
+first (`Faststart.MoovFirst`) and cuts its 480 × 480 poster. A take that cannot be made square, or a length the server
+would refuse round, is sent as the regular video the planner makes of it ("Couldn't make it round."); a square over
+`max_round_video_bytes` goes as a regular 480 × 480 video ("Too big for a video message."). A real close over a take or a
+clip asks "Delete video message?" in `OnClosing`, and Keep cancels the close. The video entry also needs the server's
+`max_round_video_ms` and `max_round_video_bytes` on `GET /families/mine` (`RoundVideoLimits`, carried by the pass into the
+session) and a camera on the machine.
+
+**To switch it on**, set `RecordingEnabled = true` in `src/FamilyConnect.App.Logic/RoundVideoRules.cs`, build, and run the
+trials on the ARM64 machine (`RoundVideoRulesTests.RecordingIsSwitchedOffUntilTheTrials` fails while it is on, on
+purpose: flip that assertion too when the trials pass and the switch is meant to ship). Then:
+
+- **T1 — the picture and the microphone.** Open the recorder (the video button in an empty field) on the built-in webcam
+  and on any USB one: the circle shows the live picture, mirrored, within a second or two ("Starting camera…" then "Not
+  recording", Record coming alive), and the first-time line shows once per device. With PREVIEW up and Record NOT pressed,
+  look at the taskbar's privacy indicators: if Windows shows the MICROPHONE in use, set
+  `RoundVideoRules.MicrophoneOnInPreview = true` — PREVIEW then says "Camera and microphone on · Not recording". Close the
+  shutter or turn the camera off in Settings: "We can't see anything…" should appear after two seconds (the frame reader
+  runs with `MemoryPreference = Cpu`; if it does not start, the picture still shows and only that line is lost — check
+  `diagnostics.log` for "frame reader"). Check the camera light goes out on Close, in REVIEW, on a minimise, a lock, an
+  incoming call and Esc.
+- **T2 — the circle.** In PREVIEW and REVIEW the picture must be cut ROUND, its corners not showing past the ring. If
+  they show, set `RoundVideoRules.Clip` to `PreviewClip.Composition` (an ellipse clip on the element's visual) and try
+  again; if that also fails, `PreviewClip.Mask` (the corners painted over in the card's colour on an opaque card). Write
+  down which one held.
+- **T3 — the square.** Record ten seconds and Send to a test family; then check the uploaded file (or the REVIEW clip in
+  `%TEMP%\FamilyConnect\round\`): 480 × 480, H.264, AAC mono at 64 000 (96 000 is acceptable and is logged when taken),
+  `moov` before `mdat`, not squashed (a circle drawn on paper stays a circle), not mirrored (writing held up to the camera
+  reads correctly), a 480 × 480 poster, and a keyframe at least every 2 s (`ffprobe -select_streams v -skip_frame nokey
+  -show_entries frame=pts_time -of csv` lists them; the profile asks for `MF_MT_MAX_KEYFRAME_SPACING`, and only the last
+  encode tried goes without it). `diagnostics.log` says which encode was taken and anything that came out other than
+  asked. Also check a phone and the web draw it as a circle.
+
+Until all three pass, leave the switch off. T5 (Narrator reads every state of the recorder) and T6 (opening the camera
+while a WebView2 call holds it — "The camera is being used by another app.", read from Media Foundation's codes in
+`RoundVideoRules.Trouble`) are worth running in the same session.
 
 **Sharing INTO the app** is a share target in the manifest. What was shared is copied into the app's
 inbox by the process Windows launched for it, BEFORE that process hands its activation to the running
