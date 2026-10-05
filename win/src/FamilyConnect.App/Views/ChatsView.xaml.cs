@@ -14,6 +14,7 @@ using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Animation = Microsoft.UI.Xaml.Media.Animation;
 using Windows.Storage;
 using Windows.Storage.Pickers;
 using Windows.Storage.Streams;
@@ -104,15 +105,78 @@ public sealed partial class ChatsView : UserControl
     private readonly ComposerDrafts drafts = new();
     private string? restoredDraft;
 
-    /// <summary>A voice note being recorded, and the clock that redraws its bar.</summary>
+    /// <summary>A voice note being recorded, the chat it belongs to — the one it was started in — and the clock that redraws its row.</summary>
     private VoiceRecorder? recorder;
+    private long recordingChat;
     private DispatcherQueueTimer? recordingTimer;
+
+    /// <summary>
+    /// Whether the recording began beside words or staged items — from the paperclip or the shortcut — so the slot is Stop and
+    /// Stop stages the note beside them (S1.3 row 3); otherwise the composer was empty and the slot is the Send arrow (row 2).
+    /// </summary>
+    private bool recordingBesideDraft;
+
+    /// <summary>
+    /// A start under way — Windows' permission prompt, a screen reader's second — so a second press starts nothing more,
+    /// nothing plays meanwhile (S1.7), and an interruption meanwhile lets go of the microphone once it is granted (S4).
+    /// </summary>
+    private readonly RecordingStart recordingStart = new();
+
+    /// <summary>"30 seconds left" said once a recording, as it is shown (S2.5).</summary>
+    private bool warnedThirtySeconds;
+
+    /// <summary>The red dot's pulse while something records (S2.9), and whether the row's buttons are icons for want of room (S2.4).</summary>
+    private Animation.Storyboard? recordingPulse;
+    private bool? recordingRowNarrow;
+
+    /// <summary>
+    /// The trailing slot (S1.3, S8.6): its 600 ms guard and the press reaching it — the latest pointer's and key's, for their
+    /// ends — Ctrl+Shift+R's held-down repeats, and how the slot was drawn last, so a redraw on every keystroke changes
+    /// nothing that has not changed.
+    /// </summary>
+    private readonly SlotGuard slotGuard = new();
+    private long slotPointerPress;
+    private long slotKeyPress;
+    private readonly ShortcutPresses recordShortcut = new();
+    private int? slotGlyph;
+    private string? slotName;
+    private string? slotHelp;
+    private string? slotTooltip;
+    private Animation.Storyboard? slotFade;
+
+    /// <summary>How many voice messages that were not sent the open chat's rows show: the microphone's row 9 (S1.3).</summary>
+    private int notSentShown;
+
+    /// <summary>Takes the last thing said to a screen reader off the hidden status line a moment later.</summary>
+    private DispatcherQueueTimer? statusClear;
+
+    /// <summary>A recording stopped to ask "Delete this recording?", while the question is up: an interruption keeps it.</summary>
+    private AskedRecording? asking;
+
+    /// <summary>
+    /// Recordings stopped and not yet put anywhere — the moment between Stop and review, while Windows finishes the file —
+    /// which a real close waits for, so that what lands there is kept too.
+    /// </summary>
+    private readonly List<Task> settling = [];
+
+    /// <summary>The screen, kept on while something records (S1.7).</summary>
+    private readonly KeepAwake keepAwake = new();
+
+    /// <summary>
+    /// The voice messages that were not sent (docs/audio-video-messages-2026-10-04.md, S2.8) — this account's, on this
+    /// server — and whether what is recorded is still kept at all: not once the session has ended (<see cref="Detach"/>).
+    /// </summary>
+    private readonly ParkedRecordings parked;
+    private bool keepsRecordings = true;
     /// <summary>A link clicked a beat ago and waiting to open: a double click on it is the heart, which cancels it.</summary>
     private DispatcherQueueTimer? pendingLink;
     /// <summary>The album the viewer is showing, and a count that makes a load for an earlier page land nowhere.</summary>
     private MediaAlbum? viewing;
     private int viewerShown;
     private long lastHeart;
+
+    /// <summary>The viewer's video, muted while something records and given back as it was (S1.7).</summary>
+    private readonly QuietWhileRecording viewerQuiet = new();
 
     /// <summary>
     /// The one recording playing — one at a time — and the latest row drawn for each, which a redraw replaces; ended, it
@@ -125,6 +189,17 @@ public sealed partial class ChatsView : UserControl
     private bool audioAtEnd;
     private bool movingTrack;
     private bool scrubbingAudio;
+
+    /// <summary>
+    /// A voice note playing from THIS DEVICE — a staged one (S2.7) or one that was not sent (S2.8) — through the same one
+    /// player, so it is never beside a bubble's recording; the rows drawn for them, by the note itself and by the not-sent
+    /// entry's id; and a count that makes a read for an earlier press land nowhere.
+    /// </summary>
+    private StagedMedia? playingStaged;
+    private string? playingParked;
+    private int fetchingLocal;
+    private readonly Dictionary<StagedMedia, LocalRow> stagedRows = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<string, LocalRow> parkedRows = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The place under each drawn recording where its text goes (docs/protocol.md, "Transcripts on request"), by
@@ -155,6 +230,9 @@ public sealed partial class ChatsView : UserControl
 
     /// <summary>Whether a call is on — the window's to say — and where a call this chat asks for goes.</summary>
     private bool callBusy;
+
+    /// <summary>The call records' "Call back" links drawn in the conversation, switched off with the toolbar's call buttons.</summary>
+    private readonly List<HyperlinkButton> callBackLinks = [];
 
     internal event Action<long, long, bool>? CallRequested;
     private bool sendingMedia;
@@ -200,17 +278,27 @@ public sealed partial class ChatsView : UserControl
         var say = services.Say;
         list = new ChatListModel(connection.Chats, () => connection.Session.State.Me?.Id ?? 0, say);
         typing = new TypingRoster(connection.Chats, words: say);
+        // The account is known by now: the chats are drawn only for a member, and `GET /me` said who that is.
+        parked = ParkedRecordings.For(AppFolders.ParkedPath, connection.Server, connection.Session.State.Me?.Id ?? 0);
+        try
+        {
+            // What a crash left half-written is no recording: it goes, and nothing an entry names does.
+            parked.Sweep();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"sweeping voice messages that were not sent: {e.GetType().Name}");
+        }
 
         ChatsHeading.Text = say.Get("Chats");
         EmptyListText.Text = say.Get("No chats yet");
-        SendButton.Content = say.Get("Send");
         ComposerBox.PlaceholderText = say.Get("Message");
         ToolTipService.SetToolTip(AttachButton, say.Get("Attach"));
         AutomationProperties.SetName(AttachButton, say.Get("Attach"));
         OpenPollsText.Text = say.Get("Open polls");
 
         ChatList.SelectionChanged += OnChatPicked;
-        SendButton.Click += (_, _) => Send();
+        WireSlot();
         ConsentReview.Click += (_, _) => _ = ReviewAssistantConsentAsync(Send);
         AttachButton.Click += (_, _) => ShowAttachMenu();
         ToolTipService.SetToolTip(StickerButton, say.Get("Stickers"));
@@ -293,13 +381,21 @@ public sealed partial class ChatsView : UserControl
             activeName = 0;
             DrawSuggestions();
             DrawPictureNotice();
+            // Words the person typed, deleted or pasted lift the slot's guard (S1.1, fc_text::record's OtherAction).
+            slotGuard.TextChanged(ComposerBox.Text, recording: recorder is not null);
+            // The first character makes the microphone Send, and the last one deleted makes it the microphone again.
+            DrawSlot();
         };
         MessageScroller.ViewChanged += OnScrolled;
         JumpButton.Click += (_, _) => JumpToNewest();
-        RecordingStop.Content = say.Get("Stop");
-        RecordingCancel.Content = say.Get("Cancel");
-        RecordingStop.Click += (_, _) => _ = StopRecordingAsync();
-        RecordingCancel.Click += (_, _) => CancelRecording();
+        // The recording row's own buttons (S2.4): real buttons, named for what they do to the recording (S6).
+        ToolTipService.SetToolTip(RecordingDelete, say.Get("Delete recording"));
+        AutomationProperties.SetName(RecordingDelete, say.Get("Delete recording"));
+        ToolTipService.SetToolTip(RecordingStop, say.Get("Stop recording"));
+        AutomationProperties.SetName(RecordingStop, say.Get("Stop recording"));
+        RecordingStop.Click += (_, _) => _ = EndRecordingAsync(RecordingEnd.Stopped);
+        RecordingDelete.Click += (_, _) => _ = DeleteRecordingAsync();
+        RecordingRow.SizeChanged += (_, _) => FitRecordingRow();
         LocationText.Text = say.Get("Finding your location…");
         PreparingText.Text = say.Get("Preparing…");
         PreparingCancel.Content = say.Get("Cancel");
@@ -343,6 +439,12 @@ public sealed partial class ChatsView : UserControl
         {
             if (!gone)
             {
+                if (recordingStart.Quiet(recorder is not null) && AudioRunning)
+                {
+                    // No app sound while something records (S1.7) — not even one the system's media keys start: every press
+                    // here is refused, and this is what a key outside the app reaches.
+                    audio.Pause();
+                }
                 ShowPlayback();
             }
         });
@@ -426,8 +528,12 @@ public sealed partial class ChatsView : UserControl
         Redraw();
     }
 
-    /// <summary>The window is going away from this connection: stop listening to it.</summary>
-    internal void Detach()
+    /// <summary>
+    /// The window is going away from this connection: stop listening to it. <paramref name="keep"/> is false when the
+    /// session itself ended — signed out, expired, the family left — which takes everything recorded and not sent with it
+    /// (S4's last row); otherwise, the window closing or another server, what is being recorded waits as "not sent".
+    /// </summary>
+    internal void Detach(bool keep)
     {
         typingTimer.Stop();
         pictures.Clear();
@@ -455,9 +561,18 @@ public sealed partial class ChatsView : UserControl
         transcriptHosts.Clear();
         LinkPreviewSetting.Changed -= onPreviews;
         MapPreviewSetting.Changed -= onPreviews;
-        // A microphone nothing can reach is a microphone left on.
-        CancelRecording();
+        // A microphone nothing can reach is a microphone left on — let go of NOW, whatever becomes of what it recorded.
+        if (!keep)
+        {
+            keepsRecordings = false;
+        }
+        _ = Interrupt(keep ? RecordingEnd.WindowClosed : RecordingEnd.SignedOut);
+        if (!keep)
+        {
+            WipeParked();
+        }
         recordingTimer?.Stop();
+        keepAwake.Release();
         pendingLink?.Stop();
         pendingLink = null;
         StopAudio();
@@ -807,14 +922,16 @@ public sealed partial class ChatsView : UserControl
 
     private async Task OpenAsync(long chatId)
     {
+        // Leaving: a recording belongs to the chat it was started in, and waits there as "not sent" — and so does a voice
+        // note still in review, taking the words in the field as its caption (S2.8, S4). BEFORE the draft is kept, so the
+        // words are not kept twice.
+        _ = Interrupt(RecordingEnd.LeftChat);
         if (open is { } leaving && editing is null)
         {
             // Half a thought stays with the chat it was written in.
             drafts.Save(leaving.ChatId, ComposerBox.Text);
         }
-        // A recording belongs to the chat it was started in, one playing goes quiet with its bubble, and a place being
-        // found was asked for there.
-        CancelRecording();
+        // One playing goes quiet with its bubble, and a place being found was asked for there.
         StopAudio();
         locationHunt?.Cancel();
         // What was being looked at belongs to the chat it came from.
@@ -838,6 +955,7 @@ public sealed partial class ChatsView : UserControl
             ComposerBox.SelectionStart = draft.Length;
         }
         DrawStaging();
+        DrawNotSent();
         ComposerError.Visibility = Visibility.Collapsed;
         var held = connection.Chats.Chat(chatId);
         ConversationTitle.Text = held is { } row ? list.Title(row.Chat) : string.Empty;
@@ -880,6 +998,7 @@ public sealed partial class ChatsView : UserControl
         if (open is not { } chat)
         {
             MessageStack.Children.Clear();
+            callBackLinks.Clear();
             conversationDrawn = string.Empty;
             return;
         }
@@ -906,6 +1025,7 @@ public sealed partial class ChatsView : UserControl
         conversationDrawn = drawn;
         MessageStack.Children.Clear();
         balloons.Clear();
+        callBackLinks.Clear();
         if (bubbles.Count == 0 && pending.Count == 0)
         {
             MessageStack.Children.Add(new TextBlock
@@ -2253,7 +2373,10 @@ public sealed partial class ChatsView : UserControl
                     stream.Dispose();
                     return;
                 }
+                // Not by itself under a running microphone, and not at all until it stops (S1.7).
+                ViewerVideo.AutoPlay = recorder is null;
                 ViewerVideo.Source = Windows.Media.Core.MediaSource.CreateFromStream(stream, item.Mime ?? "video/mp4");
+                QuietViewerVideo();
                 ViewerLoading.IsActive = false;
                 return;
             }
@@ -2458,6 +2581,47 @@ public sealed partial class ChatsView : UserControl
         ViewerVideo.PosterSource = null;
     }
 
+    /// <summary>
+    /// No app sound while something records (S1.7) — the viewer's video included. While a recording runs its controls go and
+    /// it says why, as every dimmed play button does, and its player is paused and muted, so nothing a key or the system's
+    /// media buttons start is heard in the note; once the recording ends the controls come back and the player is left muted,
+    /// or not, as it was before (<see cref="QuietWhileRecording"/>).
+    /// </summary>
+    private void QuietViewerVideo()
+    {
+        if (gone)
+        {
+            return;
+        }
+        var recording = recorder is not null;
+        ViewerVideo.AreTransportControlsEnabled = !recording;
+        try
+        {
+            if (ViewerVideo.MediaPlayer is { } player)
+            {
+                if (recording)
+                {
+                    player.Pause();
+                }
+                player.IsMuted = viewerQuiet.Muted(recording, player.IsMuted);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"quieting the viewer's video: {e.GetType().Name}");
+        }
+        var sentence = services.Say.Get("You can play this after recording.");
+        if (recording && viewing is { IsVideo: true })
+        {
+            ViewerNotice.Text = sentence;
+            ViewerNotice.Visibility = Visibility.Visible;
+        }
+        else if (!recording && ViewerNotice.Visibility == Visibility.Visible && ViewerNotice.Text == sentence)
+        {
+            ViewerNotice.Visibility = Visibility.Collapsed;
+        }
+    }
+
     /// <summary>Share — Windows' own share window, as the Mac's viewer offers its sharing menu — with the original's bytes.</summary>
     private async Task ShareViewedAsync()
     {
@@ -2503,20 +2667,36 @@ public sealed partial class ChatsView : UserControl
 
     // ---- calls --------------------------------------------------------------------------------------
 
-    /// <summary>A call from this chat, to its other member: the window places it and shows it (docs/protocol.md, "Voice calls").</summary>
+    /// <summary>
+    /// A call from this chat, to its other member: the window places it and shows it (docs/protocol.md, "Voice calls") — never
+    /// over a recording, whatever button asked (S1.7: the call buttons are off while something records).
+    /// </summary>
     private void RequestCall(bool video)
     {
+        if (!CallRecords.CanPlaceCall(callBusy, recorder is not null))
+        {
+            return;
+        }
         if (open is { } chat && connection.Chats.Chat(chat.ChatId)?.Chat is { Kind: "direct", PeerUserId: { } peer })
         {
             CallRequested?.Invoke(chat.ChatId, peer, video);
         }
     }
 
-    /// <summary>Whether a call is on: while one is, a second is not placed.</summary>
+    /// <summary>
+    /// Whether a call is on: while one is, a second is not placed — and nothing is recorded. A call in any phase stops what
+    /// is being recorded, which waits as "not sent", never sent (S4).
+    /// </summary>
     internal void ShowCallBusy(bool busy)
     {
         callBusy = busy;
+        if (busy)
+        {
+            _ = Interrupt(RecordingEnd.Call);
+        }
         ShowCallButtons();
+        // A call dims the microphone, and says so when it is pressed (S1.3 row 7).
+        DrawSlot();
         DrawConversation(keepFromBottom: atNewest ? null : DistanceFromBottom);
     }
 
@@ -2545,7 +2725,13 @@ public sealed partial class ChatsView : UserControl
         var (offered, video) = CallRecords.CallBack(call, direct, state.CallsEnabled, state.VideoCallsEnabled, inThread is not null);
         if (offered)
         {
-            var back = new HyperlinkButton { Content = say.Get("Call back"), Padding = new Thickness(0, 2, 0, 0), IsEnabled = !callBusy };
+            // Off with the toolbar's call buttons: while a call is on, and while something records (S1.7).
+            var back = new HyperlinkButton
+            {
+                Content = say.Get("Call back"),
+                Padding = new Thickness(0, 2, 0, 0),
+                IsEnabled = CallRecords.CanPlaceCall(callBusy, recorder is not null),
+            };
             if (mine)
             {
                 back.Foreground = ink;
@@ -2553,6 +2739,7 @@ public sealed partial class ChatsView : UserControl
             AutomationProperties.SetHelpText(back, say.Get("Calls back"));
             back.Click += (_, _) => RequestCall(video);
             lines.Children.Add(back);
+            callBackLinks.Add(back);
         }
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         row.Children.Add(glyph);
@@ -2571,8 +2758,15 @@ public sealed partial class ChatsView : UserControl
         var direct = open is { } chat && connection.Chats.Chat(chat.ChatId)?.Chat is { Kind: "direct", PeerUserId: not null };
         CallButton.Visibility = direct && state.CallsEnabled ? Visibility.Visible : Visibility.Collapsed;
         VideoCallButton.Visibility = direct && state.CallsEnabled && state.VideoCallsEnabled ? Visibility.Visible : Visibility.Collapsed;
-        CallButton.IsEnabled = !callBusy;
-        VideoCallButton.IsEnabled = !callBusy;
+        // Off while something records too (S1.7): a call over a recording has no right answer — and so is every record's
+        // "Call back" already drawn, which a recording starting or ending does not redraw.
+        var live = CallRecords.CanPlaceCall(callBusy, recorder is not null);
+        CallButton.IsEnabled = live;
+        VideoCallButton.IsEnabled = live;
+        foreach (var link in callBackLinks)
+        {
+            link.IsEnabled = live;
+        }
     }
 
     // ---- threads ------------------------------------------------------------------------------------
@@ -2763,6 +2957,7 @@ public sealed partial class ChatsView : UserControl
         using var hunt = new CancellationTokenSource();
         locating = true;
         locationHunt = hunt;
+        DrawSlot();
         try
         {
             var permission = await LocationFinder.RequestPermissionAsync();
@@ -2787,7 +2982,8 @@ public sealed partial class ChatsView : UserControl
             LocationRing.IsActive = true;
             LocationBar.Visibility = Visibility.Visible;
             AttachButton.IsEnabled = false;
-            SendButton.IsEnabled = false;
+            // Send waits for the place: the words typed meanwhile are its caption.
+            DrawSlot();
             var (fix, denied) = await LocationFinder.CurrentFixAsync(hunt.Token);
             finding = false;
             if (gone || open != chat || hunt.IsCancellationRequested)
@@ -2814,7 +3010,7 @@ public sealed partial class ChatsView : UserControl
                 LocationRing.IsActive = false;
                 LocationBar.Visibility = Visibility.Collapsed;
                 AttachButton.IsEnabled = recorder is null;
-                SendButton.IsEnabled = !sendingMedia;
+                DrawSlot();
             }
         }
     }
@@ -2862,58 +3058,642 @@ public sealed partial class ChatsView : UserControl
         {
             store.Release(handles);
             sendingMedia = false;
+            DrawSlot();
         }
     }
 
-    // ---- voice notes ----------------------------------------------------------------------------
+    // ---- the Send slot ---------------------------------------------------------------------------
+    //
+    // Voice and video messages from the Send button (docs/audio-video-messages-2026-10-04.md, Phase 1; issue #79): the
+    // composer's trailing control is Send when there is something to send and a microphone when there is not, in one fixed
+    // place. Which it is, how it is drawn and what a press on it does are ComposerButton's; this only wires and draws.
 
     /// <summary>
-    /// Record a voice note (docs/protocol.md, "Audio"): the microphone into an M4A, a bar with the time so far, Cancel and
-    /// Stop — and staged when it stops, so a caption can be added and an accident thrown away.
+    /// The slot's presses (S8.6): a click of any length with any input; a mouse right-click, a pen tap with the barrel button
+    /// down, Shift+F10 or the Menu key for the microphone's menu — never a hold; the press that is reaching it, from its going
+    /// down to its end, for the 600 ms guard (<see cref="SlotGuard"/>); and Ctrl+Shift+R, the app's first keyboard accelerator,
+    /// once per press however long it is held, and Esc while something records.
     /// </summary>
-    private async Task StartRecordingAsync()
+    private void WireSlot()
     {
-        if (open is not { } chat || recorder is not null)
+        SendButton.Click += (_, _) => OnSlotClick();
+        SendButton.RightTapped += (_, e) =>
+        {
+            e.Handled = true;
+            OnSlotMenuPress(slotGuard.RightTapped(DeviceOf(e.PointerDeviceType), CurrentSlot().IsMicrophone));
+        };
+        SendButton.ContextRequested += (sender, e) =>
+        {
+            e.Handled = true;
+            // No position: the keyboard's Shift+F10 or Menu key. At a position: a pointer's, which RightTapped answers.
+            var press = e.TryGetPosition(SendButton, out _) ? SlotPress.ContextAtPointer : SlotPress.ContextKey;
+            OnSlotMenuPress(ComposerButton.Respond(press, SlotDevice.None, barrelAtPress: false, CurrentSlot().IsMicrophone));
+        };
+        // The button takes the pointer's press for itself; what it was — and when, and when it ended — is still read, after it.
+        SendButton.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(OnSlotPointerPressed), true);
+        SendButton.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(OnSlotPointerEnded), true);
+        SendButton.AddHandler(UIElement.PointerCanceledEvent, new PointerEventHandler(OnSlotPointerEnded), true);
+        SendButton.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler(OnSlotPointerEnded), true);
+        SendButton.PreviewKeyDown += OnSlotKey;
+        SendButton.AddHandler(UIElement.KeyUpEvent, new KeyEventHandler(OnSlotKeyUp), true);
+        SendButton.LostFocus += (_, _) => EndSlotPress(slotKeyPress);
+        var record = new KeyboardAccelerator
+        {
+            Key = Windows.System.VirtualKey.R,
+            Modifiers = Windows.System.VirtualKeyModifiers.Control | Windows.System.VirtualKeyModifiers.Shift,
+        };
+        record.Invoked += (_, args) =>
+        {
+            args.Handled = true;
+            if (recordShortcut.Fresh(Environment.TickCount64))
+            {
+                OnRecordShortcut();
+            }
+        };
+        ComposerPanel.KeyboardAccelerators.Add(record);
+        // An accelerator repeats while its key is held, and that cannot be changed: the chord's repeats are swallowed as they
+        // come in — PreviewKeyDown comes before any accelerator — so a held Ctrl+Shift+R starts a recording, or stops one, once.
+        AddHandler(UIElement.PreviewKeyDownEvent, new KeyEventHandler(OnShortcutKey), true);
+        // Inside the recording row Esc is Stop — never Delete (S2.4, decision 13).
+        ComposerPanel.KeyDown += (_, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Escape && recorder is not null)
+            {
+                e.Handled = true;
+                _ = EndRecordingAsync(RecordingEnd.Stopped);
+            }
+        };
+        DrawSlot();
+    }
+
+    private static SlotDevice DeviceOf(Microsoft.UI.Input.PointerDeviceType type) => type switch
+    {
+        Microsoft.UI.Input.PointerDeviceType.Touch => SlotDevice.Touch,
+        Microsoft.UI.Input.PointerDeviceType.Pen => SlotDevice.Pen,
+        // A mouse — and a touchpad, whose two-finger click is the mouse's right one.
+        _ => SlotDevice.Mouse,
+    };
+
+    private static bool KeyHeld(Windows.System.VirtualKey key) =>
+        InputKeyboardSource.GetKeyStateForCurrentThread(key).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+
+    /// <summary>A press goes down on the slot: with what — and whether a pen's barrel button was held as it did (S8.6).</summary>
+    private void OnSlotPointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        var device = DeviceOf(e.Pointer.PointerDeviceType);
+        var barrel = device == SlotDevice.Pen && e.GetCurrentPoint(SendButton).Properties.IsBarrelButtonPressed;
+        slotPointerPress = slotGuard.PointerDown(Environment.TickCount64, device, barrel);
+    }
+
+    /// <summary>The pointer's press is over — lifted, cancelled or its capture lost — with or without a click.</summary>
+    private void OnSlotPointerEnded(object sender, PointerRoutedEventArgs e) => EndSlotPress(slotPointerPress);
+
+    /// <summary>
+    /// A press ends — after the click it made, if it made one: the button's own handling comes first, and this goes to the
+    /// back of the queue besides, so whatever that press raises in the same breath still reads it. A later press is not
+    /// touched (<see cref="SlotGuard.PressEnded"/>).
+    /// </summary>
+    private void EndSlotPress(long press) =>
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => slotGuard.PressEnded(press));
+
+    /// <summary>
+    /// Enter or Space on the focused slot: the press begins at the key's going down — and a key held down is ONE press, so its
+    /// repeats are swallowed rather than let through once the guard has run out.
+    /// </summary>
+    private void OnSlotKey(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key is not (Windows.System.VirtualKey.Enter or Windows.System.VirtualKey.Space))
+        {
+            return;
+        }
+        if (e.KeyStatus.WasKeyDown)
+        {
+            e.Handled = true;
+            return;
+        }
+        slotKeyPress = slotGuard.KeyDown(Environment.TickCount64);
+    }
+
+    private void OnSlotKeyUp(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key is Windows.System.VirtualKey.Enter or Windows.System.VirtualKey.Space)
+        {
+            EndSlotPress(slotKeyPress);
+        }
+    }
+
+    /// <summary>Ctrl+Shift+R going down anywhere in the view: a repeat is swallowed before the accelerator sees it (S1.6).</summary>
+    private void OnShortcutKey(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key == Windows.System.VirtualKey.R && KeyHeld(Windows.System.VirtualKey.Control) && KeyHeld(Windows.System.VirtualKey.Shift)
+            && recordShortcut.KeyDown(Environment.TickCount64, e.KeyStatus.WasKeyDown))
+        {
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>A right-click, a barrel tap or the menu key reached the slot: the microphone's menu, or nothing (S1.6, S8.6).</summary>
+    private void OnSlotMenuPress(SlotResponse response)
+    {
+        if (response == SlotResponse.Menu && !gone && open is not null)
+        {
+            ShowSlotMenu();
+        }
+    }
+
+    /// <summary>
+    /// A click reached the slot. What it does is <see cref="SlotGuard.Click"/>'s (S8.6) and the row's (S1.3): the recording's
+    /// Send or Stop, today's Send or Save, a dimmed microphone's reason, or a hands-free recording — none of them while the
+    /// guard runs, or for a press that went down while it ran (S1.1).
+    /// </summary>
+    private void OnSlotClick()
+    {
+        var now = Environment.TickCount64;
+        // Asked even with nothing open: the press is used up either way, and the next click brings its own or none at all.
+        var slot = CurrentSlot();
+        var response = slotGuard.Click(now, slot, ComposerBox.Text);
+        if (gone || open is null)
+        {
+            return;
+        }
+        if (response == SlotResponse.Menu)
+        {
+            ShowSlotMenu();
+            return;
+        }
+        if (response == SlotResponse.Ignore)
+        {
+            return;
+        }
+        switch (slot.Kind)
+        {
+            case SlotKind.SendVoice:
+                slotGuard.Arm(now, ComposerBox.Text);
+                _ = EndRecordingAsync(RecordingEnd.Sent);
+                break;
+            case SlotKind.StopRecording:
+                slotGuard.Arm(now, ComposerBox.Text);
+                _ = EndRecordingAsync(RecordingEnd.Stopped);
+                break;
+            case SlotKind.Save or SlotKind.Send:
+                Send();
+                break;
+            case SlotKind.Dimmed:
+                Explain(ComposerButton.Notice(slot.Reason, services.Say)!);
+                break;
+            case SlotKind.Microphone:
+                _ = StartRecordingAsync(fromSlot: true);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// The microphone's secondary menu (S1.6): "Record Voice Message" — which, in rows 7 to 9, says why it cannot instead. Its
+    /// "Record Video Message" arrives with round video on Windows (Phase 3d).
+    /// </summary>
+    private void ShowSlotMenu()
+    {
+        var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.TopEdgeAlignedRight };
+        var record = new MenuFlyoutItem
+        {
+            Text = services.Say.Get("Record Voice Message"),
+            Icon = new FontIcon { Glyph = ((char)ComposerButton.MicrophoneGlyph).ToString() },
+            KeyboardAcceleratorTextOverride = ComposerButton.RecordShortcut,
+        };
+        record.Click += (_, _) =>
+        {
+            if (CurrentSlot() is { Kind: SlotKind.Dimmed } dimmed)
+            {
+                Explain(ComposerButton.Notice(dimmed.Reason, services.Say)!);
+                return;
+            }
+            _ = StartRecordingAsync(fromSlot: false);
+        };
+        menu.Items.Add(record);
+        menu.ShowAt(SendButton);
+    }
+
+    /// <summary>
+    /// Ctrl+Shift+R (S1.6): records — beside the draft when there is one — and, pressed while a recording runs, stops it into
+    /// review. A shortcut never sends, and never opens a camera. Nothing in the assistant's chat, and nothing new under the
+    /// viewer, where the row could not be seen.
+    /// </summary>
+    private void OnRecordShortcut()
+    {
+        if (gone || open is not { } chat)
+        {
+            return;
+        }
+        if (recorder is not null)
+        {
+            _ = EndRecordingAsync(RecordingEnd.Stopped);
+            return;
+        }
+        if (recordingStart.Starting || asking is not null || ViewerOverlay.Visibility == Visibility.Visible || Kind(chat) == "ai")
+        {
+            return;
+        }
+        _ = StartRecordingAsync(fromSlot: false);
+    }
+
+    /// <summary>The composer's attachment guard (S1.2's <b>busy</b>): files being prepared or written down, or a place being found.</summary>
+    private bool Busy(ComposerStaging strip) => strip.Preparing || sendingMedia || locating;
+
+    /// <summary>Which row of S1.3 the open chat's slot is in, from what the composer is now.</summary>
+    private Slot CurrentSlot()
+    {
+        if (open is not { } chat)
+        {
+            return new(SlotKind.SendDisabled);
+        }
+        var strip = Staging(chat.ChatId);
+        return ComposerButton.ComposerSlot(new SlotInputs(
+            RecorderOpen: false,
+            Recording: recorder is null ? Recording.None : recordingBesideDraft ? Recording.HandsFreeBesideDraft : Recording.HandsFree,
+            Editing: editing is not null,
+            DraftBlank: string.IsNullOrWhiteSpace(ComposerBox.Text),
+            Staged: strip.Items.Count > 0,
+            AssistantChat: Kind(chat) == "ai",
+            // Whether this machine has a microphone at all is only learnt by trying: a press then says it could not start.
+            CanRecord: true,
+            Call: callBusy,
+            Busy: Busy(strip),
+            NotSent: notSentShown > 0));
+    }
+
+    /// <summary>
+    /// The slot as its row draws it (S8.6): the glyph, cross-faded over 150 ms when it changes (at once with Windows'
+    /// animations off), the name, the tooltip and Narrator's HelpText; dimmed is drawn faded and left enabled.
+    /// </summary>
+    private void DrawSlot()
+    {
+        if (gone)
+        {
+            return;
+        }
+        var face = ComposerButton.Face(CurrentSlot(), sendHeld: sendingMedia || finding, services.Say);
+        if (SendButton.IsEnabled != face.Enabled)
+        {
+            SendButton.IsEnabled = face.Enabled;
+        }
+        // Set only when they change: the slot is redrawn on every keystroke, and a screen reader is told of every setting.
+        if (slotName != face.Name)
+        {
+            slotName = face.Name;
+            AutomationProperties.SetName(SendButton, face.Name);
+        }
+        if (slotHelp != face.HelpText)
+        {
+            slotHelp = face.HelpText;
+            AutomationProperties.SetHelpText(SendButton, face.HelpText);
+        }
+        if (slotTooltip != face.Tooltip)
+        {
+            slotTooltip = face.Tooltip;
+            ToolTipService.SetToolTip(SendButton, face.Tooltip);
+        }
+        SlotLook.Opacity = face.Enabled && !face.LooksDimmed ? 1 : 0.4;
+        ShowSlotGlyph(face.Glyph);
+    }
+
+    private void ShowSlotGlyph(int glyph)
+    {
+        if (slotGlyph == glyph)
+        {
+            return;
+        }
+        var before = slotGlyph;
+        slotGlyph = glyph;
+        slotFade?.Stop();
+        slotFade = null;
+        SlotGlyph.Glyph = ((char)glyph).ToString();
+        // At once the first time, before the view is on screen, and when Windows' animations are off (S1.3, S6).
+        if (before is not { } leaving || !SendButton.IsLoaded || !StickerImaging.AnimationsWanted())
+        {
+            SlotGlyph.Opacity = 1;
+            SlotGlyphLeaving.Opacity = 0;
+            return;
+        }
+        SlotGlyphLeaving.Glyph = ((char)leaving).ToString();
+        SlotGlyph.Opacity = 1;
+        SlotGlyphLeaving.Opacity = 0;
+        var length = new Duration(TimeSpan.FromMilliseconds(ComposerButton.SlotCrossfadeMs));
+        var coming = new Animation.DoubleAnimation { From = 0, To = 1, Duration = length };
+        var going = new Animation.DoubleAnimation { From = 1, To = 0, Duration = length };
+        Animation.Storyboard.SetTarget(coming, SlotGlyph);
+        Animation.Storyboard.SetTargetProperty(coming, "Opacity");
+        Animation.Storyboard.SetTarget(going, SlotGlyphLeaving);
+        Animation.Storyboard.SetTargetProperty(going, "Opacity");
+        slotFade = new Animation.Storyboard();
+        slotFade.Children.Add(coming);
+        slotFade.Children.Add(going);
+        slotFade.Begin();
+    }
+
+    /// <summary>
+    /// A sentence on the composer's notice line, said as it appears: a dimmed control explaining itself (S1.3), a refusal —
+    /// shown but never said while a recording runs, when the app's own speech would be in the note (S6): a play button
+    /// pressed then has the sentence as its HelpText already.
+    /// </summary>
+    private void Explain(string sentence)
+    {
+        ShowProblem(sentence);
+        if (VoiceNotes.NoticeSaid(recording: recorder is not null))
+        {
+            Announce(ComposerError);
+        }
+    }
+
+    /// <summary>
+    /// Said to a screen reader and never drawn (S6): "Recording", "Recording deleted", "Voice message sent", "Ready to review,
+    /// 0:42", "30 seconds left" — on the hidden status line, a polite live region, which is emptied a moment later so a
+    /// reader walking the window does not come upon an old one.
+    /// </summary>
+    private void SayAloud(string sentence)
+    {
+        if (gone)
+        {
+            return;
+        }
+        RecordingStatus.Text = sentence;
+        Announce(RecordingStatus);
+        if (statusClear is null)
+        {
+            statusClear = DispatcherQueue.CreateTimer();
+            statusClear.Interval = TimeSpan.FromSeconds(5);
+            statusClear.IsRepeating = false;
+            statusClear.Tick += (_, _) =>
+            {
+                if (!gone)
+                {
+                    RecordingStatus.Text = string.Empty;
+                }
+            };
+        }
+        statusClear.Stop();
+        statusClear.Start();
+    }
+
+    /// <summary>
+    /// No app sound while something records (S1.7): every play button — a bubble's recording, a staged or not-sent note — is
+    /// drawn dimmed and says why, as HelpText and when pressed; it stays a button, because dimmed is not disabled.
+    /// </summary>
+    private void ShowPlayDimming()
+    {
+        foreach (var toggle in audioRows.Values.Select(row => row.Toggle)
+                     .Concat(stagedRows.Values.Select(row => row.Toggle))
+                     .Concat(parkedRows.Values.Select(row => row.Toggle)))
+        {
+            DimPlay(toggle);
+        }
+    }
+
+    private void DimPlay(Button toggle)
+    {
+        var recording = recorder is not null;
+        toggle.Opacity = recording ? 0.4 : 1;
+        AutomationProperties.SetHelpText(toggle, recording ? services.Say.Get("You can play this after recording.") : string.Empty);
+    }
+
+    // ---- voice notes ----------------------------------------------------------------------------
+    //
+    // The recorder made safe (docs/audio-video-messages-2026-10-04.md, Phase 0) and put in the Send slot (Phase 1): whatever
+    // ends a recording lets go of the microphone at once; the person's Send sends it, their Stop stages it for review, their
+    // Delete deletes it; anything else STOPS AND KEEPS it as a voice message that was not sent, in its own row, never sent
+    // by anything but that row and deleted only by the person or a sign-out.
+
+    /// <summary>A recording stopped to ask "Delete this recording?": what it recorded, while the question is up.</summary>
+    private sealed class AskedRecording(long chatId, Recorded recorded, ContentDialog question)
+    {
+        public long ChatId { get; } = chatId;
+
+        public Recorded Recorded { get; } = recorded;
+
+        public ContentDialog Question { get; } = question;
+
+        /// <summary>Taken out of the question's hands by an interruption, which kept the recording: the answer is moot.</summary>
+        public bool Settled { get; set; }
+    }
+
+    /// <summary>
+    /// Whether something recorded is held only in memory: a recording running, one being asked about, a voice note in
+    /// review, or one not sent that the disk refused. A real close keeps them first (MainWindow), because nothing awaited
+    /// after the window goes would finish.
+    /// </summary>
+    internal bool HoldsRecordings =>
+        recorder is not null || asking is not null || settling.Count > 0 || strips.Values.Any(strip => strip.HoldsRecordings)
+        || parked.HoldsInMemory;
+
+    /// <summary>
+    /// Something other than the person ends what is being recorded — leaving the chat, a call, the window hidden, minimised
+    /// or closing, the session locking, the computer sleeping (S4). It STOPS AND KEEPS: the recording waits in its chat as a
+    /// voice message that was not sent; a question about deleting one is taken away and the recording kept; and where the
+    /// chat is left — or the window really closes — a voice note still in review goes the same way, taking the words in the
+    /// field as its caption. Everything that reads or changes the composer happens before this returns, so a caller that
+    /// goes on to change the composer changes it after.
+    /// </summary>
+    internal Task Interrupt(RecordingEnd why)
+    {
+        // A start still waiting on Windows' prompt or the lead-in has no recorder to stop: it lets go of the microphone
+        // once it is granted, rather than recording behind a lock screen (S4).
+        recordingStart.Interrupted();
+        var work = new List<Task>();
+        if (asking is { } question)
+        {
+            work.Add(KeepAskedAsync(question, why));
+        }
+        if (recorder is not null)
+        {
+            work.Add(EndRecordingAsync(why));
+        }
+        if (NotSent.ParksReview(why))
+        {
+            foreach (var chatId in strips.Keys.ToList())
+            {
+                work.Add(ParkReviewNotesAsync(chatId));
+            }
+            if (settling.Count > 0)
+            {
+                // A Stop or a Delete already under way lands in review after this: it is kept when it does.
+                work.Add(ParkReviewAfterAsync([.. settling]));
+            }
+        }
+        // The app is going: what the disk refused and memory held is offered to the disk once more, after the rest.
+        return why == RecordingEnd.WindowClosed ? WriteHeldAfterAsync(Task.WhenAll(work)) : Task.WhenAll(work);
+    }
+
+    /// <summary>
+    /// A real close: once everything else is kept, the voice messages the disk refused (S4) are tried on it again — the last
+    /// chance before the app goes and memory with it.
+    /// </summary>
+    private async Task WriteHeldAfterAsync(Task keeping)
+    {
+        try
+        {
+            await keeping;
+        }
+        finally
+        {
+            if (parked.HoldsInMemory)
+            {
+                var left = await Task.Run(parked.WriteHeld);
+                if (left > 0)
+                {
+                    Diagnostics.Write($"voice messages that were not sent and could not be written before closing: {left}");
+                }
+            }
+        }
+    }
+
+    /// <summary>What recordings still settling put in review, kept as "not sent" once they have landed.</summary>
+    private async Task ParkReviewAfterAsync(IReadOnlyList<Task> landing)
+    {
+        await Task.WhenAll(landing);
+        foreach (var chatId in strips.Keys.ToList())
+        {
+            await ParkReviewNotesAsync(chatId);
+        }
+    }
+
+    /// <summary>One stop's settling, from the microphone let go of until what it recorded is wherever it goes.</summary>
+    private TaskCompletionSource Settling()
+    {
+        var landed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        settling.Add(landed.Task);
+        return landed;
+    }
+
+    private void Settled(TaskCompletionSource landed)
+    {
+        settling.Remove(landed.Task);
+        landed.TrySetResult();
+    }
+
+    /// <summary>
+    /// Record a voice note (docs/protocol.md, "Audio"; docs/audio-video-messages-2026-10-04.md, S2.2): the microphone into an
+    /// M4A, the recording row in place of the field — Delete, the clock, Stop — and the slot beside it the Send arrow, or
+    /// Stop when it began beside words or staged items.
+    /// </summary>
+    /// <remarks>
+    /// Refused, with the reason, the way the Send slot's rows refuse (S1.3): in an edit, during a call, while an attachment
+    /// is on its way, and while this chat holds a voice message that was not sent — and never in the assistant's chat
+    /// (decision 24). Whatever is playing goes quiet first, so the app's own sound does not open the note; with a screen
+    /// reader running, "Recording" is said BEFORE the microphone records, and the recording and its clock start a second
+    /// later (S6); the screen is kept on and the call buttons are off until it ends.
+    /// </remarks>
+    /// <param name="fromSlot">The slot's own click (row 10), which arms its 600 ms guard (S1.1) — the menu and the shortcut do not.</param>
+    private async Task StartRecordingAsync(bool fromSlot)
+    {
+        // Not while the last one is still landing — a moment after its Send, Stop or Delete — so what that one says is never
+        // said into this one, and its review never arrives under this one's row.
+        if (open is not { } chat || recorder is not null || asking is not null || recordingStart.Starting || settling.Count > 0
+            || Kind(chat) == "ai")
         {
             return;
         }
         var say = services.Say;
         var strip = Staging(chat.ChatId);
-        if (strip.BusyReason(editing is not null, say) is { } busy)
+        if (VoiceNotes.Refusal(
+                editing is not null, callBusy, Busy(strip), HasNotSent(chat.ChatId), !strip.CanStage, say) is { } refused)
         {
-            ShowProblem(busy);
+            Explain(refused);
             return;
         }
-        if (!strip.CanStage)
+        recordingStart.Begin();
+        if (fromSlot)
         {
-            ShowProblem(ComposerStaging.CapSentence(say));
-            return;
+            slotGuard.Arm(Environment.TickCount64, ComposerBox.Text);
         }
-        var (started, failure) = await VoiceRecorder.StartAsync();
-        if (started is null)
+        QuietForRecording();
+        try
         {
-            ShowProblem(failure == RecordingFailure.MicrophoneDenied
-                ? say.Get("Family needs permission to use your microphone. Turn it on in Settings.")
-                : say.Get("Couldn't start recording."));
-            return;
+            var leadIn = VoiceNotes.LeadIn(ScreenReader.Running());
+            var spoken = false;
+            Func<Task>? speakFirst = leadIn > TimeSpan.Zero
+                ? async () =>
+                {
+                    spoken = true;
+                    SayAloud(say.Get("Recording"));
+                    await Task.Delay(leadIn);
+                }
+                : null;
+            var (started, failure) = await VoiceRecorder.StartAsync(speakFirst);
+            if (started is null)
+            {
+                if (gone || open != chat)
+                {
+                    return;
+                }
+                if (failure != RecordingFailure.MicrophoneDenied)
+                {
+                    Explain(say.Get("Couldn't start recording."));
+                    return;
+                }
+                // Settings is offered only where a switch there can help — asked of Windows first (S2.2).
+                var (sentence, offersSettings) = VoiceNotes.MicrophoneRefusal(VoiceRecorder.MicrophoneAccess(), say);
+                if (sentence is not null)
+                {
+                    ShowProblem(sentence, offersSettings ? (say.Get("Open Settings"), OpenMicrophoneSettings) : null);
+                    Announce(ComposerError);
+                }
+                return;
+            }
+            // Granted after the chat went, beside one already running, while another is being asked about, with a call or an
+            // edit that began while Windows asked, behind a window minimised or hidden meanwhile, or after the session locked,
+            // the computer slept or the screen saver started (S4): let go of the microphone.
+            if (open != chat || gone || recorder is not null || asking is not null || callBusy || services.WindowAway || editing is not null
+                || recordingStart.WasInterrupted || SessionWatch.ScreenSaverRunning())
+            {
+                await started.DisposeAsync();
+                if (callBusy && !gone && open == chat)
+                {
+                    Explain(say.Get("You can record a message after the call."));
+                }
+                return;
+            }
+            recorder = started;
+            recordingChat = chat.ChatId;
+            // Whatever began playing while the microphone was being opened — the system's media keys reach the player
+            // whatever the app refuses — goes quiet before the recording does (S1.7).
+            QuietForRecording();
+            // Beside words or staged items — the paperclip, the menu, the shortcut — the words are hidden behind the row and
+            // must not leave unseen: the slot is Stop, and Stop stages the note beside them (row 3).
+            recordingBesideDraft = !string.IsNullOrWhiteSpace(ComposerBox.Text) || strip.Items.Count > 0;
+            warnedThirtySeconds = false;
+            // The microphone pulled out or taken away mid-recording: what can be read back is kept (S4).
+            started.Failed += () => DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!gone && ReferenceEquals(recorder, started))
+                {
+                    _ = EndRecordingAsync(RecordingEnd.RecorderFailed);
+                }
+            });
+            keepAwake.Hold();
+            ComposerError.Visibility = Visibility.Collapsed;
+            recordingTimer ??= RecordingClock();
+            recordingTimer.Start();
+            if (fromSlot)
+            {
+                // The slot just turned into the Send arrow under the pointer: a double click on the microphone cannot send.
+                slotGuard.Arm(Environment.TickCount64, ComposerBox.Text);
+            }
+            ShowRecordingRow();
+            if (!spoken)
+            {
+                SayAloud(say.Get("Recording"));
+            }
         }
-        if (open != chat || gone || recorder is not null)
+        finally
         {
-            // Granted after the chat went, or beside one already running: let go of the microphone.
-            await started.DisposeAsync();
-            return;
+            recordingStart.End();
+            DrawSlot();
         }
-        recorder = started;
-        ComposerError.Visibility = Visibility.Collapsed;
-        recordingTimer ??= RecordingClock();
-        recordingTimer.Start();
-        ShowRecording();
-        RecordingBar.Visibility = Visibility.Visible;
-        AttachButton.IsEnabled = false;
-        RecordingStop.Focus(FocusState.Programmatic);
     }
 
-    /// <summary>The bar's clock — and the five-minute ceiling, which presses Stop by itself.</summary>
+    /// <summary>
+    /// The row's clock — and the five-minute ceiling, which stops into review by itself and says so; and the screen saver,
+    /// which says nothing to an app and so is asked about, and stops and keeps (S4).
+    /// </summary>
     private DispatcherQueueTimer RecordingClock()
     {
         var timer = DispatcherQueue.CreateTimer();
@@ -2927,7 +3707,12 @@ public sealed partial class ChatsView : UserControl
             }
             if (VoiceNotes.IsDone(running.Elapsed))
             {
-                _ = StopRecordingAsync();
+                _ = EndRecordingAsync(RecordingEnd.Capped);
+                return;
+            }
+            if (SessionWatch.ScreenSaverRunning())
+            {
+                _ = EndRecordingAsync(RecordingEnd.SessionLocked);
                 return;
             }
             ShowRecording();
@@ -2935,45 +3720,800 @@ public sealed partial class ChatsView : UserControl
         return timer;
     }
 
-    private void ShowRecording() =>
-        RecordingText.Text = VoiceNotes.RecordingLine(recorder?.Elapsed ?? TimeSpan.Zero, services.Say);
-
-    private async Task StopRecordingAsync()
+    /// <summary>
+    /// The clock, "0:42" — never announced (S6) — and from 4:30 "30 seconds left" beside it in orange, said once: words as well
+    /// as colour (S2.5, WCAG 1.4.1). Windows draws no level meter in this version (S2.9), so the words take its place.
+    /// </summary>
+    private void ShowRecording()
     {
-        if (recorder is not { } stopping || open is not { } chat)
+        var elapsed = recorder?.Elapsed ?? TimeSpan.Zero;
+        RecordingTime.Text = VoiceNotes.Clock(elapsed);
+        if (!VoiceNotes.Warns(elapsed))
         {
             return;
         }
-        recorder = null;
-        recordingTimer?.Stop();
-        RecordingBar.Visibility = Visibility.Collapsed;
-        AttachButton.IsEnabled = true;
-        var recorded = await stopping.StopAsync();
-        if (recorded is not { } done || VoiceNotes.Staged(done.Bytes, done.Elapsed) is not { } staged)
+        if (RecordingWarning.Visibility != Visibility.Visible)
         {
-            ShowProblem(services.Say.Get("That recording was too short."));
-            return;
+            RecordingWarning.Text = services.Say.Get("30 seconds left");
+            RecordingWarning.Visibility = Visibility.Visible;
+            RecordingTime.Foreground = (Brush)Application.Current.Resources["SystemFillColorCautionBrush"];
         }
-        if (open != chat || gone)
+        if (!warnedThirtySeconds)
         {
-            return;
+            warnedThirtySeconds = true;
+            SayAloud(services.Say.Get("30 seconds left"));
         }
-        Staging(chat.ChatId).Add(staged);
-        DrawStaging();
-        ComposerBox.Focus(FocusState.Programmatic);
     }
 
-    private void CancelRecording()
+    /// <summary>
+    /// The recording row in place of the field and the buttons beside it (S2.4) — at the height the row had, so nothing above
+    /// it moves — with its middle Stop only when the slot is not Stop already, and focus on the slot, where it stays.
+    /// </summary>
+    private void ShowRecordingRow()
     {
-        if (recorder is not { } abandoned)
+        RecordingRow.MinHeight = Math.Max(ComposerBox.ActualHeight, ComposerTools.ActualHeight);
+        RecordingStop.Visibility = recordingBesideDraft ? Visibility.Collapsed : Visibility.Visible;
+        RecordingWarning.Visibility = Visibility.Collapsed;
+        RecordingTime.ClearValue(TextBlock.ForegroundProperty);
+        ShowRecording();
+        ComposerTools.Visibility = Visibility.Collapsed;
+        ComposerBox.Visibility = Visibility.Collapsed;
+        SuggestionScroller.Visibility = Visibility.Collapsed;
+        RecordingRow.Visibility = Visibility.Visible;
+        FitRecordingRow();
+        StartPulse();
+        AttachButton.IsEnabled = false;
+        ShowCallButtons();
+        ShowPlayDimming();
+        QuietViewerVideo();
+        DrawSlot();
+        SendButton.Focus(FocusState.Programmatic);
+    }
+
+    /// <summary>Too narrow for words (S2.4): Delete and Stop become icons, with the same names.</summary>
+    private void FitRecordingRow()
+    {
+        var narrow = RecordingRow.ActualWidth is > 0 and < 300;
+        if (narrow == recordingRowNarrow)
         {
             return;
         }
+        recordingRowNarrow = narrow;
+        var say = services.Say;
+        // Delete and Stop, in Segoe Fluent Icons.
+        RecordingDelete.Content = narrow ? new FontIcon { Glyph = ((char)0xE74D).ToString(), FontSize = 14 } : say.Get("Delete");
+        RecordingStop.Content = narrow ? new FontIcon { Glyph = ((char)ComposerButton.StopGlyph).ToString(), FontSize = 14 } : say.Get("Stop");
+    }
+
+    /// <summary>The red dot pulses between 100 % and 40 % once a second while it records — and stays still when Windows' animations are off (S2.9).</summary>
+    private void StartPulse()
+    {
+        StopPulse();
+        if (!StickerImaging.AnimationsWanted())
+        {
+            return;
+        }
+        var pulse = new Animation.DoubleAnimation
+        {
+            From = 1,
+            To = 0.4,
+            Duration = new Duration(TimeSpan.FromMilliseconds(500)),
+            AutoReverse = true,
+            RepeatBehavior = Animation.RepeatBehavior.Forever,
+        };
+        Animation.Storyboard.SetTarget(pulse, RecordingDot);
+        Animation.Storyboard.SetTargetProperty(pulse, "Opacity");
+        recordingPulse = new Animation.Storyboard();
+        recordingPulse.Children.Add(pulse);
+        recordingPulse.Begin();
+    }
+
+    private void StopPulse()
+    {
+        recordingPulse?.Stop();
+        recordingPulse = null;
+    }
+
+    /// <summary>
+    /// However a recording ends — Send, Stop, five minutes, Delete, or something that is not the person — the microphone is
+    /// let go of at once, and what it recorded goes where <see cref="NotSent.Ended"/> says: sent, review, its not-sent row,
+    /// or nowhere. What the person did is said to a screen reader (S6), and their own ending gives the keyboard back to the
+    /// field, so a second Enter cannot open the microphone again (S2.4).
+    /// </summary>
+    private async Task EndRecordingAsync(RecordingEnd why)
+    {
+        if (recorder is not { } stopping)
+        {
+            return;
+        }
+        var chatId = recordingChat;
+        // Read NOW, before leaving the chat ends the composer's mode: the reply it was recorded under goes with it — and the
+        // slot's Send carries the reply the composer is primed with at the moment it is pressed, shown above the row.
+        var take = TakeForInterrupted(chatId, why);
+        var sending = why == RecordingEnd.Sent && open?.ChatId == chatId ? open : null;
+        var replyTo = sending is not null && editing is null ? replyingTo?.Id : null;
+        RecordingStopped();
+        if (!gone && open?.ChatId == chatId && NotSent.GivesFocusBack(why))
+        {
+            ComposerBox.Focus(FocusState.Programmatic);
+        }
+        var landed = Settling();
+        try
+        {
+            var recorded = await stopping.StopAsync();
+            var outcome = NotSent.Ended(keepsRecordings ? why : RecordingEnd.SignedOut, recorded.Elapsed, recorded.Bytes?.Length, services.Say);
+            ReleaseReply(chatId, take, outcome.Fate);
+            var fate = outcome.Fate == RecordingFate.Send
+                ? await SendRecordedAsync(sending, chatId, recorded, replyTo)
+                : await SettleAsync(chatId, recorded, outcome.Fate, take.ReplyTo, caption: null);
+            if (gone || open?.ChatId != chatId)
+            {
+                return;
+            }
+            if (outcome.Sentence is { } sentence)
+            {
+                Explain(sentence);
+            }
+            else if (NotSent.Said(why, fate, VoiceNotes.DurationMs(recorded.Elapsed), services.Say) is { } said)
+            {
+                SayAloud(said);
+            }
+        }
+        finally
+        {
+            Settled(landed);
+        }
+    }
+
+    /// <summary>
+    /// The slot's Send in row 2 (S2.5): the note goes through the outbox like any media send — its row written before its
+    /// first byte, its bytes kept until the ack — with the reply the composer was primed with. The person pressed Send, so a
+    /// chat switched in the same breath does not stop it. A note that cannot be written down lands in review with the
+    /// error, and one the window let go of meanwhile waits as not sent: never lost. Answers where it went.
+    /// </summary>
+    /// <param name="chat">The conversation the Send was pressed in, or null when it was not open — kept as not sent instead.</param>
+    private async Task<RecordingFate> SendRecordedAsync(ConversationModel? chat, long chatId, Recorded recorded, long? replyTo)
+    {
+        if (!keepsRecordings || recorded.Bytes is not { } bytes || VoiceNotes.Staged(bytes, recorded.Elapsed) is not { } note)
+        {
+            return RecordingFate.Discard;
+        }
+        if (chat is null || gone)
+        {
+            await ParkAsync(chatId, bytes, note.DurationMs ?? 0, replyTo, caption: null);
+            return RecordingFate.Park;
+        }
+        var store = connection.Staging;
+        string? handle = null;
+        sendingMedia = true;
+        DrawSlot();
+        try
+        {
+            handle = await Task.Run(() => store.Stage(note));
+            chat.Send(
+                string.Empty, replyToMessageId: replyTo, pendingFiles: [handle],
+                mentions: ComposerMentions.ForSend(string.Empty, connection.Chats.Members(), IsFamily(chat)));
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"sending a voice message: {e.GetType().Name}");
+            var kept = await SettleAsync(chatId, recorded, RecordingFate.Review, replyTo, caption: null);
+            if (!gone && open?.ChatId == chatId)
+            {
+                Explain(services.Say.Get("Something went wrong. Try again."));
+            }
+            return kept;
+        }
+        finally
+        {
+            if (handle is not null)
+            {
+                // The row that names it is in the outbox now (or never will be): the sweep may judge it.
+                store.Release([handle]);
+            }
+            sendingMedia = false;
+            DrawSlot();
+        }
+        // Written down: from here it is the outbox's, whatever the window does next.
+        if (!gone && open == chat && replyTo is not null && editing is null && replyingTo?.Id == replyTo)
+        {
+            // The reply went with the note: the composer is primed for nothing now.
+            EndComposerMode(clear: false);
+        }
+        if (!gone && open == chat)
+        {
+            Queued();
+        }
+        else
+        {
+            _ = connection.Live.FlushAsync(SendRules.FlushTrigger.Queued);
+        }
+        return RecordingFate.Send;
+    }
+
+    /// <summary>
+    /// The reply went with a recording an interruption kept, and nothing else in the composer was going to carry it: the
+    /// composer, empty, is primed for nothing now — unless it has been primed for something else since.
+    /// </summary>
+    private void ReleaseReply(long chatId, ComposerTake take, RecordingFate fate)
+    {
+        if (fate == RecordingFate.Park && take.ClearsReply && !gone && open?.ChatId == chatId
+            && editing is null && replyingTo?.Id == take.ReplyTo)
+        {
+            EndComposerMode(clear: false);
+        }
+    }
+
+    /// <summary>What a recording an interruption keeps takes from the composer — nothing, when the person ended it.</summary>
+    private ComposerTake TakeForInterrupted(long chatId, RecordingEnd why) =>
+        why is RecordingEnd.Stopped or RecordingEnd.Sent or RecordingEnd.Capped or RecordingEnd.Deleted or RecordingEnd.SignedOut
+        || !keepsRecordings || gone || open?.ChatId != chatId
+            ? ComposerTake.Nothing
+            : NotSent.ForRecording(ComposerBox.Text, replyingTo?.Id, editing is not null, Staging(chatId).Items.Count > 0);
+
+    /// <summary>
+    /// The microphone's part of every ending: the row gives the field and its buttons back, and the clock, the screen, the
+    /// call buttons, the play buttons, the viewer's video and the slot go back to how they were.
+    /// </summary>
+    private void RecordingStopped()
+    {
         recorder = null;
         recordingTimer?.Stop();
-        RecordingBar.Visibility = Visibility.Collapsed;
-        AttachButton.IsEnabled = true;
-        _ = abandoned.DisposeAsync().AsTask();
+        keepAwake.Release();
+        if (gone)
+        {
+            return;
+        }
+        StopPulse();
+        RecordingRow.Visibility = Visibility.Collapsed;
+        ComposerBox.Visibility = Visibility.Visible;
+        ComposerTools.Visibility = Visibility.Visible;
+        AttachButton.IsEnabled = !finding;
+        DrawSuggestions();
+        ShowCallButtons();
+        ShowPlayDimming();
+        QuietViewerVideo();
+        DrawSlot();
+    }
+
+    /// <summary>
+    /// The row's Delete (S2.5). Under ten seconds the recording is deleted at once; from ten seconds it STOPS FIRST — nothing
+    /// more is recorded while the question is up — and then asks "Delete this recording?" [Delete] [Keep], and Keep stages it
+    /// for review. An interruption meanwhile takes the question away and keeps the recording as "not sent".
+    /// </summary>
+    private async Task DeleteRecordingAsync()
+    {
+        if (recorder is not { } running)
+        {
+            return;
+        }
+        if (running.Elapsed < VoiceNotes.DeleteAsksFrom)
+        {
+            await EndRecordingAsync(RecordingEnd.Deleted);
+            return;
+        }
+        var chatId = recordingChat;
+        RecordingStopped();
+        var landed = Settling();
+        try
+        {
+            await AskBeforeDeletingAsync(chatId, await running.StopAsync());
+        }
+        finally
+        {
+            Settled(landed);
+        }
+    }
+
+    /// <summary>The question itself, about a recording that has stopped and been read back.</summary>
+    private async Task AskBeforeDeletingAsync(long chatId, Recorded recorded)
+    {
+        var outcome = NotSent.Ended(RecordingEnd.Stopped, recorded.Elapsed, recorded.Bytes?.Length, services.Say);
+        if (outcome.Fate != RecordingFate.Review)
+        {
+            // Nothing that could be read back: nothing to ask about, and the composer says what happened.
+            if (outcome.Sentence is { } sentence && !gone && open?.ChatId == chatId)
+            {
+                ShowProblem(sentence);
+                Announce(ComposerError);
+            }
+            return;
+        }
+        if (gone || !keepsRecordings || open?.ChatId != chatId)
+        {
+            // Left, closed or signed out while it stopped: an interruption's rule, not a question nobody is there to answer.
+            await SettleAsync(chatId, recorded, keepsRecordings ? RecordingFate.Park : RecordingFate.Discard, replyTo: null, caption: null);
+            return;
+        }
+        var question = new AskedRecording(chatId, recorded, Dialogs.DeleteRecording(XamlRoot, services.Say));
+        asking = question;
+        ContentDialogResult answer;
+        try
+        {
+            answer = await question.Question.ShowAsync();
+        }
+        catch (Exception e)
+        {
+            // Another dialog was up: nothing was asked, so nothing is deleted — it goes to review.
+            Diagnostics.Write($"asking before deleting a recording: {e.GetType().Name}");
+            answer = ContentDialogResult.None;
+        }
+        if (question.Settled)
+        {
+            return;
+        }
+        asking = null;
+        // Delete: gone. Keep: to review, as the person's Stop would have put it. Either is said (S6).
+        var (why, went) = answer == ContentDialogResult.Primary
+            ? (RecordingEnd.Deleted, RecordingFate.Discard)
+            : (RecordingEnd.Stopped, await SettleAsync(chatId, recorded, RecordingFate.Review, replyTo: null, caption: null));
+        if (gone || open?.ChatId != chatId)
+        {
+            return;
+        }
+        if (NotSent.GivesFocusBack(why))
+        {
+            ComposerBox.Focus(FocusState.Programmatic);
+        }
+        if (NotSent.Said(why, went, VoiceNotes.DurationMs(recorded.Elapsed), services.Say) is { } said)
+        {
+            SayAloud(said);
+        }
+    }
+
+    /// <summary>An interruption while "Delete this recording?" is up: the question goes, and the recording is kept as "not sent".</summary>
+    private async Task KeepAskedAsync(AskedRecording question, RecordingEnd why)
+    {
+        asking = null;
+        question.Settled = true;
+        var take = TakeForInterrupted(question.ChatId, why);
+        try
+        {
+            question.Question.Hide();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"taking a question away: {e.GetType().Name}");
+        }
+        var outcome = NotSent.Ended(keepsRecordings ? why : RecordingEnd.SignedOut, question.Recorded.Elapsed, question.Recorded.Bytes?.Length, services.Say);
+        ReleaseReply(question.ChatId, take, outcome.Fate);
+        await SettleAsync(question.ChatId, question.Recorded, outcome.Fate, take.ReplyTo, caption: null);
+    }
+
+    /// <summary>
+    /// A stopped recording, put where it goes, and where it went answered. REVIEW is the strip of the chat it was recorded in
+    /// while that chat is open — and its not-sent row when it is not: a note in review in a chat somebody left is exactly a
+    /// note not sent (S2.8).
+    /// </summary>
+    private async Task<RecordingFate> SettleAsync(long chatId, Recorded recorded, RecordingFate fate, long? replyTo, string? caption)
+    {
+        // A send is SendRecordedAsync's, never this; anything else that is not a discard is kept somewhere.
+        if (fate == RecordingFate.Discard || recorded.Bytes is not { } bytes || !keepsRecordings)
+        {
+            return RecordingFate.Discard;
+        }
+        if (fate == RecordingFate.Review && !gone && open?.ChatId == chatId
+            && VoiceNotes.Staged(bytes, recorded.Elapsed) is { } staged && Staging(chatId).Add(staged))
+        {
+            DrawStaging();
+            // The field comes back, focused, for an optional caption (S2.7).
+            ComposerBox.Focus(FocusState.Programmatic);
+            return RecordingFate.Review;
+        }
+        await ParkAsync(chatId, bytes, VoiceNotes.DurationMs(recorded.Elapsed), replyTo, caption);
+        return RecordingFate.Park;
+    }
+
+    /// <summary>
+    /// Leaving a chat — or the window really closing — with a voice note still in review (S2.8): it waits as "not sent",
+    /// taking the words in the field as its caption and the reply with them, and the field is left empty. Taken NOW, before
+    /// the composer is handed to another chat or its draft is kept; only the writing waits.
+    /// </summary>
+    private Task ParkReviewNotesAsync(long chatId)
+    {
+        if (!keepsRecordings || !strips.TryGetValue(chatId, out var strip) || !strip.HoldsRecordings)
+        {
+            return Task.CompletedTask;
+        }
+        var here = !gone && open?.ChatId == chatId;
+        var take = here ? NotSent.ForReview(ComposerBox.Text, replyingTo?.Id, editing is not null) : ComposerTake.Nothing;
+        var notes = strip.TakeRecordings();
+        if (take.ClearsWords)
+        {
+            ComposerBox.Text = string.Empty;
+        }
+        if (take.ClearsReply)
+        {
+            EndComposerMode(clear: false);
+        }
+        if (here)
+        {
+            DrawStaging();
+        }
+        return ParkNotesAsync(chatId, notes, take);
+    }
+
+    /// <summary>Several notes in review, one row each: every one keeps the reply, and only the first the words — one message's words, never two.</summary>
+    private async Task ParkNotesAsync(long chatId, IReadOnlyList<StagedMedia> notes, ComposerTake take)
+    {
+        for (var at = 0; at < notes.Count; at++)
+        {
+            await ParkAsync(chatId, notes[at].Bytes.ToArray(), notes[at].DurationMs ?? 0, take.ReplyTo, at == 0 ? take.Caption : null);
+        }
+    }
+
+    /// <summary>
+    /// Written down as a voice message that was not sent. Where it cannot be written — a full disk (S4) — it is held in
+    /// memory instead, as the same row with the same reply and caption, never carried by another Send (S2.8): kept for as
+    /// long as the app runs, and the disk tried again as the window really closes.
+    /// </summary>
+    private async Task ParkAsync(long chatId, byte[] bytes, int durationMs, long? replyTo, string? caption)
+    {
+        try
+        {
+            await Task.Run(() => parked.Park(chatId, bytes, durationMs, replyTo, caption, DateTimeOffset.UtcNow));
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"keeping a voice message that was not sent: {e.GetType().Name}");
+            if (!keepsRecordings)
+            {
+                return;
+            }
+            parked.Hold(chatId, bytes, durationMs, replyTo, caption, DateTimeOffset.UtcNow);
+            if (!gone && open?.ChatId == chatId)
+            {
+                DrawNotSent();
+            }
+            return;
+        }
+        if (!keepsRecordings)
+        {
+            // The session ended while it was being written: it goes with everything else recorded and not sent.
+            WipeParked();
+            return;
+        }
+        if (!gone && open?.ChatId == chatId)
+        {
+            DrawNotSent();
+        }
+    }
+
+    /// <summary>Whether this chat holds a voice message that was not sent; a disk that cannot be read blocks nothing.</summary>
+    private bool HasNotSent(long chatId)
+    {
+        try
+        {
+            return parked.Any(chatId);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Diagnostics.Write($"reading voice messages that were not sent: {e.GetType().Name}");
+            return false;
+        }
+    }
+
+    /// <summary>Everything recorded and not sent, gone with the session — written, or held in memory for want of a disk.</summary>
+    private void WipeParked()
+    {
+        parked.ForgetHeld();
+        try
+        {
+            ParkedRecordings.WipeAll(AppFolders.ParkedPath);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"wiping voice messages that were not sent: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// Starting a recording pauses whatever is playing (S1.7) — the one recording player, and a video in the viewer — and a
+    /// recording on its way to playing is called off, so its bytes landing do not start it under the microphone.
+    /// </summary>
+    private void QuietForRecording()
+    {
+        fetchingAudio = 0;
+        fetchingLocal++;
+        if (AudioRunning)
+        {
+            audio.Pause();
+        }
+        ShowPlayback();
+        try
+        {
+            ViewerVideo.MediaPlayer?.Pause();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"pausing the viewer's video: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>Windows' own microphone page — offered only after <c>AppCapability</c> said a switch there can help.</summary>
+    private void OpenMicrophoneSettings()
+    {
+        try
+        {
+            _ = Windows.System.Launcher.LaunchUriAsync(new Uri(VoiceNotes.MicrophoneSettingsPage));
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"opening the microphone settings: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// The open chat's voice messages that were not sent (S2.8), a row each above the composer: "Voice message not sent ·
+    /// 0:42", the reply it was recorded under and its caption, then ▶, Send and ✕.
+    /// </summary>
+    private void DrawNotSent()
+    {
+        NotSentPanel.Children.Clear();
+        parkedRows.Clear();
+        IReadOnlyList<ParkedRecording> waiting = [];
+        if (!gone && open is { } chat)
+        {
+            try
+            {
+                waiting = parked.Of(chat.ChatId);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                Diagnostics.Write($"reading voice messages that were not sent: {e.GetType().Name}");
+            }
+            foreach (var entry in waiting)
+            {
+                NotSentPanel.Children.Add(NotSentRow(chat, entry));
+            }
+        }
+        NotSentPanel.Visibility = waiting.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        // While one waits, the microphone is dimmed and says so (S1.3 row 9).
+        notSentShown = waiting.Count;
+        ReconcileLocal();
+        DrawSlot();
+    }
+
+    private FrameworkElement NotSentRow(ConversationModel chat, ParkedRecording entry)
+    {
+        var say = services.Say;
+        var resources = Application.Current.Resources;
+        var secondary = (Brush)resources["TextFillColorSecondaryBrush"];
+        var grid = new Grid { ColumnSpacing = 10 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        // A microphone, in Segoe Fluent Icons.
+        grid.Children.Add(new FontIcon
+        {
+            Glyph = ((char)0xE720).ToString(),
+            FontSize = 16,
+            Foreground = secondary,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var lines = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        var idle = NotSent.Line(entry.DurationMs, say);
+        var line = new TextBlock { Text = idle, TextTrimming = TextTrimming.CharacterEllipsis };
+        Typography.SetNumeralAlignment(line, FontNumeralAlignment.Tabular);
+        lines.Children.Add(line);
+        // The reply it was recorded under — which is the one it goes with, whatever the composer is primed with now.
+        if (entry.ReplyToMessageId is { } replyId && connection.Chats.Message(replyId) is { } answered)
+        {
+            lines.Children.Add(new TextBlock
+            {
+                Text = Quotes.Banner(answered, connection.Chats, say),
+                FontSize = 12,
+                Foreground = secondary,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            });
+        }
+        if (entry.Caption is { } caption)
+        {
+            lines.Children.Add(new TextBlock
+            {
+                Text = caption,
+                FontSize = 12,
+                Foreground = secondary,
+                TextWrapping = TextWrapping.Wrap,
+                MaxLines = 2,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            });
+        }
+        Grid.SetColumn(lines, 1);
+        grid.Children.Add(lines);
+        // Its ▶ (S2.8): the note as it would be sent, from this device.
+        var (play, glyph) = PlayButton();
+        play.Click += (_, _) => _ = ToggleLocalAsync(null, entry);
+        parkedRows[entry.Id] = new LocalRow(play, glyph, line, idle, VoiceNotes.TotalSeconds(entry.DurationMs));
+        DimPlay(play);
+        Grid.SetColumn(play, 2);
+        grid.Children.Add(play);
+        var send = new Button { Content = say.Get("Send"), VerticalAlignment = VerticalAlignment.Center };
+        if (resources.TryGetValue("AccentButtonStyle", out var accent) && accent is Style accented)
+        {
+            send.Style = accented;
+        }
+        ToolTipService.SetToolTip(send, say.Get("Send voice message"));
+        AutomationProperties.SetName(send, say.Get("Send voice message"));
+        send.Click += (_, _) => _ = SendParkedAsync(chat, entry);
+        Grid.SetColumn(send, 3);
+        grid.Children.Add(send);
+        var delete = new Button { Content = "✕", Padding = new Thickness(8, 4, 8, 4), VerticalAlignment = VerticalAlignment.Center };
+        ToolTipService.SetToolTip(delete, say.Get("Delete recording"));
+        AutomationProperties.SetName(delete, say.Get("Delete recording"));
+        delete.Click += (_, _) => _ = DeleteParkedAsync(entry);
+        Grid.SetColumn(delete, 4);
+        grid.Children.Add(delete);
+        return new Border
+        {
+            Child = grid,
+            Padding = new Thickness(10, 6, 6, 6),
+            CornerRadius = new CornerRadius(8),
+            Background = (Brush)resources["CardBackgroundFillColorDefaultBrush"],
+            BorderBrush = (Brush)resources["CardStrokeColorDefaultBrush"],
+            BorderThickness = new Thickness(1),
+        };
+    }
+
+    /// <summary>
+    /// A not-sent row's Send: THAT recording, with THAT reply and caption, and nothing else — never the composer's words,
+    /// staged items or reply, and never carried by another Send (S2.8). Asked about exactly as the Send button is where the
+    /// assistant would hear it, and written down in the outbox BEFORE it leaves the store, so a crash in between can never
+    /// lose it.
+    /// </summary>
+    private async Task SendParkedAsync(ConversationModel chat, ParkedRecording entry)
+    {
+        if (gone || open != chat || sendingMedia || !HasEntry(chat.ChatId, entry))
+        {
+            return;
+        }
+        var say = services.Say;
+        var caption = entry.Caption ?? string.Empty;
+        var session = connection.Session.State;
+        var chatKind = Kind(chat);
+        if (AssistantConsent.IsRequired(chatKind, caption, session.Assistant?.Processor, session.AssistantConsentAt))
+        {
+            _ = ReviewAssistantConsentAsync(() =>
+            {
+                // A yes is for the chat it was asked in.
+                if (!gone && open == chat)
+                {
+                    _ = SendParkedAsync(chat, entry);
+                }
+            });
+            return;
+        }
+        if (AssistantConsent.IsWithheldFromAnUnnamedAssistant(chatKind, caption, session.Assistant is not null, session.Assistant?.Processor))
+        {
+            ShowProblem(say.Get("This server hasn't said which service answers, so nothing can be sent to the assistant here."));
+            return;
+        }
+        var store = connection.Staging;
+        string? handle = null;
+        sendingMedia = true;
+        DrawSlot();
+        ComposerError.Visibility = Visibility.Collapsed;
+        try
+        {
+            var media = await Task.Run(() => parked.Staged(entry));
+            if (media is null)
+            {
+                ShowProblem(say.Get("Something went wrong. Try again."));
+                return;
+            }
+            handle = await Task.Run(() => store.Stage(media));
+            if (gone || open != chat)
+            {
+                // Not sent after all: it stays in its row.
+                return;
+            }
+            chat.Send(
+                caption, replyToMessageId: entry.ReplyToMessageId, pendingFiles: [handle],
+                mentions: ComposerMentions.ForSend(caption, connection.Chats.Members(), IsFamily(chat)));
+            if (!await Task.Run(() => parked.Remove(entry)))
+            {
+                Diagnostics.Write("a voice message that was sent could not be taken out of the not-sent store");
+            }
+            DrawNotSent();
+            Queued();
+            if (!gone && open == chat)
+            {
+                // Its Send went with its row: the keyboard goes back to the field, and a screen reader hears what happened.
+                RowEnded(sent: true, entry.DurationMs);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"sending a voice message that was not sent: {e.GetType().Name}");
+            if (!gone)
+            {
+                ShowProblem(say.Get("Something went wrong. Try again."));
+            }
+        }
+        finally
+        {
+            if (handle is not null)
+            {
+                // The row that names it is in the outbox now (or never will be): the sweep may judge it.
+                store.Release([handle]);
+            }
+            sendingMedia = false;
+            DrawSlot();
+        }
+    }
+
+    private bool HasEntry(long chatId, ParkedRecording entry)
+    {
+        try
+        {
+            return parked.Of(chatId).Any(held => held.Id == entry.Id);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Diagnostics.Write($"reading voice messages that were not sent: {e.GetType().Name}");
+            return false;
+        }
+    }
+
+    /// <summary>A not-sent row's ✕: deleted — after "Delete this recording?" from ten seconds, because it cannot be made again.</summary>
+    private async Task DeleteParkedAsync(ParkedRecording entry)
+    {
+        if (VoiceNotes.AsksBeforeDeleting(entry.DurationMs))
+        {
+            ContentDialogResult answer;
+            try
+            {
+                answer = await Dialogs.DeleteRecording(XamlRoot, services.Say).ShowAsync();
+            }
+            catch (Exception e)
+            {
+                // Only one dialog may be up at a time: nothing was asked, so nothing is deleted.
+                Diagnostics.Write($"asking before deleting a recording: {e.GetType().Name}");
+                return;
+            }
+            if (answer != ContentDialogResult.Primary || gone)
+            {
+                return;
+            }
+        }
+        await Task.Run(() => parked.Remove(entry));
+        if (!gone)
+        {
+            DrawNotSent();
+            // Its ✕ went with its row: the keyboard goes back to the field, and a screen reader hears what happened (S6).
+            RowEnded(sent: false, entry.DurationMs);
+        }
+    }
+
+    /// <summary>
+    /// A not-sent row's own Send or ✕ took it, and its focused button with it: the keyboard goes back to the field — never left
+    /// nowhere, which loses a screen reader's place — and what happened is said (<see cref="NotSent.RowEnded"/>).
+    /// </summary>
+    private void RowEnded(bool sent, int durationMs)
+    {
+        var (focusField, said) = NotSent.RowEnded(sent, durationMs, services.Say);
+        if (focusField)
+        {
+            ComposerBox.Focus(FocusState.Programmatic);
+        }
+        SayAloud(said);
+    }
+
+    /// <summary>A sentence on the composer's notice line, said to a screen reader as it appears (S6): the line is a polite live region.</summary>
+    private static void Announce(FrameworkElement line)
+    {
+        try
+        {
+            (FrameworkElementAutomationPeer.FromElement(line) ?? FrameworkElementAutomationPeer.CreatePeerForElement(line))
+                ?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+        }
+        catch (Exception e)
+        {
+            // An announcement is a courtesy: the sentence is on the screen either way.
+            Diagnostics.Write($"announcing a notice: {e.GetType().Name}");
+        }
     }
 
     /// <summary>One recording's row as drawn, so playback can keep it up to date.</summary>
@@ -3063,6 +4603,7 @@ public sealed partial class ChatsView : UserControl
 
         var drawn = new AudioRow(attachment.Id, toggle, glyph, track, elapsed, total);
         audioRows[attachment.Id] = drawn;
+        DimPlay(toggle);
         toggle.Click += (_, _) => _ = ToggleAudioAsync(attachment);
         // While the thumb is held, playback does not fight it for the position.
         track.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, _) => scrubbingAudio = true), true);
@@ -3346,6 +4887,12 @@ public sealed partial class ChatsView : UserControl
 
     private async Task ToggleAudioAsync(AttachmentDto attachment)
     {
+        // No app sound while something records (S1.7): it would be in the recording.
+        if (recordingStart.Quiet(recorder is not null))
+        {
+            Explain(services.Say.Get("You can play this after recording."));
+            return;
+        }
         if (playingAudio == attachment.Id)
         {
             if (AudioRunning)
@@ -3366,8 +4913,9 @@ public sealed partial class ChatsView : UserControl
             ShowPlayback();
             return;
         }
-        // One at a time: whatever was playing stops, and says so.
+        // One at a time: whatever was playing stops, and says so — a staged or not-sent note too.
         fetchingAudio = attachment.Id;
+        fetchingLocal++;
         audio.Pause();
         audioAtEnd = false;
         if (playingAudio is { } stopped)
@@ -3375,6 +4923,7 @@ public sealed partial class ChatsView : UserControl
             playingAudio = null;
             ShowAudio(stopped);
         }
+        ReleaseLocal();
         byte[]? bytes;
         try
         {
@@ -3445,9 +4994,13 @@ public sealed partial class ChatsView : UserControl
         {
             ShowAudio(id);
         }
+        ShowLocal();
     }
 
-    /// <summary>Played to the end: it stops there, showing its whole length, and Play starts it again.</summary>
+    /// <summary>
+    /// Played to the end: a bubble's recording stops there, showing its whole length, and Play starts it again; a staged or
+    /// not-sent note goes back to its name.
+    /// </summary>
     private void AudioEnded()
     {
         if (gone)
@@ -3455,6 +5008,11 @@ public sealed partial class ChatsView : UserControl
             return;
         }
         audio.Pause();
+        if (LocalActive)
+        {
+            ReleaseLocal();
+            return;
+        }
         audioAtEnd = true;
         ShowPlayback();
     }
@@ -3463,13 +5021,161 @@ public sealed partial class ChatsView : UserControl
     private void StopAudio()
     {
         fetchingAudio = 0;
+        fetchingLocal++;
         playingAudio = null;
+        playingStaged = null;
+        playingParked = null;
         audioAtEnd = false;
         scrubbingAudio = false;
         audio.Pause();
         (audio.Source as Windows.Media.Core.MediaSource)?.Dispose();
         audio.Source = null;
         audioRows.Clear();
+        stagedRows.Clear();
+        parkedRows.Clear();
+    }
+
+    /// <summary>A staged or not-sent note's row as drawn — its ▶, the line that becomes "0:12 / 0:42", its name and length — so playback can keep it up to date.</summary>
+    private sealed record LocalRow(Button Toggle, FontIcon Glyph, TextBlock Line, string Idle, double Total);
+
+    private bool LocalActive => playingStaged is not null || playingParked is not null;
+
+    private LocalRow? ActiveLocalRow() =>
+        playingStaged is { } staged && stagedRows.TryGetValue(staged, out var review) ? review
+        : playingParked is { } id && parkedRows.TryGetValue(id, out var waiting) ? waiting
+        : null;
+
+    /// <summary>
+    /// ▶ on a voice note in review (S2.7) or one that was not sent (S2.8): it plays the note from this device — the local
+    /// bytes, the very ones a Send would upload — through the one player, so whatever else plays stops first; ❚❚ pauses it.
+    /// Nothing plays while something records (S1.7).
+    /// </summary>
+    private async Task ToggleLocalAsync(StagedMedia? staged, ParkedRecording? entry)
+    {
+        if (recordingStart.Quiet(recorder is not null))
+        {
+            Explain(services.Say.Get("You can play this after recording."));
+            return;
+        }
+        var same = staged is not null ? ReferenceEquals(playingStaged, staged) : entry is not null && playingParked == entry.Id;
+        if (same)
+        {
+            if (AudioRunning)
+            {
+                audio.Pause();
+            }
+            else
+            {
+                audio.Play();
+            }
+            ShowLocal();
+            return;
+        }
+        // One at a time: a bubble's recording, or another note, stops — and says so.
+        fetchingAudio = 0;
+        audio.Pause();
+        audioAtEnd = false;
+        if (playingAudio is { } stopped)
+        {
+            playingAudio = null;
+            ShowAudio(stopped);
+        }
+        ReleaseLocal();
+        var token = ++fetchingLocal;
+        byte[]? bytes;
+        try
+        {
+            bytes = staged is not null
+                ? staged.Bytes.ToArray()
+                : await Task.Run(() => parked.Staged(entry!)?.Bytes.ToArray());
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a voice message to play: {e.GetType().Name}");
+            bytes = null;
+        }
+        if (gone || token != fetchingLocal)
+        {
+            // Gone, or something else was pressed meanwhile: that one plays.
+            return;
+        }
+        if (bytes is null)
+        {
+            Explain(services.Say.Get("Something went wrong. Try again."));
+            return;
+        }
+        var stream = new InMemoryRandomAccessStream();
+        using (var writer = new DataWriter(stream))
+        {
+            writer.WriteBytes(bytes);
+            await writer.StoreAsync();
+            await writer.FlushAsync();
+            writer.DetachStream();
+        }
+        stream.Seek(0);
+        if (gone || token != fetchingLocal || recordingStart.Quiet(recorder is not null))
+        {
+            stream.Dispose();
+            return;
+        }
+        (audio.Source as Windows.Media.Core.MediaSource)?.Dispose();
+        audio.Source = Windows.Media.Core.MediaSource.CreateFromStream(stream, VoiceNotes.Mime);
+        playingStaged = staged;
+        playingParked = staged is null ? entry?.Id : null;
+        audio.Play();
+        ShowLocal();
+    }
+
+    /// <summary>The playing note's row: ❚❚ or ▶, named for what a press does next, and "0:12 / 0:42" while it is the one.</summary>
+    private void ShowLocal()
+    {
+        if (gone || ActiveLocalRow() is not { } row)
+        {
+            return;
+        }
+        var running = AudioRunning;
+        // Pause and Play, in Segoe Fluent Icons.
+        row.Glyph.Glyph = ((char)(running ? 0xE769 : 0xE768)).ToString();
+        var name = running ? services.Say.Get("Pause") : services.Say.Get("Play");
+        AutomationProperties.SetName(row.Toggle, name);
+        ToolTipService.SetToolTip(row.Toggle, name);
+        row.Line.Text = VoiceNotes.PlayingLabel(audio.PlaybackSession.Position.TotalSeconds, row.Total);
+    }
+
+    /// <summary>The note that was playing is not the one any more — ended, or something else pressed: its row goes back to ▶ and its name.</summary>
+    private void ReleaseLocal()
+    {
+        var row = ActiveLocalRow();
+        playingStaged = null;
+        playingParked = null;
+        if (row is null || gone)
+        {
+            return;
+        }
+        row.Glyph.Glyph = ((char)0xE768).ToString();
+        AutomationProperties.SetName(row.Toggle, services.Say.Get("Play"));
+        ToolTipService.SetToolTip(row.Toggle, services.Say.Get("Play"));
+        row.Line.Text = row.Idle;
+    }
+
+    /// <summary>
+    /// After the strip or the not-sent rows were drawn again: a note still there goes on showing that it plays; one that went
+    /// — sent, deleted, kept as not sent, another chat opened — goes quiet with it.
+    /// </summary>
+    private void ReconcileLocal()
+    {
+        var drawn = playingStaged is { } staged ? stagedRows.ContainsKey(staged)
+            : playingParked is { } id ? parkedRows.ContainsKey(id)
+            : true;
+        if (drawn)
+        {
+            ShowLocal();
+            return;
+        }
+        fetchingLocal++;
+        audio.Pause();
+        playingStaged = null;
+        playingParked = null;
     }
 
     /// <summary>A document: its name and its size, and a click that saves it. A recording plays in <see cref="AudioElement"/>.</summary>
@@ -3756,9 +5462,24 @@ public sealed partial class ChatsView : UserControl
         }
     }
 
-    private void ShowProblem(string sentence)
+    private void ShowProblem(string sentence) => ShowProblem(sentence, null);
+
+    /// <summary>
+    /// A sentence on the composer's notice line, with a link after it that does something about it — Settings, for a
+    /// refused microphone (S2.2). The link lives in the line itself, so the next sentence, which replaces the text,
+    /// takes it away, and hiding the line hides it.
+    /// </summary>
+    private void ShowProblem(string sentence, (string Words, Action Act)? link)
     {
         ComposerError.Text = sentence;
+        if (link is { } action)
+        {
+            var hyperlink = new Hyperlink();
+            hyperlink.Inlines.Add(new Run { Text = action.Words });
+            hyperlink.Click += (_, _) => action.Act();
+            ComposerError.Inlines.Add(new Run { Text = " " });
+            ComposerError.Inlines.Add(hyperlink);
+        }
         ComposerError.Visibility = Visibility.Visible;
     }
 
@@ -3839,7 +5560,7 @@ public sealed partial class ChatsView : UserControl
         BannerText.Text = Quotes.Banner(message, connection.Chats, services.Say);
         BannerCancel.Content = services.Say.Get("Cancel reply");
         BannerPanel.Visibility = Visibility.Visible;
-        SendButton.Content = services.Say.Get("Send");
+        DrawSlot();
         ComposerBox.Focus(FocusState.Programmatic);
         // A photo being replied to may now go to the assistant with the draft.
         DrawPictureNotice();
@@ -3852,11 +5573,12 @@ public sealed partial class ChatsView : UserControl
         BannerText.Text = services.Say.Get("Editing message");
         BannerCancel.Content = services.Say.Get("Cancel editing");
         BannerPanel.Visibility = Visibility.Visible;
-        SendButton.Content = services.Say.Get("Save");
         ShowAssistantButtons();
         ComposerBox.Text = message.Body;
         ComposerBox.SelectionStart = ComposerBox.Text.Length;
         ComposerBox.Focus(FocusState.Programmatic);
+        // Save — never a microphone, even with the field cleared (S1.3 row 4) — whether or not the words changed.
+        DrawSlot();
     }
 
     /// <summary>Back to writing a new message. An abandoned edit takes its words with it.</summary>
@@ -3865,13 +5587,13 @@ public sealed partial class ChatsView : UserControl
         replyingTo = null;
         editing = null;
         BannerPanel.Visibility = Visibility.Collapsed;
-        SendButton.Content = services.Say.Get("Send");
         ShowAssistantButtons();
         if (clear)
         {
             ComposerBox.Text = string.Empty;
         }
         DrawPictureNotice();
+        DrawSlot();
     }
 
     // ---- polls ---------------------------------------------------------------------------------------
@@ -4409,10 +6131,16 @@ public sealed partial class ChatsView : UserControl
                     return;
             }
         }
+        // A key held down is ONE press (S2.4): its first may have been Esc stopping a recording, Enter on the slot's Stop or
+        // Send, or on the recording row's Stop or Delete — each of which hands focus to this field — and its repeats here must
+        // neither drop the reply the note was recorded under nor send what that first press staged or uncovered.
         if (e.Key == Windows.System.VirtualKey.Escape && BannerPanel.Visibility == Visibility.Visible)
         {
             e.Handled = true;
-            EndComposerMode(clear: editing is not null);
+            if (!slotGuard.IgnoresFieldKey(Environment.TickCount64, e.KeyStatus.WasKeyDown, sends: false, ComposerBox.Text))
+            {
+                EndComposerMode(clear: editing is not null);
+            }
             return;
         }
         if (e.Key != Windows.System.VirtualKey.Enter)
@@ -4425,7 +6153,13 @@ public sealed partial class ChatsView : UserControl
         if (!shift)
         {
             e.Handled = true;
-            Send();
+            // Enter is the slot's activation in rows 2 to 5 (S1.3), so it waits out the slot's guard as a click does: a second
+            // Enter after the slot's Stop in row 3 must not send the words the note is being staged beside (S1.1). Words typed
+            // since are never guarded, so "ok" sent at once still goes.
+            if (!slotGuard.IgnoresFieldKey(Environment.TickCount64, e.KeyStatus.WasKeyDown, sends: true, ComposerBox.Text))
+            {
+                Send();
+            }
         }
     }
 
@@ -4446,6 +6180,8 @@ public sealed partial class ChatsView : UserControl
             }
             var words = ComposerBox.Text;
             EndComposerMode(clear: true);
+            // The slot was Save and is the microphone now: a second click in the same breath must not record (S1.1).
+            slotGuard.Arm(Environment.TickCount64, ComposerBox.Text);
             _ = ActAsync(() => chat.EditAsync(target.Id, words));
             return;
         }
@@ -4481,7 +6217,9 @@ public sealed partial class ChatsView : UserControl
         var replyTo = replyingTo?.Id;
         if (strip.Items.Count > 0)
         {
+            // Its first steps empty the composer before it awaits anything: the slot is the microphone from here.
             _ = SendWithMediaAsync(chat, strip, body, replyTo);
+            slotGuard.Arm(Environment.TickCount64, ComposerBox.Text);
             return;
         }
         // Written down first; the outbox owns it from here, and a send interrupted by anything at
@@ -4490,6 +6228,9 @@ public sealed partial class ChatsView : UserControl
         chat.Send(body, replyToMessageId: replyTo, mentions: ComposerMentions.ForSend(body, connection.Chats.Members(), IsFamily(chat)));
         drafts.Sent(chat.ChatId);
         EndComposerMode(clear: true);
+        // A send that empties the composer turns Send into the microphone under the pointer: a double click on Send cannot
+        // start a recording (S1.1). Typing never arms it, so "ok" followed at once by Send still sends.
+        slotGuard.Arm(Environment.TickCount64, ComposerBox.Text);
         Queued();
     }
 
@@ -4507,7 +6248,6 @@ public sealed partial class ChatsView : UserControl
         var handles = new List<string>();
         // One at a time: a second send while these are written would be queued in front of them.
         sendingMedia = true;
-        SendButton.IsEnabled = false;
         EndComposerMode(clear: true);
         DrawStaging();
         try
@@ -4543,7 +6283,7 @@ public sealed partial class ChatsView : UserControl
         {
             store.Release(handles);
             sendingMedia = false;
-            SendButton.IsEnabled = true;
+            DrawSlot();
         }
     }
 
@@ -4584,10 +6324,23 @@ public sealed partial class ChatsView : UserControl
         var paste = new MenuFlyoutItem { Text = say.Get("Paste"), Icon = new SymbolIcon(Symbol.Paste) };
         paste.Click += (_, _) => _ = PasteAsync(fromMenu: true);
         menu.Items.Add(paste);
-        // A microphone, in Segoe Fluent Icons.
-        var record = new MenuFlyoutItem { Text = say.Get("Record Audio"), Icon = new FontIcon { Glyph = ((char)0xE720).ToString() } };
-        record.Click += (_, _) => _ = StartRecordingAsync();
-        menu.Items.Add(record);
+        // "Record Voice Message" (S1.5): in a family or a direct chat — never the assistant's, where every message is a
+        // consented model call (decision 24). Off while an attachment is on its way, in an edit, during a call, and while
+        // this chat holds a voice message that was not sent — its row is right there. With words typed or items staged it
+        // records beside them, and the slot is Stop (S1.3 row 3).
+        if (Kind(chat) != "ai")
+        {
+            var strip = Staging(chat.ChatId);
+            var record = new MenuFlyoutItem
+            {
+                Text = say.Get("Record Voice Message"),
+                Icon = new FontIcon { Glyph = ((char)ComposerButton.MicrophoneGlyph).ToString() },
+                KeyboardAcceleratorTextOverride = ComposerButton.RecordShortcut,
+                IsEnabled = !Busy(strip) && editing is null && !callBusy && !HasNotSent(chat.ChatId),
+            };
+            record.Click += (_, _) => _ = StartRecordingAsync(fromSlot: false);
+            menu.Items.Add(record);
+        }
         // A map pin, in Segoe Fluent Icons.
         var place = new MenuFlyoutItem { Text = say.Get("Location"), Icon = new FontIcon { Glyph = ((char)0xE707).ToString() }, IsEnabled = !locating };
         place.Click += (_, _) => _ = ShareLocationAsync();
@@ -5489,6 +7242,7 @@ public sealed partial class ChatsView : UserControl
             return;
         }
         ComposerError.Visibility = Visibility.Collapsed;
+        var stagedBefore = strip.Items.Count;
         string? said;
         try
         {
@@ -5511,6 +7265,11 @@ public sealed partial class ChatsView : UserControl
         // By its id: a chat left and come back to while a video was transcoded is a new model over the same strip.
         if (open?.ChatId == chat.ChatId)
         {
+            if (strip.Items.Count > stagedBefore)
+            {
+                // The person's staging is never guarded (S1.1): a picture pasted just after a send goes at the next Send.
+                slotGuard.Changed(recording: recorder is not null);
+            }
             if (said is not null)
             {
                 ShowProblem(said);
@@ -5529,6 +7288,8 @@ public sealed partial class ChatsView : UserControl
         var preparing = open is { } chat && strips.TryGetValue(chat.ChatId, out var strip) && strip.Preparing;
         PreparingRing.IsActive = preparing;
         PreparingBar.Visibility = preparing ? Visibility.Visible : Visibility.Collapsed;
+        // An attachment on its way dims the microphone (S1.3 row 8).
+        DrawSlot();
     }
 
     private void DrawStaging()
@@ -5536,15 +7297,23 @@ public sealed partial class ChatsView : UserControl
         ShowPreparing();
         DrawPictureNotice();
         StagingStrip.Children.Clear();
+        stagedRows.Clear();
         if (open is not { } chat || Staging(chat.ChatId) is not { Items.Count: > 0 } strip)
         {
             StagingScroller.Visibility = Visibility.Collapsed;
+            ReconcileLocal();
+            DrawSlot();
             return;
         }
         var say = services.Say;
         for (var index = 0; index < strip.Items.Count; index++)
         {
             var item = strip.Items[index];
+            if (VoiceNotes.IsRecorded(item))
+            {
+                StagingStrip.Children.Add(ChipBox(StagedNoteChip(strip, item)));
+                continue;
+            }
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
             row.Children.Add(Thumb(item));
             row.Children.Add(new TextBlock
@@ -5561,18 +7330,114 @@ public sealed partial class ChatsView : UserControl
             remove.Click += (_, _) =>
             {
                 strip.Remove(at);
+                // Taken off by the person: a change of theirs, never guarded (S1.1, fc_text::record's OtherAction).
+                slotGuard.Changed(recording: recorder is not null);
                 DrawStaging();
             };
             row.Children.Add(remove);
-            StagingStrip.Children.Add(new Border
-            {
-                Child = row,
-                Padding = new Thickness(6, 4, 4, 4),
-                CornerRadius = new CornerRadius(8),
-                Background = (Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"],
-            });
+            StagingStrip.Children.Add(ChipBox(row));
         }
         StagingScroller.Visibility = Visibility.Visible;
+        ReconcileLocal();
+        DrawSlot();
+    }
+
+    private static Border ChipBox(FrameworkElement row) => new()
+    {
+        Child = row,
+        Padding = new Thickness(6, 4, 4, 4),
+        CornerRadius = new CornerRadius(8),
+        Background = (Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"],
+    };
+
+    /// <summary>
+    /// A voice note in review (S2.7): "[▶] Voice message · 0:42 [✕]" — ▶ plays it from this device, "[❚❚] 0:12 / 0:42" while
+    /// it does, and ✕ ("Delete recording") deletes it, asking first from ten seconds, because it cannot be made again.
+    /// </summary>
+    private FrameworkElement StagedNoteChip(ComposerStaging strip, StagedMedia item)
+    {
+        var say = services.Say;
+        var idle = ComposerStaging.Label(item, say, services.Culture);
+        var (toggle, glyph) = PlayButton();
+        var line = new TextBlock
+        {
+            Text = idle,
+            VerticalAlignment = VerticalAlignment.Center,
+            MaxWidth = 220,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        Typography.SetNumeralAlignment(line, FontNumeralAlignment.Tabular);
+        var remove = new Button { Content = "✕", Padding = new Thickness(6, 2, 6, 2), VerticalAlignment = VerticalAlignment.Center };
+        ToolTipService.SetToolTip(remove, say.Get("Delete recording"));
+        AutomationProperties.SetName(remove, say.Get("Delete recording"));
+        toggle.Click += (_, _) => _ = ToggleLocalAsync(item, null);
+        remove.Click += (_, _) => _ = DeleteStagedNoteAsync(strip, item);
+        stagedRows[item] = new LocalRow(toggle, glyph, line, idle, VoiceNotes.TotalSeconds(item.DurationMs));
+        DimPlay(toggle);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        row.Children.Add(toggle);
+        row.Children.Add(line);
+        row.Children.Add(remove);
+        return row;
+    }
+
+    /// <summary>
+    /// A small ▶ that becomes ❚❚ while its note plays, named for what it does next — in a 44-epx target that reaches past
+    /// the row it sits in rather than making it taller (S1.1: the hit area grows, the visual does not).
+    /// </summary>
+    private (Button Toggle, FontIcon Glyph) PlayButton()
+    {
+        var say = services.Say;
+        // Play, in Segoe Fluent Icons.
+        var glyph = new FontIcon { Glyph = ((char)0xE768).ToString(), FontSize = 14 };
+        var toggle = new Button
+        {
+            Content = glyph,
+            Width = ComposerButton.MinTargetWindowsEpx,
+            Height = ComposerButton.MinTargetWindowsEpx,
+            Margin = new Thickness(-6),
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(ComposerButton.MinTargetWindowsEpx / 2.0),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTipService.SetToolTip(toggle, say.Get("Play"));
+        AutomationProperties.SetName(toggle, say.Get("Play"));
+        return (toggle, glyph);
+    }
+
+    /// <summary>A note in review's ✕: gone — after "Delete this recording?" from ten seconds — and said (S2.7, S6).</summary>
+    private async Task DeleteStagedNoteAsync(ComposerStaging strip, StagedMedia item)
+    {
+        if (VoiceNotes.AsksBeforeDeleting(item.DurationMs ?? 0))
+        {
+            ContentDialogResult answer;
+            try
+            {
+                answer = await Dialogs.DeleteRecording(XamlRoot, services.Say).ShowAsync();
+            }
+            catch (Exception e)
+            {
+                // Only one dialog may be up at a time: nothing was asked, so nothing is deleted.
+                Diagnostics.Write($"asking before deleting a recording: {e.GetType().Name}");
+                return;
+            }
+            if (answer != ContentDialogResult.Primary || gone)
+            {
+                return;
+            }
+        }
+        // By reference: it may have been sent, kept as not sent or moved meanwhile, and then this deletes nothing.
+        if (!strip.Remove(item))
+        {
+            return;
+        }
+        // Taken off by the person, as any staged item's ✕ (S1.1): the guard lifts.
+        slotGuard.Changed(recording: recorder is not null);
+        DrawStaging();
+        ComposerBox.Focus(FocusState.Programmatic);
+        SayAloud(NotSent.Said(RecordingEnd.Deleted, RecordingFate.Discard, item.DurationMs ?? 0, services.Say)!);
     }
 
     /// <summary>A staged item's picture — its preview — or its kind's glyph.</summary>

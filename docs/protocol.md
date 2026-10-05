@@ -109,9 +109,15 @@ The consequences worth stating rather than discovering:
 - **A browser records voice notes into MP4 (AAC) where it can, and into WAV where it cannot —
   never WebM.** WebM is what most browsers' recorders produce by default, `kind=audio` does not
   accept it, and a family's phones could not play it if it did. WAV is large, and it plays
-  everywhere. Everything else about a voice note — five minutes at most, staged so a caption can
-  be added — is the apps' rule. A browser's location comes from its own geolocation, under the
-  same freshness bar the apps apply (see "Locations"): never a fix older than two minutes.
+  everywhere. Everything else about a voice note is the apps' rule: five minutes at most, sent
+  from the recorder, or staged when the member stops it to listen or add words — never sent by an
+  interruption, except that an interruption during the five-second Undo window after a release
+  ends the window early and sends it. (*Amended 2026-10-05, #79:* it read "staged so a caption can
+  be added" while stopping was the only way a recording ended. A release is letting go of a held
+  microphone, and the Undo window is the grace before such a release sends; a note sent from the
+  recorder is a media send like any other — see "Sending on an unreliable network". Nothing on the
+  wire changes.) A browser's location comes from its own geolocation, under the same freshness bar
+  the apps apply (see "Locations"): never a fix older than two minutes.
 - **A browser notifies ITSELF, and names who rather than what.** It registers no device and takes
   no push, so what it has instead is the tab it is already in: the number of unread messages in the
   page's TITLE — derived from its own store, exactly as a running app derives the badge it puts on
@@ -5861,7 +5867,11 @@ client keeps trying.
   nothing at all. Until every upload has landed that row must never be posted: a message claiming
   no attachments is a text message, and for a photo with a caption the server would accept it
   happily, leaving a delivered bubble with the pictures gone. Ids that DID land are kept and reused
-  within the grace, so a retry pushes only the remainder.
+  within the grace, so a retry pushes only the remainder. A voice note sent straight from the
+  recorder — by its Send, or when the five-second Undo window after a release runs out — is such a
+  send like any other (*added 2026-10-05, #79*): its row is written before its first byte and its
+  bytes are kept until the ack, and during the window, which is the device's grace before anything
+  leaves, it is not in the outbox at all.
 - **Keep the source bytes until the message is acked.** An attachment id is only valid while the
   server still holds the upload it names — unclaimed uploads are swept after
   `limits.attachment_grace_hours` — so a client that has thrown its copy away has no way to

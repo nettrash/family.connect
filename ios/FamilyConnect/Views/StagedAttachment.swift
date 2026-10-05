@@ -38,8 +38,16 @@ struct StagedAttachment: Identifiable {
     /// staged, so once is also correct.
     let assistantWireBytes: Int
 
-    init(prepared: MediaPrep.Prepared) {
+    /// Recorded by this composer's recorder, as opposed to a sound file
+    /// picked from disk — which shares `kind=audio` and nothing else. Only a
+    /// recording is kept as "not sent" when the person leaves the chat with
+    /// it still in review (#79, S2.8): a file can be picked again, a
+    /// recording cannot be made again.
+    let isVoiceNote: Bool
+
+    init(prepared: MediaPrep.Prepared, isVoiceNote: Bool = false) {
         self.prepared = prepared
+        self.isVoiceNote = isVoiceNote
         self.assistantWireBytes = AssistantPictureLimits.wireBytes(
             previewBytes: prepared.previewJPEG?.count,
             originalBytes: Self.fileBytes(at: prepared.fileURL))
@@ -154,12 +162,21 @@ private struct StagedThumbnail: View {
 }
 
 /// The one staged attachment sitting above the field, with the way out —
-/// the shape this row has always had, kept for the single-item case.
+/// the shape this row has always had, kept for the single-item case. A voice
+/// note in review is its own chip, one that plays (#79, S2.7).
 struct StagedAttachmentChip: View {
     let item: StagedAttachment
     let onRemove: () -> Void
 
     var body: some View {
+        if item.isVoiceNote {
+            StagedVoiceNoteChip(item: item, onRemove: onRemove)
+        } else {
+            fileChip
+        }
+    }
+
+    private var fileChip: some View {
         HStack(spacing: 10) {
             StagedThumbnail(item: item, side: 44)
 
@@ -200,6 +217,14 @@ struct StagedAttachmentTile: View {
     let onRemove: () -> Void
 
     var body: some View {
+        if item.isVoiceNote {
+            StagedVoiceNoteTile(item: item, onRemove: onRemove)
+        } else {
+            fileTile
+        }
+    }
+
+    private var fileTile: some View {
         StagedThumbnail(item: item, side: 56)
             .overlay(alignment: .topTrailing) {
                 Button {
@@ -245,6 +270,187 @@ struct StagedAttachmentRow: View {
                 // Room for the X riding above the tile's corner.
                 .padding(.top, 2)
             }
+        }
+    }
+}
+
+// MARK: - A voice note in review (#79, S2.7)
+
+/// What a staged voice note needs that a picked file does not: its length,
+/// a player for the file on this device, and the rule that deleting ten
+/// seconds or more asks first.
+extension StagedAttachment {
+    /// By the length the recording reported.
+    var duration: TimeInterval { Double(prepared.durationMS ?? 0) / 1000 }
+
+    /// Deleting it asks "Delete this recording?" (S1.1, `DELETE_ASKS_FROM_MS`).
+    var deleteAsks: Bool {
+        (prepared.durationMS ?? 0) >= Int(RecordRules.deleteAsksFromMS)
+    }
+}
+
+/// "[▶] Voice message · 0:42 [✕]"; while it plays, "[❚❚] 0:12 / 0:42". ▶
+/// plays the LOCAL file through `.playback` and pauses anything else playing
+/// (LocalVoicePlayer); while a recording runs it is dimmed and says "You can
+/// play this after recording." (S1.7). ✕ is "Delete recording", and asks
+/// from ten seconds.
+struct StagedVoiceNoteChip: View {
+    let item: StagedAttachment
+    let onRemove: () -> Void
+
+    @State private var player = LocalVoicePlayer()
+    @State private var asksDelete = false
+    @State private var saysAfterRecording = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VoiceNotePlayButton(
+                player: player, file: { item.prepared.fileURL }, side: 44,
+                saysAfterRecording: $saysAfterRecording)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Group {
+                    if player.isPlaying {
+                        Text(verbatim: "\(AudioRecorder.timeLabel(player.elapsed)) / \(AudioRecorder.timeLabel(item.duration))")
+                    } else {
+                        Text("Voice message · \(AudioRecorder.timeLabel(item.duration))")
+                    }
+                }
+                .font(.caption.weight(.medium).monospacedDigit())
+                .lineLimit(1)
+                if saysAfterRecording {
+                    Text("You can play this after recording.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text("Add a message, or send it on its own.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            Button {
+                if item.deleteAsks {
+                    asksDelete = true
+                } else {
+                    player.stop()
+                    onRemove()
+                }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    // Tap slack without a layout change, as the file chip's.
+                    .contentShape(Rectangle().inset(by: -12))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Delete recording")
+            // A pointer's tooltip, on the Mac and under an iPad's pointer.
+            .help("Delete recording")
+        }
+        .confirmationDialog("Delete this recording?", isPresented: $asksDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                player.stop()
+                onRemove()
+            }
+            Button("Keep", role: .cancel) {}
+        }
+        .onDisappear { player.stop() }
+    }
+}
+
+/// A voice note among several staged items: the tile plays it.
+struct StagedVoiceNoteTile: View {
+    let item: StagedAttachment
+    let onRemove: () -> Void
+
+    @State private var player = LocalVoicePlayer()
+    @State private var asksDelete = false
+    @State private var saysAfterRecording = false
+
+    var body: some View {
+        ZStack {
+            Color.appSecondaryFill
+            VoiceNotePlayButton(
+                player: player, file: { item.prepared.fileURL }, side: 56,
+                saysAfterRecording: $saysAfterRecording)
+        }
+        .frame(width: 56, height: 56)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(alignment: .topTrailing) {
+            Button {
+                if item.deleteAsks {
+                    asksDelete = true
+                } else {
+                    player.stop()
+                    onRemove()
+                }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.body)
+                    .foregroundStyle(.white, .black.opacity(0.55))
+                    .frame(width: 28, height: 28, alignment: .topTrailing)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(2)
+            .accessibilityLabel("Delete recording")
+            .help("Delete recording")
+        }
+        .confirmationDialog("Delete this recording?", isPresented: $asksDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                player.stop()
+                onRemove()
+            }
+            Button("Keep", role: .cancel) {}
+        }
+        .onDisappear { player.stop() }
+    }
+}
+
+/// ▶ / ❚❚ over a local voice note — dimmed while a recording runs anywhere
+/// in the app, saying why instead of playing (S1.7). Shared by the review
+/// chip, its tile and the "not sent" row.
+struct VoiceNotePlayButton: View {
+    let player: LocalVoicePlayer
+    /// Where the file is — asked at the tap, never per redraw: the composer
+    /// redraws on every keystroke, and finding a parked file reads the disk.
+    let file: () -> URL?
+    let side: CGFloat
+    @Binding var saysAfterRecording: Bool
+
+    private var recording: Bool { VoiceRecordingArbiter.shared.isRecording }
+
+    var body: some View {
+        Button {
+            guard !recording else {
+                saysAfterRecording = true
+                AccessibilityNotification.Announcement(String(localized: "You can play this after recording.")).post()
+                return
+            }
+            saysAfterRecording = false
+            guard let url = player.url ?? file() else { return }
+            player.toggle(url)
+        } label: {
+            Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                .font(.system(size: side >= 44 ? 30 : 26))
+                .foregroundStyle(.tint)
+                .opacity(recording ? 0.35 : 1)
+                .frame(width: side, height: side)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+        // Two Texts, not a ternary of literals: that would be a `String`,
+        // which `.help` shows verbatim and never translates.
+        .help(player.isPlaying ? Text("Pause") : Text("Play"))
+        .accessibilityValue(recording ? Text("You can play this after recording.") : Text(""))
+        // A recording starting pauses it through NowPlaying; once it stops
+        // the sentence has nothing left to say.
+        .onChange(of: recording) { _, now in
+            if !now { saysAfterRecording = false }
         }
     }
 }

@@ -75,6 +75,22 @@ public sealed class ComposerStaging
         }
     }
 
+    /// <summary>
+    /// This very item out of the strip — by REFERENCE, not by place or by value: a question asked about it ("Delete this
+    /// recording?") may be answered after other items came or went, and two notes can hold equal bytes. Answers whether it
+    /// was still there.
+    /// </summary>
+    public bool Remove(StagedMedia item)
+    {
+        var at = items.FindIndex(held => ReferenceEquals(held, item));
+        if (at < 0)
+        {
+            return false;
+        }
+        items.RemoveAt(at);
+        return true;
+    }
+
     /// <summary>Everything staged, handed to a send, and the strip left empty.</summary>
     public IReadOnlyList<StagedMedia> TakeAll()
     {
@@ -87,6 +103,21 @@ public sealed class ComposerStaging
     public void Restore(IReadOnlyList<StagedMedia> taken)
     {
         items.InsertRange(0, taken);
+    }
+
+    /// <summary>Whether a voice note recorded here is in review in this strip (<see cref="VoiceNotes.IsRecorded"/>).</summary>
+    public bool HoldsRecordings => items.Any(VoiceNotes.IsRecorded);
+
+    /// <summary>
+    /// The voice notes recorded here, taken out of the strip in their order — to wait as "not sent" when the person leaves
+    /// the chat (docs/audio-video-messages-2026-10-04.md, S2.8). Everything else staged stays: a photo can be picked
+    /// again, and a recording cannot be made again.
+    /// </summary>
+    public IReadOnlyList<StagedMedia> TakeRecordings()
+    {
+        var taken = items.Where(VoiceNotes.IsRecorded).ToList();
+        items.RemoveAll(VoiceNotes.IsRecorded);
+        return taken;
     }
 
     /// <summary>
@@ -196,13 +227,19 @@ public sealed class ComposerStaging
         _ => say.Get("Couldn't read that file."),
     };
 
-    /// <summary>What a staged item is called on its chip: a picture by its kind, a file by its name and size.</summary>
+    /// <summary>
+    /// What a staged item is called on its chip: a picture by its kind, a file by its name and size — and a voice note recorded
+    /// here by its LENGTH, "Voice message · 0:42" (docs/audio-video-messages-2026-10-04.md, S2.7, S10): its size says nothing
+    /// to the person deciding whether to send it.
+    /// </summary>
     public static string Label(StagedMedia item, IStringCatalog say, CultureInfo? culture = null) => item.Kind switch
     {
         "photo" => say.Get("Photo"),
         "video" => say.Get("Video"),
-        "audio" or "file" =>
-            $"{item.Name ?? (item.Kind == "audio" ? say.Get("Voice message") : say.Get("File"))} · {MediaText.DisplaySize(item.Bytes.Length, say, culture)}",
+        "audio" when VoiceNotes.IsRecorded(item) =>
+            say.Format("Voice message · %@", MediaText.TimeLabel((item.DurationMs ?? 0) / 1000.0)),
+        // A sound file picked from disk keeps its name — a voice note is the audio with none (VoiceNotes.IsRecorded).
+        "audio" or "file" => $"{item.Name ?? say.Get("File")} · {MediaText.DisplaySize(item.Bytes.Length, say, culture)}",
         _ => item.Name ?? say.Get("File"),
     };
 }

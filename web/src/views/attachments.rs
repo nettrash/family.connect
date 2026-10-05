@@ -16,8 +16,11 @@ use wasm_bindgen::JsCast;
 use web_sys::HtmlAudioElement;
 use yew::prelude::*;
 
+use crate::awake::ScreenAwake;
 use crate::media::{download, use_media, MediaLoader, Variant};
 use crate::model::Attachment;
+use crate::views::attach::{phone_like, PLAY_AFTER};
+use crate::views::quiet::{use_quiet, use_quiet_explain, LiveRegion};
 
 #[derive(Properties, PartialEq)]
 pub struct StackProps {
@@ -414,6 +417,13 @@ fn audio_player(props: &AudioProps) -> Html {
     let elapsed = use_state(|| 0.0_f64);
     let url = use_media(props.attachment.id, Variant::Original, *asked);
     let total = (props.attachment.duration_ms.unwrap_or(0) as f64 / 1000.0).max(0.1);
+    // While a voice message is being recorded nothing of the app's plays
+    // (the plan for #79, S1.7): the ▶ is dimmed — not disabled — and says
+    // why when pressed, on the recording pane's notice line; a screen reader
+    // hears the same sentence with the control (S6).
+    let dimmed = use_quiet();
+    let explain = use_quiet_explain();
+    let reason_id = use_memo((), |_| crate::views::dialog::fresh_id("play-reason"));
 
     let start = {
         let asked = asked.clone();
@@ -450,7 +460,12 @@ fn audio_player(props: &AudioProps) -> Html {
         let elapsed = elapsed.clone();
         let loaded = url.is_some();
         let is_playing = *playing;
+        let explain = explain.clone();
         Callback::from(move |_: MouseEvent| {
+            if dimmed {
+                explain.emit(t(PLAY_AFTER).to_string());
+                return;
+            }
             let audio = player.cast::<HtmlAudioElement>();
             if is_playing {
                 if let Some(audio) = audio {
@@ -484,20 +499,36 @@ fn audio_player(props: &AudioProps) -> Html {
             }
         })
     };
+    // On a phone's browser the screen is kept on while a voice note plays,
+    // so the lock does not hide the tab halfway through a long one (the plan
+    // for #79, S1.7, S8.8); let go of when it stops, ends or goes.
+    let awake = use_mut_ref(|| Option::<ScreenAwake>::None);
     let on_play = {
         let playing = playing.clone();
-        Callback::from(move |_: Event| playing.set(true))
+        let awake = awake.clone();
+        Callback::from(move |_: Event| {
+            playing.set(true);
+            if phone_like() {
+                *awake.borrow_mut() = Some(ScreenAwake::hold());
+            }
+        })
     };
     let on_pause = {
         let playing = playing.clone();
-        Callback::from(move |_: Event| playing.set(false))
+        let awake = awake.clone();
+        Callback::from(move |_: Event| {
+            playing.set(false);
+            awake.borrow_mut().take();
+        })
     };
     let on_ended = {
         let playing = playing.clone();
         let asked = asked.clone();
         let elapsed = elapsed.clone();
+        let awake = awake.clone();
         Callback::from(move |_: Event| {
             playing.set(false);
+            awake.borrow_mut().take();
             asked.set(false);
             elapsed.set(total);
         })
@@ -525,7 +556,13 @@ fn audio_player(props: &AudioProps) -> Html {
     html! {
         <div class={classes!("audio", props.mine.then_some("on-tint"))}
              aria-label={t1("Audio, %@", &media::time_label(total))}>
-            <button class="audio-toggle" onclick={toggle} aria-label={label}>{ glyph }</button>
+            <button class={classes!("audio-toggle", dimmed.then_some("is-dimmed"))}
+                    onclick={toggle} aria-label={label}
+                    aria-disabled={dimmed.then_some("true")}
+                    aria-describedby={dimmed.then(|| (*reason_id).clone())}>{ glyph }</button>
+            if dimmed {
+                <span id={(*reason_id).clone()} hidden=true>{ t(PLAY_AFTER) }</span>
+            }
             <div class="audio-track">
                 <input
                     type="range"
@@ -648,7 +685,7 @@ pub fn transcript_block(props: &TranscriptProps) -> Html {
         None => Html::default(),
         Some(TranscriptState::Asking) => html! {
             <div class="transcript">{ marker.clone().unwrap_or_default() }
-                <p class="transcript-status" role="status" aria-busy="true">{ t("Getting the text…") }</p>
+                <LiveRegion class="transcript-status" role="status" busy=true>{ t("Getting the text…") }</LiveRegion>
             </div>
         },
         Some(TranscriptState::Hidden(_)) => html! {
@@ -681,7 +718,7 @@ pub fn transcript_block(props: &TranscriptProps) -> Html {
         }
         Some(TranscriptState::Failed(failure)) => html! {
             <div class="transcript">{ marker.clone().unwrap_or_default() }
-                <p class="transcript-failure" role="status">{ failure.sentence() }</p>
+                <LiveRegion class="transcript-failure" role="status">{ failure.sentence() }</LiveRegion>
                 if failure.may_retry() && props.offered {
                     { show_button(t("Try Again")) }
                 }
@@ -731,6 +768,324 @@ mod tests {
             ..Attachment::default()
         };
         assert_eq!(file_name(&clip), "video-35.mov");
+    }
+
+    #[derive(Properties, PartialEq)]
+    struct QuietTranscriptProps {
+        state: TranscriptState,
+        recording: bool,
+    }
+
+    /// A recording's text line beside a recording somewhere in the app.
+    #[function_component(QuietTranscript)]
+    fn quiet_transcript(props: &QuietTranscriptProps) -> Html {
+        use crate::views::quiet::QuietRoot;
+        #[derive(Properties, PartialEq)]
+        struct RecordingProps {
+            on: bool,
+        }
+        #[function_component(Recording)]
+        fn recording(props: &RecordingProps) -> Html {
+            crate::views::quiet::use_quiet_while(props.on);
+            Html::default()
+        }
+        html! {
+            <QuietRoot>
+                <Recording on={props.recording} />
+                <TranscriptBlock
+                    state={Some(props.state.clone())}
+                    offered=true
+                    on_show={Callback::noop()}
+                    on_hide={Callback::noop()}
+                />
+            </QuietRoot>
+        }
+    }
+
+    /// "Getting the text…" and a failure are live regions of the app's: quiet
+    /// while a voice message is being recorded, so a transcript finishing
+    /// meanwhile is not spoken into the note (the plan for #79, S6).
+    #[wasm_bindgen_test]
+    async fn a_recordings_text_line_is_quiet_while_a_voice_message_is_recorded() {
+        use fc_text::transcript::Failure;
+        for (state, line) in [
+            (TranscriptState::Asking, ".transcript-status"),
+            (
+                TranscriptState::Failed(Failure::TryAgain),
+                ".transcript-failure",
+            ),
+        ] {
+            for recording in [false, true] {
+                let document = web_sys::window().unwrap().document().unwrap();
+                let root = document.create_element("div").unwrap();
+                document.body().unwrap().append_child(&root).unwrap();
+                let handle = yew::Renderer::<QuietTranscript>::with_root_and_props(
+                    root.clone(),
+                    QuietTranscriptProps {
+                        state: state.clone(),
+                        recording,
+                    },
+                )
+                .render();
+                gloo_timers::future::TimeoutFuture::new(30).await;
+                let said = root.query_selector(line).unwrap().expect(line);
+                let quiet = (said.get_attribute("role"), said.get_attribute("aria-live"));
+                if recording {
+                    assert_eq!(quiet, (None, Some("off".into())), "{line}: quiet");
+                } else {
+                    assert_eq!(quiet, (Some("status".into()), None), "{line}: loud");
+                }
+                handle.destroy();
+                root.remove();
+            }
+        }
+    }
+
+    #[derive(Properties, PartialEq)]
+    struct WithLoaderProps {
+        loader: MediaLoader,
+        attachment: Attachment,
+    }
+
+    #[function_component(WithLoader)]
+    fn with_loader(props: &WithLoaderProps) -> Html {
+        html! {
+            <ContextProvider<MediaLoader> context={props.loader.clone()}>
+                <AttachmentStack attachments={vec![props.attachment.clone()]} mine=false
+                                 on_open={Callback::noop()} />
+            </ContextProvider<MediaLoader>>
+        }
+    }
+
+    /// On a phone's browser the screen is kept on while a received voice
+    /// note plays, and let go of when it is paused (the plan for #79, S1.7,
+    /// S8.8: playback pauses with a hidden tab, so the lock must not cut a
+    /// long note short). On a desktop it is not asked for.
+    #[wasm_bindgen_test]
+    async fn a_voice_note_keeps_a_phones_screen_on_while_it_plays() {
+        use crate::awake::testing::FakeWakeLock;
+        use wasm_bindgen::JsValue;
+        let run = |source: &str| {
+            js_sys::Function::new_no_args(source)
+                .call0(&JsValue::NULL)
+                .unwrap()
+        };
+        for phone in [true, false] {
+            let screen = FakeWakeLock::install();
+            if phone {
+                run("window.__fcMatchMedia = window.matchMedia; \
+                     window.matchMedia = (query) => ({ matches: query === '(pointer: coarse)', \
+                       media: query, addListener() {}, removeListener() {}, \
+                       addEventListener() {}, removeEventListener() {} });");
+            }
+            let rate = fc_text::wav::VOICE_RATE;
+            let samples: Vec<f32> = (0..2 * rate)
+                .map(|at| (at as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 0.3)
+                .collect();
+            let bytes = fc_text::wav::encode(&samples, rate);
+            let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes.as_slice()));
+            let options = web_sys::BlobPropertyBag::new();
+            options.set_type("audio/wav");
+            let blob =
+                web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options).unwrap();
+            let loader = MediaLoader::new(crate::live::Live::new(
+                crate::live::AppState {
+                    token: Some("t".into()),
+                    ..Default::default()
+                },
+                std::rc::Rc::new(|| {}),
+            ));
+            loader.seed(31, Variant::Original, blob);
+            let attachment = Attachment {
+                id: 31,
+                kind: "audio".into(),
+                mime: Some("audio/wav".into()),
+                duration_ms: Some(2_000),
+                ..Attachment::default()
+            };
+            let document = web_sys::window().unwrap().document().unwrap();
+            let root = document.create_element("div").unwrap();
+            document.body().unwrap().append_child(&root).unwrap();
+            let handle = yew::Renderer::<WithLoader>::with_root_and_props(
+                root.clone(),
+                WithLoaderProps { loader, attachment },
+            )
+            .render();
+            gloo_timers::future::TimeoutFuture::new(50).await;
+            let toggle = root
+                .query_selector(".audio-toggle")
+                .unwrap()
+                .expect("a play button")
+                .dyn_into::<web_sys::HtmlElement>()
+                .unwrap();
+            let player = root
+                .query_selector("audio")
+                .unwrap()
+                .unwrap()
+                .dyn_into::<HtmlAudioElement>()
+                .unwrap();
+            toggle.click();
+            let mut waited = 0;
+            while player.paused() && waited < 2_000 {
+                gloo_timers::future::TimeoutFuture::new(20).await;
+                waited += 20;
+            }
+            assert!(!player.paused(), "it plays");
+            gloo_timers::future::TimeoutFuture::new(50).await;
+            assert_eq!(screen.asked(), u32::from(phone), "phone={phone}: asked");
+            let _ = player.pause();
+            gloo_timers::future::TimeoutFuture::new(50).await;
+            assert_eq!(
+                screen.released(),
+                u32::from(phone),
+                "phone={phone}: let go of"
+            );
+            handle.destroy();
+            root.remove();
+            if phone {
+                run("window.matchMedia = window.__fcMatchMedia; delete window.__fcMatchMedia;");
+            }
+        }
+    }
+
+    #[derive(Properties, PartialEq)]
+    struct RecordingBesideProps {
+        loader: MediaLoader,
+        attachment: Attachment,
+        recording: bool,
+        said: Callback<String>,
+    }
+
+    /// A received voice note beside a recording somewhere in the app, the
+    /// recording pane's notice line heard.
+    #[function_component(RecordingBeside)]
+    fn recording_beside(props: &RecordingBesideProps) -> Html {
+        #[derive(Properties, PartialEq)]
+        struct PaneProps {
+            on: bool,
+            said: Callback<String>,
+        }
+        #[function_component(Pane)]
+        fn pane(props: &PaneProps) -> Html {
+            crate::views::quiet::use_quiet_while(props.on);
+            crate::views::quiet::use_quiet_reason(props.said.clone());
+            Html::default()
+        }
+        html! {
+            <crate::views::quiet::QuietRoot>
+                <Pane on={props.recording} said={props.said.clone()} />
+                <WithLoader loader={props.loader.clone()} attachment={props.attachment.clone()} />
+            </crate::views::quiet::QuietRoot>
+        }
+    }
+
+    /// NOTHING OF THE APP'S PLAYS WHILE A VOICE MESSAGE IS RECORDED (the plan
+    /// for #79, S1.7, S6): a received voice note's ▶ is dimmed — not
+    /// disabled — with the reason given to a screen reader beside it
+    /// (`aria-describedby`); pressed, it plays nothing and says "You can
+    /// play this after recording." on the recording pane's line. Once the
+    /// recording is over it plays.
+    #[wasm_bindgen_test]
+    async fn a_voice_notes_play_is_dimmed_while_a_voice_message_is_recorded() {
+        let rate = fc_text::wav::VOICE_RATE;
+        let samples: Vec<f32> = (0..2 * rate)
+            .map(|at| (at as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 0.3)
+            .collect();
+        let bytes = fc_text::wav::encode(&samples, rate);
+        let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes.as_slice()));
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type("audio/wav");
+        let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options).unwrap();
+        let loader = MediaLoader::new(crate::live::Live::new(
+            crate::live::AppState {
+                token: Some("t".into()),
+                ..Default::default()
+            },
+            std::rc::Rc::new(|| {}),
+        ));
+        loader.seed(32, Variant::Original, blob);
+        let attachment = Attachment {
+            id: 32,
+            kind: "audio".into(),
+            mime: Some("audio/wav".into()),
+            duration_ms: Some(2_000),
+            ..Attachment::default()
+        };
+        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let said = {
+            let heard = heard.clone();
+            Callback::from(move |text: String| heard.borrow_mut().push(text))
+        };
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root = document.create_element("div").unwrap();
+        document.body().unwrap().append_child(&root).unwrap();
+        let mut handle = yew::Renderer::<RecordingBeside>::with_root_and_props(
+            root.clone(),
+            RecordingBesideProps {
+                loader: loader.clone(),
+                attachment: attachment.clone(),
+                recording: true,
+                said: said.clone(),
+            },
+        )
+        .render();
+        gloo_timers::future::TimeoutFuture::new(50).await;
+        let toggle = root
+            .query_selector(".audio-toggle")
+            .unwrap()
+            .expect("a play button")
+            .dyn_into::<web_sys::HtmlElement>()
+            .unwrap();
+        assert_eq!(
+            toggle.get_attribute("aria-disabled").as_deref(),
+            Some("true")
+        );
+        assert!(!toggle.has_attribute("disabled"), "dimmed, not disabled");
+        assert!(toggle.class_list().contains("is-dimmed"));
+        let reason = toggle
+            .get_attribute("aria-describedby")
+            .and_then(|id| document.get_element_by_id(&id))
+            .and_then(|reason| reason.text_content());
+        assert_eq!(
+            reason.as_deref(),
+            Some("You can play this after recording.")
+        );
+        let player = root
+            .query_selector("audio")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<HtmlAudioElement>()
+            .unwrap();
+        toggle.click();
+        gloo_timers::future::TimeoutFuture::new(300).await;
+        assert!(player.paused(), "it plays nothing");
+        assert_eq!(toggle.get_attribute("aria-label").as_deref(), Some("Play"));
+        assert_eq!(
+            heard.borrow().as_slice(),
+            ["You can play this after recording.".to_string()]
+        );
+
+        // The recording over: it plays.
+        handle.update(RecordingBesideProps {
+            loader,
+            attachment,
+            recording: false,
+            said,
+        });
+        gloo_timers::future::TimeoutFuture::new(50).await;
+        assert!(toggle.get_attribute("aria-disabled").is_none());
+        assert!(toggle.get_attribute("aria-describedby").is_none());
+        toggle.click();
+        let mut waited = 0;
+        while player.paused() && waited < 2_000 {
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            waited += 20;
+        }
+        assert!(!player.paused(), "it plays once the recording is over");
+        let _ = player.pause();
+        assert_eq!(heard.borrow().len(), 1);
+        handle.destroy();
+        root.remove();
     }
 
     /// Which bytes a tile asks for — never a whole video.

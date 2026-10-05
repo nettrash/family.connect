@@ -14,6 +14,7 @@
     --tint: #2f6fd0;
     --mine: #dceafd;
     --danger: #b3261e;
+    --warn: #b45309;
     --soft: #eef0f5;
     --radius: 12px;
 }
@@ -28,6 +29,7 @@
         --tint: #6fa5f5;
         --mine: #24405f;
         --danger: #f2b8b5;
+        --warn: #fbbf24;
         --soft: #262631;
     }
 }
@@ -857,7 +859,124 @@ button.pack-cell:disabled { cursor: default; }
 .staged-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .staged-remove { background: transparent; color: var(--muted); padding: 2px 6px; flex: none; }
 
+/* THE SEND SLOT (#79, S1.3): one fixed icon button — Send with something
+ * to send, a microphone without, the Send arrow or the Stop square while a
+ * recording runs — so the row never jumps as it changes. Its word stays in
+ * it as visually hidden text. The hit area grows on a coarse pointer, the
+ * button and the bar do not (S1.1). */
+.slot-wrap { position: relative; flex: none; }
+.composer .slot {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    position: relative;
+    /* A finger held on it is not a selection and not the browser's callout
+     * (S8.8) — on this button only, never the page. */
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    touch-action: manipulation;
+}
+.composer .slot.is-dimmed { opacity: .5; }
+.composer .slot svg { width: 22px; height: 22px; display: block; }
+/* Send ↔ microphone: a 150 ms cross-fade, none under reduced motion. */
+.slot-icon { animation: slot-in 150ms ease-out; }
+@keyframes slot-in { from { opacity: 0; transform: scale(.8); } to { opacity: 1; transform: none; } }
+.slot-menu { top: auto; bottom: 100%; right: 0; left: auto; margin-bottom: 6px; }
+
+/* THE RECORDING ROW (S2.4): in the composer's own row, in the field's
+ * place, at the same height — Delete, the red dot, the time and the level
+ * meter, Stop — before the slot. */
 .recording {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-variant-numeric: tabular-nums;
+}
+/* As tall as the slot beside them, border and all, so the row is the
+ * composer's own height whichever it shows. */
+.recording button.secondary {
+    flex: none;
+    position: relative;
+    height: 40px;
+    padding: 0 12px;
+    background: transparent;
+    color: var(--tint);
+    border: 1px solid var(--line);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+}
+.recording .recording-stop { margin-left: auto; }
+.recording .row-icon { width: 20px; height: 20px; display: none; }
+/* 8 units, between full and 40 % once a second (S2.9). */
+.recording-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--danger);
+    animation: recording-pulse .5s ease-in-out infinite alternate;
+}
+@keyframes recording-pulse { from { opacity: 1; } to { opacity: .4; } }
+.recording-time { flex: none; }
+.recording-time.is-warning, .recording-left { color: var(--warn); }
+.recording-left { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Five bars, 3 × 16, lit at −50, −40, −30, −20 and −10 dBFS of the peak. */
+.recording-meter { flex: none; display: inline-flex; gap: 2px; align-items: center; height: 16px; }
+.recording-meter .bar { width: 3px; height: 16px; border-radius: 1px; background: var(--line); }
+.recording-meter .bar.is-lit { background: var(--tint); }
+/* On a phone's width the row's buttons are icons with the same labels,
+ * and on the narrowest the meter goes first (S2.4). */
+@media (max-width: 720px) {
+    .recording .button-word { display: none; }
+    .recording .row-icon { display: block; }
+    .recording button.secondary { width: 40px; padding: 0; }
+}
+@media (max-width: 360px) {
+    .recording-meter { display: none; }
+}
+
+/* Read by a screen reader, not drawn: the slot's word, the announcements. */
+.visually-hidden {
+    position: absolute !important;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* A recording's ▶ — a voice note in review, one that was not sent (S2.7,
+ * S2.8) — dimmed while another records (S1.7). */
+.local-play {
+    flex: none;
+    position: relative;
+    background: transparent;
+    color: var(--tint);
+    padding: 4px 8px;
+    font-size: 13px;
+    line-height: 1;
+}
+.local-play.is-dimmed, .audio-toggle.is-dimmed { opacity: .5; }
+.local-play + audio { display: none; }
+.staged.is-voice { padding-left: 2px; }
+.staged.is-voice .staged-label { font-variant-numeric: tabular-nums; }
+
+/* A voice message that was not sent (#79, S2.8): a row of its own above the
+ * box, with its own Send and ✕ — never carried by another Send. */
+.not-sent {
     flex: none;
     display: flex;
     align-items: center;
@@ -865,10 +984,48 @@ button.pack-cell:disabled { cursor: default; }
     padding: 8px 16px;
     border-top: 1px solid var(--line);
     background: var(--panel);
-    font-variant-numeric: tabular-nums;
+    font-size: 13px;
 }
-.recording-dot { color: var(--danger); animation: blink 1s steps(2) infinite; }
-.recording .secondary { margin-left: auto; background: transparent; color: var(--tint); }
+.not-sent-glyph { flex: none; }
+.not-sent-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.not-sent-label { font-variant-numeric: tabular-nums; }
+.not-sent-quote, .not-sent-caption { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.not-sent .link { flex: none; }
+.not-sent .not-sent-delete { color: var(--muted); }
+/* A finger needs room the pointer does not (S1.1: 44 CSS px on a coarse
+ * pointer) — the hit area grows, the row does not. */
+@media (pointer: coarse) {
+    .not-sent .link { min-width: 44px; min-height: 44px; }
+    /* The slot, the recording row's buttons and a recording's ▶ and ✕ take
+     * a 44-px finger without growing: the hit area reaches past them. */
+    .composer .slot::after,
+    .recording button.secondary::after,
+    .local-play::after,
+    .staged.is-voice .staged-remove::after {
+        content: "";
+        position: absolute;
+        inset: min(0px, calc((100% - 44px) / 2));
+    }
+    .staged.is-voice .staged-remove { position: relative; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .slot-icon, .recording-dot { animation: none; }
+}
+
+/* In the system's high-contrast colours the dot and the meter are drawn in
+ * them, rather than painted over with the background like any other box
+ * (S6, "Low vision"). */
+@media (forced-colors: active) {
+    .recording-dot, .recording-meter .bar { forced-color-adjust: none; }
+    .recording-dot { background: CanvasText; }
+    .recording-meter .bar { background: GrayText; }
+    .recording-meter .bar.is-lit { background: Highlight; }
+}
+
+/* DIMMED, NOT DISABLED (S1.3): it looks unavailable, stays focusable and
+ * clickable, and says why instead of acting. */
+.menu > button.is-dimmed { opacity: .5; }
 
 /* A drag over the pane: an accent border, as the Mac draws one. */
 .conversation.is-drop-target { outline: 3px solid var(--tint); outline-offset: -3px; }

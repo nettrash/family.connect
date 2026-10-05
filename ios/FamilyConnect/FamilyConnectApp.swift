@@ -25,6 +25,9 @@
 import SwiftData
 import SwiftUI
 import os
+#if os(iOS)
+import TipKit
+#endif
 
 @main
 struct FamilyConnectApp: App {
@@ -88,6 +91,16 @@ struct FamilyConnectApp: App {
             AppSettings.wipe(keepServerURL: false)
             try? KeychainStore.delete(account: KeychainStore.tokenAccount)
         }
+        #endif
+
+        // The one coach mark #79 allows (VoiceTips): TipKit keeps its count
+        // on the device. Never over a UI test's composer, whose anchors a
+        // popover could cover.
+        #if os(iOS)
+        #if DEBUG
+        if uiTestReset { Tips.hideAllTipsForTesting() }
+        #endif
+        try? Tips.configure()
         #endif
 
         let schema = Schema([
@@ -314,6 +327,12 @@ struct FamilyConnectApp: App {
             }
             calls.onEnded = { coordinator.callDidEnd() }
             coordinator.bind(callManager: calls)
+            // No recording during a call, in any phase (#79, S1.7): what
+            // every recorder and the one-recording-at-a-time arbiter ask
+            // before they open — or give back — the shared audio session.
+            VoiceRecordingArbiter.shared.callIsActive = { [weak calls] in
+                calls.map { !$0.isIdle } ?? false
+            }
             #if os(iOS)
             let callKit = CallKitController()
             callKit.manager = calls
@@ -365,6 +384,10 @@ struct FamilyConnectApp: App {
             // none of them. This must NOT touch PendingMediaStaging —
             // those bytes belong to messages somebody pressed Send on.
             MediaOutbox.sweepOrphans()
+            // Voice messages that were not sent, for whoever is signed in:
+            // files no entry names, entries whose file is gone, and another
+            // account's leftovers (ParkedRecordings, #79).
+            ParkedRecordings.shared.sweep()
             // Staging directories no row names any more: a send that was
             // delivered while the process died between deleting its rows
             // and deleting its files, or a store the app had to recreate.
@@ -388,6 +411,14 @@ struct FamilyConnectApp: App {
                 // an account this device no longer holds.
                 BackgroundUploads.shared.cancelAll()
                 #endif
+            }
+            // Everything recorded and not sent goes with the session that
+            // recorded it (#79, S4 "Sign-out") — a recording still running
+            // first, so that nothing parks itself into the store after it
+            // was emptied.
+            session.clearParkedRecordings = {
+                VoiceRecordingArbiter.shared.stopHolder(.discard)
+                ParkedRecordings.shared.removeAll()
             }
             coordinator.bind(attachmentStore: attachments)
             // Logout wipes the store; faces must go with it, or the next
@@ -488,6 +519,10 @@ struct FamilyConnectApp: App {
                 }
                 .keyboardShortcut("r", modifiers: .command)
             }
+            // File ▸ Record Voice Message ⌥⌘R, for the key window's
+            // conversation (#79, S8.3) — every window's, though the menu
+            // bar is declared on this one scene.
+            MacVoiceCommands()
         }
         #else
         WindowGroup {

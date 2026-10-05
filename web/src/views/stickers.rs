@@ -28,6 +28,7 @@ use crate::media::{use_media, MediaLoader, Variant};
 use crate::model::{Attachment, PackItem};
 use crate::pack::Limits;
 use crate::views::dialog::{Confirm, Modal};
+use crate::views::quiet::LiveRegion;
 
 /// What a sticker is called where it has to be called something: its label
 /// when whoever added it gave one, and the word otherwise.
@@ -340,8 +341,10 @@ pub fn sticker_view(props: &ViewProps) -> Html {
                     <p class="footnote">{ t("Loading…") }</p>
                 }
             </div>
+            // Quiet while a voice message is being recorded behind it (the
+            // plan for #79, S6) — like every live region of the app's.
             if let Some(message) = (*error).clone() {
-                <p class="error" role="alert">{ message }</p>
+                <LiveRegion class="error" role="alert">{ message }</LiveRegion>
             }
             if props.offered && *in_pack == Some(true) {
                 <p class="footnote">{ t("Already in the family's stickers.") }</p>
@@ -358,7 +361,7 @@ pub fn sticker_view(props: &ViewProps) -> Html {
                     oninput={on_label}
                 />
                 if let Some(message) = too_long {
-                    <p class="error" role="alert">{ message }</p>
+                    <LiveRegion class="error" role="alert">{ message }</LiveRegion>
                 }
             }
             <div class="dialog-actions">
@@ -1010,6 +1013,80 @@ mod tests {
                 adding={false}
                 {on_action}
             />
+        }
+    }
+
+    #[derive(Properties, PartialEq)]
+    struct RecordingProps {
+        on: bool,
+    }
+
+    /// A voice message being recorded behind the view, the way the
+    /// conversation says so.
+    #[function_component(Recording)]
+    fn recording(props: &RecordingProps) -> Html {
+        crate::views::quiet::use_quiet_while(props.on);
+        Html::default()
+    }
+
+    /// Opened over a chat while a voice message is being recorded, the view's
+    /// refusals — a description too long, an add that failed — are quiet
+    /// like every live region of the app's: nothing is spoken into the note
+    /// (the plan for #79, S6). With nothing recording they speak.
+    #[wasm_bindgen_test]
+    async fn the_views_refusals_are_quiet_while_a_voice_message_is_recorded() {
+        use crate::views::quiet::QuietRoot;
+        for on in [false, true] {
+            let loader = loader();
+            loader.seed(90, Variant::Sticker, bytes("party cat"));
+            let finish = Rc::new(RefCell::new(None::<Callback<Option<String>>>));
+            let on_action = {
+                let finish = finish.clone();
+                Callback::from(move |action: Action| {
+                    if let Action::KeepSticker { done, .. } = action {
+                        *finish.borrow_mut() = Some(done);
+                    }
+                })
+            };
+            let (root, handle) = render(
+                &loader,
+                html! {
+                    <QuietRoot>
+                        <Recording {on} />
+                        { view(Vec::new(), true, on_action) }
+                    </QuietRoot>
+                },
+            )
+            .await;
+            settle().await;
+            let expected = if on {
+                (None, Some("off".to_string()))
+            } else {
+                (Some("alert".to_string()), None)
+            };
+            let said = |root: &Element| {
+                let error = root
+                    .query_selector(".error")
+                    .unwrap()
+                    .expect("a refusal on the page");
+                (
+                    error.get_attribute("role"),
+                    error.get_attribute("aria-live"),
+                )
+            };
+            type_into(&root, ".pack-label", &"a".repeat(65));
+            settle().await;
+            assert_eq!(said(&root), expected, "too long, recording={on}");
+            type_into(&root, ".pack-label", "cat");
+            settle().await;
+            click(&root, ".dialog-actions button:not(.secondary)");
+            settle().await;
+            let done = finish.borrow_mut().take().expect("asked to keep it");
+            done.emit(Some("Couldn't add the sticker.".into()));
+            settle().await;
+            assert_eq!(said(&root), expected, "a failed add, recording={on}");
+            handle.destroy();
+            root.remove();
         }
     }
 

@@ -160,11 +160,8 @@
     <string name="s_request_declined_explanation">El propietario rechazó tu solicitud. Puedes probar con otro código de invitación o crear tu propia familia.</string>
     <string name="s_waiting_explanation">No hay nada que cancelar desde aquí: el propietario te deja entrar o rechaza la solicitud.</string>
     <string name="s_take_photo">Hacer foto</string>
-    <string name="s_record_video">Grabar vídeo</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Añade un mensaje, o envíalo tal cual.</string>
     <string name="s_remove_attachment">Quitar adjunto</string>
-    <string name="s_record_audio">Grabar audio</string>
-    <string name="s_stop">Detener</string>
     <string name="s_audio">Audio</string>
     <string name="s_play">Reproducir</string>
     <string name="s_pause">Pausar</string>
@@ -666,4 +663,44 @@
     <string name="s_greeting_weather_remove_place">Quitar lugar</string>
     <string name="s_greeting_weather_limit">Hasta 3 lugares.</string>
     <string name="s_greeting_weather_footer">El saludo diario mencionará también el tiempo de hoy en estos lugares. Solo se envían los nombres de los lugares a Open-Meteo para obtener el pronóstico. No se envía nada más.</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">Mensaje de voz no enviado · %1$s</string>
+    <string name="s_send_voice_message">Enviar mensaje de voz</string>
+    <string name="s_delete_recording">Eliminar la grabación</string>
+    <string name="s_keep">Conservar</string>
+    <string name="s_delete_this_recording">¿Eliminar esta grabación?</string>
+    <string name="e_record_after_the_call">Podrás grabar un mensaje después de la llamada.</string>
+    <string name="e_send_or_delete_the_unsent_first">Primero envía o elimina el mensaje de voz que no se envió.</string>
+    <string name="s_recording_stopped_at_five_minutes">La grabación se detuvo a los cinco minutos.</string>
+    <string name="e_recording_stopped_unexpectedly">La grabación se detuvo de forma inesperada.</string>
+    <string name="s_voice_message_with_length">Mensaje de voz · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">Grabar mensaje de voz</string>
+    <string name="s_take_video">Hacer vídeo</string>
+    <string name="s_undo">Deshacer</string>
+    <string name="s_open_settings">Abrir Ajustes</string>
+    <string name="s_stop_recording">Detener la grabación</string>
+    <string name="s_stop_and_listen_first">Detener y escuchar primero</string>
+    <string name="s_start_recording_action">empezar a grabar</string>
+    <string name="s_sending_voice_message">Enviando mensaje de voz · %1$s</string>
+    <string name="s_sending_in">Se envía en %1$d</string>
+    <string name="s_slide_to_cancel">Desliza para cancelar</string>
+    <string name="s_release_to_cancel">Suelta para cancelar</string>
+    <string name="s_still_recording_tap_send">Sigue grabando. Toca «Enviar» cuando termines.</string>
+    <string name="s_next_time_letting_go_sends">La próxima vez, al soltar se enviará.</string>
+    <string name="s_hold_the_microphone_coach">También puedes mantener pulsado el micrófono mientras hablas.</string>
+    <string name="s_play_after_recording">Podrás reproducirlo cuando termines de grabar.</string>
+    <string name="s_thirty_seconds_left">Quedan 30 segundos</string>
+    <string name="s_voice_messages">Mensajes de voz</string>
+    <string name="s_review_before_sending">Revisar antes de enviar</string>
+    <string name="s_review_before_sending_explanation">Cuando mantienes pulsado el micrófono para hablar, al soltarlo el mensaje no se envía: se guarda para que lo revises.</string>
+    <string name="s_you_can_record_now">Ya puedes grabar.</string>
+    <string name="s_we_didnt_hear_anything">No se oyó nada.</string>
+    <string name="s_cant_hear_microphone_muted">No se oye nada. ¿Está silenciado el micrófono?</string>
+    <string name="s_announce_recording">Grabando</string>
+    <string name="s_announce_recording_locked">Grabación fijada</string>
+    <string name="s_announce_recording_deleted">Grabación eliminada</string>
+    <string name="s_announce_voice_message_sent">Mensaje de voz enviado</string>
+    <string name="s_announce_ready_to_review">Listo para revisar, %1$s</string>
+    <string name="e_wait_for_the_attachment">Espera a que termine el adjunto actual.</string>
 </resources>

@@ -88,6 +88,16 @@ class MediaPrep @Inject constructor(
         val previewJpeg: ByteArray?,
         /** Files only: the name the sender picked it by. */
         val name: String? = null,
+        /**
+         * A recording VoiceRecorder made, as opposed to a sound file picked
+         * from disk — which share `kind=audio` on the wire and are told
+         * apart nowhere else. A voice note travels with NO name (#79): the
+         * server drops an audio upload's name anyway, and until the echo
+         * arrived the sender's own chat list showed "voice-<ms>.m4a". It is
+         * also what the composer reads to call the chip "Voice message",
+         * and what leaving the chat parks as "not sent" (S2.8).
+         */
+        val voiceNote: Boolean = false,
     )
 
     /** The item could not be read or decoded at all. */
@@ -684,8 +694,11 @@ class MediaPrep @Inject constructor(
                 durationMs = durationMs,
                 previewJpeg = null,
                 // A name only when there is one worth showing: a recording's
-                // identity is its length, a track's is its title.
-                name = name.takeIf { it.isNotBlank() },
+                // identity is its length, a track's is its title. A voice
+                // note's would be the recorder's own "voice-<ms>.m4a", which
+                // is this device's business (#79, Decision 35).
+                name = if (voiceNote) null else name.takeIf { it.isNotBlank() },
+                voiceNote = voiceNote,
             )
         }
 

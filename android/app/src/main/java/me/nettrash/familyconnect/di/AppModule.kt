@@ -82,12 +82,15 @@ import me.nettrash.familyconnect.data.net.DefaultFamilyApi
 import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.OkHttpChatSocket
+import me.nettrash.familyconnect.data.repo.AndroidVoiceRecorder
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.AvatarSource
 import me.nettrash.familyconnect.data.repo.ContentResolverAvatarSource
 import me.nettrash.familyconnect.data.repo.DefaultShareImporter
 import me.nettrash.familyconnect.data.repo.MediaStaging
 import me.nettrash.familyconnect.data.repo.PackRepository
+import me.nettrash.familyconnect.data.repo.ParkedRecordings
+import me.nettrash.familyconnect.data.repo.VoiceRecorder
 import me.nettrash.familyconnect.data.repo.MediaUploadScheduler
 import me.nettrash.familyconnect.data.repo.MediaUploadWorker
 import me.nettrash.familyconnect.data.repo.PosterCache
@@ -101,6 +104,8 @@ import me.nettrash.familyconnect.data.settings.KeystoreTokenStore
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.data.settings.TokenStore
 import me.nettrash.familyconnect.util.Clock
+import me.nettrash.familyconnect.util.Uptime
+import android.os.SystemClock
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 import javax.inject.Qualifier
@@ -187,6 +192,12 @@ abstract class AppModule {
 
     @Binds
     abstract fun bindCallStateSource(impl: CallManager): CallStateSource
+
+    // The microphone. An interface so the chat's tests drive a fake one
+    // (#79): the one per process, which used to outlive the chat that
+    // started it.
+    @Binds
+    abstract fun bindVoiceRecorder(impl: AndroidVoiceRecorder): VoiceRecorder
 
     // The only Firebase touchpoint in the graph. Safely inert when the
     // build has no google-services.json — see PushTokenProvider.kt.
@@ -279,6 +290,7 @@ abstract class AppModule {
         fun provideLocalDataWiper(
             db: AppDatabase,
             @ApplicationContext context: Context,
+            settings: SettingsRepository,
         ): LocalDataWiper = LocalDataWiper {
             // The staged bytes and the jobs that would upload them go with
             // the rows: a send composed in one account must never reach the
@@ -294,6 +306,12 @@ abstract class AppModule {
             PackRepository.bytesDirectory(context).deleteRecursively()
             staged.forEach { staging.remove(it) }
             MediaUploadWorker.cancelAll(context)
+            // The voice messages that were not sent (#79, S2.8): everything
+            // recorded and not sent is deleted at sign-out, and goes when the
+            // chats it belongs to go. Index and bytes together, so neither is
+            // left naming — or holding — the other.
+            settings.updateParkedRecordings { emptyList() }
+            ParkedRecordings.directory(context).deleteRecursively()
         }
 
         @Provides
@@ -310,6 +328,9 @@ abstract class AppModule {
         @Provides
         @Singleton
         fun provideClock(): Clock = Clock { System.currentTimeMillis() }
+
+        @Provides
+        fun provideUptime(): Uptime = Uptime { SystemClock.uptimeMillis() }
 
         /** The protocol's ring timeout and the client's own guards. */
         @Provides

@@ -63,6 +63,8 @@ struct SettingsView: View {
     /// observable, so the toggle owns the state and writes through.
     @State private var linkPreviewsEnabled = AppSettings.linkPreviewsEnabled
     @State private var mapPreviewsEnabled = AppSettings.mapPreviewsEnabled
+    /// Mirrors AppSettings.voiceReviewBeforeSending, for the same reason.
+    @State private var reviewVoiceBeforeSending = AppSettings.voiceReviewBeforeSending
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var uploadingAvatar = false
     @State private var changingPassword = false
@@ -82,6 +84,7 @@ struct SettingsView: View {
                 assistantConsentSection
                 AssistantLookupConsentSection { reviewingAssistant = true }
                 privacySection
+                voiceMessagesSection
                 serverSection
                 sessionSection
             }
@@ -475,6 +478,23 @@ struct SettingsView: View {
             Text("Privacy")
         } footer: {
             Text("Shows a preview under links in messages, and a map on a shared location. Building either asks somebody else for it — the linked website for its title and image, Apple for the map — so they see a request from this device. With maps off, a shared location still shows its pin and opens in Maps when you tap it.")
+        }
+    }
+
+    /// Where a release can send — iPhone and iPad (#79, S9): one switch,
+    /// per device, never on the wire. It turns the five-second Undo window
+    /// off for a held release, which reviews instead — WCAG 2.2.1's "turn
+    /// off" for the one timer that sends.
+    private var voiceMessagesSection: some View {
+        Section {
+            Toggle("Review Before Sending", isOn: $reviewVoiceBeforeSending)
+                .onChange(of: reviewVoiceBeforeSending) { _, newValue in
+                    AppSettings.voiceReviewBeforeSending = newValue
+                }
+        } header: {
+            Text("Voice Messages")
+        } footer: {
+            Text("When you hold the microphone to talk, letting go keeps the message for you to check instead of sending it.")
         }
     }
 

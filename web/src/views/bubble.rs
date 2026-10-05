@@ -15,6 +15,7 @@ use crate::views::attachments::{AttachmentStack, Transcribing};
 use crate::views::avatar::Avatar;
 use crate::views::body::Body;
 use crate::views::poll::PollView;
+use crate::views::quiet::LiveRegion;
 use crate::views::reactions::{chips, details, EmojiPicker, QUICK_REACTIONS};
 use crate::views::stickers::StickerTile;
 
@@ -596,11 +597,12 @@ pub fn bubble(props: &BubbleProps) -> Html {
     let meta = if let Some(reason) = props.failed.clone() {
         let client_msg_id = message.client_msg_id.clone().unwrap_or_default();
         html! {
-            <span class="meta send-failed" role="alert">
+            // Quiet while a voice message is being recorded (S6).
+            <LiveRegion tag="span" class="meta send-failed" role="alert">
                 { reason }
                 <button class="link" onclick={emit(Action::Retry(client_msg_id.clone()))}>{ t("Retry") }</button>
                 <button class="link" onclick={emit(Action::Discard(client_msg_id))}>{ t("Discard") }</button>
-            </span>
+            </LiveRegion>
         }
     } else if !acked {
         html! { <span class="meta sending">{ t("Sending…") }</span> }

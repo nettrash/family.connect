@@ -44,6 +44,15 @@ pub struct Prepared {
 }
 
 impl Prepared {
+    /// A voice note recorded here — audio with no name, since its length is
+    /// its identity (`prep::recording`) — as opposed to a sound file picked
+    /// from disk, which keeps its name. The one the chip calls a voice note
+    /// (views::attach::label), and the one a chat left with it in review
+    /// keeps as not sent (store::Store::park_review).
+    pub fn is_voice_note(&self) -> bool {
+        self.kind == "audio" && self.name.is_none()
+    }
+
     /// A place, decided now. No bytes: it IS its three numbers.
     pub fn location(latitude: f64, longitude: f64, accuracy_m: Option<f64>) -> Self {
         Prepared {

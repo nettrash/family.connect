@@ -1,0 +1,280 @@
+/*
+ * ParkedRecordings.kt
+ * Family Connect (Android)
+ *
+ * Voice messages that were not sent (docs/audio-video-messages-2026-10-04.md,
+ * S2.8, #79 Phase 0).
+ *
+ * A recording stopped by something other than the person — a call, the app
+ * leaving the screen, leaving the chat, the recorder failing, another app
+ * taking the audio — used to be lost, or worse, left running. It is now
+ * PARKED here: the file, its length, the reply it was recorded under and its
+ * caption, per chat, until the person sends it or deletes it from the "Voice
+ * message not sent" row. A recording cannot be made again, which is why this
+ * exists for recordings only — a photo can be picked again.
+ *
+ * Where it lives: the bytes in `filesDir/parked-recordings`, which the system
+ * does not reclaim (MediaStaging's reason for the outbox), and the index in
+ * SettingsRepository, so both survive the app being closed. Both go at
+ * sign-out — the index with the settings, the files with the session wipe
+ * (AppModule's LocalDataWiper) — and a park that finishes after a session
+ * has ended is dropped, its file deleted ([SessionEpoch]): nothing recorded
+ * in one account may surface in the next. Files no entry names, and entries
+ * whose file is gone, are swept once per process.
+ *
+ * iOS counterpart: ios/FamilyConnect/Core/ParkedRecordings.swift
+ */
+
+package me.nettrash.familyconnect.data.repo
+
+import android.content.Context
+import android.util.Log
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
+import java.util.UUID
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
+import me.nettrash.familyconnect.data.net.dto.ReplyToDto
+import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.di.AppScope
+
+/** One voice message that was not sent, as the store keeps it. */
+@Serializable
+data class ParkedRecording(
+    val id: String,
+    @SerialName("chat_id") val chatId: Long,
+    /** The file's NAME inside [ParkedRecordings.directory] — never a path. */
+    val file: String,
+    /** How long it ran, by the recorder's own clock: what the row shows. */
+    @SerialName("duration_ms") val durationMs: Long,
+    /** The message it was recorded in answer to; it goes with it, and with nothing else. */
+    @SerialName("reply_to") val replyTo: ReplyToDto? = null,
+    /** Its words, when it had any; they never leave without it. */
+    val caption: String = "",
+    /**
+     * Released and waiting out its five-second Undo window (#79, S2.6):
+     * nothing has left the device, and it is not a "not sent" row either — it
+     * is on its way. Written at the release so that a crash cannot lose it:
+     * the outbox hand-off or Undo removes the entry, and a launch that still
+     * finds one marked like this makes it a not-sent row, never an orphan the
+     * sweep takes while its sender believes it went. Absent (false) on every
+     * entry Phase 0 wrote.
+     */
+    val sending: Boolean = false,
+) {
+    companion object {
+        private val json = Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = false
+        }
+        private val listSerializer = ListSerializer(serializer())
+
+        fun encode(entries: List<ParkedRecording>): String =
+            json.encodeToString(listSerializer, entries)
+
+        /** Never throws: a corrupt index reads as empty, and the sweep then reclaims the files. */
+        fun decode(raw: String?): List<ParkedRecording> {
+            if (raw.isNullOrBlank()) return emptyList()
+            return runCatching { json.decodeFromString(listSerializer, raw) }.getOrDefault(emptyList())
+        }
+    }
+}
+
+@Singleton
+class ParkedRecordings internal constructor(
+    private val settings: SettingsRepository,
+    private val epoch: SessionEpoch,
+    private val scope: CoroutineScope,
+    /**
+     * Where the bytes live: [directory] in the app. A test hands in a folder
+     * of its own — Robolectric gives every test in a JVM the same filesDir,
+     * and another test's store sweeping it would take this one's files.
+     */
+    private val root: File,
+) {
+
+    @Inject
+    constructor(
+        @ApplicationContext context: Context,
+        settings: SettingsRepository,
+        epoch: SessionEpoch,
+        @AppScope scope: CoroutineScope,
+    ) : this(settings, epoch, scope, directory(context))
+
+    /**
+     * Every write here takes it, so a park, a removal and the sweep never
+     * interleave: a file moved in is named by its entry before the sweep can
+     * look, and an entry is never read half-written.
+     */
+    private val lock = Mutex()
+
+    /**
+     * Once per process, at launch (FamilyConnectApp creates this store): a
+     * note a crash left in its Undo window becomes a not-sent row (S2.6), then
+     * the files a crash or a killed app left behind with no entry, and
+     * entries whose file is gone, are swept.
+     */
+    internal val launchSweep: Job = scope.launch {
+        runCatching { notSentAfterACrash() }.onFailure { Log.w(TAG, "could not recover: ${it.message}") }
+        runCatching { sweep() }.onFailure { Log.w(TAG, "sweep failed: ${it.message}") }
+    }
+
+    /**
+     * This chat's voice messages that were not sent, oldest first. A note in
+     * its Undo window is not one of them: it is on its way.
+     */
+    fun forChat(chatId: Long): Flow<List<ParkedRecording>> =
+        settings.state
+            .map { state ->
+                state.parkedRecordings.filter { it.chatId == chatId && !it.sending && file(it).exists() }
+            }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.IO)
+
+    /** Where an entry's bytes are. */
+    fun file(entry: ParkedRecording): File = File(root, entry.file)
+
+    /**
+     * The session now. A chat takes it when it opens and hands it back with
+     * every park: one that lands after a sign-out is dropped.
+     */
+    fun session(): Long = epoch.current()
+
+    /**
+     * Keep [source] as a voice message that was not sent, MOVING it out of
+     * the cache. Null when it could not be kept — the session that recorded
+     * it has ended (sign-out deletes everything recorded and not sent), or
+     * the disk refused the file; in both cases [source] is gone.
+     */
+    suspend fun park(
+        chatId: Long,
+        source: File,
+        durationMs: Long,
+        replyTo: ReplyToDto?,
+        caption: String,
+        session: Long,
+        /** A released note entering its Undo window (S2.6), not a not-sent row. */
+        sending: Boolean = false,
+    ): ParkedRecording? = lock.withLock {
+        var kept: ParkedRecording? = null
+        epoch.whileCurrent(session) {
+            withContext(Dispatchers.IO) {
+                val id = UUID.randomUUID().toString()
+                val name = "$id.$EXTENSION"
+                val target = File(root.apply { mkdirs() }, name)
+                val moved = source.renameTo(target) ||
+                    runCatching {
+                        source.copyTo(target, overwrite = true)
+                        true
+                    }.getOrDefault(false)
+                if (moved) {
+                    val entry = ParkedRecording(
+                        id = id,
+                        chatId = chatId,
+                        file = name,
+                        durationMs = durationMs,
+                        replyTo = replyTo,
+                        caption = caption,
+                        sending = sending,
+                    )
+                    settings.updateParkedRecordings { it + entry }
+                    kept = entry
+                } else {
+                    target.delete()
+                    Log.w(TAG, "could not keep a recording that was not sent")
+                }
+            }
+        }
+        // Moved, copied (the original is then a stray in the cache), or not
+        // kept at all — the cache copy goes in every case.
+        withContext(Dispatchers.IO) { source.delete() }
+        kept
+    }
+
+    /**
+     * A note in its Undo window that could not be handed to the outbox
+     * becomes what any interrupted recording is: a not-sent row (S2.8). So
+     * does one that Undo was taking back into review when the chat was left
+     * — and leaving hands it, as it hands a note in review, the words the
+     * field held as its [caption] and the composer's primed reply as its
+     * [replyTo]. Null keeps what the entry already has.
+     */
+    suspend fun markNotSent(id: String, caption: String? = null, replyTo: ReplyToDto? = null): Unit =
+        lock.withLock {
+            settings.updateParkedRecordings { entries ->
+                entries.map {
+                    if (it.id == id && it.sending) {
+                        it.copy(sending = false, caption = caption ?: it.caption, replyTo = replyTo ?: it.replyTo)
+                    } else {
+                        it
+                    }
+                }
+            }
+        }
+
+    /** At launch: whatever a crash left "sending" is not sent (S2.6). */
+    private suspend fun notSentAfterACrash(): Unit = lock.withLock {
+        if (settings.state.first().parkedRecordings.none { it.sending }) return@withLock
+        settings.updateParkedRecordings { entries ->
+            entries.map { if (it.sending) it.copy(sending = false) else it }
+        }
+        Log.i(TAG, "a voice message left in its Undo window is now not sent")
+    }
+
+    /** Forget one, and its file. Sent or deleted, it is the same removal. */
+    suspend fun remove(id: String): Unit = lock.withLock {
+        val entry = settings.state.first().parkedRecordings.firstOrNull { it.id == id }
+        settings.updateParkedRecordings { entries -> entries.filterNot { it.id == id } }
+        if (entry != null) withContext(Dispatchers.IO) { file(entry).delete() }
+    }
+
+    /**
+     * Delete every file no entry names, and every entry whose file is gone.
+     * Returns how many files went.
+     */
+    suspend fun sweep(): Int = lock.withLock {
+        withContext(Dispatchers.IO) {
+            val directory = root
+            val missing = settings.state.first().parkedRecordings
+                .filterNot { File(directory, it.file).exists() }
+                .map { it.id }
+                .toSet()
+            if (missing.isNotEmpty()) {
+                settings.updateParkedRecordings { entries -> entries.filterNot { it.id in missing } }
+                Log.i(TAG, "dropped ${missing.size} entries whose file was gone")
+            }
+            val named = settings.state.first().parkedRecordings.map { it.file }.toSet()
+            var removed = 0
+            directory.listFiles()?.forEach { candidate ->
+                if (candidate.name !in named && candidate.delete()) removed++
+            }
+            if (removed > 0) Log.i(TAG, "swept $removed recording(s) nothing names")
+            removed
+        }
+    }
+
+    companion object {
+        private const val TAG = "ParkedRecordings"
+        private const val DIRECTORY = "parked-recordings"
+        private const val EXTENSION = "m4a"
+
+        /** Where the bytes live — also what the session wipe deletes. */
+        fun directory(context: Context): File = File(context.filesDir, DIRECTORY)
+    }
+}

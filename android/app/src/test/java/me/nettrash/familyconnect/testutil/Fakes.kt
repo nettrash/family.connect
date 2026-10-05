@@ -137,6 +137,25 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(supportContact = contact)
     }
 
+    override suspend fun updateParkedRecordings(
+        transform: (List<me.nettrash.familyconnect.data.repo.ParkedRecording>) ->
+        List<me.nettrash.familyconnect.data.repo.ParkedRecording>,
+    ) {
+        _state.value = _state.value.copy(parkedRecordings = transform(_state.value.parkedRecordings))
+    }
+
+    override suspend fun setReviewBeforeSending(enabled: Boolean) {
+        _state.value = _state.value.copy(reviewBeforeSending = enabled)
+    }
+
+    override suspend fun setHeldReleaseTaught() {
+        _state.value = _state.value.copy(heldReleaseTaught = true)
+    }
+
+    override suspend fun setVoiceCoachMarkShown() {
+        _state.value = _state.value.copy(voiceCoachMarkShown = true)
+    }
+
     override suspend fun setBlockedUserIds(ids: Collection<Long>) {
         val next = ids.toSet()
         blockedWrites += next
@@ -1658,5 +1677,94 @@ class FakeTranscriptSound : me.nettrash.familyconnect.data.repo.TranscriptSoundS
     ): me.nettrash.familyconnect.data.repo.TranscriptSoundPlan.Result {
         asked += attachment.id to maxBytes
         return next
+    }
+}
+
+/**
+ * The microphone, scripted (#79). [elapsed] is the recorder's own clock —
+ * what the counter shows and what a stopped recording measures — and [end]
+ * is the recorder ending a recording by itself: the cap, a failure, another
+ * app, another chat starting one. Each kept recording is a real file in
+ * [dir] whose first bytes are an M4A header, so MediaPrep's magic check
+ * takes it for the voice note it is.
+ */
+class FakeVoiceRecorder(private val dir: java.io.File) :
+    me.nettrash.familyconnect.data.repo.VoiceRecorder {
+
+    var elapsed: Long = 0
+    var startResult = true
+
+    /** The peak [maxAmplitude] reports: loud enough to count as heard unless a test says otherwise. */
+    var amplitude: Int = 2_000
+    var starts = 0
+        private set
+    var stops = 0
+        private set
+    var cancels = 0
+        private set
+    var owner: me.nettrash.familyconnect.data.repo.VoiceRecorder.Listener? = null
+        private set
+
+    /** Every file a recording left, in order — so a test can see which survived. */
+    val files = mutableListOf<java.io.File>()
+
+    override var isRecording: Boolean = false
+        private set
+
+    override val elapsedMs: Long get() = if (isRecording) elapsed else 0
+
+    override fun start(owner: me.nettrash.familyconnect.data.repo.VoiceRecorder.Listener): Boolean {
+        if (!startResult) return false
+        starts++
+        this.owner = owner
+        isRecording = true
+        elapsed = 0
+        return true
+    }
+
+    /** A stop that keeps nothing — under the recorder's floor, a recording that never got audio. */
+    var keepsNothing = false
+
+    override fun stop(): me.nettrash.familyconnect.data.repo.VoiceRecorder.Recording? {
+        if (!isRecording) return null
+        stops++
+        isRecording = false
+        owner = null
+        if (keepsNothing) return null
+        return me.nettrash.familyconnect.data.repo.VoiceRecorder.Recording(newFile(), elapsed)
+    }
+
+    override fun cancel() {
+        if (!isRecording) return
+        cancels++
+        isRecording = false
+        owner = null
+    }
+
+    override fun maxAmplitude(): Int = if (isRecording) amplitude else 0
+
+    /** The recorder ends it by itself; [keep] false is a recording that left nothing usable. */
+    fun end(ending: me.nettrash.familyconnect.data.repo.VoiceRecorder.Ending, keep: Boolean = true) {
+        val told = owner ?: return
+        val kept = if (keep) {
+            stop()
+        } else {
+            cancel()
+            null
+        }
+        told.onEnded(ending, kept)
+    }
+
+    private fun newFile(): java.io.File {
+        dir.mkdirs()
+        val file = java.io.File.createTempFile("voice-", ".m4a", dir)
+        file.writeBytes(M4A_HEAD + ByteArray(4096) { 5 })
+        files += file
+        return file
+    }
+
+    companion object {
+        /** `....ftypM4A ` — the ISO base media header the server's magic check reads. */
+        val M4A_HEAD: ByteArray = byteArrayOf(0, 0, 0, 0x20) + "ftypM4A ".toByteArray(Charsets.US_ASCII)
     }
 }

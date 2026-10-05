@@ -47,12 +47,18 @@ win/
                 Notifications — when this client speaks up, and what it says when it does
                 Avatars — what a picture must be before it is sent, and a cache keyed by VERSION
                 StartupSetting — what the "start when I sign in" row shows, and who may change it
+                VoiceNotes, NotSent, ParkedRecordings — a voice note's floors, what ends a recording and where
+                                it goes, and the voice messages that were not sent, kept per account
+                ComposerButton — the Send slot (Send, Save, the microphone, a recording's Send or Stop), the video
+                                button's rule, the round video's arithmetic, and which press opens the slot's menu
   src/FamilyConnect.App/               the WinUI 3 window: structure + code-behind, no decisions
                 Services/ Connection (one server, wired), LockerTokenStore (the credential
                           locker), AppServices, AppFolders, the settings files, Toasts and
                           Attention, TrayIcon, StartupLaunch (the manifest's startup task),
                           ShareInbox, WindowPlacement, WebViewCallMedia, VoiceRecorder,
-                          MediaPreparing, LocationFinder, StickerImaging
+                          MediaPreparing, LocationFinder, StickerImaging, KeepAwake (the
+                          screen on while recording), SessionWatch (lock, screen saver, sleep),
+                          ScreenReader (whether one runs, so the microphone waits for it)
                 Views/    ServerView, SignInView, DoorView, PendingView, OfflineView, ChatsView,
                           BoardView + NoteSheet, FamilyView, SettingsView, CallCardView, and the
                           sheets and cards they open (polls, emoji, dialogs)
@@ -368,6 +374,54 @@ File sizes, "Zero KB" and "%lld byte(s)" are English for now: the Apple apps use
 formatter, so the shared catalogue has no such sentences, and this port's catalogue has no plural
 forms (two keys stand in for English's one and other).
 
+**A recording is never lost to an interruption, and never sent by one** (docs/audio-video-messages-2026-10-04.md,
+Phase 0; issue #79). The person's Stop stages a voice note for review, as before. Anything else that ends a recording —
+another chat, the rail's Board, Family or Settings, a call in any phase, the window minimised, hidden in the
+notification area or really closed, the session locking, the screen saver, sleep, the recorder failing — STOPS AND
+KEEPS it (`NotSent`): it waits in its chat as "Voice message not sent · 0:42", with the reply it was recorded under
+and, when the person left the chat with a note still in review, the words in the field as its caption. That row's Send
+sends it with THAT reply and caption and nothing else, never riding out with the next text; its ✕ deletes it, asking
+from ten seconds, as the recording row's Delete does; and while it waits, that chat records nothing new. Under a
+second there is nothing worth keeping, and it goes without a word. The rows are on disk per account per server
+(`ParkedRecordings`: whole or not at all, swept at launch) and wiped whenever the session ends, as the outbox is; one the
+disk refuses waits in memory as the same row, with the same reply and caption, and the disk is tried again as the window
+really closes. A real close is held back while they are written, because nothing awaited after the last window goes
+would finish. Nothing records during a call — refused with the reason, and the call buttons, every record's "Call back"
+among them, are off while something records — the screen is kept on while it does (`KeepAwake`), whatever plays is
+paused first, and nothing plays until it ends, the viewer's video included. **None of it has run on Windows**
+(the plan's trial T7): that `WTSRegisterSessionNotification` on a hidden window of its own hears a packaged app's lock
+and `WM_POWERBROADCAST` its sleep (`SessionWatch`), that `AppWindow.Changed` sees a minimise, that
+`DisplayRequest.RequestActive` no longer throws (the execution-state fallback is there if it does), that `AppCapability`
+answers for the microphone before Settings is offered, and that `MediaCapture.Failed` reaches the recorder when a
+microphone is pulled out.
+
+**The microphone lives in the Send slot** (docs/audio-video-messages-2026-10-04.md, Phase 1; issue #79). The composer's
+trailing control is one fixed 40-epx accent disc in a 44-epx target — Send, Save, the microphone, or while something records
+the Send arrow (or Stop, when the recording began beside words or staged items) — so the row never jumps, and which it is,
+how it is named and what a press does are `ComposerButton`'s, held case for case to `fc_text::record` by
+`record-vectors.json` (the slot, the video button and the round helpers; Windows has no hold). **Every input clicks**: a
+press of any length with a mouse, a finger or a pen records hands-free, the same place sends it, and holding is off; a mouse
+right-click, a pen tap with the barrel button down, Shift+F10 or the Menu key open the microphone's menu ("Record Voice
+Message"), and a touch or pen hold never does. **Ctrl+Shift+R** — the app's first keyboard accelerator — records, beside
+the draft when there is one, and pressed again stops into review: a shortcut never sends. Recording takes the field's place
+in the input row (Delete, the clock, Stop; "30 seconds left" from 4:30), Esc is Stop and never Delete, and Enter in an empty
+field still does nothing. A dimmed microphone — a call, an attachment on its way, a voice message not sent — stays a
+button and says why; for 600 ms after the slot's own click changed it, a second click — or Enter in the field, which is
+the slot's — is ignored, and so is a press that went down meanwhile, however late it lifts, so a double click can neither
+start nor send a recording; words typed and pictures staged since are never held back, and nothing under a second is
+ever sent. A key held
+down is one press: its repeats never send from the field or drop a reply, and Ctrl+Shift+R held down records, or stops,
+once. A note in review, and one that was not sent, plays from this device (▶), and nothing plays while something records
+— or while the microphone is still being opened (Windows' prompt, the screen reader's second); a lock, sleep or any other
+interruption that arrives then lets go of the microphone once it is granted (`RecordingStart`).
+With a screen reader running, "Recording" is said a second before the microphone records (`ScreenReader`), and what a
+recording does is said on a hidden polite line. **None of it has run on Windows** (trial T7, and T4 for a touch or pen hold
+on a button with holding off): that a long touch press clicks rather than opening the menu, that a pen's barrel tap reaches
+the menu, that Ctrl+Shift+R reaches an accelerator on the composer while the field has focus, the cross-fade and the pulse,
+and what Narrator reads in every state (T5). There is no video button yet: Windows records no round video before Phase 3d,
+and a camera button with nothing behind it is never drawn (decision 40); its rule is written and tested, and that phase
+only wires it.
+
 **Sharing INTO the app** is a share target in the manifest. What was shared is copied into the app's
 inbox by the process Windows launched for it, BEFORE that process hands its activation to the running
 window and exits — the share belongs to it — and only a copy whose marker was written last is taken
@@ -560,6 +614,21 @@ cargo run --quiet -- media-plan > ../../tests/FamilyConnect.Core.Tests/Fixtures/
 cd ../../..
 cp win/tests/FamilyConnect.Core.Tests/Fixtures/media-plan-vectors.json ios/FamilyConnectTests/Fixtures/
 cp win/tests/FamilyConnect.Core.Tests/Fixtures/media-plan-vectors.json android/app/src/test/resources/
+```
+
+A fourth, `record-vectors.json`, is `fc_text::record` — voice and video messages from the Send
+button (issue #79): which control the composer's trailing slot is, when the video button shows,
+the hold's reducer and the round video's arithmetic. It travels like the media-plan file, three
+copies CI compares with a fresh print; the Windows port reads every function in it but
+`hold_step` and `hold_threshold_ms` (it has no hold), and `App.Logic.Tests` links the Core copy
+rather than keeping a fourth:
+
+```bash
+cd win/tools/board-oracle
+cargo run --quiet -- record > ../../tests/FamilyConnect.Core.Tests/Fixtures/record-vectors.json
+cd ../../..
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/record-vectors.json ios/FamilyConnectTests/Fixtures/
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/record-vectors.json android/app/src/test/resources/
 ```
 
 Four implementations of one rule need an oracle, not four readings. This repo has been bitten by a

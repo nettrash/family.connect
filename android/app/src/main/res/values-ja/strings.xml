@@ -158,11 +158,8 @@
     <string name="s_request_declined_explanation">ファミリーのオーナーがリクエストを拒否しました。別の招待コードを試すか、自分のファミリーを作成できます。</string>
     <string name="s_waiting_explanation">ここでキャンセルできることはありません。オーナーが承認するか拒否します。</string>
     <string name="s_take_photo">写真を撮る</string>
-    <string name="s_record_video">ビデオを撮影</string>
     <string name="s_add_a_message_or_send_it_on_its_own">メッセージを添えても、そのまま送ってもかまいません。</string>
     <string name="s_remove_attachment">添付を削除</string>
-    <string name="s_record_audio">音声を録音</string>
-    <string name="s_stop">停止</string>
     <string name="s_audio">オーディオ</string>
     <string name="s_play">再生</string>
     <string name="s_pause">一時停止</string>
@@ -637,4 +634,44 @@
     <string name="s_greeting_weather_remove_place">場所を削除</string>
     <string name="s_greeting_weather_limit">場所は3つまでです。</string>
     <string name="s_greeting_weather_footer">毎日のあいさつで、これらの場所の今日の天気にも触れます。予報を取得するため、地名だけが Open-Meteo に送られます。それ以外は何も送られません。</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">未送信のボイスメッセージ · %1$s</string>
+    <string name="s_send_voice_message">ボイスメッセージを送信</string>
+    <string name="s_delete_recording">録音を削除</string>
+    <string name="s_keep">残す</string>
+    <string name="s_delete_this_recording">この録音を削除しますか？</string>
+    <string name="e_record_after_the_call">通話が終わったらメッセージを録音できます。</string>
+    <string name="e_send_or_delete_the_unsent_first">先に未送信のボイスメッセージを送信するか削除してください。</string>
+    <string name="s_recording_stopped_at_five_minutes">5分に達したため録音を停止しました。</string>
+    <string name="e_recording_stopped_unexpectedly">録音が予期せず停止しました。</string>
+    <string name="s_voice_message_with_length">ボイスメッセージ · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">ボイスメッセージを録音</string>
+    <string name="s_take_video">ビデオを撮る</string>
+    <string name="s_undo">取り消す</string>
+    <string name="s_open_settings">設定を開く</string>
+    <string name="s_stop_recording">録音を停止</string>
+    <string name="s_stop_and_listen_first">停止して先に聞く</string>
+    <string name="s_start_recording_action">録音を開始</string>
+    <string name="s_sending_voice_message">ボイスメッセージを送信中 · %1$s</string>
+    <string name="s_sending_in">%1$d秒後に送信</string>
+    <string name="s_slide_to_cancel">スライドしてキャンセル</string>
+    <string name="s_release_to_cancel">指を離すとキャンセル</string>
+    <string name="s_still_recording_tap_send">録音を続けています。終わったら「送信」をタップしてください。</string>
+    <string name="s_next_time_letting_go_sends">次からは、指を離すと送信されます。</string>
+    <string name="s_hold_the_microphone_coach">マイクを押したまま話すこともできます。</string>
+    <string name="s_play_after_recording">録音が終わったら再生できます。</string>
+    <string name="s_thirty_seconds_left">残り30秒</string>
+    <string name="s_voice_messages">ボイスメッセージ</string>
+    <string name="s_review_before_sending">送信前に確認</string>
+    <string name="s_review_before_sending_explanation">マイクを押したまま話したとき、指を離してもメッセージはすぐに送信されず、確認できるように残ります。</string>
+    <string name="s_you_can_record_now">録音できるようになりました。</string>
+    <string name="s_we_didnt_hear_anything">何も聞こえませんでした。</string>
+    <string name="s_cant_hear_microphone_muted">何も聞こえません。マイクがミュートになっていませんか？</string>
+    <string name="s_announce_recording">録音中</string>
+    <string name="s_announce_recording_locked">録音をロックしました</string>
+    <string name="s_announce_recording_deleted">録音を削除しました</string>
+    <string name="s_announce_voice_message_sent">ボイスメッセージを送信しました</string>
+    <string name="s_announce_ready_to_review">確認できます、%1$s</string>
+    <string name="e_wait_for_the_attachment">今の添付が終わるまで待ってください。</string>
 </resources>

@@ -159,11 +159,8 @@
     <string name="s_request_declined_explanation">Der Eigentümer hat deine Anfrage abgelehnt. Du kannst einen anderen Einladungscode versuchen oder eine eigene Familie gründen.</string>
     <string name="s_waiting_explanation">Von hier gibt es nichts abzubrechen – der Eigentümer lässt dich rein oder lehnt die Anfrage ab.</string>
     <string name="s_take_photo">Foto aufnehmen</string>
-    <string name="s_record_video">Video aufnehmen</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Schreib etwas dazu — oder schick es einfach so.</string>
     <string name="s_remove_attachment">Anhang entfernen</string>
-    <string name="s_record_audio">Sprachnachricht aufnehmen</string>
-    <string name="s_stop">Stopp</string>
     <string name="s_audio">Audio</string>
     <string name="s_play">Abspielen</string>
     <string name="s_pause">Pause</string>
@@ -655,4 +652,44 @@
     <string name="s_greeting_weather_remove_place">Ort entfernen</string>
     <string name="s_greeting_weather_limit">Bis zu 3 Orte.</string>
     <string name="s_greeting_weather_footer">Der tägliche Gruß nennt dann auch das heutige Wetter an diesen Orten. Nur die Ortsnamen werden an Open-Meteo gesendet, um die Vorhersage abzurufen. Sonst wird nichts gesendet.</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">Sprachnachricht nicht gesendet · %1$s</string>
+    <string name="s_send_voice_message">Sprachnachricht senden</string>
+    <string name="s_delete_recording">Aufnahme löschen</string>
+    <string name="s_keep">Behalten</string>
+    <string name="s_delete_this_recording">Diese Aufnahme löschen?</string>
+    <string name="e_record_after_the_call">Nach dem Anruf kannst du eine Nachricht aufnehmen.</string>
+    <string name="e_send_or_delete_the_unsent_first">Sende oder lösche zuerst die nicht gesendete Sprachnachricht.</string>
+    <string name="s_recording_stopped_at_five_minutes">Die Aufnahme wurde nach fünf Minuten beendet.</string>
+    <string name="e_recording_stopped_unexpectedly">Die Aufnahme wurde unerwartet beendet.</string>
+    <string name="s_voice_message_with_length">Sprachnachricht · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">Sprachnachricht aufnehmen</string>
+    <string name="s_take_video">Video drehen</string>
+    <string name="s_undo">Rückgängig</string>
+    <string name="s_open_settings">Einstellungen öffnen</string>
+    <string name="s_stop_recording">Aufnahme stoppen</string>
+    <string name="s_stop_and_listen_first">Stoppen und zuerst anhören</string>
+    <string name="s_start_recording_action">Aufnahme starten</string>
+    <string name="s_sending_voice_message">Sprachnachricht wird gesendet · %1$s</string>
+    <string name="s_sending_in">Senden in %1$d</string>
+    <string name="s_slide_to_cancel">Zum Abbrechen wischen</string>
+    <string name="s_release_to_cancel">Zum Abbrechen loslassen</string>
+    <string name="s_still_recording_tap_send">Die Aufnahme läuft weiter. Tippe auf „Senden“, wenn du fertig bist.</string>
+    <string name="s_next_time_letting_go_sends">Beim nächsten Mal wird beim Loslassen gesendet.</string>
+    <string name="s_hold_the_microphone_coach">Du kannst das Mikrofon auch gedrückt halten, während du sprichst.</string>
+    <string name="s_play_after_recording">Das kannst du nach der Aufnahme abspielen.</string>
+    <string name="s_thirty_seconds_left">Noch 30 Sekunden</string>
+    <string name="s_voice_messages">Sprachnachrichten</string>
+    <string name="s_review_before_sending">Vor dem Senden prüfen</string>
+    <string name="s_review_before_sending_explanation">Wenn du das Mikrofon zum Sprechen gedrückt hältst, wird die Nachricht beim Loslassen nicht gesendet, sondern zum Prüfen aufbewahrt.</string>
+    <string name="s_you_can_record_now">Jetzt kannst du aufnehmen.</string>
+    <string name="s_we_didnt_hear_anything">Es war nichts zu hören.</string>
+    <string name="s_cant_hear_microphone_muted">Es ist nichts zu hören. Ist das Mikrofon stummgeschaltet?</string>
+    <string name="s_announce_recording">Aufnahme läuft</string>
+    <string name="s_announce_recording_locked">Aufnahme fixiert</string>
+    <string name="s_announce_recording_deleted">Aufnahme gelöscht</string>
+    <string name="s_announce_voice_message_sent">Sprachnachricht gesendet</string>
+    <string name="s_announce_ready_to_review">Bereit zum Prüfen, %1$s</string>
+    <string name="e_wait_for_the_attachment">Warte, bis der aktuelle Anhang fertig ist.</string>
 </resources>
