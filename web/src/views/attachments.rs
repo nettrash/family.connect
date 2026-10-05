@@ -579,6 +579,7 @@ fn audio_player(props: &AudioProps) -> Html {
                 </div>
             </div>
             <audio ref={player} src={url.unwrap_or_default()} preload="auto"
+                   data-playback="true"
                    ontimeupdate={on_time} onplay={on_play} onpause={on_pause} onended={on_ended} />
         </div>
     }

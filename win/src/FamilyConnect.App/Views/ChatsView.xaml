@@ -28,7 +28,7 @@
         <Border Grid.Column="1" Width="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
 
         <!-- One conversation: who it is with, the messages, and the composer as a card at the foot. -->
-        <Grid Grid.Column="2">
+        <Grid x:Name="ConversationPane" Grid.Column="2">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
@@ -164,6 +164,27 @@
                         <Button x:Name="AskPictureButton" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed" />
                     </StackPanel>
                     <TextBox x:Name="ComposerBox" Grid.Row="2" Grid.Column="1" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" VerticalAlignment="Center" />
+                    <!--
+                        The video button (docs/audio-video-messages-2026-10-04.md, S1.4): inside the empty field at its trailing edge,
+                        centred on its one line — a 22-epx Segoe Fluent E714 in a 44-epx target — and the field given trailing room
+                        while it shows. Drawn only where a video message can be recorded (DrawVideoDoor), which no build does until
+                        RoundVideoRules.RecordingEnabled is switched on after the Windows trials.
+                    -->
+                    <Button
+                        x:Name="VideoDoorButton"
+                        Grid.Row="2"
+                        Grid.Column="1"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Center"
+                        Width="44"
+                        Height="44"
+                        Padding="0"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        IsHoldingEnabled="False"
+                        Visibility="Collapsed">
+                        <FontIcon Glyph="&#xE714;" FontSize="22" />
+                    </Button>
                     <!--
                         A voice message being recorded, IN the input row (docs/audio-video-messages-2026-10-04.md, S2.4, S8.6): it
                         takes the place of the field and the buttons beside it, at the height they had, and the slot stays where it
@@ -334,6 +355,19 @@
                 <Image x:Name="ViewerImage" Stretch="Uniform" />
             </ScrollViewer>
             <MediaPlayerElement x:Name="ViewerVideo" Grid.Row="1" Margin="24" AreTransportControlsEnabled="True" AutoPlay="True" Visibility="Collapsed" />
+            <!--
+                A video message (docs/audio-video-messages-2026-10-04.md, S5.3): the square clip plays inside a ring painted
+                over its corners, on the viewer's solid backdrop — the mask's fill IS that backdrop, set with it in code.
+                Drawn over the player and never hit-tested, so nothing it covers stops answering.
+            -->
+            <Grid x:Name="ViewerRoundFrame" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" Visibility="Collapsed">
+                <Path x:Name="ViewerRoundMask" />
+                <Ellipse x:Name="ViewerRoundRing" StrokeThickness="3" Stroke="{ThemeResource AccentFillColorDefaultBrush}" />
+            </Grid>
+            <!-- What a circle that could not be had says, over its poster; a click asks again. -->
+            <Button x:Name="ViewerRoundRetry" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="14,10" Background="#B3000000" BorderThickness="0" Foreground="White" Visibility="Collapsed">
+                <TextBlock x:Name="ViewerRoundRetryText" MaxWidth="200" TextAlignment="Center" TextWrapping="Wrap" />
+            </Button>
             <ProgressRing x:Name="ViewerLoading" Grid.Row="1" Width="36" Height="36" HorizontalAlignment="Center" VerticalAlignment="Center" IsActive="False" />
             <Button x:Name="ViewerPrevious" Grid.Row="1" Margin="12" Padding="12" HorizontalAlignment="Left" VerticalAlignment="Center" Background="#66000000" BorderThickness="0" Foreground="White">
                 <FontIcon Glyph="&#xE76B;" />
@@ -341,6 +375,14 @@
             <Button x:Name="ViewerNext" Grid.Row="1" Margin="12" Padding="12" HorizontalAlignment="Right" VerticalAlignment="Center" Background="#66000000" BorderThickness="0" Foreground="White">
                 <FontIcon Glyph="&#xE76C;" />
             </Button>
+            <!-- A circle's own controls, under it: the corners the ring paints over are where a player's bar would be. -->
+            <StackPanel x:Name="ViewerRoundBar" Grid.Row="2" Margin="0,8,0,14" HorizontalAlignment="Center" Orientation="Horizontal" Spacing="12" Visibility="Collapsed">
+                <Button x:Name="ViewerRoundPlay" Width="44" Height="44" Padding="0">
+                    <FontIcon x:Name="ViewerRoundGlyph" Glyph="&#xE768;" FontSize="16" />
+                </Button>
+                <Slider x:Name="ViewerRoundSeek" Width="260" VerticalAlignment="Center" Minimum="0" Maximum="1" StepFrequency="0.1" IsThumbToolTipEnabled="False" />
+                <TextBlock x:Name="ViewerRoundTime" MinWidth="76" VerticalAlignment="Center" Foreground="White" />
+            </StackPanel>
             <StackPanel x:Name="ViewerZoomBar" Grid.Row="2" Margin="0,8,0,14" HorizontalAlignment="Center" Orientation="Horizontal" Spacing="8">
                 <Button x:Name="ViewerZoomOut" Padding="10">
                     <FontIcon Glyph="&#xE71F;" FontSize="14" />

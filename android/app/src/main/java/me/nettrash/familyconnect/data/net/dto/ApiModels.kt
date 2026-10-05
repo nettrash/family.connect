@@ -632,6 +632,21 @@ data class AttachmentDto(
      * meant a note on the wall. This one is the chat picture.
      */
     val sticker: Boolean? = null,
+    /**
+     * `true` when (and only when) the message carrying this was sent as a
+     * VIDEO MESSAGE (docs/protocol.md, "Video messages"; #79, S5): a square
+     * H.264/AAC MP4 recorded to be drawn round, still a `kind=video` in
+     * every other respect. The sticker flag's pattern exactly: absent
+     * otherwise and never `false`, nullable so a stored copy round-trips
+     * what the wire said, set by the send and never changed, never beside
+     * `sticker`.
+     *
+     * Rides INSIDE the attachments JSON a message row already stores, so it
+     * needs no Room migration. A row cached by a build from before the key
+     * was written back without it and draws square until it is read again
+     * (S5.8).
+     */
+    val round: Boolean? = null,
 ) {
     val isVideo: Boolean get() = kind == KIND_VIDEO
 
@@ -640,6 +655,13 @@ data class AttachmentDto(
      * strayed onto something that is not a picture draws as what it is.
      */
     val isSticker: Boolean get() = sticker == true && kind == KIND_PHOTO
+
+    /**
+     * Sent as a video message (#79, S5.1). The kind is checked too, as the
+     * sticker's is: the flag on a photo, an audio or a file draws as what
+     * that attachment otherwise is.
+     */
+    val isRound: Boolean get() = round == true && kind == KIND_VIDEO
     val isFile: Boolean get() = kind == KIND_FILE
     val isAudio: Boolean get() = kind == KIND_AUDIO
     val isLocation: Boolean get() = kind == KIND_LOCATION
@@ -980,6 +1002,13 @@ data class SendMessageRequest(
      * what they were; never sent as `false`.
      */
     val sticker: Boolean? = null,
+    /**
+     * `true` sends the message's one `kind=video` attachment as a VIDEO
+     * MESSAGE (docs/protocol.md, "Video messages"; #79). Null — and
+     * therefore omitted — for every other message, exactly as [sticker]
+     * is; never sent as `false`, and never beside it.
+     */
+    val round: Boolean? = null,
 )
 
 /**
@@ -1453,6 +1482,14 @@ data class FamilyMineResponse(
      */
     @SerialName("max_pack_items") val maxPackItems: Int? = null,
     @SerialName("max_pack_item_bytes") val maxPackItemBytes: Long? = null,
+    /**
+     * Video messages' two limits (#79; docs/protocol.md, "Video messages") —
+     * ALWAYS present on a server that has them, so their ABSENCE is how this
+     * client knows the server predates video messages: no video entry is
+     * offered there at all, and `round` is never sent.
+     */
+    @SerialName("max_round_video_ms") val maxRoundVideoMs: Long? = null,
+    @SerialName("max_round_video_bytes") val maxRoundVideoBytes: Long? = null,
     // Absent when the server has no assistant configured, which is the
     // whole of the capability check (docs/protocol.md, "Mentioning the
     // assistant in the family chat").

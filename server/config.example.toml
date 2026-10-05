@@ -194,6 +194,15 @@ max_family_members = 50
 # the apps' own: this server never decodes an image.
 max_pack_items = 200
 max_pack_item_bytes = 524288
+# The largest VIDEO MESSAGE — a short square video the apps draw as a circle
+# (docs/protocol.md, "Video messages"). Left UNSET it is 12 MiB, or
+# max_attachment_bytes when that is lower: clamped, never refused, so a
+# server with a small attachment ceiling starts as it always did. A minute
+# recorded to the apps' profile is about 4.2 MB. If you SET it, it must be
+# between 1 and max_attachment_bytes — a video message is uploaded as an
+# attachment — and the server refuses to start otherwise. The apps are told
+# the ceiling in force; the length (60 s) is fixed.
+# max_round_video_bytes = 12582912
 # Largest preview (the downscaled photo or a video's poster frame). Small on
 # purpose: it is drawn in a chat bubble.
 max_preview_bytes = 2097152

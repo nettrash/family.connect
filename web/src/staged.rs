@@ -146,6 +146,7 @@ impl OutgoingItem {
             accuracy_m: self.accuracy_m,
             // The row's to say, not the item's: see `Store::enqueue`.
             sticker: false,
+            round: false,
         }
     }
 }

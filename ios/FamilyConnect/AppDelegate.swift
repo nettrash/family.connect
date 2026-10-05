@@ -45,6 +45,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         return true
     }
 
+    // MARK: - Orientation
+
+    /// The phone's orientation is held while a video message records
+    /// (#79, S3.5, S8.1): the window gets only the orientation it was in at
+    /// Record — never forced to portrait — until Stop. Otherwise what the
+    /// Info.plist declares for the device.
+    func application(
+        _ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?
+    ) -> UIInterfaceOrientationMask {
+        if let held = OrientationHold.mask { return held }
+        return UIDevice.current.userInterfaceIdiom == .pad ? .all : .allButUpsideDown
+    }
+
     // MARK: - Uploads the app was not around for
 
     /// iOS has relaunched this app — possibly straight into the background
@@ -113,6 +126,41 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         Task { @MainActor in
             AppDelegate.session?.pendingPushRoute = route
             completionHandler()
+        }
+    }
+}
+
+/// The orientation a phone is held in from Record to Stop (S3.5, S8.1).
+///
+/// A phone only: an iPad cannot be locked while it multitasks, so there the
+/// recorder's layout, chosen at Record, simply never switches (S3.5).
+@MainActor
+enum OrientationHold {
+    /// What `AppDelegate` reports while held; nil otherwise.
+    private(set) static var mask: UIInterfaceOrientationMask?
+
+    static func set(_ on: Bool) {
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return }
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        if on {
+            mask = scene.map { Self.mask(for: $0.effectiveGeometry.interfaceOrientation) } ?? .portrait
+        } else {
+            guard mask != nil else { return }
+            mask = nil
+        }
+        for window in scene?.windows ?? [] {
+            window.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        }
+    }
+
+    /// The one orientation an interface orientation allows.
+    static func mask(for orientation: UIInterfaceOrientation) -> UIInterfaceOrientationMask {
+        switch orientation {
+        case .landscapeLeft: .landscapeLeft
+        case .landscapeRight: .landscapeRight
+        case .portraitUpsideDown: .portraitUpsideDown
+        default: .portrait
         }
     }
 }

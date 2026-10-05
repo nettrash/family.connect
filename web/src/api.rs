@@ -277,6 +277,10 @@ struct SendRequest<'a> {
     /// server from before stickers never sees a field it would ignore.
     #[serde(skip_serializing_if = "is_false")]
     sticker: bool,
+    /// What makes the message a video message (docs/protocol.md, "Video
+    /// messages"): left out when it is not one, never sent as `false`.
+    #[serde(skip_serializing_if = "is_false")]
+    round: bool,
 }
 
 fn is_false(flag: &bool) -> bool {
@@ -988,6 +992,7 @@ fn send_request(row: &Outgoing) -> SendRequest<'_> {
             .filter_map(|item| item.attachment_id)
             .collect(),
         sticker: row.sticker,
+        round: row.round,
     }
 }
 
@@ -1711,6 +1716,7 @@ mod tests {
             poll: None,
             items: Vec::new(),
             sticker: false,
+            round: false,
             attempts: 0,
             failed: None,
         }
@@ -1773,6 +1779,28 @@ mod tests {
                                "sticker": true, "reply_to_message_id": 1337})
         );
         assert!(encode(&row()).get("sticker").is_none());
+    }
+
+    /// A video message is one video and one flag, with an empty body —
+    /// a reply as well as not — and the flag is left out of every other
+    /// send, never sent as `false` (docs/protocol.md, "Video messages").
+    #[wasm_bindgen_test]
+    fn a_video_message_send_carries_the_flag_and_nothing_else_does() {
+        let mut round = row();
+        round.body = String::new();
+        round.round = true;
+        round.reply_to_message_id = Some(41);
+        let mut video = item("video", -1);
+        video.attachment_id = Some(91);
+        round.items = vec![video];
+        assert_eq!(
+            encode(&round),
+            serde_json::json!({"client_msg_id": "8f14e45f", "body": "", "attachment_ids": [91],
+                               "round": true, "reply_to_message_id": 41})
+        );
+        assert!(encode(&row()).get("round").is_none());
+        round.round = false;
+        assert!(encode(&round).get("round").is_none());
     }
 
     /// The pack's three answers, in the protocol's shapes: the whole pack

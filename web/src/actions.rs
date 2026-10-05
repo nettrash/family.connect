@@ -697,6 +697,12 @@ impl Actions {
                 if live.read(|state| state.open_chat == Some(chat_id) && state.panel.is_none()) {
                     return;
                 }
+                // Over a video message in review — during a call, the only
+                // time the page is not inert under the recorder — it asks
+                // first (S4).
+                if !crate::round_video::may_leave() {
+                    return;
+                }
                 live.now(|state| {
                     state.board_open = false;
                     state.panel = None;
@@ -1270,6 +1276,9 @@ impl Actions {
                 live.now(|state| state.failure = Some(text));
             }
             Action::OpenPanel(panel) => {
+                if !crate::round_video::may_leave() {
+                    return;
+                }
                 // A panel takes the pane the chat or the board had; nothing
                 // is being read behind it (sync::reading).
                 live.now(|state| {
@@ -1605,6 +1614,9 @@ impl Actions {
                 });
             }
             Action::OpenBoard => {
+                if !crate::round_video::may_leave() {
+                    return;
+                }
                 // The chat and its panels give way: nothing is being READ
                 // while the board is in front (sync::reading), and the pane
                 // a chat comes back to is a fresh one, caught up on opening.
@@ -3278,6 +3290,42 @@ mod tests {
             assert!(!state.board_open);
             assert_eq!(state.open_chat, Some(42));
         });
+    }
+
+    /// LEAVING THE CHAT OVER A VIDEO MESSAGE IN REVIEW ASKS (S4): reachable
+    /// only while a call has the recorder step aside. "Delete video
+    /// message?" — Keep stays in the chat, whatever was asked for; Delete
+    /// goes. Nothing held, nothing is asked.
+    #[wasm_bindgen_test]
+    fn leaving_the_chat_over_a_video_message_asks() {
+        let actions = actions();
+        actions.live.now(|state| state.open_chat = Some(42));
+        let leaving = crate::round_video::testing::Leaving::answering(false);
+        actions.handle(Action::SelectChat(43));
+        assert_eq!(leaving.asked(), 0, "nothing held: nothing asked");
+        assert_eq!(actions.live.read(|state| state.open_chat), Some(43));
+        actions.live.now(|state| state.open_chat = Some(42));
+
+        let held = crate::round_video::Held::new();
+        actions.handle(Action::SelectChat(42));
+        assert_eq!(leaving.asked(), 0, "the same chat is not leaving it");
+        actions.handle(Action::SelectChat(43));
+        actions.handle(Action::OpenBoard);
+        actions.handle(Action::OpenPanel(Panel::Family));
+        assert_eq!(leaving.asked(), 3, "each way out asks");
+        actions.live.read(|state| {
+            assert_eq!(state.open_chat, Some(42), "Keep: still in the chat");
+            assert!(!state.board_open && state.panel.is_none());
+        });
+        leaving.answer(true);
+        actions.handle(Action::SelectChat(43));
+        assert_eq!(leaving.asked(), 4);
+        assert_eq!(
+            actions.live.read(|state| state.open_chat),
+            Some(43),
+            "Delete: gone"
+        );
+        drop(held);
     }
 
     /// Peeking at a hidden note is per note, and forgotten with the note.

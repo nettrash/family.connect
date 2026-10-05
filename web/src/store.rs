@@ -236,6 +236,12 @@ pub struct Outgoing {
     /// reload — sends the same flag.
     #[serde(default)]
     pub sticker: bool,
+    /// This message is a VIDEO MESSAGE: its one video is sent with
+    /// `round: true` and drawn as a circle (docs/protocol.md, "Video
+    /// messages"). On the row, like `sticker`, so a retry sends the same
+    /// flag; a row kept by a build from before it reads as an ordinary one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub round: bool,
     /// Tries whose outcome was UNKNOWN. A refusal is not counted here: it
     /// ends the row outright.
     pub attempts: u32,
@@ -256,6 +262,8 @@ pub struct Draft {
     pub attachments: Vec<Prepared>,
     /// Sent as a sticker: one picture, no words, no bubble.
     pub sticker: bool,
+    /// Sent as a video message: one square video, no words, drawn round.
+    pub round: bool,
 }
 
 /// Why a queued message whose bytes a reload took fails at once — it has
@@ -436,6 +444,10 @@ pub struct Store {
     pub board: crate::board::Board,
     /// The family's sticker pack (pack.rs).
     pub pack: crate::pack::Pack,
+    /// How long and how big a video message may be on this server — None on
+    /// a server from before video messages, which is offered none
+    /// (docs/protocol.md, "Video messages"; round_video.rs).
+    pub round: Option<crate::round_video::RoundLimits>,
     /// The whole of the last `GET /me` — the role, a join request still
     /// waiting, the server's switches — and None until it has answered.
     pub account: Option<Me>,
@@ -689,6 +701,11 @@ impl Store {
             .max_pack_items
             .zip(roster.max_pack_item_bytes)
             .map(|(items, bytes)| crate::pack::Limits { items, bytes });
+        // The same for video messages: both keys, or a server without them.
+        self.round = crate::round_video::RoundLimits::of(
+            roster.max_round_video_ms,
+            roster.max_round_video_bytes,
+        );
         self.blocked = roster.blocked_user_ids.iter().copied().collect();
         // The roster names every member's role, this account's too — and it
         // is fresher than the `/me` it may follow, and than a `family_owner`
@@ -1283,6 +1300,7 @@ impl Store {
             poll: draft.poll,
             items,
             sticker: draft.sticker,
+            round: draft.round,
             attempts: 0,
             failed: None,
         });
@@ -1391,12 +1409,15 @@ impl Store {
                 .unwrap_or(id)
         });
         // A sticker's pending bubble is already the sticker: drawn bare,
-        // from this tab's own bytes, before the server has said anything.
+        // from this tab's own bytes, before the server has said anything —
+        // and a video message's is already the circle (the plan for #79,
+        // S5.6).
         let attachments: Vec<crate::model::Attachment> = row
             .items
             .iter()
             .map(|item| crate::model::Attachment {
                 sticker: row.sticker,
+                round: row.round,
                 ..item.as_attachment()
             })
             .collect();
@@ -3605,10 +3626,98 @@ mod tests {
         assert_eq!(old.items[0].source_attachment_id, None);
     }
 
+    fn round_draft() -> Draft {
+        Draft {
+            attachments: vec![Prepared {
+                kind: "video".into(),
+                mime: "video/mp4".into(),
+                size: 1_649_700,
+                width: Some(480),
+                height: Some(480),
+                duration_ms: Some(23_400),
+                file: Some(web_sys::Blob::new().expect("a blob")),
+                preview: Some(web_sys::Blob::new().expect("a poster")),
+                ..Prepared::default()
+            }],
+            round: true,
+            ..Draft::default()
+        }
+    }
+
+    /// A VIDEO MESSAGE in the outbox is one row and one bubble, drawn at
+    /// once — and its bubble is already the circle, from this tab's own
+    /// poster (the plan for #79, S5.6). The flag rides on the row through a
+    /// reload, like a sticker's; unlike a sticker's, its bytes are this
+    /// tab's alone, so after a reload it fails as any video does.
+    #[wasm_bindgen_test]
+    fn a_queued_video_message_draws_round_at_once() {
+        let mut queued = store();
+        queued.queue_send(42, "v".into(), round_draft());
+        let row = &queued.outbox[0];
+        assert!(row.round && !row.sticker && row.body.is_empty());
+        let pending = &queued.threads[&42].messages[0];
+        let drawn = pending
+            .round_video()
+            .expect("the pending bubble is the circle");
+        assert_eq!(drawn.id, row.items[0].provisional_id);
+        assert!(drawn.has_preview, "drawn from the local poster");
+        assert!(!drawn.sticker);
+        // An ordinary video beside it is not one.
+        let mut plain = round_draft();
+        plain.round = false;
+        queued.queue_send(42, "p".into(), plain);
+        assert!(!queued.outbox[1].round);
+        assert!(queued.threads[&42].messages[1].round_video().is_none());
+        let kept = serde_json::to_value(&queued.outbox[1]).expect("encodes");
+        assert!(kept.get("round").is_none(), "written only when true");
+
+        let kept = serde_json::to_string(&queued.outbox).expect("the outbox is kept as JSON");
+        let rows: Vec<Outgoing> = serde_json::from_str(&kept).expect("and read back");
+        let mut after = store();
+        after.restore_outbox(rows);
+        assert!(after.outbox[0].round, "the flag rides on the row");
+        assert!(
+            after.threads[&42].messages[0].round_video().is_some(),
+            "and the bubble is still round"
+        );
+        assert_eq!(
+            after.failed_sends(42).len(),
+            2,
+            "a video's bytes do not survive a reload"
+        );
+    }
+
     /// The pack's limits ride on the roster, and are the capability: with
     /// them there are stickers, without them — a server from before packs —
     /// there are none. And the pack is the FAMILY's: leaving takes it, the
     /// way it takes the wall.
+    /// A server with video messages says both keys; the store keeps them
+    /// as one pair, and a server that sends neither — or only one — offers
+    /// none (docs/protocol.md, "Video messages").
+    #[wasm_bindgen_test]
+    fn the_roster_says_how_long_and_big_a_video_message_may_be() {
+        let mut store = Store::default();
+        store.apply_roster(&Roster {
+            max_round_video_ms: Some(60_000),
+            max_round_video_bytes: Some(12_582_912),
+            ..Roster::default()
+        });
+        assert_eq!(
+            store.round,
+            Some(crate::round_video::RoundLimits {
+                max_ms: 60_000,
+                max_bytes: 12_582_912
+            })
+        );
+        store.apply_roster(&Roster {
+            max_round_video_ms: Some(60_000),
+            ..Roster::default()
+        });
+        assert_eq!(store.round, None, "one key is not a server that has them");
+        store.apply_roster(&Roster::default());
+        assert_eq!(store.round, None, "an older server");
+    }
+
     #[wasm_bindgen_test]
     fn the_roster_offers_the_pack_and_leaving_takes_it() {
         let mut store = store();

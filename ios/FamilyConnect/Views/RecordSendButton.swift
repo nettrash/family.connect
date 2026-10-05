@@ -52,6 +52,10 @@ struct RecordSendEvents {
     var activated: () -> Void = {}
     /// The secondary menu's Record Voice Message.
     var recordFromMenu: () -> Void = {}
+    /// The secondary menu's Record Video Message, and the accessibility
+    /// action "Record video message" (S1.6, S6) — offered only when round
+    /// video is available (`RecordSendSlot.offersVideo`).
+    var recordVideo: () -> Void = {}
     /// "Stop and listen first" (S6).
     var stopAndListen: () -> Void = {}
     /// "Delete recording" (S6).
@@ -73,6 +77,9 @@ struct RecordSendSlot: View {
     let side: CGFloat
     let glyph: CGFloat
     let events: RecordSendEvents
+    /// S1.2's **round available**: the menu's second item and the
+    /// accessibility action exist (S1.6).
+    var offersVideo = false
 
     @Environment(\.layoutDirection) private var layoutDirection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -100,6 +107,7 @@ struct RecordSendSlot: View {
             // to the visual, so it overhangs into the spacing around it.
             RecordSendControlView(
                 slot: slot,
+                offersVideo: offersVideo,
                 rtl: layoutDirection == .rightToLeft,
                 focusRequest: focusRequest,
                 events: events)
@@ -128,19 +136,20 @@ struct RecordSendSlot: View {
 /// The representable around the control.
 private struct RecordSendControlView: UIViewRepresentable {
     let slot: ComposerSlot
+    let offersVideo: Bool
     let rtl: Bool
     let focusRequest: Int
     let events: RecordSendEvents
 
     func makeUIView(context: Context) -> RecordSendControl {
         let control = RecordSendControl()
-        control.update(slot: slot, rtl: rtl, events: events)
+        control.update(slot: slot, offersVideo: offersVideo, rtl: rtl, events: events)
         context.coordinator.focusRequest = focusRequest
         return control
     }
 
     func updateUIView(_ control: RecordSendControl, context: Context) {
-        control.update(slot: slot, rtl: rtl, events: events)
+        control.update(slot: slot, offersVideo: offersVideo, rtl: rtl, events: events)
         if context.coordinator.focusRequest != focusRequest {
             context.coordinator.focusRequest = focusRequest
             // After this update lands, so the label VoiceOver reads is the
@@ -163,6 +172,9 @@ private struct RecordSendControlView: UIViewRepresentable {
 final class RecordSendControl: UIControl, UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate {
 
     private(set) var slot: ComposerSlot = .send
+    /// Round video is available: Record Video Message in the menu, and the
+    /// accessibility action (S1.6).
+    private(set) var offersVideo = false
     private var rtl = false
     private var events = RecordSendEvents()
 
@@ -217,11 +229,12 @@ final class RecordSendControl: UIControl, UIGestureRecognizerDelegate, UIEditMen
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    func update(slot: ComposerSlot, rtl: Bool, events: RecordSendEvents) {
+    func update(slot: ComposerSlot, offersVideo: Bool = false, rtl: Bool, events: RecordSendEvents) {
         self.rtl = rtl
         self.events = events
-        guard slot != self.slot || accessibilityLabel == nil else { return }
+        guard slot != self.slot || offersVideo != self.offersVideo || accessibilityLabel == nil else { return }
         self.slot = slot
+        self.offersVideo = offersVideo
         // The hold exists only on the microphone — and while a held one
         // records, so the finger's slide and lift keep reaching it.
         longPress.isEnabled = slot.isMicrophone || slot == .heldMicrophone || longPressIsActive
@@ -332,15 +345,23 @@ final class RecordSendControl: UIControl, UIGestureRecognizerDelegate, UIEditMen
         suggestedActions: [UIMenuElement]
     ) -> UIMenu? {
         guard slot.isMicrophone else { return nil }
-        // Record Video Message joins it with Phase 3, where round video is
-        // available (S1.6) — never before.
         let record = UIAction(
             title: String(localized: "Record Voice Message"),
             image: UIImage(systemName: "mic")
         ) { [weak self] _ in
             self?.events.recordFromMenu()
         }
-        return UIMenu(children: [record])
+        // Record Video Message, only where round video is available
+        // (S1.6). In rows 7–8 both items explain; in row 9 this one opens
+        // the recorder — the composer decides, as the video button does.
+        guard offersVideo else { return UIMenu(children: [record]) }
+        let video = UIAction(
+            title: String(localized: "Record Video Message"),
+            image: UIImage(systemName: "video.circle")
+        ) { [weak self] _ in
+            self?.events.recordVideo()
+        }
+        return UIMenu(children: [record, video])
     }
 
     // MARK: - Accessibility (S6)
@@ -356,11 +377,13 @@ final class RecordSendControl: UIControl, UIGestureRecognizerDelegate, UIEditMen
         case .microphone:
             accessibilityHint = String(localized: "Starts recording.")
             accessibilityUserInputLabels = microphoneInputLabels
+            accessibilityCustomActions = videoActions
         case .dimmed(let reason):
             // Dimmed, not disabled: still activatable, and the reason is its
             // value — the same sentence the notice line says.
             accessibilityValue = reason.notice
             accessibilityUserInputLabels = microphoneInputLabels
+            accessibilityCustomActions = videoActions
         case .sendVoice, .heldMicrophone:
             accessibilityCustomActions = [
                 UIAccessibilityCustomAction(name: String(localized: "Stop and listen first")) { [weak self] _ in
@@ -376,6 +399,18 @@ final class RecordSendControl: UIControl, UIGestureRecognizerDelegate, UIEditMen
         case .recorder, .save, .send:
             break
         }
+    }
+
+    /// "Record video message" on the microphone, when round video is
+    /// available (S1.6, S6).
+    private var videoActions: [UIAccessibilityCustomAction]? {
+        guard offersVideo else { return nil }
+        return [
+            UIAccessibilityCustomAction(name: String(localized: "Record video message")) { [weak self] _ in
+                self?.events.recordVideo()
+                return true
+            },
+        ]
     }
 
     private var deleteAction: UIAccessibilityCustomAction {

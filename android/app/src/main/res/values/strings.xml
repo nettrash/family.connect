@@ -747,4 +747,35 @@
     <string name="s_announce_voice_message_sent">Voice message sent</string>
     <string name="s_announce_ready_to_review">Ready to review, %1$s</string>
     <string name="e_wait_for_the_attachment">Wait until the current attachment is done.</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">Video message</string>
+    <string name="s_video_message_a11y">Video message, %1$s</string>
+    <string name="s_not_played">Not played</string>
+    <string name="s_open_full_screen">Open full screen</string>
+    <string name="s_couldnt_load_video_tap">Couldn\'t load the video. Tap to try again.</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">Record video message</string>
+    <string name="s_send_video_message">Send video message</string>
+    <string name="s_retake">Retake</string>
+    <string name="s_record">Record</string>
+    <string name="s_switch_camera">Switch camera</string>
+    <string name="s_video_message_with_length">Video message · %1$s</string>
+    <string name="s_not_recording">Not recording</string>
+    <string name="s_only_you_can_see_this">Only you can see this until you start recording.</string>
+    <string name="s_starting_camera">Starting camera…</string>
+    <string name="s_cant_see_anything">We can\'t see anything. Is the camera turned off or covered?</string>
+    <string name="s_ten_seconds_left">10 seconds left</string>
+    <string name="s_recording_stopped_at_one_minute">Recording stopped at one minute.</string>
+    <string name="s_video_too_short">That video was too short.</string>
+    <string name="s_delete_video_message">Delete video message?</string>
+    <string name="s_video_messages_need_camera_and_microphone">Video messages need the camera and the microphone.</string>
+    <string name="e_camera_permission_settings">Family needs permission to use your camera. Turn it on in Settings.</string>
+    <string name="s_camera_in_use_by_another_app">The camera is being used by another app.</string>
+    <string name="s_couldnt_make_it_round">Couldn\'t make it round. It will be sent as a regular video.</string>
+    <string name="s_too_big_for_video_message">Too big for a video message. It will be sent as a regular video.</string>
+    <string name="s_announce_camera_ready">Camera ready</string>
+    <string name="s_announce_recording_video">Recording video</string>
+    <string name="s_announce_video_message_sent">Video message sent</string>
+    <string name="s_announce_camera_turned_off">Camera turned off</string>
+    <string name="s_record_voice_message_instead">Record a voice message instead</string>
 </resources>

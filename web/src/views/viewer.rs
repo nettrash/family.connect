@@ -242,7 +242,8 @@ fn video_view(props: &ItemProps) -> Html {
     html! {
         <div class="viewer-video">
             if let Some(url) = full {
-                <video src={url} poster={poster.unwrap_or_default()} controls=true autoplay=true playsinline=true />
+                <video src={url} poster={poster.unwrap_or_default()} controls=true autoplay=true playsinline=true
+                       data-playback="true" />
             } else {
                 if let Some(poster) = poster {
                     <img src={poster} alt="" draggable="false" />

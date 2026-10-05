@@ -692,4 +692,35 @@
     <string name="s_announce_voice_message_sent">Sprachnachricht gesendet</string>
     <string name="s_announce_ready_to_review">Bereit zum Prüfen, %1$s</string>
     <string name="e_wait_for_the_attachment">Warte, bis der aktuelle Anhang fertig ist.</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">Videonachricht</string>
+    <string name="s_video_message_a11y">Videonachricht, %1$s</string>
+    <string name="s_not_played">Nicht abgespielt</string>
+    <string name="s_open_full_screen">Im Vollbild öffnen</string>
+    <string name="s_couldnt_load_video_tap">Das Video konnte nicht geladen werden. Zum Wiederholen tippen.</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">Videonachricht aufnehmen</string>
+    <string name="s_send_video_message">Videonachricht senden</string>
+    <string name="s_retake">Neu aufnehmen</string>
+    <string name="s_record">Aufnehmen</string>
+    <string name="s_switch_camera">Kamera wechseln</string>
+    <string name="s_video_message_with_length">Videonachricht · %1$s</string>
+    <string name="s_not_recording">Keine Aufnahme</string>
+    <string name="s_only_you_can_see_this">Nur du siehst das, bis du die Aufnahme startest.</string>
+    <string name="s_starting_camera">Kamera wird gestartet…</string>
+    <string name="s_cant_see_anything">Es ist nichts zu sehen. Ist die Kamera ausgeschaltet oder abgedeckt?</string>
+    <string name="s_ten_seconds_left">Noch 10 Sekunden</string>
+    <string name="s_recording_stopped_at_one_minute">Die Aufnahme wurde nach einer Minute beendet.</string>
+    <string name="s_video_too_short">Dieses Video war zu kurz.</string>
+    <string name="s_delete_video_message">Videonachricht löschen?</string>
+    <string name="s_video_messages_need_camera_and_microphone">Videonachrichten brauchen die Kamera und das Mikrofon.</string>
+    <string name="e_camera_permission_settings">Family braucht die Berechtigung für deine Kamera. Schalte sie in den Einstellungen ein.</string>
+    <string name="s_camera_in_use_by_another_app">Die Kamera wird gerade von einer anderen App verwendet.</string>
+    <string name="s_couldnt_make_it_round">Das Video konnte nicht rund gemacht werden. Es wird als normales Video gesendet.</string>
+    <string name="s_too_big_for_video_message">Zu groß für eine Videonachricht. Es wird als normales Video gesendet.</string>
+    <string name="s_announce_camera_ready">Kamera bereit</string>
+    <string name="s_announce_recording_video">Videoaufnahme läuft</string>
+    <string name="s_announce_video_message_sent">Videonachricht gesendet</string>
+    <string name="s_announce_camera_turned_off">Kamera ausgeschaltet</string>
+    <string name="s_record_voice_message_instead">Stattdessen eine Sprachnachricht aufnehmen</string>
 </resources>

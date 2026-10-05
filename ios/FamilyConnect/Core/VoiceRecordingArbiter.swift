@@ -92,6 +92,11 @@ final class VoiceRecordingArbiter {
     /// voice note waiting in review — and how each keeps it.
     @ObservationIgnored private var quitKeepers: [UUID: () -> Void] = [:]
     @ObservationIgnored private var observers: [(center: NotificationCenter, token: any NSObjectProtocol)] = []
+    /// Whoever must also hear that the app or a window went away without
+    /// holding the microphone — the video recorder, whose PREVIEW closes on
+    /// the same events that stop a recording (#79, S4) — and the window it
+    /// is drawn in.
+    @ObservationIgnored private var awayWatchers: [UUID: (window: () -> AnyObject?, action: () -> Void)] = [:]
 
     init(watchesTheSystem: Bool = false) {
         if watchesTheSystem { watchTheSystem() }
@@ -137,6 +142,20 @@ final class VoiceRecordingArbiter {
         release(holder)
     }
 
+    // MARK: - Watching without holding
+
+    /// `action` runs whenever the app goes away (the background, a lock,
+    /// sleep, the screen saver, ⌘H) or `window` is minimised or closed —
+    /// the events that stop a recording, heard by somebody that may not be
+    /// recording at all (S4: the video recorder's PREVIEW closes on them).
+    func watchAway(_ id: UUID, window: @escaping () -> AnyObject? = { nil }, _ action: @escaping () -> Void) {
+        awayWatchers[id] = (window, action)
+    }
+
+    func unwatchAway(_ id: UUID) {
+        awayWatchers[id] = nil
+    }
+
     // MARK: - Quitting (the Mac)
 
     /// `keep` runs when the app quits: ⌘Q gives no `onDisappear`, so a
@@ -155,11 +174,15 @@ final class VoiceRecordingArbiter {
     /// sleep, the screen saver, another user's session, ⌘H. Stop and keep.
     func appWentAway() {
         stopHolder(.park)
+        for watcher in awayWatchers.values { watcher.action() }
     }
 
     /// A window was minimised or closed. Only the holder's own window
     /// matters: a desktop window that merely loses focus keeps recording.
     func windowWentAway(_ window: AnyObject) {
+        for watcher in awayWatchers.values where watcher.window() === window {
+            watcher.action()
+        }
         guard let holderWindow, holderWindow === window else { return }
         stopHolder(.park)
     }

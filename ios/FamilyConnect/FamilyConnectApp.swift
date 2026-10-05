@@ -333,6 +333,9 @@ struct FamilyConnectApp: App {
             VoiceRecordingArbiter.shared.callIsActive = { [weak calls] in
                 calls.map { !$0.isIdle } ?? false
             }
+            // The app's one player owner starts watching the system now —
+            // the background, interruptions, headphones going (#79, S4).
+            _ = NowPlaying.shared
             #if os(iOS)
             let callKit = CallKitController()
             callKit.manager = calls
@@ -419,6 +422,13 @@ struct FamilyConnectApp: App {
             session.clearParkedRecordings = {
                 VoiceRecordingArbiter.shared.stopHolder(.discard)
                 ParkedRecordings.shared.removeAll()
+            }
+            // Which video messages this device has played is the
+            // account's own knowledge, and goes with it; whatever plays,
+            // stops (#79, S5.2, S4 "Sign-out").
+            session.clearRoundVideoPlays = {
+                NowPlaying.shared.pauseAll()
+                RoundVideoPlays.shared.removeAll()
             }
             coordinator.bind(attachmentStore: attachments)
             // Logout wipes the store; faces must go with it, or the next
@@ -513,12 +523,9 @@ struct FamilyConnectApp: App {
             // The menu bar is not decoration on a Mac: it is where the
             // keyboard shortcuts live and where people look for what an
             // app can do.
-            CommandGroup(after: .toolbar) {
-                Button("Refresh") {
-                    NotificationCenter.default.post(name: .macRequestResync, object: nil)
-                }
-                .keyboardShortcut("r", modifiers: .command)
-            }
+            // View ▸ Refresh ⌘R — disabled while the key window's video
+            // recorder is open (#79, S8.3).
+            MacRefreshCommands()
             // File ▸ Record Voice Message ⌥⌘R, for the key window's
             // conversation (#79, S8.3) — every window's, though the menu
             // bar is declared on this one scene.
@@ -540,6 +547,9 @@ struct FamilyConnectApp: App {
                 if let chatID {
                     MacConversationView(chatID: chatID)
                         .id(chatID)
+                        // Its own window, so its own recorder over it (#79,
+                        // S8.3).
+                        .videoMessageRecorderHost()
                 } else {
                     // A restored window whose chat has since gone (left the
                     // family, or a fresh install) — say so rather than

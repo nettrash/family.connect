@@ -130,6 +130,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.automirrored.filled.CallMade
 import androidx.compose.material.icons.automirrored.filled.CallMissed
@@ -148,6 +149,7 @@ import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Poll
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.HowToVote
+import androidx.compose.material.icons.outlined.VideoCameraFront
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.automirrored.outlined.Reply
@@ -225,6 +227,7 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -734,6 +737,65 @@ fun ChatScreen(
         }
     }
 
+    // Recording a video message (#79, Phase 3). The recorder is the app's
+    // (MainActivity provides it), a layer over everything; this chat only
+    // opens it — from the video button, the paperclip, the microphone's menu
+    // and its TalkBack action (S3.1) — and does what only it can for it.
+    val videoRecorder = LocalVideoMessageRecorder.current
+    val roundVideoOffered by viewModel.roundVideoOffered.collectAsStateWithLifecycle()
+    // Hidden on a device without a camera (S1.2, S1.4).
+    val hasCamera = remember(context) {
+        context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
+    }
+    val replyingToRound = stringResource(R.string.s_video_message)
+    val openVideoRecorder: () -> Unit = open@{
+        val recorder = videoRecorder ?: return@open
+        if (!viewModel.mayOpenVideoRecorder()) return@open
+        val reply = viewModel.replyDraft.value
+        val appContext = context.applicationContext
+        fun granted(permission: String) =
+            ContextCompat.checkSelfPermission(appContext, permission) == PackageManager.PERMISSION_GRANTED
+        recorder.open(
+            session = VideoMessageRecorder.Session(
+                chatId = viewModel.chatId,
+                reply = reply,
+                replyAuthor = reply?.senderId?.let { sender ->
+                    if (sender == myUserId) memberYou else memberNames[sender] ?: memberFallbackName
+                }.orEmpty(),
+                replyExcerpt = reply?.let { draft ->
+                    if (draft.excerpt.isEmpty() && quotesRound(items, draft.messageId)) replyingToRound else draft.excerpt
+                }.orEmpty(),
+                voiceBlocked = viewModel.notSent.value.isNotEmpty(),
+            ),
+            host = object : RecorderHost {
+                override fun recordVoiceInstead() {
+                    viewModel.recordVoiceMessage(
+                        ChatViewModel.VoiceEnvironment(
+                            permission = if (granted(Manifest.permission.RECORD_AUDIO)) {
+                                RecordGesture.Permission.GRANTED
+                            } else {
+                                RecordGesture.Permission.NOT_ASKED
+                            },
+                            assistive = appContext.getSystemService(AccessibilityManager::class.java)
+                                ?.isTouchExplorationEnabled == true,
+                            systemLongPressMs = android.view.ViewConfiguration.getLongPressTimeout().toLong(),
+                        ),
+                    )
+                }
+
+                override fun sent(replyId: Long?) = viewModel.videoMessageSent(replyId)
+                override fun replyDropped() = viewModel.cancelReply()
+                override fun announce(text: Int) = viewModel.announceFromRecorder(text)
+            },
+            permissions = VideoMessageRecorder.Permissions(
+                camera = granted(Manifest.permission.CAMERA),
+                microphone = granted(Manifest.permission.RECORD_AUDIO),
+                cameraRefusedForGood = recorder.cameraRefusedForGood,
+                microphoneRefusedForGood = recorder.microphoneRefusedForGood || micRefusedForGood,
+            ),
+        )
+    }
+
     // Placing a call: the microphone permission, asked the same way, and
     // the grant places the call. A refused start means this device is on
     // a call already (docs/protocol.md: one call per person). A VIDEO
@@ -912,6 +974,7 @@ fun ChatScreen(
     // first.
     val lifecycleOwner = LocalLifecycleOwner.current
     val hostActivity = remember(context) { context.findActivity() }
+    val playbackOwner = LocalPlaybackCoordinator.current
     DisposableEffect(lifecycleOwner, viewModel) {
         viewModel.screenAttached()
         val observer = LifecycleEventObserver { _, event ->
@@ -923,6 +986,10 @@ fun ChatScreen(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             viewModel.screenDetached(hostActivity?.isChangingConfigurations == true)
+            // Leaving the chat STOPS whatever plays (S4) — a voice note and a
+            // circle alike. A rebuilt activity is not leaving: the
+            // now-playing owner keeps a circle going through it.
+            if (hostActivity?.isChangingConfigurations != true) playbackOwner?.stopAll()
         }
     }
     // The chat's OWN thread and polls come over it, which is not leaving it
@@ -977,7 +1044,9 @@ fun ChatScreen(
     // One thing of the chat's plays at a time, and nothing over a recording
     // (S1.7): starting one pauses what plays, and every play control says why
     // it waits.
-    val playback = remember { PlaybackCoordinator() }
+    // The app's now-playing owner (#79, Phase 2), provided by MainActivity;
+    // a chat composed without one (a test) keeps its own.
+    val playback = playbackOwner ?: remember { PlaybackCoordinator() }
     LaunchedEffect(isRecording) { if (isRecording) playback.pauseAll() }
     val recordingGate = remember(isRecording) {
         RecordingGate(recording = isRecording, explain = viewModel::explainPlaybackWhileRecording)
@@ -1211,13 +1280,17 @@ fun ChatScreen(
     Scaffold(
         // The coach mark goes with any tap anywhere (S7.2). Watched in the
         // Initial pass and never consumed, so the tap still does what it does.
-        modifier = Modifier.pointerInput(coachMark) {
-            if (!coachMark) return@pointerInput
-            awaitEachGesture {
-                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                viewModel.dismissCoachMark()
+        modifier = Modifier
+            .pointerInput(coachMark) {
+                if (!coachMark) return@pointerInput
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    viewModel.dismissCoachMark()
+                }
             }
-        },
+            // The conversation pane, for the video recorder: its circle and
+            // controls stand over it, and its scrim is lighter here (#79, S3.3).
+            .onGloballyPositioned { coordinates -> videoRecorder?.paneBounds = coordinates.boundsInRoot() },
         topBar = {
             TopAppBar(
                 title = {
@@ -1604,7 +1677,16 @@ fun ChatScreen(
             InputBar(
                 state = viewModel.inputState,
                 onSend = viewModel::send,
-                replyDraft = replyDraft,
+                // Shown, not sent: answering a video message, the banner
+                // names it — its excerpt is its empty body (#79, S5.7). The
+                // draft the send carries stays the server's cut.
+                replyDraft = replyDraft?.let { draft ->
+                    if (draft.excerpt.isEmpty() && quotesRound(items, draft.messageId)) {
+                        draft.copy(excerpt = stringResource(R.string.s_video_message))
+                    } else {
+                        draft
+                    }
+                },
                 replyAuthorName = replyDraft?.senderId?.let { sender ->
                     if (sender == myUserId) {
                         stringResource(R.string.s_you)
@@ -1636,6 +1718,31 @@ fun ChatScreen(
                 onTakePhoto = { startCapture(false) },
                 onTakeVideo = { startCapture(true) },
                 onRecordAudio = startRecording,
+                // The video entries (#79, S1.4–S1.6): S1.2's **round
+                // available** — this server has video messages, this device
+                // a camera, and this build records them — in a family or a
+                // direct chat. The button itself is decided per keystroke.
+                videoEntries = ComposerSlot.DoorInputs(
+                    slot = ComposerSlot.SlotInputs(
+                        recorderOpen = false,
+                        recording = hold.recording,
+                        editing = editTarget != null,
+                        draftBlank = true,
+                        staged = staged.isNotEmpty(),
+                        assistantChat = chat?.kind == "ai",
+                        canRecord = canRecordSound,
+                        call = callLive,
+                        busy = mediaState.isBusy,
+                        notSent = notSent.isNotEmpty(),
+                    ),
+                    familyOrDirectChat = chat?.kind == "family" || chat?.kind == "direct",
+                    undoWindow = hold.undo != null,
+                    serverOffersRound = roundVideoOffered,
+                    hasCamera = hasCamera,
+                    encoderProbePasses = true,
+                    recordsRoundVideo = ComposerSlot.RECORDS_ROUND_VIDEO,
+                ),
+                onRecordVideo = openVideoRecorder,
                 // Not during a call, and not while a recording nobody has
                 // finished deciding about waits (#79, S1.5).
                 recordAudioEnabled = !callLive && notSent.isEmpty(),
@@ -1834,6 +1941,14 @@ fun ChatScreen(
             },
             canViewThread = target.item.entity.serverId != null &&
                 (target.item.entity.threadRootId != null || target.item.entity.replyCount > 0),
+            // A video message opens in the existing viewer, with scrubbing
+            // (#79, S5.4) — the same place a tap on a video tile goes.
+            onOpenFullScreen = roundOf(target.item.entity)?.let { round ->
+                {
+                    pickerTarget = null
+                    viewingAlbum = AttachmentAlbum.opening(target.item.entity.attachmentList, round)
+                }
+            },
             onClosePoll = {
                 val entity = target.item.entity
                 pickerTarget = null
@@ -2049,6 +2164,8 @@ private fun ReactionPickerPopup(
     /** Open the chain this message belongs to (docs/protocol.md, "Threads"). */
     onViewThread: () -> Unit = {},
     canViewThread: Boolean = false,
+    /** A video message's "Open full screen" (#79, S5.4); null on everything else. */
+    onOpenFullScreen: (() -> Unit)? = null,
     onEdit: () -> Unit,
     onClosePoll: () -> Unit,
     onCopy: () -> Unit,
@@ -2208,6 +2325,7 @@ private fun ReactionPickerPopup(
                 MessageContextMenu(
                     onReply = { exitThen(onReply) },
                     onViewThread = { exitThen(onViewThread) },
+                    onOpenFullScreen = onOpenFullScreen?.let { open -> { exitThen(open) } },
                     onEdit = { exitThen(onEdit) },
                     onClosePoll = { exitThen(onClosePoll) },
                     onCopy = { exitThen(onCopy) },
@@ -2358,10 +2476,12 @@ private fun EditBanner(onCancel: () -> Unit) {
 }
 
 @Composable
-private fun MessageContextMenu(
+internal fun MessageContextMenu(
     onReply: () -> Unit,
     onEdit: () -> Unit,
     onViewThread: () -> Unit = {},
+    /** A video message's "Open full screen" (#79, S5.4); null — no row — on anything else. */
+    onOpenFullScreen: (() -> Unit)? = null,
     onClosePoll: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
@@ -2411,6 +2531,13 @@ private fun MessageContextMenu(
                     label = stringResource(R.string.s_view_thread),
                     icon = Icons.Outlined.Forum,
                     onClick = onViewThread,
+                )
+            }
+            if (onOpenFullScreen != null) {
+                MessageContextMenuItem(
+                    label = stringResource(R.string.s_open_full_screen),
+                    icon = Icons.Filled.OpenInFull,
+                    onClick = onOpenFullScreen,
                 )
             }
             if (canEdit) {
@@ -2866,7 +2993,10 @@ internal fun MessageBubble(
     // when it is a REPLY — replying with a sticker is how one answers
     // something, and the quote then sits above it on the chat background.
     val sticker = remember(entity) { stickerOf(entity) }
-    val bareMedia = mediaOnly || sticker != null
+    // A VIDEO MESSAGE is bare the same way (#79, S5.2): the circle alone on
+    // the chat background, its quote above it when it is a reply.
+    val round = remember(entity) { roundOf(entity) }
+    val bareMedia = mediaOnly || sticker != null || round != null
     // A reveal is a PEEK, not a setting: per row and per device, never on
     // the wire, never stored, and gone on the next launch. Keyed on the
     // message so a recycled row cannot inherit somebody else's reveal, and
@@ -3073,6 +3203,7 @@ internal fun MessageBubble(
                     answerFailure = answerFailure,
                     mediaOnly = bareMedia,
                     sticker = sticker,
+                    round = round,
                     emojiFontSize = emojiFontSize,
                     blocks = bodyBlocks,
                     memberNames = memberNames,
@@ -4009,6 +4140,11 @@ private fun BubbleContent(
      * tile (docs/protocol.md, "Sticker pack"). Resolved by the caller.
      */
     sticker: AttachmentDto? = null,
+    /**
+     * The message's video when it was sent as a VIDEO MESSAGE, else null:
+     * drawn as a circle that plays in place (#79, S5). Resolved by the caller.
+     */
+    round: AttachmentDto? = null,
     /** Emoji-ladder size for an emoji-only body, else null. Resolved by the caller. */
     emojiFontSize: Float?,
     /**
@@ -4166,7 +4302,14 @@ private fun BubbleContent(
                         else -> memberNames[quotedSender] ?: stringResource(R.string.s_someone)
                     }
                 },
-                excerpt = if (replyHidden) "" else quotedExcerpt,
+                excerpt = when {
+                    replyHidden -> ""
+                    // The quoted message is a circle this list holds: its
+                    // excerpt is its (empty) body, so the quote names it
+                    // (#79, S5.7).
+                    item.quotesRound && quotedExcerpt.isEmpty() -> stringResource(R.string.s_video_message)
+                    else -> quotedExcerpt
+                },
                 isMine = isMine,
                 parentLine = parentLine,
                 replyHidden = replyHidden,
@@ -4220,7 +4363,33 @@ private fun BubbleContent(
         // exactly as before, an album as a stack of cards, files and audio
         // as rows (see AttachmentGroup).
         val bubbleAttachments = entity.attachmentList
-        if (sticker != null) {
+        if (round != null) {
+            // Before the sticker's branch, and not an AttachmentGroup: a
+            // video tile opens the viewer, and a circle plays where it is.
+            RoundVideoBubble(
+                attachment = round,
+                isMine = isMine,
+                acked = acked,
+                sending = !acked && entity.status == MessageStatus.SENDING,
+                streamUrl = streamUrl,
+                onOpenFullScreen = { onOpenAttachment(round) },
+                onLongPress = onTextLongPress,
+                onDoubleTap = onDoubleTap,
+                modifier = measureBlock,
+            )
+            // "Show text" under it, outside its gestures, under the same
+            // rules as under a video tile (S5.5) — the sticker's branch has
+            // no footer, so this one draws its own. The bubble is bare, so
+            // the line already takes the chat background's ink.
+            TranscriptLine(
+                attachment = round,
+                chatKind = chat?.kind,
+                chatId = entity.chatId,
+                messageServerId = entity.serverId,
+                senderId = entity.senderId,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        } else if (sticker != null) {
             // Not an AttachmentGroup: that draws a photograph — cropped to
             // its tile, from its preview when it has one. A sticker is
             // fitted whole and drawn from its ORIGINAL bytes, which is the
@@ -5659,6 +5828,18 @@ internal fun InputBar(
     /** "Record voice message" is offered at all — never in the assistant's chat (S1.5). */
     showsRecordVoice: Boolean = true,
     /**
+     * Everything the video entries are decided from (#79, S1.2, S1.4) but the
+     * draft, which is read here per keystroke; null offers none — a thread,
+     * a test, a build that does not record video.
+     */
+    videoEntries: ComposerSlot.DoorInputs? = null,
+    /**
+     * Open the video recorder (S3.1) — the video button, the paperclip's
+     * "Record video message", the microphone's menu and its TalkBack action.
+     * Dimmed ways in come here too, and are told why (S1.3).
+     */
+    onRecordVideo: () -> Unit = {},
+    /**
      * What the trailing slot is (S1.3) — all but the draft, which is read
      * here, where the field is: the slot is decided per keystroke.
      */
@@ -5797,6 +5978,12 @@ internal fun InputBar(
     /** Opens the consent screen, which is what Send does here too. */
     onReviewAssistantConsent: () -> Unit,
 ) {
+    // S1.2's **round available** in a family or a direct chat: the paperclip's
+    // and the microphone menu's "Record video message", and TalkBack's action
+    // on the microphone (S1.5, S1.6). The paperclip's is disabled while busy,
+    // mid-edit and during a call; the others say why.
+    val videoRoundAvailable = videoEntries?.let { it.roundAvailable && it.familyOrDirectChat } == true
+    val recordVideoEnabled = videoEntries?.slot?.let { !it.busy && !it.editing && !it.call } == true
     Surface(tonalElevation = 3.dp) {
         Column(modifier = Modifier.fillMaxWidth()) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -6022,6 +6209,24 @@ internal fun InputBar(
                                     },
                                 )
                             }
+                            if (videoRoundAvailable) {
+                                // "Record video message", right below (S1.5): it
+                                // works with words typed or items staged — a
+                                // video message always travels alone, and they
+                                // stay in the composer. Disabled while busy,
+                                // mid-edit and during a call.
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.s_record_video_message)) },
+                                    leadingIcon = {
+                                        Icon(Icons.Outlined.VideoCameraFront, contentDescription = null)
+                                    },
+                                    enabled = recordVideoEnabled,
+                                    onClick = {
+                                        attachMenuOpen = false
+                                        onRecordVideo()
+                                    },
+                                )
+                            }
                             if (showsPoll) {
                                 // Inside the attach menu rather than beside
                                 // the field: a poll is one more thing a
@@ -6178,6 +6383,12 @@ internal fun InputBar(
                 // the hold row and the Undo row, typing simply carries on, and
                 // words typed before a recording beside them are kept.
                 val covered = recordingRow || undoNote != null
+                // The video button inside the empty field (#79, S1.4): decided
+                // per keystroke by the shared rule — gone the moment a
+                // character is typed, dimmed in rows 7 and 8.
+                val videoDoor = videoEntries
+                    ?.let { ComposerSlot.videoDoor(it.copy(slot = it.slot.copy(draftBlank = state.text.isBlank()))) }
+                    ?: ComposerSlot.Door.Hidden
                 Box(modifier = Modifier.weight(1f)) {
                     TextField(
                         state = state,
@@ -6214,7 +6425,15 @@ internal fun InputBar(
                         // the last line of text. 10.dp puts the text's optical
                         // centre level with them at one line and at five alike.
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-                        placeholder = { Text(stringResource(R.string.s_message)) },
+                        placeholder = {
+                            // Truncated, never overlapped, by the video button (S1.4).
+                            Text(stringResource(R.string.s_message), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        },
+                        trailingIcon = if (videoDoor != ComposerSlot.Door.Hidden && !covered) {
+                            { VideoDoorButton(door = videoDoor, onOpen = onRecordVideo) }
+                        } else {
+                            null
+                        },
                         lineLimits = TextFieldLineLimits.MultiLine(
                             minHeightInLines = 1,
                             maxHeightInLines = 5,
@@ -6281,6 +6500,7 @@ internal fun InputBar(
                     onStopAndListen = onStopRecording,
                     onDeleteRecording = onDeleteRecording,
                     onRecordFromMenu = onRecordAudio,
+                    onRecordVideo = if (videoRoundAvailable) onRecordVideo else null,
                     focusRequester = slotFocus,
                     pressIgnored = onSlotPressIgnored,
                     coachMark = coachMark,

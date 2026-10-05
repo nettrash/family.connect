@@ -328,6 +328,14 @@ pub struct Roster {
     pub max_pack_items: Option<i64>,
     #[serde(default)]
     pub max_pack_item_bytes: Option<i64>,
+    /// How long and how big a video message may be. ALWAYS present on a
+    /// server that has video messages — so their absence is how this client
+    /// knows the server predates them, and offers no video entry at all and
+    /// never sends `round` there (docs/protocol.md, "Video messages").
+    #[serde(default)]
+    pub max_round_video_ms: Option<i64>,
+    #[serde(default)]
+    pub max_round_video_bytes: Option<i64>,
     /// The family itself — the owner's invite code and switches with it.
     #[serde(default)]
     pub family: Option<Family>,
@@ -768,6 +776,13 @@ pub struct Attachment {
     /// which is what the attachment otherwise is.
     #[serde(default, skip_serializing_if = "is_false")]
     pub sticker: bool,
+    /// This video was SENT as a video message, drawn as a circle
+    /// (docs/protocol.md, "Video messages"). Present only when true, set by
+    /// the send and never changed, never beside `sticker` and never on
+    /// anything but a video. A client that has not heard of it draws a
+    /// square video tile, which is what the attachment otherwise is.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub round: bool,
 }
 
 fn is_false(flag: &bool) -> bool {
@@ -906,6 +921,28 @@ impl Message {
         match self.attachments() {
             [only] if only.sticker && only.kind == "photo" => Some(only),
             _ => None,
+        }
+    }
+
+    /// The video message this message IS, if it is one — drawn as a circle
+    /// (docs/protocol.md, "Video messages"; the plan for #79, S5.1). The one
+    /// test every client shares, `fc_text::record::is_round`: exactly one
+    /// attachment, a video, carrying `round: true`, and no body. Anything
+    /// else — two attachments, the flag on a photo, words beside it — is
+    /// drawn as the ordinary message it otherwise is.
+    pub fn round_video(&self) -> Option<&Attachment> {
+        let flags: Vec<fc_text::record::AttachmentFlags> = self
+            .attachments()
+            .iter()
+            .map(|attachment| fc_text::record::AttachmentFlags {
+                kind: &attachment.kind,
+                round: attachment.round,
+            })
+            .collect();
+        if fc_text::record::is_round(&self.body, &flags) {
+            self.attachments().first()
+        } else {
+            None
         }
     }
 }
@@ -1240,6 +1277,71 @@ mod tests {
         assert!(kept.get("sticker").is_none());
         let kept = serde_json::to_value(&sent.attachments()[0]).expect("encodes");
         assert_eq!(kept["sticker"], true);
+    }
+
+    /// A VIDEO MESSAGE is a video with one more field (docs/protocol.md,
+    /// "Video messages"): read from every shape the server sends it in,
+    /// drawn round only by the one test every client shares — exactly one
+    /// attachment, a video, `round: true`, no body — and written back only
+    /// when true, so the outbox's JSON of an ordinary video never grows it.
+    #[wasm_bindgen_test]
+    fn a_video_message_is_a_video_with_one_more_field() {
+        let sent: Message = serde_json::from_str(
+            r#"{"id": 1500, "chat_id": 42, "sender_id": 9, "body": "",
+                "created_at": "2026-10-05T10:00:00Z",
+                "attachments": [{"id": 91, "kind": "video", "mime": "video/mp4",
+                                 "size": 1649700, "width": 480, "height": 480,
+                                 "duration_ms": 23400, "has_preview": true, "round": true}],
+                "attachment": {"id": 91, "kind": "video", "round": true}}"#,
+        )
+        .expect("reads");
+        let round = sent.round_video().expect("a circle");
+        assert_eq!((round.id, round.duration_ms), (91, Some(23400)));
+        assert!(sent.sticker().is_none(), "never a sticker as well");
+
+        let plain: Message = serde_json::from_str(
+            r#"{"id": 1501, "chat_id": 42, "sender_id": 9, "body": "",
+                "created_at": "2026-10-05T10:00:00Z",
+                "attachments": [{"id": 92, "kind": "video", "mime": "video/mp4",
+                                 "width": 480, "height": 480}]}"#,
+        )
+        .expect("reads");
+        assert!(plain.round_video().is_none(), "absent is an ordinary video");
+        assert!(!plain.attachments()[0].round);
+
+        // Never two: a video message travels alone.
+        let mut pair = sent.clone();
+        let again = pair.attachments()[0].clone();
+        pair.attachments.as_mut().expect("has some").push(again);
+        assert!(pair.round_video().is_none());
+        // The flag on anything that is not a video is not a circle.
+        for kind in ["photo", "file", "audio", "location"] {
+            let mut other = sent.clone();
+            other.attachments.as_mut().expect("has some")[0].kind = kind.into();
+            assert!(other.round_video().is_none(), "a flagged {kind}");
+        }
+        let mut bare = sent.clone();
+        bare.attachments = None;
+        assert!(bare.round_video().is_none());
+        // Words beside it — which the server refuses anyway — draw it as
+        // the ordinary message it would then be (`is_round` compares the
+        // body exactly: the server stores a trimmed-empty body as "").
+        for body in ["words", " "] {
+            let mut worded = sent.clone();
+            worded.body = body.into();
+            assert!(worded.round_video().is_none(), "{body:?}");
+        }
+        // The edits feed, a history page and `last_message` all carry it
+        // the same way; a newer field beside it changes nothing.
+        let newer: Attachment =
+            serde_json::from_str(r#"{"id": 93, "kind": "video", "round": true, "invented": 1}"#)
+                .expect("reads");
+        assert!(newer.round);
+        // Written only when true — the outbox keeps its rows as JSON.
+        let kept = serde_json::to_value(&plain.attachments()[0]).expect("encodes");
+        assert!(kept.get("round").is_none());
+        let kept = serde_json::to_value(&sent.attachments()[0]).expect("encodes");
+        assert_eq!(kept["round"], true);
     }
 
     /// A pack item live, labelled, and as a tombstone — which carries

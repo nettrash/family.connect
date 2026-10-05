@@ -703,4 +703,35 @@
     <string name="s_announce_voice_message_sent">Гласовна порука послата</string>
     <string name="s_announce_ready_to_review">Спремно за проверу, %1$s</string>
     <string name="e_wait_for_the_attachment">Сачекај да се тренутни прилог заврши.</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">Видео-порука</string>
+    <string name="s_video_message_a11y">Видео-порука, %1$s</string>
+    <string name="s_not_played">Није пуштено</string>
+    <string name="s_open_full_screen">Отвори преко целог екрана</string>
+    <string name="s_couldnt_load_video_tap">Видео није учитан. Додирни да покушаш поново.</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">Сними видео-поруку</string>
+    <string name="s_send_video_message">Пошаљи видео-поруку</string>
+    <string name="s_retake">Сними поново</string>
+    <string name="s_record">Сними</string>
+    <string name="s_switch_camera">Промени камеру</string>
+    <string name="s_video_message_with_length">Видео-порука · %1$s</string>
+    <string name="s_not_recording">Снимање није у току</string>
+    <string name="s_only_you_can_see_this">Док не почнеш снимање, ово видиш само ти.</string>
+    <string name="s_starting_camera">Камера се покреће…</string>
+    <string name="s_cant_see_anything">Ништа се не види. Да ли је камера искључена или прекривена?</string>
+    <string name="s_ten_seconds_left">Још 10 секунди</string>
+    <string name="s_recording_stopped_at_one_minute">Снимање је заустављено после једног минута.</string>
+    <string name="s_video_too_short">Видео је прекратак.</string>
+    <string name="s_delete_video_message">Обрисати видео-поруку?</string>
+    <string name="s_video_messages_need_camera_and_microphone">За видео-поруке су потребни камера и микрофон.</string>
+    <string name="e_camera_permission_settings">Family треба дозволу за приступ твојој камери. Укључи је у Подешавањима.</string>
+    <string name="s_camera_in_use_by_another_app">Камеру користи друга апликација.</string>
+    <string name="s_couldnt_make_it_round">Видео није могао да постане округао. Биће послат као обичан видео.</string>
+    <string name="s_too_big_for_video_message">Превелик за видео-поруку. Биће послат као обичан видео.</string>
+    <string name="s_announce_camera_ready">Камера је спремна</string>
+    <string name="s_announce_recording_video">Снимање видеа у току</string>
+    <string name="s_announce_video_message_sent">Видео-порука послата</string>
+    <string name="s_announce_camera_turned_off">Камера искључена</string>
+    <string name="s_record_voice_message_instead">Сними гласовну поруку уместо тога</string>
 </resources>

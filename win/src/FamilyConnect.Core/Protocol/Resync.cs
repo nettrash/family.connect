@@ -108,7 +108,15 @@ public sealed class Resync(
         /// here rather than being applied.
         /// </summary>
         AssistantDto? Assistant = null,
-        ApiError? Stopped = null)
+        ApiError? Stopped = null,
+        /// <summary>Whether this pass read the family's own document — the only read that carries what follows.</summary>
+        bool FamilyRead = false,
+        /// <summary>
+        /// The video message's two limits, or null on a server that predates them (docs/protocol.md, "Video messages").
+        /// Carried out of the pass as the assistant is, and applied only when <see cref="FamilyRead"/>: a pass that
+        /// stopped before that read knows nothing about them, which is not the same as a server without them.
+        /// </summary>
+        RoundVideoLimits? RoundVideo = null)
     {
         /// <summary>Whether every read finished. A flush that ran anyway is not a failure.</summary>
         public bool Complete => Stopped is null;
@@ -210,7 +218,12 @@ public sealed class Resync(
             pack?.SetLimits(family.Value is { MaxPackItems: { } items, MaxPackItemBytes: { } bytes }
                 ? new PackLimits(items, bytes)
                 : null);
-            report = report with { Assistant = family.Value.Assistant };
+            report = report with
+            {
+                Assistant = family.Value.Assistant,
+                FamilyRead = true,
+                RoundVideo = RoundVideoLimits.Of(family.Value),
+            };
         }
 
         // 2. The list: previews, the authoritative unread counts, and the caller's own marker.

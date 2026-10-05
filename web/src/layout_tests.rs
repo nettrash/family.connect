@@ -31,7 +31,7 @@ fn document() -> Document {
 }
 
 /// The shipped stylesheet, once per page.
-fn install_stylesheet() {
+pub(crate) fn install_stylesheet() {
     let document = document();
     if document.get_element_by_id("fc-test-styles").is_some() {
         return;
@@ -48,7 +48,7 @@ fn install_stylesheet() {
 
 /// A root pinned over the whole viewport, so whatever the test runner has
 /// on its own page cannot offset or shrink what is measured.
-fn fixed_root(style: &str) -> HtmlElement {
+pub(crate) fn fixed_root(style: &str) -> HtmlElement {
     let document = document();
     let root: HtmlElement = document
         .create_element("div")
@@ -340,6 +340,7 @@ pub(crate) fn props_with(
         transcripts: Default::default(),
         on_action,
         now_ms: 0.0,
+        round: None,
     }
 }
 

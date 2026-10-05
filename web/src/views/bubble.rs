@@ -17,6 +17,7 @@ use crate::views::body::Body;
 use crate::views::poll::PollView;
 use crate::views::quiet::LiveRegion;
 use crate::views::reactions::{chips, details, EmojiPicker, QUICK_REACTIONS};
+use crate::views::round_tile::RoundVideoTile;
 use crate::views::stickers::StickerTile;
 
 /// The page's body text size, in CSS pixels (styles.css `body`).
@@ -126,6 +127,11 @@ pub struct BubbleProps {
     pub quote_revealed: bool,
     #[prop_or_default]
     pub parent_revealed: bool,
+    /// The quoted message is a video message this client holds — its quote
+    /// has no words to show, and says "Video message" instead (the plan for
+    /// #79, S5.7). The quote itself carries only the server's excerpt.
+    #[prop_or_default]
+    pub quote_round: bool,
     pub shows_sender: bool,
     /// The sender's `avatar_version`, for the picture beside their name at
     /// the head of a run — 0, and initials, for anybody the roster does not
@@ -353,7 +359,13 @@ pub fn bubble(props: &BubbleProps) -> Html {
                     <button class="link" onclick={reveal(0)}>{ t("Replying to a hidden message") }</button>
                 } else {
                     <span class="quote-name">{ name_of(&props.names, quote.sender_id) }</span>
-                    <span class="quote-text">{ &quote.excerpt }</span>
+                    <span class="quote-text">
+                        if quote.excerpt.is_empty() && props.quote_round {
+                            { t("Video message") }
+                        } else {
+                            { &quote.excerpt }
+                        }
+                    </span>
                 }
             </div>
         }
@@ -438,6 +450,10 @@ pub fn bubble(props: &BubbleProps) -> Html {
         && !message.body.is_empty()
         && message.call.is_none()
         && message.sticker().is_none();
+    // Nor on a video message (docs/protocol.md, "Video messages"; Decision
+    // 20) — by the drawing test itself: a message drawn round has no body,
+    // so the body rule above already says no, and one WITH words is not
+    // drawn round but as the ordinary video it then is.
     // Choosing the emoji that is already mine takes it off — the menu and
     // the picker TOGGLE, the Mac's `toggleReaction`; only the chips never
     // remove.
@@ -532,6 +548,13 @@ pub fn bubble(props: &BubbleProps) -> Html {
                 }
                 if !message.body.is_empty() {
                     <button role="menuitem" onclick={copy}>{ t("Copy") }</button>
+                }
+                if let Some(round) = message.round_video().cloned() {
+                    // The viewer, with scrubbing (S5.4).
+                    <button role="menuitem"
+                        onclick={act(Action::OpenViewer { items: vec![round], index: 0 })}>
+                        { t("Open Full Screen") }
+                    </button>
                 }
                 if failed {
                     <button role="menuitem" onclick={act(Action::Retry(client_msg_id.clone()))}>{ t("Try Again") }</button>
@@ -629,6 +652,10 @@ pub fn bubble(props: &BubbleProps) -> Html {
     // attachment; without it this is an ordinary photo and everything below
     // draws it as one, exactly as before there were stickers.
     let sticker = message.sticker().cloned();
+    // A VIDEO MESSAGE (docs/protocol.md, "Video messages"; the plan for #79,
+    // S5): a circle with no balloon, from the same kind of flag. Without it
+    // this is an ordinary video, drawn as a tile below.
+    let round = message.round_video().cloned();
 
     // Nothing but photos and videos, and nothing above them: the pictures
     // ARE the message, and draw without a balloon round them (the Mac's
@@ -761,6 +788,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
                 emoji_size.is_some().then_some("is-emoji-only"),
                 media_only.then_some("is-media-only"),
                 sticker.is_some().then_some("is-chat-sticker"),
+                round.is_some().then_some("is-round-video"),
             )}
             ondblclick={on_double}
         >
@@ -780,6 +808,15 @@ pub fn bubble(props: &BubbleProps) -> Html {
                 <StickerTile
                     attachment={sticker}
                     on_open={props.on_action.reform(Action::OpenSticker)}
+                />
+            } else if let Some(round) = round {
+                <RoundVideoTile
+                    attachment={round}
+                    my_user_id={me}
+                    {mine}
+                    sending={!acked && props.failed.is_none()}
+                    on_open={props.on_action.reform(|attachment| Action::OpenViewer { items: vec![attachment], index: 0 })}
+                    transcribing={transcribing.clone()}
                 />
             } else if !message.attachments().is_empty() {
                 <AttachmentStack
@@ -885,6 +922,7 @@ mod tests {
             hidden: false,
             quote_revealed: false,
             parent_revealed: false,
+            quote_round: false,
             shows_sender: true,
             run_end: true,
             seen: false,
@@ -1897,6 +1935,170 @@ mod tests {
         root.remove();
     }
 
+    fn round_video(id: i64, round: bool) -> crate::model::Attachment {
+        crate::model::Attachment {
+            id,
+            kind: "video".into(),
+            mime: Some("video/mp4".into()),
+            size: Some(1_649_700),
+            width: Some(480),
+            height: Some(480),
+            duration_ms: Some(23_400),
+            has_preview: true,
+            round,
+            ..Default::default()
+        }
+    }
+
+    /// A VIDEO MESSAGE IS DRAWN AS A CIRCLE WITHOUT A BUBBLE (S5.1, S5.2):
+    /// the class `is-round-video`, the circle and nothing of a tile — and
+    /// the same video without the flag is the tile it always was, which is
+    /// what an older server leaves it as. "Show text" goes under the circle,
+    /// outside its gestures (S5.5).
+    #[wasm_bindgen_test]
+    async fn a_video_message_draws_round_and_a_plain_video_as_before() {
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let mut sent = message(1501, ANNA, "");
+        sent.attachments = Some(vec![round_video(91, true)]);
+        let mut with_text = props(sent, actions.clone());
+        with_text.transcription = Some(transcription(true));
+        let (root, handle) = render(with_text).await;
+        assert!(root
+            .query_selector(".bubble.is-round-video")
+            .unwrap()
+            .is_some());
+        assert!(root.query_selector(".round-face").unwrap().is_some());
+        assert!(
+            root.query_selector(".tile").unwrap().is_none(),
+            "not a tile"
+        );
+        assert!(
+            root.query_selector(".round-video .round-transcript .transcript")
+                .unwrap()
+                .is_some(),
+            "Show text under the circle"
+        );
+        let buttons = show_buttons(&root);
+        assert_eq!(buttons.len(), 1);
+        buttons[0].click();
+        assert!(actions.borrow().iter().any(|action| matches!(
+            action,
+            Action::ShowTranscript { attachment, .. } if attachment.id == 91
+        )));
+        handle.destroy();
+        root.remove();
+
+        let mut plain = message(1502, ANNA, "");
+        plain.attachments = Some(vec![round_video(92, false)]);
+        let (root, handle) = render(props(plain, actions.clone())).await;
+        assert!(root
+            .query_selector(".bubble.is-round-video")
+            .unwrap()
+            .is_none());
+        assert!(root.query_selector(".round-face").unwrap().is_none());
+        assert!(
+            root.query_selector(".tile").unwrap().is_some(),
+            "the tile it always was"
+        );
+        handle.destroy();
+        root.remove();
+
+        // Words beside it — which the server refuses — are not a circle.
+        let mut worded = message(1503, ANNA, "words");
+        worded.attachments = Some(vec![round_video(93, true)]);
+        let (root, handle) = render(props(worded, actions)).await;
+        assert!(root.query_selector(".round-face").unwrap().is_none());
+        handle.destroy();
+        root.remove();
+    }
+
+    /// A VIDEO MESSAGE'S MENU (S5.4): "Open Full Screen", which opens the
+    /// viewer on it, and NEVER "Edit" — mine included; an ordinary video of
+    /// mine with a caption is edited as ever, and offers no full screen of
+    /// its own (its tile opens the viewer).
+    #[wasm_bindgen_test]
+    async fn a_video_message_opens_full_screen_and_is_never_edited() {
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let mut mine = message(1504, ME, "");
+        mine.attachments = Some(vec![round_video(94, true)]);
+        let (root, handle) = render(props(mine, actions.clone())).await;
+        click(&root, ".more");
+        settle().await;
+        let rows = labels(&root, ".menu [role=menuitem]");
+        assert!(rows.contains(&"Open Full Screen".to_string()), "{rows:?}");
+        assert!(!rows.contains(&"Edit".to_string()), "{rows:?}");
+        assert!(rows.contains(&"Reply".to_string()), "{rows:?}");
+        click_text(&root, ".menu [role=menuitem]", "Open Full Screen");
+        settle().await;
+        assert!(actions.borrow().iter().any(|action| matches!(
+            action,
+            Action::OpenViewer { items, index: 0 } if items.len() == 1 && items[0].id == 94
+        )));
+        assert!(
+            root.query_selector(".menu").unwrap().is_none(),
+            "the menu closed"
+        );
+        handle.destroy();
+        root.remove();
+
+        let mut captioned = message(1505, ME, "a caption");
+        captioned.attachments = Some(vec![round_video(95, false)]);
+        let (root, handle) = render(props(captioned, actions)).await;
+        click(&root, ".more");
+        settle().await;
+        let rows = labels(&root, ".menu [role=menuitem]");
+        assert!(rows.contains(&"Edit".to_string()), "{rows:?}");
+        assert!(!rows.contains(&"Open Full Screen".to_string()), "{rows:?}");
+        handle.destroy();
+        root.remove();
+    }
+
+    /// A REPLY QUOTING A VIDEO MESSAGE SAYS "Video message" (S5.7): the
+    /// server's excerpt of a message with no words is empty. A quote with
+    /// words says them, whatever it quotes.
+    #[wasm_bindgen_test]
+    async fn a_quote_of_a_video_message_says_so() {
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let mut reply = message(1506, ANNA, "nice!");
+        reply.reply_to = Some(crate::model::ReplyTo {
+            message_id: 1501,
+            sender_id: ME,
+            excerpt: String::new(),
+            parent: None,
+        });
+        let mut quoting = props(reply.clone(), actions.clone());
+        quoting.quote_round = true;
+        let (root, handle) = render(quoting).await;
+        assert_eq!(
+            root.query_selector(".quote .quote-text")
+                .unwrap()
+                .and_then(|text| text.text_content())
+                .as_deref(),
+            Some("Video message")
+        );
+        handle.destroy();
+        root.remove();
+        let (root, handle) = render(props(reply.clone(), actions.clone())).await;
+        assert_eq!(
+            root.query_selector(".quote .quote-text")
+                .unwrap()
+                .and_then(|text| text.text_content())
+                .as_deref(),
+            Some(""),
+            "not a video message: what the server said"
+        );
+        handle.destroy();
+        root.remove();
+        // The rule the conversation decides it by.
+        let mut circle = message(1501, ME, "");
+        circle.attachments = Some(vec![round_video(91, true)]);
+        let mut held = vec![circle.clone()];
+        assert!(crate::views::conversation::quotes_round(&reply, &held));
+        held[0].attachments = Some(vec![round_video(91, false)]);
+        assert!(!crate::views::conversation::quotes_round(&reply, &held));
+        assert!(!crate::views::conversation::quotes_round(&reply, &[]));
+    }
+
     impl BubbleProps {
         fn clone_for_test(&self) -> BubbleProps {
             BubbleProps {
@@ -1909,6 +2111,7 @@ mod tests {
                 hidden: self.hidden,
                 quote_revealed: self.quote_revealed,
                 parent_revealed: self.parent_revealed,
+                quote_round: self.quote_round,
                 shows_sender: self.shows_sender,
                 run_end: self.run_end,
                 seen: self.seen,

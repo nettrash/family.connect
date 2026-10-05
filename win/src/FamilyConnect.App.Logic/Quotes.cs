@@ -117,7 +117,16 @@ public static class Quotes
                     ? say.Get("Replying to a hidden message")
                     : say.Get("which replied to a hidden message"),
                 Hidden: true)
-            : new QuoteLine(messageId, NameOf(senderId, chats, say), excerpt, Hidden: false);
+            : new QuoteLine(messageId, NameOf(senderId, chats, say), Shown(messageId, excerpt, chats, say), Hidden: false);
+
+    /// <summary>
+    /// The server's excerpt, except that a quoted VIDEO MESSAGE — which has no words, so an empty excerpt — says "Video
+    /// message" (S5.7) when this device holds it and can tell. One it does not hold stays as the server cut it.
+    /// </summary>
+    private static string Shown(long messageId, string excerpt, ChatStore chats, IStringCatalog say) =>
+        excerpt.Length == 0 && chats.Message(messageId) is { RoundVideo: not null }
+            ? say.Get("Video message")
+            : excerpt;
 
     private static bool Hides(long senderId, ChatStore chats) =>
         senderId != chats.Reader && chats.IsBlocked(senderId);

@@ -674,4 +674,35 @@
     <string name="s_announce_voice_message_sent">语音消息已发送</string>
     <string name="s_announce_ready_to_review">可以检查了，%1$s</string>
     <string name="e_wait_for_the_attachment">请等当前附件处理完。</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">视频消息</string>
+    <string name="s_video_message_a11y">视频消息，%1$s</string>
+    <string name="s_not_played">未播放</string>
+    <string name="s_open_full_screen">全屏打开</string>
+    <string name="s_couldnt_load_video_tap">无法加载视频。轻点以重试。</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">录制视频消息</string>
+    <string name="s_send_video_message">发送视频消息</string>
+    <string name="s_retake">重拍</string>
+    <string name="s_record">录制</string>
+    <string name="s_switch_camera">切换相机</string>
+    <string name="s_video_message_with_length">视频消息 · %1$s</string>
+    <string name="s_not_recording">未在录制</string>
+    <string name="s_only_you_can_see_this">开始录制前，只有你能看到这个画面。</string>
+    <string name="s_starting_camera">正在启动相机…</string>
+    <string name="s_cant_see_anything">什么也看不到。相机是不是关了或被遮住了？</string>
+    <string name="s_ten_seconds_left">还剩10秒</string>
+    <string name="s_recording_stopped_at_one_minute">录制已满一分钟，已停止。</string>
+    <string name="s_video_too_short">这段视频太短了。</string>
+    <string name="s_delete_video_message">要删除视频消息吗？</string>
+    <string name="s_video_messages_need_camera_and_microphone">视频消息需要使用相机和麦克风。</string>
+    <string name="e_camera_permission_settings">Family 需要使用你的相机的权限。请在“设置”中开启。</string>
+    <string name="s_camera_in_use_by_another_app">相机正被其他应用使用。</string>
+    <string name="s_couldnt_make_it_round">无法做成圆形视频。将作为普通视频发送。</string>
+    <string name="s_too_big_for_video_message">太大，无法作为视频消息发送。将作为普通视频发送。</string>
+    <string name="s_announce_camera_ready">相机已就绪</string>
+    <string name="s_announce_recording_video">正在录制视频</string>
+    <string name="s_announce_video_message_sent">视频消息已发送</string>
+    <string name="s_announce_camera_turned_off">相机已关闭</string>
+    <string name="s_record_voice_message_instead">改为录制语音消息</string>
 </resources>

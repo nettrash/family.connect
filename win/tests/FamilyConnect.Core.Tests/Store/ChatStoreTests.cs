@@ -264,6 +264,24 @@ public class ChatStoreTests : IDisposable
     }
 
     /// <summary>
+    /// A CIRCLE IS STILL A CIRCLE OUT OF THE CACHE. Everything this window draws it reads back from here, so a flag
+    /// dropped on the way in would draw every video message square from the second look on (S5.8).
+    /// </summary>
+    [Fact]
+    public void AVideoMessageComesBackRound()
+    {
+        var store = Store();
+        store.Replace([Row()]);
+        var video = new AttachmentDto(91, "video", "video/mp4", 1649700, 480, 480, 23400, HasPreview: true, Round: true);
+        store.Apply(Message(1341, body: "") with { Attachments = [video], Attachment = video });
+        store.Apply(Message(1342, body: "") with { Attachments = [video with { Id = 92, Round = false }] });
+
+        Assert.Equal(91, store.Message(1341)!.RoundVideo!.Id);
+        Assert.Equal(23400, store.Message(1341)!.RoundVideo!.DurationMs);
+        Assert.Null(store.Message(1342)!.RoundVideo);
+    }
+
+    /// <summary>
     /// APPLYING AN EDIT IS GUARDED. A history page fetched BEFORE an edit but delivered after it
     /// would otherwise restore the old text, and two devices in a family disagree about what was
     /// said.

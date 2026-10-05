@@ -477,4 +477,99 @@ public class FrameTests
             ClientFrames.Send(42, "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01", "Dinner at 7?", attachmentIds: [90])).RootElement;
         Assert.False(plain.TryGetProperty("sticker", out _));
     }
+
+    // ---- video messages (docs/protocol.md, "Video messages") -----------------------------------
+
+    /// <summary>
+    /// The flag is on the ATTACHMENT, present only when true — in <c>attachments</c> and in the legacy singular — and it
+    /// is what makes the message a circle.
+    /// </summary>
+    [Fact]
+    public void AVideoMessageIsOneFlaggedVideoAndNoWords()
+    {
+        var frame = ServerFrame.Parse(
+            """
+            {"type": "message", "message": {"id": 1341, "chat_id": 42, "sender_id": 9,
+             "client_msg_id": null, "body": "", "created_at": "2026-10-05T10:00:00Z",
+             "attachments": [{"id": 91, "kind": "video", "mime": "video/mp4", "size": 1649700, "width": 480,
+                              "height": 480, "duration_ms": 23400, "has_preview": true, "round": true}],
+             "attachment": {"id": 91, "kind": "video", "mime": "video/mp4", "size": 1649700, "width": 480,
+                            "height": 480, "duration_ms": 23400, "has_preview": true, "round": true}}}
+            """);
+        var message = Assert.IsType<ServerFrame.Message>(frame).Value;
+        var video = Assert.Single(message.Media);
+        Assert.True(video.Round);
+        Assert.False(video.Sticker);
+        Assert.True(message.Attachment!.Round);
+        Assert.Equal(91, message.RoundVideo!.Id);
+        Assert.Equal(23400, message.RoundVideo.DurationMs);
+        Assert.Null(message.StickerPicture);
+    }
+
+    /// <summary>
+    /// THE ONE TEST (S5.1), the same on every client: exactly ONE attachment, <c>kind=video</c>, <c>round: true</c>, no body. A
+    /// video without the flag — every video from before, and every one an old server delivers — is a square video.
+    /// </summary>
+    [Fact]
+    public void OnlyOneFlaggedVideoIsAVideoMessage()
+    {
+        var plain = Wire.Decode<MessageDto>(
+            """
+            {"id": 1, "chat_id": 42, "sender_id": 9, "client_msg_id": null, "body": "",
+             "created_at": "2026-10-05T10:00:00Z",
+             "attachments": [{"id": 91, "kind": "video", "mime": "video/mp4", "size": 1649700}]}
+            """)!;
+        Assert.False(plain.Media[0].Round);
+        Assert.Null(plain.RoundVideo);
+
+        MessageDto With(string body, params AttachmentDto[] media) =>
+            new(1, 42, 9, null, body, "2026-10-05T10:00:00Z", Attachments: media);
+        var flagged = new AttachmentDto(91, "video", "video/mp4", 1649700, 480, 480, 23400, true, Round: true);
+        Assert.NotNull(With("", flagged).RoundVideo);
+        Assert.Null(With("", flagged, flagged with { Id = 92 }).RoundVideo);
+        Assert.Null(With("", flagged with { Kind = "photo" }).RoundVideo);
+        Assert.Null(With("", flagged with { Kind = "audio" }).RoundVideo);
+        Assert.Null(With("", flagged with { Round = false }).RoundVideo);
+        Assert.Null(With("").RoundVideo);
+        // A body — any body, whitespace too, compared exactly (fc_text::record::is_round) — is an ordinary message.
+        Assert.Null(With("look", flagged).RoundVideo);
+        Assert.Null(With(" ", flagged).RoundVideo);
+        Assert.Null(With("\n", flagged).RoundVideo);
+        Assert.Null(With("\u00A0", flagged).RoundVideo);
+        // And nothing else is asked — not the type, not the shape.
+        Assert.NotNull(With("", flagged with { Width = 640, Height = 480 }).RoundVideo);
+        // A circle is not a sticker, and a sticker is not a circle.
+        Assert.Null(With("", flagged).StickerPicture);
+    }
+
+    /// <summary>The legacy singular alone — a server that predates plurality — is read the same way.</summary>
+    [Fact]
+    public void TheLegacySingularCarriesTheFlagToo()
+    {
+        var legacy = Wire.Decode<MessageDto>(
+            """
+            {"id": 1, "chat_id": 42, "sender_id": 9, "client_msg_id": null, "body": "",
+             "created_at": "2026-10-05T10:00:00Z",
+             "attachment": {"id": 91, "kind": "video", "mime": "video/mp4", "round": true}}
+            """)!;
+        Assert.Equal(91, legacy.RoundVideo!.Id);
+    }
+
+    [Fact]
+    public void ASendSaysRoundOnlyWhenItIsAVideoMessage()
+    {
+        var round = System.Text.Json.JsonDocument.Parse(
+            ClientFrames.Send(42, "4f9e21c0-ceea-4e17-a91c-0d9f8e7b2a01", "", attachmentIds: [91], round: true)).RootElement;
+        Assert.Equal("send", round.GetProperty("type").GetString());
+        Assert.True(round.GetProperty("round").GetBoolean());
+        Assert.False(round.TryGetProperty("sticker", out _));
+        Assert.Equal(91, round.GetProperty("attachment_ids")[0].GetInt64());
+
+        var plain = System.Text.Json.JsonDocument.Parse(
+            ClientFrames.Send(42, "4f9e21c0-ceea-4e17-a91c-0d9f8e7b2a01", "", attachmentIds: [91])).RootElement;
+        Assert.False(plain.TryGetProperty("round", out _));
+        var sticker = System.Text.Json.JsonDocument.Parse(
+            ClientFrames.Send(42, "4f9e21c0-ceea-4e17-a91c-0d9f8e7b2a01", "", attachmentIds: [90], sticker: true)).RootElement;
+        Assert.False(sticker.TryGetProperty("round", out _));
+    }
 }

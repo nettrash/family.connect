@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FamilyConnect.App.Logic;
 using FamilyConnect.Core;
+using FamilyConnect.Core.Protocol;
 
 namespace FamilyConnect.App.Logic.Tests;
 
@@ -239,10 +240,16 @@ public sealed class ComposerButtonTests
                 .. input.GetProperty("attachments").EnumerateArray()
                     .Select(item => new AttachmentFlags(item.GetProperty("kind").GetString()!, item.GetProperty("round").GetBoolean())),
             ];
-            Assert.True(
-                row.GetProperty("expected").GetProperty("round").GetBoolean()
-                    == ComposerButton.IsRound(input.GetProperty("body").GetString()!, attachments),
-                row.GetProperty("name").GetString());
+            var body = input.GetProperty("body").GetString()!;
+            var expected = row.GetProperty("expected").GetProperty("round").GetBoolean();
+            Assert.True(expected == ComposerButton.IsRound(body, attachments), row.GetProperty("name").GetString());
+            // And the test the conversation actually DRAWS by — the message's own — says the same, body and all.
+            AttachmentDto[] media =
+            [
+                .. attachments.Select((item, at) => new AttachmentDto(90 + at, item.Kind, "video/mp4", 1, Round: item.Round)),
+            ];
+            var message = new MessageDto(1, 42, 9, null, body, "2026-10-05T10:00:00Z", Attachments: media);
+            Assert.True(expected == message.RoundVideo is not null, $"MessageDto.RoundVideo: {row.GetProperty("name").GetString()}");
             checkedCases++;
         }
         Assert.Equal(12, checkedCases);

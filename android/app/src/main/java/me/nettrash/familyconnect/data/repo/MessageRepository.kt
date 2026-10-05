@@ -448,6 +448,16 @@ class MessageRepository @Inject constructor(
          * no network: it is queued exactly as a photo is.
          */
         sticker: Boolean = false,
+        /**
+         * Send the ONE item as a VIDEO MESSAGE (docs/protocol.md, "Video
+         * messages"; #79): `round: true` on the send, the sticker's pattern
+         * exactly — the flag rides on the row's own attachment
+         * (`AttachmentDto.round`), so the bubble draws round from the first
+         * frame and a retry after a process death still sends a circle and
+         * not a square video. Unlike a sticker it KEEPS its poster: the
+         * square JPEG is what every reader's circle draws until it plays.
+         */
+        round: Boolean = false,
     ): String? {
         val named = mentions?.takeIf { it.isNotEmpty() }
         if (prepared.isEmpty()) return null
@@ -455,6 +465,11 @@ class MessageRepository @Inject constructor(
         // the server refuses (`invalid_attachment`, `validation`), so it is
         // refused here before a row could be written for it.
         if (sticker && (prepared.size != 1 || caption.isNotBlank())) return null
+        // A video message likewise: ONE `kind=video`, NO body, and never
+        // beside the sticker flag (`validation`, `invalid_attachment`).
+        if (round && !RoundSend.accepts(prepared, caption, sticker, settings.state.first().roundVideoLimits?.maxBytes)) {
+            return null
+        }
         val me = settings.state.first().myUserId ?: return null
         val clientMsgId = UUID.randomUUID().toString()
 
@@ -488,7 +503,7 @@ class MessageRepository @Inject constructor(
         // poll plays with its option ids. Without it the sender watches an
         // empty bubble for the length of the upload.
         val items = pendingAttachmentDao.itemsFor(clientMsgId)
-        val placeholders = items.map { it.placeholderDto().asSticker(sticker) }
+        val placeholders = items.map { it.placeholderDto().asSticker(sticker).asRound(round) }
         val body = caption.trim()
         val now = clock.now()
         val first = placeholders.first()
@@ -576,6 +591,7 @@ class MessageRepository @Inject constructor(
             // item rows know nothing of stickers, and the row is what
             // survived the process death this whole path exists for.
             val sticker = row.isPendingSticker
+            val round = row.isPendingRound
 
             for (item in items.filter { it.attachmentId == null }) {
                 if (!uploadItem(clientMsgId, item, sticker)) return
@@ -586,7 +602,7 @@ class MessageRepository @Inject constructor(
             // this message from a text one.
             val done = pendingAttachmentDao.itemsFor(clientMsgId)
             if (done.any { it.attachmentId == null }) return
-            val attachments = done.mapNotNull { it.uploadedDto()?.asSticker(sticker) }
+            val attachments = done.mapNotNull { it.uploadedDto()?.asSticker(sticker)?.asRound(round) }
             messageDao.applyOwnAttachments(
                 clientMsgId,
                 attachments.first().id,
@@ -600,6 +616,8 @@ class MessageRepository @Inject constructor(
                 attachments.map { it.id },
                 mentions = pendingMentionsOf(row),
                 sticker = sticker,
+                // The flag on the wire only while the keys are still here (sendsRound).
+                round = round && settings.state.first().roundVideoLimits != null,
             )
         } finally {
             mediaUploads.remove(clientMsgId)
@@ -782,6 +800,7 @@ class MessageRepository @Inject constructor(
             pendingPollOf(row),
             pendingMentionsOf(row),
             row.isPendingSticker,
+            row.sendsRound(),
         )
     }
 
@@ -809,6 +828,31 @@ class MessageRepository @Inject constructor(
     /** Stamp — or leave alone — the flag a sticker's attachment carries. */
     private fun AttachmentDto.asSticker(sticker: Boolean): AttachmentDto =
         if (sticker) copy(sticker = true) else this
+
+    /**
+     * Whether a not-yet-acked row is a video-message send (#79) — off the
+     * row, for the sticker's reason: a retry after a process death must
+     * still carry `round: true`, and the row's one attachment is where the
+     * server's own copy will put it.
+     */
+    private val MessageEntity.isPendingRound: Boolean
+        get() = serverId == null && attachmentList.singleOrNull()?.isRound == true
+
+    /**
+     * Whether a queued video message goes out WITH its flag now: only while
+     * this device still has the discovery keys. A row queued with them and
+     * retried after they went — a server rolled back — is already written,
+     * so it goes as the ordinary video such a server would make of it
+     * anyway; "a client must not send the flag without the discovery keys"
+     * (docs/protocol.md, "Video messages"). Asked at every dispatch, never
+     * remembered from the queueing.
+     */
+    private suspend fun MessageEntity.sendsRound(): Boolean =
+        isPendingRound && settings.state.first().roundVideoLimits != null
+
+    /** Stamp — or leave alone — the flag a video message's attachment carries. */
+    private fun AttachmentDto.asRound(round: Boolean): AttachmentDto =
+        if (round) copy(round = true) else this
 
     private fun pendingMentionsOf(row: MessageEntity): List<MentionDto>? {
         if (row.serverId != null) return null
@@ -876,6 +920,7 @@ class MessageRepository @Inject constructor(
                     pendingPollOf(row),
                     pendingMentionsOf(row),
                     row.isPendingSticker,
+                    row.sendsRound(),
                 )
             }
         }
@@ -902,16 +947,22 @@ class MessageRepository @Inject constructor(
          * `false`, so an ordinary send stays byte-identical to what it was.
          */
         sticker: Boolean = false,
+        /**
+         * The send is a VIDEO MESSAGE (#79). Becomes `round: true` on the
+         * frame or the request and is omitted otherwise, as [sticker] is.
+         */
+        round: Boolean = false,
     ) {
         if (attachmentIds?.any { it < 0 } == true) {
             scope.launch { uploadPending(clientMsgId) }
             return
         }
         val stickerFlag = if (sticker) true else null
+        val roundFlag = if (round) true else null
         val overSocket = socket.state.value == SocketState.Open &&
             socket.trySend(
                 ClientFrame.Send(
-                    chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag,
+                    chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag, roundFlag,
                 ),
             )
         if (overSocket) {
@@ -920,11 +971,15 @@ class MessageRepository @Inject constructor(
                 pendingAcks.remove(clientMsgId)
                 // No ack in time — the frame may or may not have landed.
                 // REST with the same client_msg_id is safe either way.
-                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag)
+                restFallback(
+                    clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag, roundFlag,
+                )
             }
         } else {
             scope.launch {
-                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag)
+                restFallback(
+                    clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag, roundFlag,
+                )
             }
         }
     }
@@ -938,11 +993,13 @@ class MessageRepository @Inject constructor(
         poll: NewPollDto? = null,
         mentions: List<MentionDto>? = null,
         sticker: Boolean? = null,
+        round: Boolean? = null,
     ) {
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // ack won the race
-        val result =
-            chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, sticker)
+        val result = chatApi.postMessage(
+            chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, sticker, round,
+        )
         when (result) {
             is ApiResult.Ok -> ackMessage(clientMsgId, result.value.message, chainLive = true)
             else -> recordSendFailure(clientMsgId, result)
@@ -986,12 +1043,14 @@ class MessageRepository @Inject constructor(
                 pendingAttachmentDao.forgetUploads(clientMsgId)
                 // The flag goes back onto the placeholders it is about to
                 // be read from: a sticker whose upload expired in the outbox
-                // must go up again as a sticker, not as a photo.
+                // must go up again as a sticker, not as a photo — and a video
+                // message as a circle, not as a square video.
                 val sticker = row.isPendingSticker
+                val round = row.isPendingRound
                 messageDao.applyOwnAttachments(
                     clientMsgId,
                     items.first().placeholderId,
-                    AttachmentsCodec.encode(items.map { it.placeholderDto().asSticker(sticker) }),
+                    AttachmentsCodec.encode(items.map { it.placeholderDto().asSticker(sticker).asRound(round) }),
                 )
                 scope.launch { uploadPending(clientMsgId) }
                 return
@@ -1862,6 +1921,8 @@ class MessageRepository @Inject constructor(
             val photo: String = "Photo",
             /** A message sent as a sticker (docs/protocol.md, "Sticker pack"). */
             val sticker: String = "Sticker",
+            /** A message sent as a video message (#79, S5.7). */
+            val videoMessage: String = "Video message",
             val videos: (Int) -> String = { "$it Videos" },
             val audios: (Int) -> String = { "$it Audio" },
             val files: (Int) -> String = { "$it Files" },
@@ -1884,6 +1945,7 @@ class MessageRepository @Inject constructor(
                         file = r.getString(R.string.s_file),
                         photo = r.getString(R.string.s_photo),
                         sticker = r.getString(R.string.s_sticker),
+                        videoMessage = r.getString(R.string.s_video_message),
                         videos = { r.getQuantityString(R.plurals.p_videos, it, it) },
                         audios = { r.getQuantityString(R.plurals.p_audio, it, it) },
                         files = { r.getQuantityString(R.plurals.p_files, it, it) },
@@ -1941,6 +2003,9 @@ class MessageRepository @Inject constructor(
                 }
             }
             return when {
+                // BEFORE "Video" (#79, S5.7): a video message is a video in
+                // every other respect, so the order is the rule.
+                attachment.isRound -> labels.videoMessage
                 attachment.isVideo -> labels.video
                 attachment.isAudio -> attachment.name?.takeIf { it.isNotEmpty() } ?: labels.audio
                 attachment.isLocation ->

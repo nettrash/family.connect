@@ -121,9 +121,16 @@ data class TranscodeSettings(
     /**
      * The most channels the output keeps: 2 for everything the upload
      * profile makes (surround is mixed to stereo, mono stays mono), 1 for
-     * the sound a transcript request supplies — speech, at 64 kbit/s.
+     * the sound a transcript request supplies — speech, at 64 kbit/s — and
+     * for a video message's square pass, whose profile is AAC mono.
      */
     val maxAudioChannels: Int = 2,
+    /**
+     * Fill [width] × [height] and crop what spills over, instead of
+     * stretching to it — a video message's square from a 4:3 camera
+     * (#79, S8.4). MediaPlan's sizes keep the aspect, so they stretch.
+     */
+    val cropToFill: Boolean = false,
 ) {
     /** A picked sound file: no video track goes into the output. */
     val audioOnly: Boolean get() = width == null || height == null
@@ -156,6 +163,29 @@ data class TranscodeSettings(
         /** 64 kbit/s: what the design names for supplied sound. */
         const val TRANSCRIPT_SOUND_BITRATE = 64_000
 
+        /**
+         * A video message that came out of the camera not exactly as the
+         * profile asks (#79, S8.4, "The recording profile for a round
+         * video"): the centre square at 480 × 480 — the decoder has already
+         * applied the source's rotation, so the pixels come out upright —
+         * H.264 at 500 000 bit/s, AAC at 64 000 bit/s MONO, at most 30 fps.
+         * Mono as iOS, the web and Windows write it: a stereo CameraX track
+         * is mixed down whenever this pass runs (CameraX's own stereo is
+         * accepted only where no pass runs at all).
+         */
+        fun forRoundVideo(edge: Int, videoBitrate: Int, audioBitrate: Int, frameRate: Int): TranscodeSettings =
+            TranscodeSettings(
+                maxAudioChannels = 1,
+                width = edge,
+                height = edge,
+                dropFramesTo = frameRate.toFloat(),
+                encoderFrameRate = frameRate.toFloat(),
+                videoBitrate = videoBitrate,
+                audioBitrate = audioBitrate,
+                toneMapToSdr = true,
+                cropToFill = true,
+            )
+
         /** A picked sound file, re-encoded at MediaPlan's [bitrate]. */
         fun forAudio(bitrate: Long): TranscodeSettings =
             TranscodeSettings(
@@ -185,7 +215,13 @@ object TranscodeRecipe {
                 Presentation.createForWidthAndHeight(
                     settings.width,
                     settings.height,
-                    Presentation.LAYOUT_STRETCH_TO_FIT,
+                    // A video message's square is CROPPED from the camera's
+                    // 4:3 (S8.4); everything else keeps its aspect, see above.
+                    if (settings.cropToFill) {
+                        Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
+                    } else {
+                        Presentation.LAYOUT_STRETCH_TO_FIT
+                    },
                 ),
             )
         }

@@ -919,6 +919,15 @@ pub struct Attachment {
     /// the photo it still is.
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub sticker: bool,
+    /// True when (and only when) the message carrying this video was sent
+    /// as a VIDEO MESSAGE (docs/protocol.md, "Video messages") — a square
+    /// H.264/AAC MP4 recorded to be drawn as a circle. Absent on the wire
+    /// otherwise, exactly as `sticker` is: an ordinary video never carries
+    /// `"round": false`, and a client that does not know the flag plays the
+    /// video it still is. Never true beside `sticker`, never on anything
+    /// that is not a video (0052's two CHECKs).
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub round: bool,
 }
 
 impl Attachment {
@@ -952,6 +961,7 @@ impl Attachment {
     /// The kinds a client and the board name by hand. `photo` is the one a
     /// board note may pin (docs/protocol.md, "Board").
     pub const KIND_PHOTO: &'static str = "photo";
+    pub const KIND_VIDEO: &'static str = "video";
     pub const KIND_FILE: &'static str = "file";
     pub const KIND_AUDIO: &'static str = "audio";
     pub const KIND_LOCATION: &'static str = "location";
@@ -974,6 +984,42 @@ impl Attachment {
 
     pub fn is_sticker_mime(mime: &str) -> bool {
         Self::STICKER_MIMES.contains(&mime)
+    }
+
+    /// A video message's one media type (docs/protocol.md, "Video
+    /// messages"). `video/quicktime` is never within the recording profile,
+    /// even holding H.264: Firefox will not play the container.
+    pub const ROUND_VIDEO_MIME: &'static str = "video/mp4";
+    /// The longest video message, in milliseconds: FIXED, and sent as
+    /// `max_round_video_ms` on `GET /families/mine`. Clients stop 500 ms
+    /// short of it.
+    pub const ROUND_VIDEO_MAX_MS: i32 = 60_000;
+    /// The largest side a video message may DECLARE. The profile records
+    /// 480; 720 is the media profile's own ceiling on a short side, so a
+    /// later client may record larger without a server change.
+    pub const ROUND_VIDEO_MAX_SIDE: i32 = 720;
+
+    /// Whether this CLAIMED upload may be sent as a video message
+    /// (docs/protocol.md, "Video messages", check 5): a `kind=video` of
+    /// `video/mp4`; a declared square of 1 to 720 on a side; a declared
+    /// length of 1 ms to `ROUND_VIDEO_MAX_MS`; at most `max_bytes`. All of
+    /// it is the sender's DECLARATION — this server never decodes a video —
+    /// and anything missing is a no, because a circle needs to know its
+    /// shape and its length before a byte arrives.
+    pub fn fits_round_video(&self, max_bytes: usize) -> bool {
+        let side_ok = |side: Option<i32>| {
+            side.is_some_and(|side| (1..=Self::ROUND_VIDEO_MAX_SIDE).contains(&side))
+        };
+        self.kind == Self::KIND_VIDEO
+            && self.mime == Self::ROUND_VIDEO_MIME
+            && side_ok(self.width)
+            && side_ok(self.height)
+            && self.width == self.height
+            && self
+                .duration_ms
+                .is_some_and(|ms| (1..=Self::ROUND_VIDEO_MAX_MS).contains(&ms))
+            && self.size >= 0
+            && self.size as u64 <= max_bytes as u64
     }
 
     pub fn kind_for(mime: &str) -> Option<&'static str> {
@@ -1033,6 +1079,10 @@ impl Attachment {
             // SELECTs have no business with this column — a note's picture
             // and a pack item's are never stickers — and those read false.
             sticker: row.try_get("sticker").unwrap_or_default(),
+            // And again for the video message's flag (0052): a SELECT that
+            // has no business with it — a note's picture, a pack item's —
+            // reads false rather than failing.
+            round: row.try_get("round").unwrap_or_default(),
         }
     }
 }
@@ -1931,6 +1981,7 @@ mod tests {
             longitude: None,
             accuracy_m: None,
             sticker: false,
+            round: false,
         };
         let json = serde_json::to_value(&photo).expect("serializes");
         assert!(json.get("sticker").is_none(), "{json}");
@@ -1956,5 +2007,124 @@ mod tests {
         for other in ["image/jpeg", "image/heic", "image/gif", "video/mp4", ""] {
             assert!(!Attachment::is_sticker_mime(other), "{other}");
         }
+    }
+
+    /// The video message as protocol.md draws it: a 480 x 480 MP4 of 23.4 s.
+    fn round_video() -> Attachment {
+        Attachment {
+            id: 91,
+            kind: "video".to_string(),
+            mime: "video/mp4".to_string(),
+            size: 1_649_700,
+            width: Some(480),
+            height: Some(480),
+            duration_ms: Some(23_400),
+            has_preview: true,
+            name: None,
+            latitude: None,
+            longitude: None,
+            accuracy_m: None,
+            sticker: false,
+            round: false,
+        }
+    }
+
+    /// `round` is on the wire when — and only when — it is true, the
+    /// sticker's rule: an ordinary video never carries `"round": false`,
+    /// and every attachment a shipped server ever sent, which has no key,
+    /// reads as an ordinary video (protocol.md, "Video messages").
+    #[test]
+    fn the_round_flag_is_absent_unless_true() {
+        let video = round_video();
+        let json = serde_json::to_value(&video).expect("serializes");
+        assert!(json.get("round").is_none(), "{json}");
+        let back: Attachment = serde_json::from_value(json).expect("parses without the key");
+        assert!(!back.round);
+
+        let circle = Attachment {
+            round: true,
+            ..video
+        };
+        let json = serde_json::to_value(&circle).expect("serializes");
+        assert_eq!(json["round"], true);
+        assert!(json.get("sticker").is_none(), "{json}");
+        let back: Attachment = serde_json::from_value(json).expect("parses");
+        assert_eq!(back, circle);
+    }
+
+    /// Check 5 of "What the server checks", as a pure question about a
+    /// claimed row: the kind, the type, a declared square of 1..=720, a
+    /// declared length of 1..=60 000 ms, and the byte ceiling — every edge
+    /// inclusive, everything missing a no.
+    #[test]
+    fn what_may_be_sent_as_a_video_message() {
+        const CEILING: usize = 12 * 1024 * 1024;
+        assert_eq!(Attachment::ROUND_VIDEO_MAX_MS, 60_000);
+        assert_eq!(Attachment::ROUND_VIDEO_MAX_SIDE, 720);
+        assert!(round_video().fits_round_video(CEILING));
+
+        let with = |change: &dyn Fn(&mut Attachment)| {
+            let mut attachment = round_video();
+            change(&mut attachment);
+            attachment.fits_round_video(CEILING)
+        };
+        // The edges that ARE allowed.
+        assert!(with(&|a| {
+            a.width = Some(1);
+            a.height = Some(1);
+        }));
+        assert!(with(&|a| {
+            a.width = Some(720);
+            a.height = Some(720);
+        }));
+        assert!(with(&|a| a.duration_ms = Some(1)));
+        assert!(with(&|a| a.duration_ms = Some(60_000)));
+        assert!(with(&|a| a.size = CEILING as i64));
+        assert!(with(&|a| a.size = 0));
+
+        // Not a video, or not an MP4.
+        for (kind, mime) in [
+            ("photo", "image/jpeg"),
+            ("audio", "audio/mp4"),
+            ("file", "video/mp4"),
+            ("location", Attachment::LOCATION_MIME),
+            ("video", "video/quicktime"),
+        ] {
+            assert!(
+                !with(&|a| {
+                    a.kind = kind.to_string();
+                    a.mime = mime.to_string();
+                }),
+                "{kind} {mime}"
+            );
+        }
+        // The shape: missing, out of range, or not a square.
+        assert!(!with(&|a| a.width = None));
+        assert!(!with(&|a| a.height = None));
+        assert!(!with(&|a| {
+            a.width = None;
+            a.height = None;
+        }));
+        assert!(!with(&|a| {
+            a.width = Some(0);
+            a.height = Some(0);
+        }));
+        assert!(!with(&|a| {
+            a.width = Some(-480);
+            a.height = Some(-480);
+        }));
+        assert!(!with(&|a| {
+            a.width = Some(721);
+            a.height = Some(721);
+        }));
+        assert!(!with(&|a| a.height = Some(640)));
+        // The length: missing, nothing, or over the minute.
+        assert!(!with(&|a| a.duration_ms = None));
+        assert!(!with(&|a| a.duration_ms = Some(0)));
+        assert!(!with(&|a| a.duration_ms = Some(-1)));
+        assert!(!with(&|a| a.duration_ms = Some(60_001)));
+        // The bytes.
+        assert!(!with(&|a| a.size = CEILING as i64 + 1));
+        assert!(!with(&|a| a.size = -1));
     }
 }

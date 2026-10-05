@@ -817,6 +817,15 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
     /// other thing this codebase calls a sticker and has nothing to do
     /// with this field.
     let sticker: Bool
+    /// True when (and only when) the message that carries this was sent as
+    /// a VIDEO MESSAGE (docs/protocol.md, "Video messages", #79): still a
+    /// `kind=video` in every other respect, drawn as a circle with no
+    /// balloon. Absent on the wire when false — never `false` — and never
+    /// beside `sticker`.
+    ///
+    /// `isRound`, with the coding key `round`, so nothing here shadows
+    /// Swift's own `round(_:)`.
+    let isRound: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -832,6 +841,7 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         case longitude
         case accuracyM = "accuracy_m"
         case sticker
+        case isRound = "round"
     }
 
     init(
@@ -847,7 +857,8 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         latitude: Double?,
         longitude: Double?,
         accuracyM: Int?,
-        sticker: Bool = false
+        sticker: Bool = false,
+        isRound: Bool = false
     ) {
         self.id = id
         self.kind = kind
@@ -862,6 +873,7 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         self.longitude = longitude
         self.accuracyM = accuracyM
         self.sticker = sticker
+        self.isRound = isRound
     }
 
     /// Hand-written for the reason `UserDTO`'s is: a property default is
@@ -884,6 +896,7 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
         accuracyM = try container.decodeIfPresent(Int.self, forKey: .accuracyM)
         sticker = try container.decodeIfPresent(Bool.self, forKey: .sticker) ?? false
+        isRound = try container.decodeIfPresent(Bool.self, forKey: .isRound) ?? false
     }
 
     /// And the writing half, because MessageEntity stores the set in the
@@ -904,6 +917,7 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         try container.encodeIfPresent(longitude, forKey: .longitude)
         try container.encodeIfPresent(accuracyM, forKey: .accuracyM)
         if sticker { try container.encode(true, forKey: .sticker) }
+        if isRound { try container.encode(true, forKey: .isRound) }
     }
 
     var isVideo: Bool { kind == Kind.video }
@@ -944,7 +958,8 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
             latitude: latitude,
             longitude: longitude,
             accuracyM: accuracyM,
-            sticker: sticker)
+            sticker: sticker,
+            isRound: isRound)
     }
 
     /// The types a sticker may be (docs/protocol.md, "What a sticker is
@@ -1570,6 +1585,12 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
     /// pack management rather than discovering a 404 when somebody taps.
     let maxPackItems: Int?
     let maxPackItemBytes: Int?
+    /// Video messages (#79; docs/protocol.md, "Video messages"): the longest
+    /// one, and the most bytes one may be. ALWAYS present on a server that
+    /// has them, so their absence is the capability check — a server that
+    /// predates them is offered no video entry and never sent `round`.
+    let maxRoundVideoMS: UInt64?
+    let maxRoundVideoBytes: Int?
 
     enum CodingKeys: String, CodingKey {
         case family
@@ -1580,6 +1601,8 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         case maxPackSeq = "max_pack_seq"
         case maxPackItems = "max_pack_items"
         case maxPackItemBytes = "max_pack_item_bytes"
+        case maxRoundVideoMS = "max_round_video_ms"
+        case maxRoundVideoBytes = "max_round_video_bytes"
         case blockedUserIDs = "blocked_user_ids"
         case nextOwnerUserID = "next_owner_user_id"
     }
@@ -1594,8 +1617,12 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         nextOwnerUserID: Int64? = nil,
         maxPackSeq: Int64? = nil,
         maxPackItems: Int? = nil,
-        maxPackItemBytes: Int? = nil
+        maxPackItemBytes: Int? = nil,
+        maxRoundVideoMS: UInt64? = nil,
+        maxRoundVideoBytes: Int? = nil
     ) {
+        self.maxRoundVideoMS = maxRoundVideoMS
+        self.maxRoundVideoBytes = maxRoundVideoBytes
         self.blockedUserIDs = blockedUserIDs
         self.nextOwnerUserID = nextOwnerUserID
         self.family = family
@@ -1622,6 +1649,10 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         maxPackSeq = try container.decodeIfPresent(Int64.self, forKey: .maxPackSeq)
         maxPackItems = try container.decodeIfPresent(Int.self, forKey: .maxPackItems)
         maxPackItemBytes = try container.decodeIfPresent(Int.self, forKey: .maxPackItemBytes)
+        // Lenient: a malformed value reads as absent — no video entry —
+        // rather than failing the whole roster.
+        maxRoundVideoMS = (try? container.decodeIfPresent(UInt64.self, forKey: .maxRoundVideoMS)) ?? nil
+        maxRoundVideoBytes = (try? container.decodeIfPresent(Int.self, forKey: .maxRoundVideoBytes)) ?? nil
         blockedUserIDs = try container.decodeIfPresent([Int64].self, forKey: .blockedUserIDs) ?? []
         nextOwnerUserID = try container.decodeIfPresent(Int64.self, forKey: .nextOwnerUserID)
     }

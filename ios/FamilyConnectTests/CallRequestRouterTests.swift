@@ -164,4 +164,17 @@ struct CallRequestRouterTests {
         // distinction is real rather than a case that never fires.
         #expect(CallRequestRouter.resolve(request(.phoneNumber("+44 20 7946 0000")), in: directory(blocked: [7])) == .unknown)
     }
+
+    @Test("under the video recorder: a member is rung in place; a question or a refusal waits for it to close (#79, S3.3, S4)")
+    func underTheRecorder() {
+        typealias R = CallRequestRouter
+        #expect(R.underRecorder(.member(7), recorderOpen: false) == .act)
+        #expect(R.underRecorder(.needsChoice(contactIdentifier: "c", name: "Anna"), recorderOpen: false) == .act)
+        #expect(R.underRecorder(.member(7), recorderOpen: true) == .ringInPlace,
+                "a call over the recorder must not open another thread beneath it")
+        #expect(R.underRecorder(.needsChoice(contactIdentifier: "c", name: "Anna"), recorderOpen: true) == .waitForRecorder,
+                "the link sheet would open from content the recorder disables")
+        #expect(R.underRecorder(.blocked(7), recorderOpen: true) == .waitForRecorder)
+        #expect(R.underRecorder(.unknown, recorderOpen: true) == .waitForRecorder)
+    }
 }

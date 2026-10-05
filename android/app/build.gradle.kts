@@ -293,6 +293,15 @@ dependencies {
     implementation(libs.androidx.media3.transformer)
     implementation(libs.androidx.media3.effect)
 
+    // CameraX — recording a video message in the app (#79): the preview,
+    // the recording, and a lifecycle of the recorder's own so a rebuilt
+    // activity does not end a take. See the catalog's header note.
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.androidx.camera.video)
+
     // Firebase Cloud Messaging — push notifications (docs/protocol.md,
     // "Push notifications"). Messaging is the ONLY Firebase artifact: no
     // analytics, no crashlytics — the app's privacy posture is that user

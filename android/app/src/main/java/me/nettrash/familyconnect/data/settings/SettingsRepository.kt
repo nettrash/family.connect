@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.ParkedRecording
+import me.nettrash.familyconnect.data.repo.RoundVideoLimits
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -130,6 +131,17 @@ data class SettingsState(
      */
     val packMaxItems: Int = 0,
     val packMaxItemBytes: Long = 0,
+    /**
+     * Video messages' limits from `GET /families/mine` (#79): the longest a
+     * clip may be and the most bytes it may take. **0 means the server has
+     * no video messages** (or has not said yet) — the keys are always
+     * present on a server that has them, so their absence is the whole
+     * capability check: no video button, no menu item, never `round`.
+     * Stored for the same reason as the pack's: the door is there on a
+     * launch with no network.
+     */
+    val roundVideoMaxMs: Long = 0,
+    val roundVideoMaxBytes: Long = 0,
     /**
      * The pack items this DEVICE sent most recently, newest first — what
      * the sticker panel puts at the top. Never on the wire and never
@@ -340,6 +352,12 @@ data class SettingsState(
      * shown on this device (S7.2) — once per device, ever.
      */
     val voiceCoachMarkShown: Boolean = false,
+    /**
+     * The video recorder's PREVIEW has said "Only you can see this until you
+     * start recording." on this device (#79, S3.4, S7.5): once per DEVICE,
+     * so it survives a sign-out like the voice teaching above.
+     */
+    val roundPreviewTaught: Boolean = false,
 )
 
 interface SettingsRepository {
@@ -397,6 +415,13 @@ interface SettingsRepository {
      * the sticker button away again.
      */
     suspend fun setPackLimits(maxItems: Int?, maxItemBytes: Long?)
+
+    /**
+     * Record what `GET /families/mine` said video messages' limits are. Null
+     * for either means the server predates them, stored as 0 — a complete
+     * state-set, so a server rolled back takes the video entry away again.
+     */
+    suspend fun setRoundVideoLimits(maxMs: Long?, maxBytes: Long?)
 
     /** REPLACE the recently-sent list (newest first). Device-local. */
     suspend fun setPackRecents(itemIds: List<Long>)
@@ -535,6 +560,9 @@ interface SettingsRepository {
     /** The voice coach mark has been shown on this device (#79, S7.2). Device-scoped. */
     suspend fun setVoiceCoachMarkShown()
 
+    /** The recorder's first-time PREVIEW line has been shown on this device (#79, S3.4). */
+    suspend fun setRoundPreviewTaught()
+
     suspend fun resetKeepingServerUrl()
 }
 
@@ -573,6 +601,8 @@ class DataStoreSettingsRepository @Inject constructor(
         val PACK_CURSOR = longPreferencesKey("pack_cursor")
         val PACK_MAX_ITEMS = intPreferencesKey("pack_max_items")
         val PACK_MAX_ITEM_BYTES = longPreferencesKey("pack_max_item_bytes")
+        val ROUND_VIDEO_MAX_MS = longPreferencesKey("round_video_max_ms")
+        val ROUND_VIDEO_MAX_BYTES = longPreferencesKey("round_video_max_bytes")
         // One joined string rather than a string SET: the order is the
         // whole meaning of "recent", and a set has none.
         val PACK_RECENTS = stringPreferencesKey("pack_recents")
@@ -626,6 +656,7 @@ class DataStoreSettingsRepository @Inject constructor(
         val REVIEW_BEFORE_SENDING = booleanPreferencesKey("review_before_sending")
         val HELD_RELEASE_TAUGHT = booleanPreferencesKey("held_release_taught")
         val VOICE_COACH_MARK_SHOWN = booleanPreferencesKey("voice_coach_mark_shown")
+        val ROUND_PREVIEW_TAUGHT = booleanPreferencesKey("round_preview_taught")
     }
 
     override val state: Flow<SettingsState> = dataStore.data.map { prefs ->
@@ -656,6 +687,8 @@ class DataStoreSettingsRepository @Inject constructor(
             packCursor = prefs[Keys.PACK_CURSOR] ?: 0L,
             packMaxItems = prefs[Keys.PACK_MAX_ITEMS] ?: 0,
             packMaxItemBytes = prefs[Keys.PACK_MAX_ITEM_BYTES] ?: 0L,
+            roundVideoMaxMs = prefs[Keys.ROUND_VIDEO_MAX_MS] ?: 0L,
+            roundVideoMaxBytes = prefs[Keys.ROUND_VIDEO_MAX_BYTES] ?: 0L,
             // `toLongOrNull`, for the block list's reason: a corrupt entry
             // must not throw inside the map every screen collects.
             packRecents = prefs[Keys.PACK_RECENTS]
@@ -693,6 +726,7 @@ class DataStoreSettingsRepository @Inject constructor(
             reviewBeforeSending = prefs[Keys.REVIEW_BEFORE_SENDING] == true,
             heldReleaseTaught = prefs[Keys.HELD_RELEASE_TAUGHT] == true,
             voiceCoachMarkShown = prefs[Keys.VOICE_COACH_MARK_SHOWN] == true,
+            roundPreviewTaught = prefs[Keys.ROUND_PREVIEW_TAUGHT] == true,
         )
     }
 
@@ -772,6 +806,15 @@ class DataStoreSettingsRepository @Inject constructor(
         dataStore.edit {
             it[Keys.PACK_MAX_ITEMS] = maxItems ?: 0
             it[Keys.PACK_MAX_ITEM_BYTES] = maxItemBytes ?: 0L
+        }
+    }
+
+    override suspend fun setRoundVideoLimits(maxMs: Long?, maxBytes: Long?) {
+        dataStore.edit {
+            // Both or neither: one without the other is not a server that has them.
+            val limits = RoundVideoLimits.of(maxMs, maxBytes)
+            it[Keys.ROUND_VIDEO_MAX_MS] = limits?.maxMs ?: 0L
+            it[Keys.ROUND_VIDEO_MAX_BYTES] = limits?.maxBytes ?: 0L
         }
     }
 
@@ -951,6 +994,10 @@ class DataStoreSettingsRepository @Inject constructor(
         dataStore.edit { it[Keys.VOICE_COACH_MARK_SHOWN] = true }
     }
 
+    override suspend fun setRoundPreviewTaught() {
+        dataStore.edit { it[Keys.ROUND_PREVIEW_TAUGHT] = true }
+    }
+
     override suspend fun resetKeepingServerUrl() {
         dataStore.edit { prefs ->
             val keepUrl = prefs[Keys.SERVER_URL]
@@ -971,6 +1018,7 @@ class DataStoreSettingsRepository @Inject constructor(
             val keepReviewBeforeSending = prefs[Keys.REVIEW_BEFORE_SENDING]
             val keepHeldReleaseTaught = prefs[Keys.HELD_RELEASE_TAUGHT]
             val keepVoiceCoachMarkShown = prefs[Keys.VOICE_COACH_MARK_SHOWN]
+            val keepRoundPreviewTaught = prefs[Keys.ROUND_PREVIEW_TAUGHT]
             prefs.clear()
             keepUrl?.let { prefs[Keys.SERVER_URL] = it }
             keepPushToken?.let { prefs[Keys.PUSH_TOKEN] = it }
@@ -979,6 +1027,7 @@ class DataStoreSettingsRepository @Inject constructor(
             keepReviewBeforeSending?.let { prefs[Keys.REVIEW_BEFORE_SENDING] = it }
             keepHeldReleaseTaught?.let { prefs[Keys.HELD_RELEASE_TAUGHT] = it }
             keepVoiceCoachMarkShown?.let { prefs[Keys.VOICE_COACH_MARK_SHOWN] = it }
+            keepRoundPreviewTaught?.let { prefs[Keys.ROUND_PREVIEW_TAUGHT] = it }
         }
     }
 }

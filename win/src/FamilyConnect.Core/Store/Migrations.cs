@@ -284,8 +284,28 @@ public static class Migrations
     ];
 
     /// <summary>
+    /// Step 6: VIDEO MESSAGES (docs/protocol.md, "Video messages"; docs/audio-video-messages-2026-10-04.md, S5). The one
+    /// bit a queued send needs to stay a circle across a relaunch — step 4's sticker column, one over — and which circles
+    /// THIS DEVICE has played, for the dot beside an unplayed one. Nothing held is read again: the outbox gains a column
+    /// whose default is what every row already in it means, and the other table is new.
+    /// </summary>
+    private static readonly string[] Six =
+    [
+        // A queued send that is a VIDEO MESSAGE: without it a circle recorded offline would land as a square video.
+        "ALTER TABLE outbox ADD COLUMN round INTEGER NOT NULL DEFAULT 0",
+        """
+        -- The video messages THIS DEVICE has played, by attachment: the dot's own knowledge (S5.2). Never on the wire —
+        -- whether somebody watched something is theirs — and wiped with the rest of the cache at sign-out, so it is
+        -- this account's. Only the newest few thousand are kept (PlayedRoundStore).
+        CREATE TABLE played_rounds (
+            attachment_id INTEGER PRIMARY KEY
+        )
+        """,
+    ];
+
+    /// <summary>
     /// Every step, in order. The index is the version it upgrades FROM, so
     /// <c>All.Count</c> is the schema this build expects.
     /// </summary>
-    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five];
+    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five, Six];
 }

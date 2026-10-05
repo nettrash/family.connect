@@ -23,7 +23,13 @@ public sealed record SendRequest(
     /// one"). Absent otherwise — never <c>false</c>, which is why it is nullable: an ordinary
     /// message must go to a server that predates stickers exactly as it always went.
     /// </summary>
-    bool? Sticker = null);
+    bool? Sticker = null,
+    /// <summary>
+    /// <c>true</c> sends the message's one video as a VIDEO MESSAGE, drawn round (docs/protocol.md, "Video messages").
+    /// Absent otherwise — never <c>false</c> — and never sent to a server whose <c>GET /families/mine</c> does not name
+    /// <c>max_round_video_ms</c>, which would ignore it and deliver a square video.
+    /// </summary>
+    bool? Round = null);
 
 public sealed record PollRequest(string[] Options);
 
@@ -290,7 +296,14 @@ public sealed record FamilyResponse(
     /// immediately before the leave dialog and never named from a cached value; absent on a fresh
     /// read means the owner is the last member and leaving DELETES the family.
     /// </summary>
-    [property: JsonPropertyName("next_owner_user_id")] long? NextOwnerUserId = null)
+    [property: JsonPropertyName("next_owner_user_id")] long? NextOwnerUserId = null,
+    /// <summary>
+    /// The two limits of a VIDEO MESSAGE (docs/protocol.md, "Video messages", 2026-10-05): its length, fixed at 60 000,
+    /// and the byte ceiling in force. ALWAYS present on a server that has video messages, so their ABSENCE is how a
+    /// client knows to offer no way of recording one and never to send <c>round</c> (<see cref="RoundVideoLimits.Of"/>).
+    /// </summary>
+    [property: JsonPropertyName("max_round_video_ms")] long? MaxRoundVideoMs = null,
+    [property: JsonPropertyName("max_round_video_bytes")] long? MaxRoundVideoBytes = null)
 {
     /// <summary>
     /// Whether this server can draw at all — the whole of the capability check for the board's
@@ -303,6 +316,21 @@ public sealed record FamilyResponse(
     /// because typing it would produce nothing.
     /// </summary>
     public bool HasAssistant => Assistant is not null;
+}
+
+/// <summary>
+/// What a server that has video messages says about them on <c>GET /families/mine</c>: how long one may be and how many
+/// bytes (docs/protocol.md, "Video messages"). A client records to <see cref="MaxMs"/> − 500 and sends the flag only on a
+/// clip within <see cref="MaxBytes"/>.
+/// </summary>
+public sealed record RoundVideoLimits(long MaxMs, long MaxBytes)
+{
+    /// <summary>
+    /// Both keys, or nothing: one missing — or a number no server sends — is a server this client cannot record for, and
+    /// a video entry that leads to a refusal is worse than none.
+    /// </summary>
+    public static RoundVideoLimits? Of(FamilyResponse family) =>
+        family is { MaxRoundVideoMs: { } ms and > 0, MaxRoundVideoBytes: { } bytes and > 0 } ? new(ms, bytes) : null;
 }
 
 public sealed record AssistantDto(

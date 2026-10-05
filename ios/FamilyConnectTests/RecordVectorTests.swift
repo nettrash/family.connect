@@ -531,10 +531,17 @@ struct RecordVectorTests {
             let mine = Self.encode(door)
             #expect(Self.same(mine, vector.expected),
                     "\(vector.name): \(Self.describe(mine)) != \(Self.describe(vector.expected))")
-            // Decision 40: this build, whatever else is true, shows no door.
+            // Decision 40: a build that does not record shows no door…
+            var receivesOnly = inputs
+            receivesOnly.recordsRoundVideo = false
+            #expect(VideoDoor.of(receivesOnly) == .hidden, "\(vector.name): a door in a build that records no video")
+            // …and this one (Phase 3a) records, so it shows what the
+            // reference says a recording build shows.
             var thisBuild = inputs
             thisBuild.recordsRoundVideo = VideoDoor.thisBuildRecords
-            #expect(VideoDoor.of(thisBuild) == .hidden, "\(vector.name): a door in a build that records no video")
+            var recording = inputs
+            recording.recordsRoundVideo = true
+            #expect(VideoDoor.of(thisBuild) == VideoDoor.of(recording), "\(vector.name)")
         }
     }
 

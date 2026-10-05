@@ -154,7 +154,14 @@ public sealed record AttachmentDto(
     /// (<c>App.Logic.Sticker</c>, <c>StickerFace</c>); this is the other thing — a picture in a
     /// chat — and the only place the wire itself spells the word.
     /// </remarks>
-    bool Sticker = false)
+    bool Sticker = false,
+    /// <summary>
+    /// This video was SENT AS A VIDEO MESSAGE (docs/protocol.md, "Video messages"): a square H.264/AAC MP4 recorded to be
+    /// drawn round. Present on the wire only when true, set by the send and never changed — so every video from before
+    /// video messages, and every one a 1.2 app sent, reads false here. Never beside <see cref="Sticker"/>, never on
+    /// anything but a video; in every other respect it is still <c>kind=video</c>.
+    /// </summary>
+    bool Round = false)
 {
     public bool IsPhoto => Kind == "photo";
     public bool IsVideo => Kind == "video";
@@ -213,6 +220,21 @@ public sealed record MessageDto(
     /// </remarks>
     public AttachmentDto? StickerPicture =>
         Media is [{ Sticker: true, Kind: "photo" } picture] ? picture : null;
+
+    /// <summary>
+    /// The video this message IS, when it is a video message — drawn as a circle with no balloon
+    /// (docs/protocol.md, "Video messages"; docs/audio-video-messages-2026-10-04.md, S5.1).
+    /// </summary>
+    /// <remarks>
+    /// THE SAME TEST ON EVERY CLIENT (<c>fc_text::record::is_round</c>, its vectors in <c>record-vectors.json</c>): exactly
+    /// ONE attachment, that attachment is <c>kind=video</c>, it carries <c>round: true</c>, and the message has NO BODY.
+    /// Anything else — two attachments, the flag on a photo, a body, a server that ignores the flag — is null, and is drawn
+    /// as the ordinary message it otherwise is. The body is compared EXACTLY: the server stores an attachment message whose
+    /// body trims to nothing as <c>""</c>, so no port's idea of whitespace can make two clients disagree. A body the wire
+    /// left out is read as none.
+    /// </remarks>
+    public AttachmentDto? RoundVideo =>
+        string.IsNullOrEmpty(Body) && Media is [{ Round: true, Kind: "video" } video] ? video : null;
 }
 
 public sealed record TaskItemDto(long Id, string Text, bool Done, long? DoneBy = null);

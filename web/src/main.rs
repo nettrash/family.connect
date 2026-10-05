@@ -28,10 +28,12 @@ mod location;
 mod media;
 mod model;
 mod notify;
+mod now_playing;
 mod outbox;
 mod pack;
 mod prep;
 mod recorder;
+mod round_video;
 mod session;
 mod socket;
 mod staged;
@@ -48,6 +50,10 @@ mod fake_server;
 mod layout_tests;
 #[cfg(test)]
 mod recording_tests;
+#[cfg(test)]
+mod round_record_tests;
+#[cfg(test)]
+mod round_tests;
 #[cfg(test)]
 mod voice_tests;
 
@@ -669,6 +675,7 @@ fn app() -> Html {
                         transcripts={store.transcripts.clone()}
                         on_action={on_action.clone()}
                         now_ms={now}
+                        round={store.round}
                         item={item.clone()}
                     />
                 } else {
@@ -708,9 +715,11 @@ fn app() -> Html {
 
 /// Whether this tab's end — closed, reloaded, signed out — would lose
 /// something only it holds: a message not sent yet, something staged, a
-/// voice message that was not sent, or one being recorded or finished.
+/// voice message that was not sent, or one being recorded or finished — or
+/// a video message being recorded, or waiting in review (the plan for #79,
+/// S4, S8.7).
 fn leaving_loses_something(state: &AppState) -> bool {
-    state.store.holds_unsent() || recorder::in_progress()
+    state.store.holds_unsent() || recorder::in_progress() || round_video::in_progress()
 }
 
 /// The browser's own question before the tab closes or reloads, asked

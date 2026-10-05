@@ -71,6 +71,12 @@ final class PendingMediaItemEntity {
     /// a relaunch is still a sticker and not a photograph in a bubble.
     /// Defaulted, so a lightweight migration for an existing store.
     var sticker: Bool = false
+    /// This send is a VIDEO MESSAGE (docs/protocol.md, "Video messages",
+    /// #79): one square MP4 whose message says `round: true`. Held here for
+    /// the sticker's reason — a send resumed after a relaunch must still be
+    /// a circle, not a square video — and drawn round at once from the
+    /// local poster (S5.6). Defaulted, so a lightweight migration.
+    var isRound: Bool = false
 
     // MARK: - Locations
 
@@ -119,6 +125,7 @@ final class PendingMediaItemEntity {
         longitude: Double? = nil,
         accuracyM: Int? = nil,
         sticker: Bool = false,
+        isRound: Bool = false,
         createdAt: Date = Date()
     ) {
         self.itemID = itemID
@@ -137,6 +144,7 @@ final class PendingMediaItemEntity {
         self.longitude = longitude
         self.accuracyM = accuracyM
         self.sticker = sticker
+        self.isRound = isRound
         self.createdAt = createdAt
     }
 }
@@ -176,7 +184,8 @@ extension PendingMediaItemEntity {
             latitude: latitude,
             longitude: longitude,
             accuracyM: accuracyM,
-            sticker: sticker)
+            sticker: sticker,
+            isRound: isRound)
     }
 
     /// This item as the wire shape, once its bytes are on the server.
@@ -199,6 +208,7 @@ extension PendingMediaItemEntity {
             latitude: latitude,
             longitude: longitude,
             accuracyM: accuracyM,
-            sticker: sticker)
+            sticker: sticker,
+            isRound: isRound)
     }
 }

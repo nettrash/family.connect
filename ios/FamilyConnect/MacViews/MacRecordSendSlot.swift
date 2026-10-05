@@ -204,6 +204,10 @@ struct MacRecordSendSlot: View {
     let onActivate: () -> Void
     /// The secondary menu's Record Voice Message.
     let onRecordFromMenu: () -> Void
+    /// S1.2's **round available**: Record Video Message in the menu and the
+    /// accessibility action "Record video message" (S1.6, S6).
+    var offersVideo = false
+    var onRecordVideo: () -> Void = {}
     let onStopAndListen: () -> Void
     let onDelete: () -> Void
     /// VoiceOver's escape: Stop, as Esc is (S6).
@@ -241,13 +245,12 @@ struct MacRecordSendSlot: View {
         .accessibilityInputLabels(MacRecordSlot.inputLabels(for: slot).map { Text(verbatim: $0) })
         .modifier(RecordingActions(
             actions: MacRecordSlot.actions(for: slot), stop: onStopAndListen, delete: onDelete))
+        .modifier(VideoAction(offered: offersVideo && slot.isMicrophone, record: onRecordVideo))
         .accessibilityAction(.escape, onEscape)
         .accessibilityFocused($voiceOverFocus)
         .focused($keyboardFocus)
         .contextMenu {
             if MacRecordSlot.offersMenu(slot) {
-                // Record Video Message joins it in Phase 3, where round video
-                // is available (S1.6) — never before (Decision 40).
                 Button {
                     onRecordFromMenu()
                 } label: {
@@ -258,11 +261,37 @@ struct MacRecordSendSlot: View {
                 // Were this one ever live too, it would do the same thing —
                 // the item is the slot's own, and only on a microphone.
                 .keyboardShortcut("r", modifiers: [.command, .option])
+                // Where round video is available, with no shortcut — no
+                // shortcut ever opens the camera (S1.6). In rows 7–8 it
+                // explains, in row 9 it opens, as the video button does.
+                if offersVideo {
+                    Button {
+                        onRecordVideo()
+                    } label: {
+                        Label("Record Video Message", systemImage: "video.circle")
+                    }
+                }
             }
         }
         .onChange(of: focusRequest) {
             voiceOverFocus = true
             keyboardFocus = true
+        }
+    }
+}
+
+/// "Record video message" on the microphone, where round video is
+/// available (S1.6, S6).
+private struct VideoAction: ViewModifier {
+    let offered: Bool
+    let record: () -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if offered {
+            content.accessibilityAction(named: Text("Record video message"), record)
+        } else {
+            content
         }
     }
 }

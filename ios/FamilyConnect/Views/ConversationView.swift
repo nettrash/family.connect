@@ -101,6 +101,9 @@ struct ConversationView: View {
     /// taken from RootView because this is where the other two facts are,
     /// and all three have to be published together.
     @Environment(\.scenePhase) private var scenePhase
+    /// The window's round-video recorder (#79, Phase 3): a layer of the
+    /// root, opened from here (`VideoMessageRecorderHost`).
+    @Environment(VideoMessagePresenter.self) private var videoRecorder: VideoMessagePresenter?
     @Query private var messages: [MessageEntity]
     @Query private var chats: [ChatEntity]
     @Query private var members: [MemberEntity]
@@ -243,6 +246,12 @@ struct ConversationView: View {
     /// for the life of the view, so a late release can never end another
     /// composer's recording.
     @State private var voice = VoiceComposer()
+    /// Where this conversation lies in the window — what the video
+    /// recorder lays itself out over (S3.3).
+    @State private var conversationFrame: CGRect?
+    /// When the video button last appeared: it ignores activation for
+    /// 600 ms after (S1.1, S1.4).
+    @State private var videoDoorShownAtMS: UInt64 = 0
     /// A line the voice flow shows — "Next time, letting go will send it.",
     /// "We didn't hear anything.", the too-short and five-minute sentences
     /// (S2.3, S2.5) — and when it goes again.
@@ -524,9 +533,32 @@ struct ConversationView: View {
         // which the compiler has been warning about here for a while. The
         // closure is inferred with this view's isolation, so the call is
         // the same call, made where it was always being made.
-        MessagePresentation.daySections(
-            visibleMessages.map { MessageSnapshot($0) },
+        // A reply quoting a video message says "Video message" (#79, S5.7):
+        // the quote's excerpt is a cut of a body the circle does not have.
+        let snapshots = visibleMessages.map { MessageSnapshot($0) }
+        let roundIDs = MessagePresentation.roundMessageIDs(snapshots)
+        return MessagePresentation.daySections(
+            snapshots.map { MessagePresentation.namingRoundQuotes($0, roundIDs: roundIDs) },
             firstUnreadID: unreadDividerServerID)
+    }
+
+    /// What the composer's reply banner says the quoted message was — its
+    /// excerpt, or "Video message" for a circle, which has no words.
+    private func quoteWord(_ quote: ReplyToDTO) -> String {
+        guard quote.excerpt.isEmpty,
+              let quoted = messages.first(where: { $0.serverID == quote.messageID }),
+              MessagePresentation.isRoundVideo(MessageSnapshot(quoted))
+        else { return quote.excerpt }
+        return String(localized: "Video message")
+    }
+
+    /// "Open Full Screen" on a video message: the existing viewer, with
+    /// scrubbing (S5.4). Whatever plays in place lets go first.
+    private func openFullScreen(_ message: MessageSnapshot) {
+        let media = AttachmentAlbum.media(of: message.attachments)
+        guard !media.isEmpty else { return }
+        NowPlaying.shared.pauseAll()
+        viewingAlbum = AttachmentAlbum(items: media, index: 0)
     }
 
     /// The server id the "N new messages" rule is drawn above, and the
@@ -1060,6 +1092,7 @@ struct ConversationView: View {
             // time to "fewer cached rows than the count" and give up — so
             // the one open that most needs an anchor would never get one.
         }
+        .modifier(VideoPaneReporter(frame: $conversationFrame, presenter: videoRecorder))
         .onDisappear {
             coordinator.releasePresence(chatID: chatID)
             // Leaving the chat stops a recording and keeps it, and a voice
@@ -1231,6 +1264,11 @@ struct ConversationView: View {
                                 onOpenAttachment: { attachment in
                                     if MessagePresentation.isSticker(message) {
                                         viewingSticker = attachment
+                                    } else if MessagePresentation.isRoundVideo(message) {
+                                        // A tap plays a circle in place;
+                                        // this is its "Open Full Screen"
+                                        // (#79, S5.4).
+                                        openFullScreen(message)
                                     } else if attachment.isFile {
                                         openFile(attachment)
                                     } else {
@@ -1748,6 +1786,20 @@ struct ConversationView: View {
                     // Not during a call, and not while this chat holds a
                     // voice message that was not sent (S1.5, S2.8).
                     .disabled(slotInputs.blocked != nil)
+                    // Right below it, where round video is available
+                    // (S1.5). Works with words typed or items staged: a
+                    // video message travels alone, and they stay here.
+                    if roundAvailable {
+                        Button {
+                            openVideoRecorder()
+                        } label: {
+                            Label("Record Video Message", systemImage: "video.circle")
+                        }
+                        // Busy, editing (the menu's own guard) and a call;
+                        // NOT a waiting voice message — that rule is about
+                        // voice.
+                        .disabled(slotInputs.call)
+                    }
                 }
                 Button {
                     shareLocation()
@@ -1860,10 +1912,21 @@ struct ConversationView: View {
             }
             .lineLimit(1...5)
             .padding(.horizontal, 12)
+            // Room for the video button while it shows, so a placeholder
+            // never runs under it (S1.4).
+            .padding(.trailing, videoDoor == .hidden ? 0 : 28)
             .padding(.vertical, 7)
             .opacity(voice.inUndoWindow ? 0 : 1)
             .accessibilityHidden(voice.inUndoWindow)
             .composerFieldBackground()
+            .overlay(alignment: .topTrailing) {
+                if videoDoor != .hidden {
+                    videoDoorButton
+                }
+            }
+            .onChange(of: videoDoor == .hidden, initial: true) { _, hidden in
+                if !hidden { videoDoorShownAtMS = VoiceComposer.uptimeMS() }
+            }
             .overlay {
                 if let undo = voice.state.undo {
                     VoiceUndoRow(
@@ -1946,7 +2009,7 @@ struct ConversationView: View {
                 Text("Replying to \(quoteAuthorName(quote.senderID))")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tint)
-                Text(quote.excerpt)
+                Text(quoteWord(quote))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -2114,6 +2177,7 @@ struct ConversationView: View {
     /// disagree about whether something records.
     private var slotInputs: ComposerSlot.Inputs {
         ComposerSlot.Inputs(
+            recorderOpen: videoRecorder?.isOpen ?? false,
             recording: voice.state.recording,
             editing: editTarget != nil,
             draftBlank: model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -2177,7 +2241,8 @@ struct ConversationView: View {
             focusRequest: voice.slotFocusRequest,
             side: composerControl,
             glyph: sendGlyph,
-            events: slotEvents)
+            events: slotEvents,
+            offersVideo: roundAvailable)
             .overlay(alignment: .top) {
                 if voice.isHolding, !voice.isArmed {
                     VoiceLockCue()
@@ -2201,6 +2266,7 @@ struct ConversationView: View {
             holdReached: { voice.holdReached() },
             activated: { activateSlot() },
             recordFromMenu: { recordVoiceMessage() },
+            recordVideo: { openVideoRecorder() },
             stopAndListen: { voice.stop() },
             deleteRecording: { voice.delete() },
             magicTap: { voice.magicTap() },
@@ -2229,6 +2295,105 @@ struct ConversationView: View {
         case .save(enabled: false), .sendDisabled, .heldMicrophone, .recorder:
             break
         }
+    }
+
+    // MARK: - Video messages (#79, Phase 3)
+
+    /// S1.2's **round available**: the server sends `max_round_video_ms`,
+    /// the device has a camera, this build records — in a family or a
+    /// direct chat (S1.4, S1.5).
+    private var roundAvailable: Bool {
+        !isAssistantChat && videoRecorder != nil && videoDoorInputs.roundAvailable
+    }
+
+    private var videoDoorInputs: VideoDoor.Inputs {
+        VideoDoor.Inputs(
+            slot: slotInputs,
+            familyOrDirectChat: !isAssistantChat,
+            undoWindow: voice.inUndoWindow,
+            serverOffersRound: AppSettings.offersRoundVideo,
+            hasCamera: VideoMessageRecorder.hasCamera,
+            encoderProbePasses: true)
+    }
+
+    /// The video button inside the empty field (S1.4).
+    private var videoDoor: VideoDoor {
+        guard videoRecorder != nil else { return .hidden }
+        return VideoDoor.of(videoDoorInputs)
+    }
+
+    /// A 22-point glyph in a 44-point target at the field's trailing edge,
+    /// centred on the first line (S1.4).
+    private var videoDoorButton: some View {
+        Button {
+            // It appears beside the slot the moment a text Send empties the
+            // field: a second tap that drifts left must not turn the camera
+            // on (S1.1).
+            let now = VoiceComposer.uptimeMS()
+            guard now >= videoDoorShownAtMS + RecordRules.activationGuardMS else { return }
+            openVideoRecorder()
+        } label: {
+            Image(systemName: "video.circle")
+                .font(.system(size: 22))
+                .foregroundStyle(videoDoor == .shown ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                .frame(width: 34, height: 36)
+                .contentShape(Rectangle().inset(by: -5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(verbatim: VideoDoor.label))
+        .accessibilityValue(videoDoor.noticeKey == nil ? Text("") : Text(verbatim: slotBlocked?.notice ?? ""))
+        .help(Text(verbatim: VideoDoor.tooltip))
+    }
+
+    /// The video button, the paperclip's Record Video Message, the
+    /// microphone's menu and its accessibility action (S3.1). Rows 7 and 8
+    /// say why instead (S1.4, S1.6); row 9 opens — that rule is voice's.
+    private func openVideoRecorder() {
+        guard let videoRecorder, roundAvailable, !videoRecorder.isOpen else { return }
+        if let reason = slotBlocked, reason != .notSent {
+            composerNotice = reason.notice
+            noticeOpensSettings = false
+            announce(reason.notice)
+            return
+        }
+        guard editTarget == nil, !mediaState.blocksComposer else { return }
+        // A released note still in its Undo window goes first (S2.6).
+        voice.otherAction()
+        // The keyboard is dismissed (S3.3).
+        inputFocused = false
+        let reply = replyDraft
+        videoRecorder.paneFrame = conversationFrame
+        videoRecorder.open(VideoMessageSession.Request(
+            chatID: chatID,
+            reply: reply,
+            replyTitle: reply.map { String(localized: "Replying to \(quoteAuthorName($0.senderID))") },
+            replyText: reply.map { quoteWord($0) },
+            maxRoundVideoMS: AppSettings.roundVideoMaxMS ?? RecordRules.defaultMaxRoundVideoMS,
+            maxRoundVideoBytes: AppSettings.roundVideoMaxBytes,
+            notSent: { !ParkedRecordings.shared.waiting(for: chatID).isEmpty },
+            send: { prepared, quote, round in sendVideoMessage(prepared, replyTo: quote, round: round) },
+            dropReply: {
+                withAnimation(.spring(duration: 0.25)) { replyDraft = nil }
+                replyStartedFromHistory = false
+            },
+            startVoice: { voice.record(besideDraft: !slotInputs.isEmpty) },
+            closed: {
+                // Focus back where it came from — the field, with a keyboard.
+                if GCKeyboard.coalesced != nil { inputFocused = true }
+            }))
+    }
+
+    /// The recorder's Send: the Phase 2 path with `round: true` — or, over
+    /// `max_round_video_bytes`, an ordinary video (S3.6). The words typed and
+    /// the items staged stay in the composer: a video message travels alone.
+    private func sendVideoMessage(_ prepared: MediaPrep.Prepared, replyTo: ReplyToDTO?, round: Bool) -> Bool {
+        let queued = round
+            ? coordinator.sendRoundVideo(prepared, replyTo: replyTo, in: chatID)
+            : coordinator.sendMedia([prepared], caption: "", replyTo: replyTo, in: chatID)
+        if queued == nil {
+            composerNotice = String(localized: "Couldn't send that — try again.")
+        }
+        return queued != nil
     }
 
     /// Record Voice Message — the paperclip, the microphone's menu, ⌥⌘R.
@@ -3220,9 +3385,13 @@ struct ConversationView: View {
                         // In a chain: a reply, or a root somebody answered.
                         let canViewThread = message.serverID != nil
                             && (message.threadRootID != nil || message.replyCount > 0)
-                        // Never on a sticker — see `offersEdit`.
+                        // Never on a sticker or a video message — see
+                        // `offersEdit`.
                         let canEdit = MessagePresentation.offersEdit(
                             MessageSnapshot(message), currentUserID: currentUserID)
+                        // A video message plays in place on a tap; its
+                        // menu is where the viewer is (#79, S5.4).
+                        let isRound = MessagePresentation.isRoundVideo(MessageSnapshot(message))
                         let attachment = message.attachmentSnapshot
                         // A photo sent without a caption has nothing to copy.
                         let canCopy = !message.body.isEmpty
@@ -3262,6 +3431,7 @@ struct ConversationView: View {
                         let menuSize = MessageContextMenu.size(
                             canReply: canReply,
                             canViewThread: canViewThread,
+                            canOpenFullScreen: isRound,
                             canEdit: canEdit,
                             canCopy: canCopy,
                             canReport: canReport,
@@ -3308,8 +3478,13 @@ struct ConversationView: View {
                                     dismissReactionPicker()
                                     openThread(serverID: message.serverID, threadRootID: message.threadRootID)
                                 },
+                                onOpenFullScreen: {
+                                    dismissReactionPicker()
+                                    openFullScreen(MessageSnapshot(message))
+                                },
                                 canReply: canReply,
                                 canViewThread: canViewThread,
+                                canOpenFullScreen: isRound,
                                 canEdit: canEdit,
                                 canCopy: canCopy,
                                 canReport: canReport,

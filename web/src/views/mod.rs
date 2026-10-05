@@ -20,6 +20,8 @@ pub mod poll;
 pub mod quiet;
 pub mod reactions;
 pub mod report;
+pub mod round_recorder;
+pub mod round_tile;
 pub mod settings;
 pub mod stickers;
 pub mod thread_panel;

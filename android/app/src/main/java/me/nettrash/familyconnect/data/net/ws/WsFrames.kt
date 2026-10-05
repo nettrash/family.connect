@@ -89,6 +89,12 @@ sealed interface ClientFrame {
          * send never carries the key at all.
          */
         val sticker: Boolean? = null,
+        /**
+         * Optional: `true` sends the one `kind=video` attachment as a VIDEO
+         * MESSAGE (protocol.md, "Video messages"; #79). Omitted the same
+         * way; never `false`, never beside [sticker].
+         */
+        val round: Boolean? = null,
     ) : ClientFrame
 
     @Serializable

@@ -86,6 +86,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.VideoCameraFront
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -187,6 +188,12 @@ internal fun RecordSendButton(
     onDeleteRecording: () -> Unit,
     /** The secondary click's menu: "Record voice message" (S1.6). */
     onRecordFromMenu: () -> Unit,
+    /**
+     * "Record video message" (#79, S1.6): the menu's second item and
+     * TalkBack's action on the microphone — only when S1.2's **round
+     * available** holds; null offers neither. Dimmed rows say why.
+     */
+    onRecordVideo: (() -> Unit)? = null,
     focusRequester: FocusRequester,
     modifier: Modifier = Modifier,
     /**
@@ -230,6 +237,8 @@ internal fun RecordSendButton(
     val startLabel = stringResource(R.string.s_start_recording_action)
     val stopLabel = stringResource(R.string.s_stop_and_listen_first)
     val deleteLabel = stringResource(R.string.s_delete_recording)
+    val videoLabel = stringResource(R.string.s_record_video_message)
+    val recordVideo by rememberUpdatedState(onRecordVideo)
 
     /** What activating the slot does, other than the microphone's own touch. */
     val click: () -> Unit = {
@@ -290,6 +299,14 @@ internal fun RecordSendButton(
                         },
                         CustomAccessibilityAction(deleteLabel) {
                             deleteRecording()
+                            true
+                        },
+                    )
+                } else if (slot.isMicrophone && onRecordVideo != null) {
+                    // S6: TalkBack's "Record video message" on the microphone.
+                    customActions = listOf(
+                        CustomAccessibilityAction(videoLabel) {
+                            recordVideo?.invoke()
                             true
                         },
                     )
@@ -396,6 +413,16 @@ internal fun RecordSendButton(
                     onRecordFromMenu()
                 },
             )
+            if (onRecordVideo != null) {
+                DropdownMenuItem(
+                    text = { Text(videoLabel) },
+                    leadingIcon = { Icon(Icons.Outlined.VideoCameraFront, contentDescription = null) },
+                    onClick = {
+                        menuOpen = false
+                        onRecordVideo()
+                    },
+                )
+            }
         }
         if (slot == Slot.HeldMicrophone) LockHint()
         if (coachMark) VoiceCoachMark(onDismiss = onDismissCoachMark)

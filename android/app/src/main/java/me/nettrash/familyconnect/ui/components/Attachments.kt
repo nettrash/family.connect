@@ -987,10 +987,12 @@ private fun AudioPlayerRow(
     var positionMs by remember(attachment.id) { mutableIntStateOf(0) }
     var scrubbing by remember(attachment.id) { mutableStateOf(false) }
 
-    // #79, S1.7 and S5.3, in a chat: one thing plays at a time, and nothing
-    // plays over a recording — starting one pauses this, and while it runs
-    // the play button is dimmed and says why. Outside a chat (a thread)
-    // there is no coordinator, and the row plays as it always has.
+    // #79, S1.7, S4 and S5.3: one thing plays at a time across the app, and
+    // nothing plays over a recording — starting one pauses this, and while it
+    // runs the play button is dimmed and says why. The coordinator is the
+    // app's now-playing owner (NowPlaying), which also pauses this when the
+    // audio focus goes or the headphones come out; only a preview or a test
+    // composes the row without one, and it then plays as it always has.
     val coordinator = me.nettrash.familyconnect.ui.chat.LocalPlaybackCoordinator.current
     val gate = me.nettrash.familyconnect.ui.chat.LocalRecordingGate.current
     val pauseThis: () -> Unit = remember(attachment.id) {

@@ -15,6 +15,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Animation = Microsoft.UI.Xaml.Media.Animation;
+using Ellipse = Microsoft.UI.Xaml.Shapes.Ellipse;
 using Windows.Storage;
 using Windows.Storage.Pickers;
 using Windows.Storage.Streams;
@@ -179,6 +180,45 @@ public sealed partial class ChatsView : UserControl
     private readonly QuietWhileRecording viewerQuiet = new();
 
     /// <summary>
+    /// Video messages (docs/audio-video-messages-2026-10-04.md, S5): which ones this device has played — the dot's own
+    /// knowledge, kept in the cache and so this account's; whether the viewer is showing one in its circle, whether it has
+    /// played there yet, and whether it failed to load; the clock that keeps the circle's bar up to date and a guard for the
+    /// bar moving itself; the backdrop the viewer had before it went solid; and the posters of the reader's own circles
+    /// still on their way, by staging handle.
+    /// </summary>
+    private readonly PlayedRoundStore playedRounds;
+    private bool viewerRound;
+    private bool viewerRoundPlayed;
+    private bool viewerRoundStarted; // this opening has seen it playing: half of being played through (S5.3)
+    private bool viewerRoundFailed;
+    private bool movingRoundSeek;
+    private DispatcherQueueTimer? viewerRoundClock;
+    private Brush? viewerBackdrop;
+    private readonly Dictionary<string, BitmapImage?> stagedPosters = new(StringComparer.Ordinal);
+
+    /// <summary>The default output device changing — headphones pulled, a headset gone — which pauses what plays (S4).</summary>
+    private readonly Windows.Foundation.TypedEventHandler<object, Windows.Media.Devices.DefaultAudioRenderDeviceChangedEventArgs> onOutputChanged;
+
+    /// <summary>
+    /// Recording a video message (docs/audio-video-messages-2026-10-04.md, S1.4–S1.6, S3; Windows Phase 3d): where the window
+    /// lets the recorder lie and how it covers itself while it does, the recorder while it is open, whether this machine has a
+    /// camera (asked only where a video message could be recorded at all), the video button's own 600 ms guard, the field's
+    /// trailing room the button takes in it, a chat a notification asked for while the recorder was up, and the session
+    /// change that brings the server's limits. Every way in is drawn only where <see cref="RoundVideoRules.Available"/> —
+    /// never while <see cref="RoundVideoRules.RecordingEnabled"/> is off.
+    /// </summary>
+    private Grid? recorderHost;
+    private Action<bool>? coverWindow;
+    private Action? recorderClosed;
+    private RoundRecorderLayer? roundRecorder;
+    private bool hasCamera;
+    private bool askingForCamera;
+    private readonly DoorGuard doorGuard = new();
+    private bool fieldPadded;
+    private long? chatAfterRecorder;
+    private readonly Action<SessionState> onSession;
+
+    /// <summary>
     /// The one recording playing — one at a time — and the latest row drawn for each, which a redraw replaces; ended, it
     /// sits at its end rather than looking paused at the start.
     /// </summary>
@@ -289,6 +329,7 @@ public sealed partial class ChatsView : UserControl
         {
             Diagnostics.Write($"sweeping voice messages that were not sent: {e.GetType().Name}");
         }
+        playedRounds = new PlayedRoundStore(connection.Cache);
 
         ChatsHeading.Text = say.Get("Chats");
         EmptyListText.Text = say.Get("No chats yet");
@@ -299,6 +340,19 @@ public sealed partial class ChatsView : UserControl
 
         ChatList.SelectionChanged += OnChatPicked;
         WireSlot();
+        AutomationProperties.SetName(VideoDoorButton, say.Get("Record video message"));
+        ToolTipService.SetToolTip(VideoDoorButton, say.Get("Record a video message"));
+        VideoDoorButton.Click += (_, _) => OnVideoDoorClick();
+        // The server's video-message limits arrive with the family's own document, after the chats are drawn.
+        onSession = _ => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!gone)
+            {
+                LearnCamera();
+                DrawSlot();
+            }
+        });
+        connection.Session.Changed += onSession;
         ConsentReview.Click += (_, _) => _ = ReviewAssistantConsentAsync(Send);
         AttachButton.Click += (_, _) => ShowAttachMenu();
         ToolTipService.SetToolTip(StickerButton, say.Get("Stickers"));
@@ -363,6 +417,37 @@ public sealed partial class ChatsView : UserControl
         };
         ViewerScroller.SizeChanged += (_, _) => FitViewerImage();
         ViewerOverlay.PreviewKeyDown += OnViewerKey;
+        // A video message's own controls under its circle (S5.3, S5.4): play and pause, and scrubbing.
+        ViewerRoundPlay.Click += (_, _) => ToggleViewerRound();
+        AutomationProperties.SetName(ViewerRoundSeek, say.Get("Position"));
+        ViewerRoundSeek.ValueChanged += (_, e) =>
+        {
+            if (movingRoundSeek || !viewerRound)
+            {
+                return;
+            }
+            try
+            {
+                if (ViewerVideo.MediaPlayer is { } player)
+                {
+                    player.PlaybackSession.Position = TimeSpan.FromSeconds(e.NewValue);
+                }
+            }
+            catch (Exception failure)
+            {
+                Diagnostics.Write($"moving a video message: {failure.GetType().Name}");
+            }
+        };
+        ViewerRoundRetryText.Text = say.Get("Couldn't load the video. Tap to try again.");
+        AutomationProperties.SetName(ViewerRoundRetry, say.Get("Couldn't load the video. Tap to try again."));
+        ViewerRoundRetry.Click += (_, _) => ShowViewerItem();
+        ViewerOverlay.SizeChanged += (_, _) =>
+        {
+            if (viewerRound)
+            {
+                SizeViewerRound();
+            }
+        };
         OpenPollsButton.Click += (_, _) => _ = ShowOpenPollsAsync();
         ComposerPanel.DragOver += OnDragOver;
         ComposerPanel.Drop += OnDrop;
@@ -455,6 +540,30 @@ public sealed partial class ChatsView : UserControl
                 AudioEnded();
             }
         });
+        // Headphones pulled or a headset gone: what was playing in the ear must not carry on out of the speakers (S4). Raised on
+        // a thread of its own, and only the default role's device is the one this app plays through.
+        onOutputChanged = (_, args) =>
+        {
+            if (args.Role != Windows.Media.Devices.AudioDeviceRole.Default)
+            {
+                return;
+            }
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!gone)
+                {
+                    PausePlayback(PlaybackEvent.OutputChanged);
+                }
+            });
+        };
+        try
+        {
+            Windows.Media.Devices.MediaDevice.DefaultAudioRenderDeviceChanged += onOutputChanged;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"listening for the output device: {e.GetType().Name}");
+        }
         ToolTipService.SetToolTip(JumpButton, say.Get("Jump to the newest message"));
         AutomationProperties.SetName(JumpButton, say.Get("Jump to the newest message"));
 
@@ -543,6 +652,7 @@ public sealed partial class ChatsView : UserControl
         stickerPictures.Clear();
         stickerThumbs.Clear();
         stagedStickers.Clear();
+        connection.Session.Changed -= onSession;
         connection.Router.PackChanged -= onPack;
         connection.Router.Arrived -= onArrived;
         connection.Router.Edited -= onEdited;
@@ -576,6 +686,15 @@ public sealed partial class ChatsView : UserControl
         pendingLink?.Stop();
         pendingLink = null;
         StopAudio();
+        try
+        {
+            Windows.Media.Devices.MediaDevice.DefaultAudioRenderDeviceChanged -= onOutputChanged;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"letting go of the output device: {e.GetType().Name}");
+        }
+        stagedPosters.Clear();
         locationHunt?.Cancel();
         // A transcode nobody is waiting for any more is minutes of an encoder for nothing: every chat's is called off.
         foreach (var strip in strips.Values)
@@ -594,6 +713,12 @@ public sealed partial class ChatsView : UserControl
     {
         if (open?.ChatId == chatId)
         {
+            return;
+        }
+        if (RecorderOpen)
+        {
+            // The recorder covers the window: the chat a notification named opens once it closes (S4).
+            chatAfterRecorder = chatId;
             return;
         }
         // The list is drawn again so the row the notification named is the one selected.
@@ -619,7 +744,12 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>The window came to the front: what is on screen may now count as read.</summary>
-    internal void ReaderReturned() => _ = ReportReadAsync();
+    internal void ReaderReturned()
+    {
+        _ = ReportReadAsync();
+        // A webcam plugged in while the window was behind others.
+        LearnCamera(again: true);
+    }
 
     private long Reader => connection.Chats.Reader;
 
@@ -1200,6 +1330,14 @@ public sealed partial class ChatsView : UserControl
             // visible sticker would have asked for are asked for here too, on the same schedule, and kept for the reveal.
             _ = FetchHiddenStickerAsync(unseen);
         }
+        // A VIDEO MESSAGE (docs/protocol.md, "Video messages"; S5.1): one flagged video, drawn as a circle with no balloon.
+        // Anything else — two attachments, an old server that ignores the flag — is the ordinary message it otherwise is.
+        var round = bubble.Reads && sticker is null ? message.RoundVideo : null;
+        if (!bubble.Reads && message.RoundVideo is { } unseenRound)
+        {
+            // The same rule for a circle: its poster — all a visible one fetches — is fetched and drawn nowhere.
+            _ = FetchHiddenPosterAsync(unseenRound);
+        }
         // One to four emoji and nothing else: drawn large and bare — the apps' ladder, scaled to this window's 14-pixel body.
         var emojiSize = !awaited && bubble.Reads && message.Call is null && message.Poll is null && message.Media.Count == 0 && message.ReplyTo is null
             ? Emoji.DisplayFontSizeForBody(body, 14)
@@ -1240,11 +1378,29 @@ public sealed partial class ChatsView : UserControl
         {
             // Over a sticker there is no balloon for the quote to sit on, so it is tinted for the window's own ground —
             // the reader's white-on-accent quote would be white on nothing.
-            stack.Children.Add(QuoteElement(quote, mine && sticker is null, say, () => QuoteClicked(chat, inThread, message.Id, quote)));
+            stack.Children.Add(QuoteElement(quote, mine && sticker is null && round is null, say, () => QuoteClicked(chat, inThread, message.Id, quote)));
         }
         if (sticker is not null)
         {
             stack.Children.Add(StickerElement(sticker));
+        }
+        else if (round is not null)
+        {
+            stack.Children.Add(RoundVideoElement(round, mine, () =>
+            {
+                CancelLinkForHeart();
+                _ = ActAsync(() => React(chat, inThread, message.Id, Reactions.DoubleTap));
+            }));
+            // "Show text" under the circle, outside its gestures (S5.5) — the sticker's branch has no footer, so this one
+            // adds its own — in the ink that reads on the chat background, since there is no balloon under it.
+            if (TranscriptPanel(round, mine: false, message, kind) is { } text)
+            {
+                if (mine)
+                {
+                    text.HorizontalAlignment = HorizontalAlignment.Right;
+                }
+                stack.Children.Add(text);
+            }
         }
         else if (bubble.Reads && message.Media.Count > 0)
         {
@@ -1313,8 +1469,9 @@ public sealed partial class ChatsView : UserControl
 
         // Nothing but photos and videos, and nothing above them: the pictures ARE the message, and draw without a balloon — as
         // do a few emoji, which are themselves.
-        // A sticker has NO BUBBLE, a reply or not: the picture alone, its transparency showing the chat behind it.
-        var bare = emojiSize is not null || sticker is not null || (bubble.Reads
+        // A sticker has NO BUBBLE, a reply or not: the picture alone, its transparency showing the chat behind it. Nor has a
+        // video message: the circle alone on the chat background (S5.2).
+        var bare = emojiSize is not null || sticker is not null || round is not null || (bubble.Reads
             && !awaited
             && body.Length == 0
             && message.ReplyTo is null
@@ -1815,6 +1972,15 @@ public sealed partial class ChatsView : UserControl
         react.Items.Add(more);
         menu.Items.Add(react);
 
+        // A circle opens full screen from its menu too (S5.4) — the viewer, with scrubbing; and it has no Edit, which
+        // MayEdit already says.
+        if (message.RoundVideo is { } circle)
+        {
+            var full = new MenuFlyoutItem { Text = say.Get("Open Full Screen") };
+            full.Click += (_, _) => OpenRound(circle);
+            menu.Items.Add(full);
+        }
+
         if (message.Body.Length > 0 && message.Call is null)
         {
             var copy = new MenuFlyoutItem { Text = say.Get("Copy") };
@@ -1986,6 +2152,10 @@ public sealed partial class ChatsView : UserControl
         if (row.Sticker)
         {
             return PendingStickerElement(chat, row);
+        }
+        if (row.Round)
+        {
+            return PendingRoundElement(chat, row);
         }
         var say = services.Say;
         var resources = Application.Current.Resources;
@@ -2237,9 +2407,9 @@ public sealed partial class ChatsView : UserControl
     // ---- the viewer ---------------------------------------------------------------------------------
 
     /// <summary>Open a message's photos and videos at full size, at the one clicked.</summary>
-    private void OpenViewer(IReadOnlyList<AttachmentDto> items, int index)
+    private void OpenViewer(IReadOnlyList<AttachmentDto> items, int index, bool round = false)
     {
-        viewing = new MediaAlbum(items, index);
+        viewing = new MediaAlbum(items, index, round);
         ViewerOverlay.Visibility = Visibility.Visible;
         ShowViewerItem();
         ViewerClose.Focus(FocusState.Programmatic);
@@ -2251,6 +2421,24 @@ public sealed partial class ChatsView : UserControl
         viewing = null;
         viewerShown++;
         StopViewerVideo();
+        var played = viewerRoundPlayed;
+        SetViewerRound(false);
+        if (played)
+        {
+            // Played here: its dot goes (S5.2) — on the next turn, and never into a view the window has already let go of
+            // (Detach closes the viewer too).
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (gone)
+                {
+                    return;
+                }
+                conversationDrawn = string.Empty;
+                threadDrawn = string.Empty;
+                DrawConversation(keepFromBottom: atNewest ? null : DistanceFromBottom);
+                DrawThread();
+            });
+        }
         ForgetViewerSticker();
         ViewerAddSticker.Visibility = Visibility.Collapsed;
         ViewerNotice.Visibility = Visibility.Collapsed;
@@ -2321,6 +2509,8 @@ public sealed partial class ChatsView : UserControl
         ViewerScroller.Visibility = album.IsVideo ? Visibility.Collapsed : Visibility.Visible;
         ViewerVideo.Visibility = album.IsVideo ? Visibility.Visible : Visibility.Collapsed;
         ViewerZoomBar.Visibility = album.IsVideo ? Visibility.Collapsed : Visibility.Visible;
+        // Only a video message — opened from its circle or its menu, S5.1's test of the whole message — is shown in its circle.
+        SetViewerRound(album.IsRound);
         ShowZoom();
         ViewerLoading.IsActive = true;
         _ = LoadViewerItemAsync(album.Current, album.IsVideo, token);
@@ -2378,6 +2568,16 @@ public sealed partial class ChatsView : UserControl
                 ViewerVideo.Source = Windows.Media.Core.MediaSource.CreateFromStream(stream, item.Mime ?? "video/mp4");
                 QuietViewerVideo();
                 ViewerLoading.IsActive = false;
+                if (viewerRound)
+                {
+                    // One thing plays at a time (S5.3): a voice note stops for the circle.
+                    if (AudioRunning)
+                    {
+                        audio.Pause();
+                        ShowPlayback();
+                    }
+                    ShowViewerRound();
+                }
                 return;
             }
             var picture = await DecodeAsync(bytes);
@@ -2537,6 +2737,14 @@ public sealed partial class ChatsView : UserControl
     private void ViewerFailed()
     {
         ViewerLoading.IsActive = false;
+        if (viewerRound)
+        {
+            // Over its poster, with the way back (S5.3).
+            viewerRoundFailed = true;
+            ViewerRoundRetry.Visibility = Visibility.Visible;
+            ViewerRoundBar.Visibility = Visibility.Collapsed;
+            return;
+        }
         ViewerProblem.Text = services.Say.Get("The file could not be downloaded.");
         ViewerProblem.Visibility = Visibility.Visible;
     }
@@ -2594,7 +2802,10 @@ public sealed partial class ChatsView : UserControl
             return;
         }
         var recording = recorder is not null;
-        ViewerVideo.AreTransportControlsEnabled = !recording;
+        // A circle has its own bar under it, which the same rule dims.
+        ViewerVideo.AreTransportControlsEnabled = !recording && !viewerRound;
+        ViewerRoundPlay.IsEnabled = !recording;
+        ViewerRoundSeek.IsEnabled = !recording;
         try
         {
             if (ViewerVideo.MediaPlayer is { } player)
@@ -3270,6 +3481,26 @@ public sealed partial class ChatsView : UserControl
             _ = StartRecordingAsync(fromSlot: false);
         };
         menu.Items.Add(record);
+        // "Record Video Message" (S1.6), where one can be recorded: in rows 7 and 8 it says why not; in row 9 it opens the
+        // recorder, as the video button does — the not-sent rule is about voice.
+        if (RoundAvailable() && open is { } chat && Kind(chat) != "ai")
+        {
+            var video = new MenuFlyoutItem
+            {
+                Text = services.Say.Get("Record Video Message"),
+                Icon = new FontIcon { Glyph = ((char)RoundVideoGlyph).ToString() },
+            };
+            video.Click += (_, _) =>
+            {
+                if (CurrentSlot() is { Kind: SlotKind.Dimmed, Reason: Dimmed.Call or Dimmed.Busy } dimmed)
+                {
+                    Explain(ComposerButton.Notice(dimmed.Reason, services.Say)!);
+                    return;
+                }
+                _ = OpenRoundRecorderAsync(SendButton);
+            };
+            menu.Items.Add(video);
+        }
         menu.ShowAt(SendButton);
     }
 
@@ -3300,15 +3531,19 @@ public sealed partial class ChatsView : UserControl
     private bool Busy(ComposerStaging strip) => strip.Preparing || sendingMedia || locating;
 
     /// <summary>Which row of S1.3 the open chat's slot is in, from what the composer is now.</summary>
-    private Slot CurrentSlot()
+    private Slot CurrentSlot() =>
+        SlotInputsNow() is { } inputs ? ComposerButton.ComposerSlot(inputs) : new(SlotKind.SendDisabled);
+
+    /// <summary>What the open chat's composer is now, as S1.2 names it — or null with no chat open.</summary>
+    private SlotInputs? SlotInputsNow()
     {
         if (open is not { } chat)
         {
-            return new(SlotKind.SendDisabled);
+            return null;
         }
         var strip = Staging(chat.ChatId);
-        return ComposerButton.ComposerSlot(new SlotInputs(
-            RecorderOpen: false,
+        return new SlotInputs(
+            RecorderOpen: RecorderOpen,
             Recording: recorder is null ? Recording.None : recordingBesideDraft ? Recording.HandsFreeBesideDraft : Recording.HandsFree,
             Editing: editing is not null,
             DraftBlank: string.IsNullOrWhiteSpace(ComposerBox.Text),
@@ -3318,7 +3553,7 @@ public sealed partial class ChatsView : UserControl
             CanRecord: true,
             Call: callBusy,
             Busy: Busy(strip),
-            NotSent: notSentShown > 0));
+            NotSent: notSentShown > 0);
     }
 
     /// <summary>
@@ -3331,7 +3566,13 @@ public sealed partial class ChatsView : UserControl
         {
             return;
         }
-        var face = ComposerButton.Face(CurrentSlot(), sendHeld: sendingMedia || finding, services.Say);
+        var slot = CurrentSlot();
+        var face = ComposerButton.Face(slot, sendHeld: sendingMedia || finding, services.Say);
+        // The microphone's video message is behind its menu (S6): Narrator says how to reach it, where there is one.
+        if (face.HelpText.Length == 0 && slot.Kind == SlotKind.Microphone && RoundAvailable())
+        {
+            face = face with { HelpText = services.Say.Get("Press Shift+F10 for a video message.") };
+        }
         if (SendButton.IsEnabled != face.Enabled)
         {
             SendButton.IsEnabled = face.Enabled;
@@ -3354,6 +3595,7 @@ public sealed partial class ChatsView : UserControl
         }
         SlotLook.Opacity = face.Enabled && !face.LooksDimmed ? 1 : 0.4;
         ShowSlotGlyph(face.Glyph);
+        DrawVideoDoor();
     }
 
     private void ShowSlotGlyph(int glyph)
@@ -3494,6 +3736,16 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     internal Task Interrupt(RecordingEnd why)
     {
+        // The video recorder hears the same interruptions, its own way (S4's three video columns).
+        if (roundRecorder is { IsOpen: true } layer && RoundVideoRules.InterruptionOf(why) is { } heard)
+        {
+            layer.Interrupt(heard);
+        }
+        // What PLAYS hears the same interruptions (S4's last column): a call, a lock, a hidden window.
+        if (PlaybackPauses.Of(why) is { } happened)
+        {
+            PausePlayback(happened);
+        }
         // A start still waiting on Windows' prompt or the lead-in has no recorder to stop: it lets go of the microphone
         // once it is granted, rather than recording behind a lock screen (S4).
         recordingStart.Interrupted();
@@ -6049,7 +6301,14 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>Open a link a beat late — the Mac's 350 ms — unless the click was the second half of a heart.</summary>
-    private void OpenLinkSoon(Uri uri)
+    private void OpenLinkSoon(Uri uri) => Soon(() => _ = Windows.System.Launcher.LaunchUriAsync(uri));
+
+    /// <summary>
+    /// Do what a click asked a beat late, unless the click was the first half of a double click — which is the heart, and
+    /// calls it off (<see cref="CancelLinkForHeart"/>): a link opening, or a circle (S5.3: the single tap waits out the
+    /// double-tap window).
+    /// </summary>
+    private void Soon(Action act)
     {
         pendingLink?.Stop();
         pendingLink = null;
@@ -6069,7 +6328,7 @@ public sealed partial class ChatsView : UserControl
                 return;
             }
             pendingLink = null;
-            _ = Windows.System.Launcher.LaunchUriAsync(uri);
+            act();
         };
         pendingLink = timer;
         timer.Start();
@@ -6340,6 +6599,20 @@ public sealed partial class ChatsView : UserControl
             };
             record.Click += (_, _) => _ = StartRecordingAsync(fromSlot: false);
             menu.Items.Add(record);
+            // "Record Video Message" (S1.5), right below, where one can be recorded: off while an attachment is on its way,
+            // in an edit and during a call. It works beside words or staged items — a video message travels alone, and they
+            // stay in the composer.
+            if (RoundAvailable())
+            {
+                var video = new MenuFlyoutItem
+                {
+                    Text = say.Get("Record Video Message"),
+                    Icon = new FontIcon { Glyph = ((char)RoundVideoGlyph).ToString() },
+                    IsEnabled = !Busy(strip) && editing is null && !callBusy && recorder is null,
+                };
+                video.Click += (_, _) => _ = OpenRoundRecorderAsync(AttachButton);
+                menu.Items.Add(video);
+            }
         }
         // A map pin, in Segoe Fluent Icons.
         var place = new MenuFlyoutItem { Text = say.Get("Location"), Icon = new FontIcon { Glyph = ((char)0xE707).ToString() }, IsEnabled = !locating };
@@ -6353,6 +6626,775 @@ public sealed partial class ChatsView : UserControl
             menu.Items.Add(poll);
         }
         menu.ShowAt(AttachButton);
+    }
+
+    // ---- video messages, recorded -----------------------------------------------------------------
+    //
+    // Phase 3d (docs/audio-video-messages-2026-10-04.md, S1.4–S1.6, S3, S4, S8.6): the video button inside the empty field,
+    // "Record Video Message" in the paperclip's menu and the microphone's, and the recorder they open over the window. All of
+    // it is drawn only where RoundVideoRules.Available — this build records (RoundVideoRules.RecordingEnabled, off until the
+    // owner's trials T1–T3), the server named the limits, and the machine has a camera — so a build that can only RECEIVE
+    // circles shows no way of recording one (Decision 40).
+
+    /// <summary>The video button's glyph: Segoe Fluent E714, a video camera (S1.4).</summary>
+    private const int RoundVideoGlyph = 0xE714;
+
+    /// <summary>
+    /// Where the recorder lies — over the rail and the page, under the call card — and how the window under it is covered
+    /// while it does; and what the window does once it has gone (a share that waited for it).
+    /// </summary>
+    internal void UseRecorderHost(Grid host, Action<bool> cover, Action closed)
+    {
+        recorderHost = host;
+        coverWindow = cover;
+        recorderClosed = closed;
+        LearnCamera();
+        DrawSlot();
+    }
+
+    /// <summary>The recorder is up: it owns the composer's row (S1.3 row 1), and a notification's chat waits for it.</summary>
+    internal bool RecorderOpen => roundRecorder?.IsOpen == true;
+
+    /// <summary>A take running or a clip in REVIEW: a real close asks "Delete video message?" first (S4, S8.6).</summary>
+    internal bool HoldsRoundClip => roundRecorder?.HoldsClip == true;
+
+    /// <summary>The ask before a real close (S4): true when the close may go ahead, false when the person kept the clip.</summary>
+    internal Task<bool> AskBeforeClosingAsync() => roundRecorder?.AskBeforeClosingAsync() ?? Task.FromResult(true);
+
+    /// <summary>The window lost focus and is still visible: PREVIEW closes — but not to a prompt it raised; a take goes on (S4).</summary>
+    internal void WindowDeactivated() => roundRecorder?.Interrupt(RecorderInterruption.FocusLost);
+
+    /// <summary>S1.2's <b>round available</b> on Windows, and somewhere for the recorder to lie.</summary>
+    private bool RoundAvailable() =>
+        recorderHost is not null && RoundVideoRules.Available(RoundVideoRules.RecordingEnabled, connection.Session.State.RoundVideo, hasCamera);
+
+    /// <summary>
+    /// Whether this machine has a camera — asked of Windows only where a video message could otherwise be recorded, so a build
+    /// with recording switched off never enumerates a camera at all.
+    /// </summary>
+    private void LearnCamera(bool again = false)
+    {
+        if (askingForCamera || (hasCamera && !again) || recorderHost is null
+            || !RoundVideoRules.Available(RoundVideoRules.RecordingEnabled, connection.Session.State.RoundVideo, hasCamera: true))
+        {
+            return;
+        }
+        askingForCamera = true;
+        _ = LearnCameraAsync();
+    }
+
+    private async Task LearnCameraAsync()
+    {
+        try
+        {
+            var found = (await VideoMessageRecorder.CamerasAsync()).Count > 0;
+            if (!gone && found != hasCamera)
+            {
+                hasCamera = found;
+                DrawSlot();
+            }
+        }
+        finally
+        {
+            askingForCamera = false;
+        }
+    }
+
+    /// <summary>The video button as S1.4 has it for the open chat's composer now.</summary>
+    private Door CurrentDoor()
+    {
+        if (open is not { } chat || SlotInputsNow() is not { } inputs)
+        {
+            return Door.Hidden;
+        }
+        return ComposerButton.VideoDoor(new DoorInputs(
+            inputs,
+            FamilyOrDirectChat: Kind(chat) is "family" or "direct",
+            UndoWindow: false,
+            ServerOffersRound: connection.Session.State.RoundVideo is not null,
+            HasCamera: hasCamera,
+            EncoderProbePasses: true,
+            RecordsRoundVideo: RoundVideoRules.RecordingEnabled && recorderHost is not null));
+    }
+
+    /// <summary>
+    /// The video button inside the empty field (S1.4): drawn — dimmed with the slot's sentence in rows 7 and 8 — or not, and
+    /// the field given trailing room while it is, so a placeholder never runs under it. Its 600 ms guard starts when it appears.
+    /// </summary>
+    private void DrawVideoDoor()
+    {
+        var door = CurrentDoor();
+        var showing = door.Kind != DoorKind.Hidden && ComposerBox.Visibility == Visibility.Visible;
+        doorGuard.Showing(showing, Environment.TickCount64);
+        var shown = showing ? Visibility.Visible : Visibility.Collapsed;
+        if (VideoDoorButton.Visibility != shown)
+        {
+            VideoDoorButton.Visibility = shown;
+        }
+        // Room for it at the field's trailing edge while it shows; the style's own padding back when it goes.
+        if (showing && !fieldPadded)
+        {
+            var padding = ComposerBox.Padding;
+            ComposerBox.Padding = new Thickness(padding.Left, padding.Top, padding.Right + ComposerButton.MinTargetWindowsEpx, padding.Bottom);
+            fieldPadded = true;
+        }
+        else if (!showing && fieldPadded)
+        {
+            ComposerBox.ClearValue(Control.PaddingProperty);
+            fieldPadded = false;
+        }
+        if (!showing)
+        {
+            return;
+        }
+        var dimmed = door.Kind == DoorKind.Dimmed;
+        VideoDoorButton.Opacity = dimmed ? 0.4 : 1;
+        AutomationProperties.SetHelpText(VideoDoorButton, dimmed ? ComposerButton.Notice(door.Reason, services.Say) ?? string.Empty : string.Empty);
+    }
+
+    /// <summary>The video button clicked: nothing for 600 ms after it appeared; its sentence when dimmed; else the recorder.</summary>
+    private void OnVideoDoorClick()
+    {
+        if (!doorGuard.Accepts(Environment.TickCount64))
+        {
+            return;
+        }
+        var door = CurrentDoor();
+        if (door.Kind == DoorKind.Dimmed)
+        {
+            Explain(ComposerButton.Notice(door.Reason, services.Say)!);
+            return;
+        }
+        if (door.Kind == DoorKind.Shown)
+        {
+            _ = OpenRoundRecorderAsync(VideoDoorButton);
+        }
+    }
+
+    /// <summary>
+    /// The recorder, over the window (S3): never in the assistant's chat, during a call, while an attachment is on its way, in
+    /// an edit or beside a voice recording — those say why where they are reachable at all. Words typed and items staged stay
+    /// in the composer; the primed reply goes with the video (S1.5).
+    /// </summary>
+    private async Task OpenRoundRecorderAsync(UIElement opener)
+    {
+        if (gone || open is not { } chat || RecorderOpen || recorderHost is not { } host || coverWindow is not { } cover
+            || connection.Session.State.RoundVideo is not { } limits || !RoundAvailable() || Kind(chat) == "ai"
+            || editing is not null || recorder is not null || recordingStart.Starting || asking is not null)
+        {
+            return;
+        }
+        if (callBusy || Busy(Staging(chat.ChatId)))
+        {
+            Explain(ComposerButton.Notice(callBusy ? Dimmed.Call : Dimmed.Busy, services.Say)!);
+            return;
+        }
+        RoundRecorderLayer? layer = null;
+        layer = new RoundRecorderLayer(
+            services,
+            host,
+            ConversationPane,
+            ComposerPanel,
+            SendButton,
+            DispatcherQueue,
+            limits,
+            new RoundRecorderLayer.Hooks(
+                ReplyText: () => replyingTo is not null && BannerPanel.Visibility == Visibility.Visible ? BannerText.Text : null,
+                DropReply: () => EndComposerMode(clear: false),
+                NotSentWaits: () => open is { } here && HasNotSent(here.ChatId),
+                QuietEverything: QuietForRecording,
+                StartVoice: () => _ = StartRecordingAsync(fromSlot: false),
+                SendAsync: (media, round) => SendVideoMessageAsync(chat, media, round),
+                Cover: covered => cover(covered),
+                Closed: () =>
+                {
+                    if (ReferenceEquals(roundRecorder, layer))
+                    {
+                        roundRecorder = null;
+                    }
+                    if (gone)
+                    {
+                        return;
+                    }
+                    DrawSlot();
+                    recorderClosed?.Invoke();
+                    if (chatAfterRecorder is { } waiting)
+                    {
+                        chatAfterRecorder = null;
+                        OpenChat(waiting);
+                    }
+                }));
+        roundRecorder = layer;
+        DrawSlot();
+        await layer.OpenAsync(opener);
+    }
+
+    /// <summary>
+    /// A video message's Send (S3.4): the clip staged and queued as one message — with <c>round</c>, or as the regular video
+    /// REVIEW said it would be (S3.6) — carrying the primed reply, the row written before the first byte moves, the bytes kept
+    /// until the ack; the circle shows in the conversation at once from this device's own poster (S5.6). The words in the
+    /// field stay where they are.
+    /// </summary>
+    private async Task SendVideoMessageAsync(ConversationModel chat, StagedMedia media, bool round)
+    {
+        var replyTo = replyingTo?.Id;
+        var store = connection.Staging;
+        string? handle = null;
+        try
+        {
+            handle = await Task.Run(() => store.Stage(media));
+            if (round)
+            {
+                chat.SendRound(handle, replyTo);
+            }
+            else
+            {
+                chat.Send(string.Empty, replyTo, pendingFiles: [handle]);
+            }
+            if (gone)
+            {
+                return;
+            }
+            if (open == chat)
+            {
+                if (replyTo is not null && replyingTo?.Id == replyTo)
+                {
+                    EndComposerMode(clear: false);
+                }
+                Queued();
+            }
+            else
+            {
+                _ = connection.Live.FlushAsync(SendRules.FlushTrigger.Queued);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"sending a video message: {e.GetType().Name}");
+            if (!gone)
+            {
+                ShowProblem(services.Say.Get("Something went wrong. Try again."));
+            }
+        }
+        finally
+        {
+            if (handle is not null)
+            {
+                // The row that names it is in the outbox now (or never will be): the sweep may judge it.
+                store.Release([handle]);
+            }
+        }
+    }
+
+    // ---- video messages ------------------------------------------------------------------------
+    //
+    // A VIDEO MESSAGE (docs/protocol.md, "Video messages"; docs/audio-video-messages-2026-10-04.md, S5): one square video
+    // sent to be drawn round. In this version a click plays it in the viewer, inside a ring painted over its corners
+    // (S5.3); playing inside the thread waits for the clipping trial (Blocked 1).
+
+    /// <summary>
+    /// A circle in a conversation (S5.2): NO BALLOON, the square poster filling an ellipse of the one size — a neutral
+    /// disc of that size until the poster lands, so the row never changes height — a play disc in the middle, the
+    /// duration in a capsule at the bottom and, until this device has played it, an accent dot beside it. Only the poster
+    /// is fetched to draw it; the video itself only when it is opened. A click opens it a beat late, because a double
+    /// click on it is the heart (S5.3).
+    /// </summary>
+    private FrameworkElement RoundVideoElement(AttachmentDto video, bool mine, Action heart)
+    {
+        var say = services.Say;
+        var resources = Application.Current.Resources;
+        const double Diameter = RoundLook.Diameter;
+        var played = HasPlayed(video.Id);
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var face = new Grid { Width = Diameter, Height = Diameter };
+        face.Children.Add(new Ellipse { Fill = (Brush)resources["ControlFillColorSecondaryBrush"] });
+        var poster = new Ellipse();
+        face.Children.Add(poster);
+        var disc = new Grid
+        {
+            Width = RoundLook.PlayDisc,
+            Height = RoundLook.PlayDisc,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        disc.Children.Add(new Ellipse { Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(140, 0, 0, 0)) });
+        // Play, in Segoe Fluent Icons — a glyph, not a sentence; nudged right so the triangle looks centred.
+        disc.Children.Add(new FontIcon
+        {
+            Glyph = ((char)0xE768).ToString(),
+            FontSize = 18,
+            Foreground = white,
+            Margin = new Thickness(3, 0, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        face.Children.Add(disc);
+        var foot = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 0, 18),
+        };
+        if (RoundLook.Capsule(video) is { } length)
+        {
+            foot.Children.Add(new Border
+            {
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(8, 2, 8, 3),
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(153, 0, 0, 0)),
+                Child = new TextBlock { Text = length, FontSize = 12, Foreground = white },
+            });
+        }
+        if (RoundLook.ShowsDot(mine, played))
+        {
+            // THIS DEVICE's own knowledge: kept per account, never sent, wiped at sign-out (S5.2) — and never on the
+            // reader's own circles.
+            foot.Children.Add(new Ellipse
+            {
+                Width = RoundLook.Dot,
+                Height = RoundLook.Dot,
+                Fill = (Brush)resources["AccentFillColorDefaultBrush"],
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+        }
+        if (foot.Children.Count > 0)
+        {
+            face.Children.Add(foot);
+        }
+        // A button, so Tab reaches it and Enter or Space opens it like a click; drawn as nothing but the circle.
+        var circle = new Button
+        {
+            Content = face,
+            Padding = new Thickness(0),
+            BorderThickness = new Thickness(0),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            CornerRadius = new CornerRadius(Diameter / 2),
+            HorizontalAlignment = mine ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+        };
+        AutomationProperties.SetName(circle, RoundLook.Name(video, say));
+        if (RoundLook.Value(mine, played, say) is { } status)
+        {
+            AutomationProperties.SetItemStatus(circle, status);
+        }
+        circle.Click += (_, _) => Soon(() => OpenRound(video));
+        // The heart, here and handled: a button may keep the gesture from the balloon, and it must not land twice.
+        circle.DoubleTapped += (_, e) =>
+        {
+            e.Handled = true;
+            heart();
+        };
+        _ = ShowPosterAsync(poster, video);
+        return circle;
+    }
+
+    /// <summary>The square poster, filling its ellipse — the same small copy the viewer shows while the video loads.</summary>
+    private async Task ShowPosterAsync(Ellipse poster, AttachmentDto video)
+    {
+        if (!video.HasPreview)
+        {
+            // No poster was ever made: the neutral disc stays, and the video is never downloaded to draw one.
+            return;
+        }
+        try
+        {
+            var key = AttachmentCache.KeyFor(video.Id, preview: true);
+            if (!pictures.TryGetValue(key, out var picture))
+            {
+                var (bytes, error) = await connection.Attachments.BytesAsync(video, preview: true);
+                if (gone)
+                {
+                    return;
+                }
+                if (bytes is null)
+                {
+                    if (error is not null)
+                    {
+                        Diagnostics.Write($"a video message's poster: {error.Code} {error.Status}");
+                    }
+                    return;
+                }
+                if (await DecodeAsync(bytes) is not { } decoded)
+                {
+                    return;
+                }
+                picture = pictures[key] = decoded;
+            }
+            poster.Fill = new ImageBrush { ImageSource = picture, Stretch = Stretch.UniformToFill };
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a video message: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>What a visible circle fetches — its poster — fetched for a hidden one and drawn nowhere.</summary>
+    private async Task FetchHiddenPosterAsync(AttachmentDto video)
+    {
+        try
+        {
+            if (video.HasPreview && !pictures.ContainsKey(AttachmentCache.KeyFor(video.Id, preview: true)))
+            {
+                await connection.Attachments.BytesAsync(video, preview: true);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"fetching a hidden video message: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>Whether this device has played it; a cache that cannot be read draws no dot rather than a wrong one.</summary>
+    private bool HasPlayed(long attachmentId)
+    {
+        try
+        {
+            return playedRounds.Played(attachmentId);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading what was played: {e.GetType().Name}");
+            return true;
+        }
+    }
+
+    /// <summary>A circle, in the viewer: its circle, and its own bar under it.</summary>
+    /// <remarks>Only ever handed what <see cref="MessageDto.RoundVideo"/> found — S5.1's test of the whole message.</remarks>
+    private void OpenRound(AttachmentDto video) => OpenViewer([video], 0, round: true);
+
+    /// <summary>
+    /// The viewer shows a video message, or stops showing one: a SOLID backdrop, the player square and filled, the ring
+    /// and its corner mask over it — painted in that same backdrop — and the bar under it in place of the player's own
+    /// controls, which would sit in the corners the ring covers.
+    /// </summary>
+    private void SetViewerRound(bool on)
+    {
+        viewerRound = on;
+        viewerRoundPlayed = false;
+        viewerRoundStarted = false;
+        viewerRoundFailed = false;
+        viewerRoundClock?.Stop();
+        ViewerRoundRetry.Visibility = Visibility.Collapsed;
+        ViewerRoundBar.Visibility = Visibility.Collapsed;
+        ViewerRoundFrame.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        ViewerVideo.AreTransportControlsEnabled = !on && recorder is null;
+        if (on)
+        {
+            viewerBackdrop ??= ViewerOverlay.Background;
+            var solid = new SolidColorBrush(Microsoft.UI.Colors.Black);
+            ViewerOverlay.Background = solid;
+            ViewerRoundMask.Fill = solid;
+            ViewerVideo.Stretch = Stretch.UniformToFill;
+            ViewerVideo.Margin = new Thickness(0);
+            ViewerVideo.HorizontalAlignment = HorizontalAlignment.Center;
+            ViewerVideo.VerticalAlignment = VerticalAlignment.Center;
+            SizeViewerRound();
+            return;
+        }
+        if (viewerBackdrop is { } before)
+        {
+            ViewerOverlay.Background = before;
+            viewerBackdrop = null;
+        }
+        ViewerVideo.Stretch = Stretch.Uniform;
+        ViewerVideo.Margin = new Thickness(24);
+        ViewerVideo.Width = double.NaN;
+        ViewerVideo.Height = double.NaN;
+        ViewerVideo.HorizontalAlignment = HorizontalAlignment.Stretch;
+        ViewerVideo.VerticalAlignment = VerticalAlignment.Stretch;
+    }
+
+    /// <summary>What the viewer's bars above and below the circle take of its height.</summary>
+    private const double ViewerRoundChrome = 140;
+
+    /// <summary>The circle at the size the viewer has room for (<see cref="RoundLook.ViewerDiameter"/>), its mask cut to it.</summary>
+    private void SizeViewerRound()
+    {
+        var diameter = RoundLook.ViewerDiameter(ViewerOverlay.ActualWidth, ViewerOverlay.ActualHeight, ViewerRoundChrome);
+        ViewerVideo.Width = diameter;
+        ViewerVideo.Height = diameter;
+        ViewerRoundFrame.Width = diameter;
+        ViewerRoundFrame.Height = diameter;
+        ViewerRoundRing.Width = diameter;
+        ViewerRoundRing.Height = diameter;
+        ViewerRoundRetryText.MaxWidth = Math.Max(120, diameter - 60);
+        // Everything in the square that is not the circle: the corners, filled with the backdrop.
+        var corners = new GeometryGroup { FillRule = FillRule.EvenOdd };
+        corners.Children.Add(new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0, diameter, diameter) });
+        corners.Children.Add(new EllipseGeometry
+        {
+            Center = new Windows.Foundation.Point(diameter / 2, diameter / 2),
+            RadiusX = diameter / 2,
+            RadiusY = diameter / 2,
+        });
+        ViewerRoundMask.Data = corners;
+    }
+
+    /// <summary>The clip is in: its bar comes up, and a clock keeps it — and the played dot — up to date.</summary>
+    private void ShowViewerRound()
+    {
+        if (viewerRoundFailed)
+        {
+            return;
+        }
+        ViewerRoundBar.Visibility = Visibility.Visible;
+        if (viewerRoundClock is null)
+        {
+            viewerRoundClock = DispatcherQueue.CreateTimer();
+            viewerRoundClock.Interval = TimeSpan.FromMilliseconds(250);
+            viewerRoundClock.Tick += (_, _) => TickViewerRound();
+        }
+        viewerRoundClock.Start();
+        TickViewerRound();
+    }
+
+    /// <summary>Where the circle is: the bar's position and time, Play or Pause — and, once played through here, no dot.</summary>
+    private void TickViewerRound()
+    {
+        if (gone || !viewerRound || viewing is not { } album)
+        {
+            viewerRoundClock?.Stop();
+            return;
+        }
+        if (ViewerVideo.MediaPlayer is not { } player)
+        {
+            return;
+        }
+        try
+        {
+            var session = player.PlaybackSession;
+            var total = session.NaturalDuration.TotalSeconds;
+            if (total <= 0)
+            {
+                total = (album.Current.DurationMs ?? 0) / 1000.0;
+            }
+            var at = Math.Clamp(session.Position.TotalSeconds, 0, Math.Max(total, 0));
+            var playing = session.PlaybackState == Windows.Media.Playback.MediaPlaybackState.Playing;
+            viewerRoundStarted |= playing;
+            // Its dot goes at the END, not at the start (S5.3), as on every other client.
+            if (!viewerRoundPlayed && RoundLook.PlayedThrough(viewerRoundStarted, at, total))
+            {
+                viewerRoundPlayed = true;
+                try
+                {
+                    playedRounds.MarkPlayed(album.Current.Id);
+                }
+                catch (Exception e)
+                {
+                    Diagnostics.Write($"remembering what was played: {e.GetType().Name}");
+                }
+            }
+            movingRoundSeek = true;
+            try
+            {
+                ViewerRoundSeek.Maximum = Math.Max(total, 0.1);
+                ViewerRoundSeek.Value = at;
+            }
+            finally
+            {
+                movingRoundSeek = false;
+            }
+            ViewerRoundTime.Text = $"{MediaText.TimeLabel(at)} / {MediaText.TimeLabel(total)}";
+            ViewerRoundGlyph.Glyph = ((char)(playing ? 0xE769 : 0xE768)).ToString();
+            var label = services.Say.Get(playing ? "Pause" : "Play");
+            if (!string.Equals(AutomationProperties.GetName(ViewerRoundPlay), label, StringComparison.Ordinal))
+            {
+                AutomationProperties.SetName(ViewerRoundPlay, label);
+                ToolTipService.SetToolTip(ViewerRoundPlay, label);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"following a video message: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>The circle's Play and Pause: played through, Play starts it again; and one thing plays at a time.</summary>
+    private void ToggleViewerRound()
+    {
+        if (ViewerVideo.MediaPlayer is not { } player)
+        {
+            return;
+        }
+        // No app sound while something records (S1.7); the button is dimmed then too.
+        if (recordingStart.Quiet(recorder is not null))
+        {
+            return;
+        }
+        try
+        {
+            var session = player.PlaybackSession;
+            if (session.PlaybackState == Windows.Media.Playback.MediaPlaybackState.Playing)
+            {
+                player.Pause();
+            }
+            else
+            {
+                if (session.NaturalDuration > TimeSpan.Zero
+                    && session.Position >= session.NaturalDuration - TimeSpan.FromMilliseconds(250))
+                {
+                    session.Position = TimeSpan.Zero;
+                }
+                if (AudioRunning)
+                {
+                    audio.Pause();
+                    ShowPlayback();
+                }
+                player.Play();
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"playing a video message: {e.GetType().Name}");
+        }
+        TickViewerRound();
+    }
+
+    /// <summary>
+    /// Something happened that pauses what plays (S4's last column; <see cref="PlaybackPauses"/>): the one recording
+    /// player, and the viewer's video when the rule says so — a circle on a hidden window, but a voice note plays on.
+    /// </summary>
+    private void PausePlayback(PlaybackEvent happened)
+    {
+        try
+        {
+            if (PlaybackPauses.Pauses(happened, Playing.VoiceNote) && AudioRunning)
+            {
+                audio.Pause();
+                ShowPlayback();
+            }
+            if (viewing is { IsVideo: true }
+                && PlaybackPauses.Pauses(happened, viewerRound ? Playing.RoundVideo : Playing.Video))
+            {
+                ViewerVideo.MediaPlayer?.Pause();
+            }
+            // And the clip the recorder is playing back in REVIEW, which is a circle like any other.
+            roundRecorder?.PausePlayback(happened);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"pausing for {happened}: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// The reader's own circle on its way (S5.6): drawn round at once from the poster this device made, fainter, with a
+    /// thin neutral ring while it goes up and "Sending…" — and, refused, the failed row's Try Again and Delete.
+    /// </summary>
+    private FrameworkElement PendingRoundElement(ConversationModel chat, OutboxRow row)
+    {
+        var say = services.Say;
+        var resources = Application.Current.Resources;
+        var column = new StackPanel
+        {
+            Spacing = 3,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(72, 8, 0, 0),
+        };
+        var face = new Grid
+        {
+            Width = RoundLook.Diameter,
+            Height = RoundLook.Diameter,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Opacity = row.Failed ? 0.9 : 0.6,
+        };
+        face.Children.Add(new Ellipse { Fill = (Brush)resources["ControlFillColorSecondaryBrush"] });
+        var poster = new Ellipse();
+        face.Children.Add(poster);
+        face.Children.Add(new Ellipse
+        {
+            Stroke = (Brush)resources["ControlStrongStrokeColorDefaultBrush"],
+            StrokeThickness = RoundLook.Ring,
+        });
+        AutomationProperties.SetName(face, say.Get("Video message"));
+        if ((row.StagedFiles ?? row.PendingFiles) is [var handle, ..])
+        {
+            _ = ShowStagedPosterAsync(poster, handle);
+        }
+        column.Children.Add(face);
+        column.Children.Add(PendingFoot(chat, row));
+        return column;
+    }
+
+    /// <summary>The poster staged with a circle on its way — this device's own JPEG, never asked of the server.</summary>
+    private async Task ShowStagedPosterAsync(Ellipse poster, string handle)
+    {
+        try
+        {
+            if (!stagedPosters.TryGetValue(handle, out var picture))
+            {
+                var store = connection.Staging;
+                var staged = await Task.Run(() => store.Read(handle));
+                if (gone || staged?.Preview is not { IsEmpty: false } jpeg)
+                {
+                    return;
+                }
+                picture = await DecodeAsync(jpeg.ToArray());
+                if (gone)
+                {
+                    return;
+                }
+                if (stagedPosters.Count >= 16)
+                {
+                    stagedPosters.Clear();
+                }
+                // A null is kept as well: bytes nothing here decodes will not decode on the next redraw either.
+                stagedPosters[handle] = picture;
+            }
+            if (picture is not null)
+            {
+                poster.Fill = new ImageBrush { ImageSource = picture, Stretch = Stretch.UniformToFill };
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a video message on its way: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// Under a bare send on its way — a sticker, a circle — with no balloon to sit in: "Sending…" in the window's own caption
+    /// colour, or, refused, the two things a person can do about it.
+    /// </summary>
+    private FrameworkElement PendingFoot(ConversationModel chat, OutboxRow row)
+    {
+        var say = services.Say;
+        if (row.Failed)
+        {
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+            var retry = new HyperlinkButton { Content = say.Get("Try Again") };
+            retry.Click += (_, _) =>
+            {
+                chat.Retry(row.ClientMsgId);
+                conversationDrawn = string.Empty;
+                DrawConversation(keepFromBottom: null);
+                threadDrawn = string.Empty;
+                DrawThread();
+                _ = connection.Live.FlushAsync(SendRules.FlushTrigger.UserRetried);
+            };
+            var discard = new HyperlinkButton { Content = say.Get("Delete") };
+            discard.Click += (_, _) =>
+            {
+                chat.Discard(row.ClientMsgId);
+                conversationDrawn = string.Empty;
+                DrawConversation(keepFromBottom: null);
+                threadDrawn = string.Empty;
+                DrawThread();
+            };
+            actions.Children.Add(retry);
+            actions.Children.Add(discard);
+            return actions;
+        }
+        return new TextBlock
+        {
+            Text = say.Get("Sending…"),
+            FontSize = 11,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(4, 0, 4, 0),
+            // No balloon under it, so the window's own caption colour — not the white a balloon carries.
+            Foreground = Palette.SecondaryText(),
+        };
     }
 
     // ---- stickers ------------------------------------------------------------------------------
@@ -6527,44 +7569,7 @@ public sealed partial class ChatsView : UserControl
             _ = ShowStagedStickerAsync(image, word, handle);
         }
         column.Children.Add(frame);
-        if (row.Failed)
-        {
-            var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
-            var retry = new HyperlinkButton { Content = say.Get("Try Again") };
-            retry.Click += (_, _) =>
-            {
-                chat.Retry(row.ClientMsgId);
-                conversationDrawn = string.Empty;
-                DrawConversation(keepFromBottom: null);
-                threadDrawn = string.Empty;
-                DrawThread();
-                _ = connection.Live.FlushAsync(SendRules.FlushTrigger.UserRetried);
-            };
-            var discard = new HyperlinkButton { Content = say.Get("Delete") };
-            discard.Click += (_, _) =>
-            {
-                chat.Discard(row.ClientMsgId);
-                conversationDrawn = string.Empty;
-                DrawConversation(keepFromBottom: null);
-                threadDrawn = string.Empty;
-                DrawThread();
-            };
-            actions.Children.Add(retry);
-            actions.Children.Add(discard);
-            column.Children.Add(actions);
-        }
-        else
-        {
-            column.Children.Add(new TextBlock
-            {
-                Text = say.Get("Sending…"),
-                FontSize = 11,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                Margin = new Thickness(4, 0, 4, 0),
-                // No balloon under it, so the window's own caption colour — not the white a balloon carries.
-                Foreground = Palette.SecondaryText(),
-            });
-        }
+        column.Children.Add(PendingFoot(chat, row));
         return column;
     }
 

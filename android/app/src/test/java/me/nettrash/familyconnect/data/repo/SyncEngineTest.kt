@@ -517,6 +517,8 @@ class SyncEngineTest {
         maxPackSeq: Long? = null,
         maxPackItems: Int? = 200,
         maxPackItemBytes: Long? = 524_288,
+        maxRoundVideoMs: Long? = null,
+        maxRoundVideoBytes: Long? = null,
     ) {
         familyApi.mineResult = ApiResult.Ok(
             FamilyMineResponse(
@@ -525,6 +527,8 @@ class SyncEngineTest {
                 maxPackSeq = maxPackSeq,
                 maxPackItems = maxPackItems,
                 maxPackItemBytes = maxPackItemBytes,
+                maxRoundVideoMs = maxRoundVideoMs,
+                maxRoundVideoBytes = maxRoundVideoBytes,
             ),
         )
     }
@@ -670,5 +674,34 @@ class SyncEngineTest {
         engine.resync()
 
         assertThat(settings.current.packLimits).isNull()
+    }
+
+    // -- Video messages' limits (#79, "Discovery and limits") -----------------------
+
+    /** The two keys are how this device learns the server has video messages. */
+    @Test
+    fun resyncLearnsTheVideoMessageLimits() = runTest(dispatcher) {
+        val engine = newEngine()
+        scriptChats()
+        scriptFamily(maxRoundVideoMs = 60_000, maxRoundVideoBytes = 12_582_912)
+
+        engine.resync()
+
+        assertThat(settings.current.roundVideoLimits).isEqualTo(RoundVideoLimits(60_000, 12_582_912))
+    }
+
+    /** Their absence is the server predating video messages: no video entry anywhere — and a state-set. */
+    @Test
+    fun aServerWithoutTheKeysOffersNoVideoMessages() = runTest(dispatcher) {
+        val engine = newEngine()
+        scriptChats()
+        scriptFamily(maxRoundVideoMs = 60_000, maxRoundVideoBytes = 4_194_304)
+        engine.resync()
+        assertThat(settings.current.roundVideoLimits).isNotNull()
+
+        scriptFamily()
+        engine.resync()
+
+        assertThat(settings.current.roundVideoLimits).isNull()
     }
 }
