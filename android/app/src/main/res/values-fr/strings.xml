@@ -734,4 +734,15 @@
     <string name="s_announce_video_message_sent">Message vidéo envoyé</string>
     <string name="s_announce_camera_turned_off">Caméra éteinte</string>
     <string name="s_record_voice_message_instead">Enregistrer plutôt un message vocal</string>
+    <!-- Voice and video message polish (#79): the approved design, long-press menu, speed chip, accessibility -->
+    <string name="s_voice_message_a11y">Message vocal, %1$s</string>
+    <string name="s_played">Lu</string>
+    <string name="s_playback_speed">Vitesse de lecture</string>
+    <string name="s_playback_speed_a11y">Vitesse de lecture, %1$s</string>
+    <string name="s_speed_1x">1×</string>
+    <string name="s_speed_1_5x">1,5×</string>
+    <string name="s_speed_2x">2×</string>
+    <string name="s_not_sent">Non envoyé</string>
+    <string name="s_switch">Changer</string>
+    <string name="s_stop">Arrêter</string>
 </resources>

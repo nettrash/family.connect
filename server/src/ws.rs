@@ -1031,6 +1031,7 @@ mod tests {
                 accuracy_m: None,
                 sticker: false,
                 round: false,
+                waveform: None,
             }
         }
         let mut message = sample_message();
@@ -1928,6 +1929,7 @@ mod tests {
                     accuracy_m: None,
                     sticker: false,
                     round: false,
+                    waveform: None,
                 }),
                 created_at: Some(time::macros::datetime!(2026-09-30 10:00 UTC)),
                 pack_seq: 12,

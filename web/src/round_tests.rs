@@ -307,6 +307,11 @@ async fn a_tap_plays_it_in_place_and_the_end_takes_the_dot() {
         crate::session::round_played(ME, 9102),
         "remembered by the device"
     );
+    let described = face(&root)
+        .get_attribute("aria-describedby")
+        .and_then(|id| web_sys::window()?.document()?.get_element_by_id(&id))
+        .and_then(|said| said.text_content());
+    assert_eq!(described.as_deref(), Some("Played"), "said as played now");
     assert!(
         !crate::session::round_played(ME + 1, 9102),
         "for this account"
@@ -714,7 +719,7 @@ async fn a_circle_is_200_under_720_and_240_from_720_and_has_no_balloon() {
         let capsule = pick(".round-duration").get_bounding_client_rect();
         assert!(capsule.bottom() <= circle.bottom() && capsule.top() >= circle.top());
         let play = pick(".round-play").get_bounding_client_rect();
-        assert_eq!((play.width(), play.height()), (44.0, 44.0));
+        assert_eq!((play.width(), play.height()), (48.0, 48.0));
         assert!(
             ((play.left() + play.width() / 2.0) - (circle.left() + circle.width() / 2.0)).abs()
                 < 1.0,
@@ -722,7 +727,8 @@ async fn a_circle_is_200_under_720_and_240_from_720_and_has_no_balloon() {
         );
         frame.remove();
     }
-    // In a pane narrower than the circle, it shrinks rather than spill.
+    // In a pane narrower than the circle, it shrinks rather than spill —
+    // keeping 6 px on each side for the ring outside its edge.
     let (frame, inner) = framed(
         1024,
         &format!(
@@ -737,7 +743,7 @@ async fn a_circle_is_200_under_720_and_240_from_720_and_has_no_balloon() {
         .unwrap()
         .unwrap()
         .get_bounding_client_rect();
-    assert_eq!((circle.width(), circle.height()), (150.0, 150.0));
+    assert_eq!((circle.width(), circle.height()), (138.0, 138.0));
     frame.remove();
 }
 
@@ -1019,7 +1025,9 @@ async fn a_refused_start_returns_to_the_play_glyph_and_the_next_tap_plays() {
     TimeoutFuture::new(100).await;
     assert!(video(&root).unwrap().paused(), "refused");
     assert!(
-        root.query_selector(".round-play").unwrap().is_some(),
+        root.query_selector(".round-play:not(.is-gone)")
+            .unwrap()
+            .is_some(),
         "back to the play glyph"
     );
     assert!(root
@@ -1040,4 +1048,255 @@ async fn a_refused_start_returns_to_the_play_glyph_and_the_next_tap_plays() {
     );
     handle.destroy();
     root.remove();
+}
+
+/// The ring's radius in its own 100-unit box (round_tile.rs).
+const RING_RADIUS_UNITS: f64 = 48.5;
+
+/// How many of `selector` are inside `root`.
+fn count(root: &Element, selector: &str) -> u32 {
+    root.query_selector_all(selector).unwrap().length()
+}
+
+/// What a ring DRAWS, rather than what is in the page: the ring rasterised
+/// as the page draws it — its own attributes, with the stroke's width, cap
+/// and vector effect as the shipped stylesheet computes them — then walked
+/// round at its radius. Answers how many separate arcs it shows and how
+/// thick its stroke is across, in CSS pixels.
+async fn drawn_ring(ring: &Element) -> (usize, f64) {
+    use std::f64::consts::PI;
+    let window = web_sys::window().unwrap();
+    let size = ring.get_bounding_client_rect().width().round();
+    assert!(size > 100.0, "the ring is laid out: {size}");
+    let circle = crate::layout_tests::query(ring, "circle");
+    let computed = window.get_computed_style(&circle).unwrap().unwrap();
+    let property = |name: &str| computed.get_property_value(name).unwrap();
+    let copy: Element = ring.clone_node_with_deep(true).unwrap().unchecked_into();
+    copy.remove_attribute("class").unwrap();
+    copy.set_attribute("xmlns", "http://www.w3.org/2000/svg")
+        .unwrap();
+    copy.set_attribute("width", &size.to_string()).unwrap();
+    copy.set_attribute("height", &size.to_string()).unwrap();
+    crate::layout_tests::query(&copy, "circle")
+        .set_attribute(
+            "style",
+            &format!(
+                "fill:none;stroke:#000;stroke-width:{};stroke-linecap:{};vector-effect:{}",
+                property("stroke-width"),
+                property("stroke-linecap"),
+                property("vector-effect"),
+            ),
+        )
+        .unwrap();
+    let raster = js_sys::Function::new_with_args(
+        "svg, size",
+        "return new Promise((ok, no) => { \
+           const url = URL.createObjectURL(new Blob([svg], {type: 'image/svg+xml'})); \
+           const image = new Image(); \
+           image.onload = () => { \
+             const canvas = document.createElement('canvas'); \
+             canvas.width = size; canvas.height = size; \
+             const context = canvas.getContext('2d'); \
+             context.drawImage(image, 0, 0, size, size); \
+             URL.revokeObjectURL(url); \
+             ok(context.getImageData(0, 0, size, size).data); \
+           }; \
+           image.onerror = () => no(new Error('the ring did not draw')); \
+           image.src = url; \
+         });",
+    );
+    let promise: js_sys::Promise = raster
+        .call2(
+            &JsValue::NULL,
+            &JsValue::from_str(&copy.outer_html()),
+            &JsValue::from_f64(size),
+        )
+        .unwrap()
+        .unchecked_into();
+    let pixels: js_sys::Uint8ClampedArray = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .expect("the ring rasterised")
+        .unchecked_into();
+    let pixels = pixels.to_vec();
+    let side = size as i64;
+    let alpha = |x: f64, y: f64| {
+        let (x, y) = (x.round() as i64, y.round() as i64);
+        if x < 0 || y < 0 || x >= side || y >= side {
+            return 0;
+        }
+        pixels[((y * side + x) * 4 + 3) as usize]
+    };
+    // The circle's radius, in pixels: its `r` in the ring's own box.
+    let units = ring
+        .get_attribute("viewBox")
+        .and_then(|view| view.split_whitespace().nth(2)?.parse::<f64>().ok())
+        .unwrap_or(size);
+    let radius: f64 = circle.get_attribute("r").unwrap().parse().unwrap();
+    let radius = radius * size / units;
+    let centre = size / 2.0;
+    const STEPS: usize = 720;
+    let on: Vec<bool> = (0..STEPS)
+        .map(|step| {
+            let angle = step as f64 * 2.0 * PI / STEPS as f64;
+            alpha(centre + radius * angle.cos(), centre + radius * angle.sin()) > 100
+        })
+        .collect();
+    let starts = (0..STEPS)
+        .filter(|&step| on[step] && !on[(step + STEPS - 1) % STEPS])
+        .count();
+    let arcs = if starts == 0 && on.iter().all(|&lit| lit) {
+        1
+    } else {
+        starts
+    };
+    // Across the stroke, wherever it is drawn.
+    let mut widths: Vec<f64> = (0..STEPS)
+        .step_by(4)
+        .filter(|&step| on[step])
+        .map(|step| {
+            let angle = step as f64 * 2.0 * PI / STEPS as f64;
+            (-40..=40)
+                .map(|tenth| radius + f64::from(tenth) * 0.2)
+                .filter(|&at| alpha(centre + at * angle.cos(), centre + at * angle.sin()) > 127)
+                .count() as f64
+                * 0.2
+        })
+        .collect();
+    widths.sort_by(f64::total_cmp);
+    let width = widths.get(widths.len() / 2).copied().unwrap_or(0.0);
+    (arcs, width)
+}
+
+/// ONE RING, DRAWN AS ONE ARC, 3 ACROSS (S5.3). While it loads, a single
+/// loading ring over the poster; while it plays, a single accent ring
+/// running round the edge, and no play disc. And each ring DRAWS as one
+/// arc 3 pixels wide: the stylesheet once drew the ring with
+/// `vector-effect: non-scaling-stroke`, under which Chrome lays a dash
+/// pattern out in screen pixels and ignores `pathLength`, so one arc of
+/// "25 of 100" became a row of dashes round the circle — the "multiple
+/// indicators" seen in a browser.
+#[wasm_bindgen_test]
+async fn one_ring_at_a_time_and_each_draws_one_arc_three_across() {
+    crate::layout_tests::install_stylesheet();
+    forget_played();
+    let cache = loader(Some("t"));
+    cache.seed(9120, Variant::Preview, poster());
+    cache.seed(9121, Variant::Preview, poster());
+    cache.seed(9121, Variant::Original, blob(WITHIN, "video/mp4"));
+    let root = mount();
+
+    // Not touched: the play disc, and no ring.
+    let handle = render(
+        &root,
+        HostProps {
+            loader: cache.clone(),
+            attachment: round(9120),
+            mine: false,
+            on_call: false,
+            opened: Callback::noop(),
+        },
+    );
+    TimeoutFuture::new(50).await;
+    assert_eq!(count(&root, ".round-ring"), 0, "no ring before a tap");
+    assert_eq!(count(&root, ".round-play:not(.is-gone)"), 1);
+
+    // Loading — over a network that never answers.
+    run("window.__fcFetch = window.fetch; window.fetch = () => new Promise(() => {});");
+    click(&face(&root), 1);
+    TimeoutFuture::new(30).await;
+    assert_eq!(count(&root, ".round-ring"), 1, "one ring while it loads");
+    assert_eq!(count(&root, ".round-ring.is-loading"), 1);
+    assert_eq!(count(&root, ".round-frame circle"), 1);
+    assert_eq!(
+        count(&root, ".round-play:not(.is-gone)"),
+        0,
+        "no play disc under it"
+    );
+    assert_eq!(count(&root, "img.round-poster"), 1, "over the poster");
+    let (arcs, width) = drawn_ring(&query(&root, ".round-ring")).await;
+    click(&face(&root), 1);
+    run("window.fetch = window.__fcFetch; delete window.__fcFetch;");
+    assert_eq!(arcs, 1, "the loading ring draws as one arc");
+    assert!((width - 3.0).abs() <= 1.0, "3 across, not {width}");
+    handle.destroy();
+
+    // Playing: a second long, so that the ring is well round while it plays.
+    let handle = render(
+        &root,
+        HostProps {
+            loader: cache,
+            attachment: Attachment {
+                duration_ms: Some(1_000),
+                ..round(9121)
+            },
+            mine: false,
+            on_call: false,
+            opened: Callback::noop(),
+        },
+    );
+    TimeoutFuture::new(50).await;
+    click(&face(&root), 1);
+    assert!(until(2_000, || video(&root).is_some()).await, "fetched");
+    video(&root).unwrap().set_playback_rate(0.1);
+    let dash = |root: &Element| {
+        root.query_selector(".round-ring.is-progress circle")
+            .unwrap()
+            .and_then(|circle| circle.get_attribute("stroke-dasharray"))
+            .and_then(|dash| dash.split_whitespace().next()?.parse::<f64>().ok())
+            .unwrap_or(0.0)
+    };
+    assert!(
+        until(4_000, || dash(&root) >= 10.0).await,
+        "the ring runs round while it plays"
+    );
+    video(&root).unwrap().set_playback_rate(0.0625);
+    assert_eq!(
+        face(&root).get_attribute("aria-pressed").as_deref(),
+        Some("true")
+    );
+    assert_eq!(count(&root, ".round-ring"), 1, "one ring while it plays");
+    assert_eq!(count(&root, ".round-ring.is-progress"), 1);
+    assert_eq!(count(&root, ".round-frame circle"), 1);
+    assert_eq!(
+        count(&root, ".round-play:not(.is-gone)"),
+        0,
+        "the play disc goes"
+    );
+    // It FADES out (none of it under Reduce Motion), and the ring lies
+    // OUTSIDE the circle — never over a face.
+    let window = web_sys::window().unwrap();
+    let disc = query(&root, ".round-play");
+    let computed = window.get_computed_style(&disc).unwrap().unwrap();
+    assert!(
+        computed
+            .get_property_value("transition-property")
+            .unwrap()
+            .contains("opacity"),
+        "a fade"
+    );
+    assert_eq!(
+        computed.get_property_value("opacity").unwrap(),
+        "0",
+        "gone while it plays"
+    );
+    let ring_box = query(&root, ".round-ring").get_bounding_client_rect();
+    let face_box = face(&root).get_bounding_client_rect();
+    assert!(
+        (ring_box.width() - face_box.width() - 12.0).abs() < 0.5
+            && (ring_box.left() - face_box.left() + 6.0).abs() < 0.5,
+        "6 px past the edge all round: {} over {}",
+        ring_box.width(),
+        face_box.width()
+    );
+    let radius_px = RING_RADIUS_UNITS * ring_box.width() / 100.0;
+    assert!(
+        radius_px - 1.5 >= face_box.width() / 2.0,
+        "the stroke's inner edge clears the circle: {radius_px}"
+    );
+    let (arcs, width) = drawn_ring(&query(&root, ".round-ring")).await;
+    assert_eq!(arcs, 1, "the progress ring draws as one arc");
+    assert!((width - 3.0).abs() <= 1.0, "3 across, not {width}");
+    handle.destroy();
+    root.remove();
+    forget_played();
 }

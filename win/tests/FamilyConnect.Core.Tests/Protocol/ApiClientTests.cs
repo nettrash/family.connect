@@ -397,6 +397,34 @@ public class ApiClientTests
     }
 
     /// <summary>
+    /// A voice note's waveform (docs/protocol.md, "A voice note's waveform") rides in the query on AUDIO only, and only
+    /// when it is exactly the wire; the answer's echo lands on the attachment, and an answer without one (a server from
+    /// before waveforms) is still a success.
+    /// </summary>
+    [Fact]
+    public async Task AVoiceNotesWaveformGoesInTheQueryOnAudioOnly()
+    {
+        const string wire = "0123456789abcdef0123456789abcdef0123456789abcdef";
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.Created, $$$"""{"attachment": {"id": 40, "kind": "audio", "mime": "audio/mp4", "duration_ms": 4200, "waveform": "{{{wire}}}"}}""")
+            .Then(HttpStatusCode.Created, """{"attachment": {"id": 41, "kind": "audio", "mime": "audio/mp4", "duration_ms": 4200}}""")
+            .Then(HttpStatusCode.Created, """{"attachment": {"id": 42, "kind": "audio", "mime": "audio/mp4"}}""")
+            .Then(HttpStatusCode.Created, """{"attachment": {"id": 43, "kind": "video", "mime": "video/mp4"}}"""));
+        var echoed = await client.Upload("audio", "audio/mp4", new byte[] { 1 }, durationMs: 4200, waveform: wire);
+        Assert.Equal(wire, echoed.Value!.Attachment.Waveform);
+        var old = await client.Upload("audio", "audio/mp4", new byte[] { 1 }, durationMs: 4200, waveform: wire);
+        Assert.True(old.Ok);
+        Assert.Null(old.Value!.Attachment.Waveform);
+        await client.Upload("audio", "audio/mp4", new byte[] { 1 }, waveform: wire.ToUpperInvariant());
+        await client.Upload("video", "video/mp4", new byte[] { 1 }, waveform: wire);
+        Assert.Equal(
+            $"https://chat.example.com/api/v1/attachments?kind=audio&duration_ms=4200&waveform={wire}",
+            handler.Sent[0].RequestUri?.ToString());
+        Assert.Equal("https://chat.example.com/api/v1/attachments?kind=audio", handler.Sent[2].RequestUri?.ToString());
+        Assert.Equal("https://chat.example.com/api/v1/attachments?kind=video", handler.Sent[3].RequestUri?.ToString());
+    }
+
+    /// <summary>
     /// A preview is PUT as raw JPEG to its attachment, and the server's 204 is success — the empty
     /// answer that a reader expecting JSON would call unreadable.
     /// </summary>

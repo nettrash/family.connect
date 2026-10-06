@@ -10,7 +10,8 @@
  *   Ok(value)                        — 2xx, decoded
  *   HttpError(status, code, message) — non-2xx, error body parsed per
  *                                      docs/protocol.md ("Error shape")
- *   NetworkError(cause)              — transport / decode failure
+ *   NetworkError(cause)              — transport / decode failure (a decode
+ *                                      failure is `isUndecodable`)
  *
  * A 401 on an *authenticated* call means the session is gone (protocol:
  * "A 401 means the session is gone"). It is broadcast on `unauthorized`
@@ -55,6 +56,9 @@ import java.time.Duration
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** A 2xx body that would not decode into the expected type; see [ApiResult.NetworkError.isUndecodable]. */
+class UndecodableResponseException(cause: Throwable) : Exception("Unreadable response body", cause)
+
 sealed class ApiResult<out T> {
     data class Ok<T>(val value: T) : ApiResult<T>()
     data class HttpError(
@@ -65,7 +69,18 @@ sealed class ApiResult<out T> {
         val retryAfterSeconds: Long? = null,
     ) : ApiResult<Nothing>()
 
-    data class NetworkError(val cause: Throwable) : ApiResult<Nothing>()
+    data class NetworkError(val cause: Throwable) : ApiResult<Nothing>() {
+        /**
+         * The server ANSWERED, 2xx, with a body this build cannot read
+         * ([ApiClient.decode]) — not a dead network. Most callers treat the
+         * two alike; a caller walking many items one request at a time
+         * cannot: a dead network fails every further request the same way,
+         * while an unreadable answer is about the one item asked for
+         * (`MessageRepository.repairUnknownRoundFlags`; iOS's
+         * `APIError.decoding`).
+         */
+        val isUndecodable: Boolean get() = cause is UndecodableResponseException
+    }
 
     /** The success value, or null for any failure. */
     fun okOrNull(): T? = (this as? Ok<T>)?.value
@@ -160,8 +175,10 @@ class ApiClient @Inject constructor(
                     ApiResult.Ok(json.decodeFromString<T>(result.value))
                 } catch (e: Exception) {
                     // A 2xx we can't decode is a server/client mismatch,
-                    // not an HTTP error — surface it as transport-level.
-                    ApiResult.NetworkError(e)
+                    // not an HTTP error — surface it as transport-level,
+                    // marked so a caller can still tell it from a dead
+                    // network (NetworkError.isUndecodable).
+                    ApiResult.NetworkError(UndecodableResponseException(e))
                 }
             }
         }

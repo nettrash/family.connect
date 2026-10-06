@@ -734,4 +734,15 @@
     <string name="s_announce_video_message_sent">Video-poruka poslata</string>
     <string name="s_announce_camera_turned_off">Kamera isključena</string>
     <string name="s_record_voice_message_instead">Snimi glasovnu poruku umesto toga</string>
+    <!-- Voice and video message polish (#79): the approved design, long-press menu, speed chip, accessibility -->
+    <string name="s_voice_message_a11y">Glasovna poruka, %1$s</string>
+    <string name="s_played">Pušteno</string>
+    <string name="s_playback_speed">Brzina reprodukcije</string>
+    <string name="s_playback_speed_a11y">Brzina reprodukcije, %1$s</string>
+    <string name="s_speed_1x">1×</string>
+    <string name="s_speed_1_5x">1,5×</string>
+    <string name="s_speed_2x">2×</string>
+    <string name="s_not_sent">Nije poslato</string>
+    <string name="s_switch">Promeni</string>
+    <string name="s_stop">Zaustavi</string>
 </resources>

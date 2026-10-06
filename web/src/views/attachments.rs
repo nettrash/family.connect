@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use fc_text::i18n::{t, t1, t2, tn};
 use fc_text::media;
 use fc_text::transcript::State as TranscriptState;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlAudioElement;
 use yew::prelude::*;
@@ -36,6 +37,10 @@ pub struct StackProps {
     /// offered and none is held.
     #[prop_or_default]
     pub transcribing: Option<Transcribing>,
+    /// Who is looking — whose unplayed dots a voice message draws; 0 draws
+    /// none.
+    #[prop_or_default]
+    pub my_user_id: i64,
 }
 
 /// One message's share of "Show text" (docs/protocol.md, "Transcripts on
@@ -115,6 +120,7 @@ pub fn attachment_stack(props: &StackProps) -> Html {
                     key={attachment.id}
                     attachment={attachment.clone()}
                     mine={props.mine}
+                    my_user_id={props.my_user_id}
                     on_notice={props.on_notice.clone()}
                     transcribing={props.transcribing.clone()}
                 />
@@ -264,6 +270,8 @@ fn card(props: &CardProps) -> Html {
 struct RowProps {
     attachment: Attachment,
     mine: bool,
+    #[prop_or_default]
+    my_user_id: i64,
     on_notice: Callback<String>,
     #[prop_or_default]
     transcribing: Option<Transcribing>,
@@ -287,7 +295,8 @@ fn row(props: &RowProps) -> Html {
             });
             html! {
                 <>
-                    <AudioPlayer attachment={props.attachment.clone()} mine={props.mine} />
+                    <AudioPlayer attachment={props.attachment.clone()} mine={props.mine}
+                                 my_user_id={props.my_user_id} />
                     { text.unwrap_or_default() }
                 </>
             }
@@ -401,13 +410,149 @@ fn file_row(props: &FileRowProps) -> Html {
 struct AudioProps {
     attachment: Attachment,
     mine: bool,
+    /// Who is looking — whose unplayed dots these are; 0 draws none.
+    #[prop_or_default]
+    my_user_id: i64,
 }
 
-/// A recording: play and pause, a scrubber, the time gone and the whole —
-/// and deliberately no waveform (docs/protocol.md, "Audio").
+/// The bars a voice message is drawn with: its 48 levels as sent
+/// (docs/protocol.md, "A voice note's waveform"), or the neutral placeholder
+/// where it has none or it cannot be read.
+pub const VOICE_BARS: usize = fc_text::waveform::LEVELS;
+
+/// The voice bubble's glyphs, drawn inline.
+pub(crate) const PLAY_PATH: &str =
+    "M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86A1 1 0 0 0 8 5.14z";
+pub(crate) const PAUSE_PATH: &str =
+    "M7 5h3a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm7 0h3a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z";
+
+pub(crate) fn glyph(path: &'static str) -> Html {
+    html! {
+        <svg class="voice-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path fill="currentColor" d={path} />
+        </svg>
+    }
+}
+
+/// A waveform's bars: each `(2 + level) / 17` of the full height, the first
+/// `played` of them in the accent colour (docs/protocol.md, "A voice note's
+/// waveform", readers). Drawn alike by the bubble, the review chip and the
+/// not-sent chip.
+pub(crate) fn waveform_bars(levels: &[u8], played: usize) -> Html {
+    html! {
+        { for levels.iter().enumerate().map(|(index, level)| {
+            let height = fc_text::waveform::bar_fraction(*level) * 100.0;
+            html! {
+                <i class={classes!((index < played).then_some("is-played"))}
+                   style={format!("height:{height:.1}%")}></i>
+            }
+        }) }
+    }
+}
+
+/// A speed as its chip says it — "1×", "1.5×", "2×" — in the reader's
+/// language (a comma where the language writes one).
+pub fn speed_label(speed: f64) -> String {
+    if speed == 1.5 {
+        t("1.5×").to_string()
+    } else if speed == 2.0 {
+        t("2×").to_string()
+    } else {
+        t("1×").to_string()
+    }
+}
+
+/// The event every voice bubble on the page hears when the speed changes —
+/// from a chip, or the message menu's "Playback speed".
+pub const SPEED_EVENT: &str = "fc-voice-speed";
+
+/// The marker of a voice bubble's player, which a change of speed applies to
+/// at once, playing or not.
+const VOICE_PLAYER: &str = "data-voice-note";
+
+/// Set the speed voice messages play at on this device, and apply it to
+/// every voice bubble now — playing ones too — and to their chips.
+pub fn set_voice_speed(speed: f64) {
+    crate::session::set_voice_speed(speed);
+    let speed = crate::session::voice_speed();
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    if let Ok(found) = document.query_selector_all(&format!("audio[{VOICE_PLAYER}]")) {
+        for index in 0..found.length() {
+            if let Some(player) = found
+                .item(index)
+                .and_then(|node| node.dyn_into::<web_sys::HtmlMediaElement>().ok())
+            {
+                player.set_playback_rate(speed);
+            }
+        }
+    }
+    if let (Some(window), Ok(event)) = (web_sys::window(), web_sys::Event::new(SPEED_EVENT)) {
+        let _ = window.dispatch_event(&event);
+    }
+}
+
+/// How far a key moves a voice message's position, in seconds.
+const SEEK_STEP: f64 = 5.0;
+
+/// Where a key on the waveform puts the position of a message `total`
+/// seconds long that is at `at` — None for a key that does not move it.
+pub fn seek_by_key(key: &str, at: f64, total: f64) -> Option<f64> {
+    let to = match key {
+        "ArrowRight" | "ArrowUp" => at + SEEK_STEP,
+        "ArrowLeft" | "ArrowDown" => at - SEEK_STEP,
+        "PageUp" => at + total / 10.0,
+        "PageDown" => at - total / 10.0,
+        "Home" => 0.0,
+        "End" => total,
+        _ => return None,
+    };
+    Some(to.clamp(0.0, total))
+}
+
+/// Where a pointer `x` across a waveform from `left` that is `width` wide
+/// puts the position of a message `total` seconds long.
+pub fn seek_by_pointer(x: f64, left: f64, width: f64, total: f64) -> f64 {
+    if !(width > 0.0) || !x.is_finite() {
+        return 0.0;
+    }
+    (((x - left) / width).clamp(0.0, 1.0) * total).clamp(0.0, total)
+}
+
+/// A pointer down on a voice message's waveform.
+struct WaveDrag {
+    /// Where it came down.
+    x: f64,
+    y: f64,
+    /// The position before it came down — what a scroll leaves it at.
+    before: f64,
+    /// Whether it is seeking: a mouse at once; a finger once it has moved
+    /// along the waveform.
+    seeking: bool,
+}
+
+/// How far, in CSS pixels, a finger moves along the waveform before it is
+/// seeking rather than perhaps starting a scroll.
+const SEEK_SLOP: f64 = 8.0;
+
+/// Whether a finger `dx` across and `dy` down from where it landed has
+/// moved ALONG the waveform — enough, and more across than down.
+pub fn along_the_wave(dx: f64, dy: f64) -> bool {
+    dx.abs() >= SEEK_SLOP && dx.abs() > dy.abs()
+}
+
+/// A voice message (the approved design for #79): a round accent play
+/// button; the waveform the sender measured, played bars in the accent
+/// colour as it plays, which a tap or a drag seeks and a screen reader
+/// adjusts as a slider; the time gone while it plays and the whole at rest,
+/// in tabular digits; a speed chip once it has started, paused part way
+/// included — 1×, 1.5×, 2×, the device's own; and an unplayed dot until this device has played it, never
+/// on one's own. "Show text" goes under it, as before.
 #[function_component(AudioPlayer)]
 fn audio_player(props: &AudioProps) -> Html {
     let player = use_node_ref();
+    let wave = use_node_ref();
     // Asked to play — and whether it IS playing, which only the player
     // itself can say: a fetch that failed, or a browser that refused to
     // start playing outside the click, must not leave the button on ⏸
@@ -415,8 +560,45 @@ fn audio_player(props: &AudioProps) -> Html {
     let asked = use_state(|| false);
     let playing = use_state(|| false);
     let elapsed = use_state(|| 0.0_f64);
+    let speed = use_state(crate::session::voice_speed);
+    // A seek made before the bytes are here: where the first play starts.
+    let seek_to = use_mut_ref(|| Option::<f64>::None);
+    // A finger or a mouse down on the waveform, until it is lifted.
+    let dragging = use_mut_ref(|| Option::<WaveDrag>::None);
     let url = use_media(props.attachment.id, Variant::Original, *asked);
-    let total = (props.attachment.duration_ms.unwrap_or(0) as f64 / 1000.0).max(0.1);
+    let duration_ms = props.attachment.duration_ms.unwrap_or(0).max(0);
+    let total = (duration_ms as f64 / 1000.0).max(0.1);
+    let id = props.attachment.id;
+    let me = props.my_user_id;
+    let watches = !props.mine && me != 0 && id > 0;
+    let played = use_state(|| crate::session::voice_played(me, id));
+    {
+        let played = played.clone();
+        use_effect_with((me, id), move |(me, id)| {
+            played.set(crate::session::voice_played(*me, *id));
+        });
+    }
+    // A change of speed anywhere — another bubble's chip, the menu — is
+    // this bubble's too.
+    {
+        let speed = speed.clone();
+        use_effect_with((), move |_| {
+            let heard = Closure::<dyn Fn()>::new(move || speed.set(crate::session::voice_speed()));
+            let window = web_sys::window();
+            if let Some(window) = &window {
+                let _ = window
+                    .add_event_listener_with_callback(SPEED_EVENT, heard.as_ref().unchecked_ref());
+            }
+            move || {
+                if let Some(window) = window {
+                    let _ = window.remove_event_listener_with_callback(
+                        SPEED_EVENT,
+                        heard.as_ref().unchecked_ref(),
+                    );
+                }
+            }
+        });
+    }
     // While a voice message is being recorded nothing of the app's plays
     // (the plan for #79, S1.7): the ▶ is dimmed — not disabled — and says
     // why when pressed, on the recording pane's notice line; a screen reader
@@ -424,10 +606,16 @@ fn audio_player(props: &AudioProps) -> Html {
     let dimmed = use_quiet();
     let explain = use_quiet_explain();
     let reason_id = use_memo((), |_| crate::views::dialog::fresh_id("play-reason"));
+    let state_id = use_memo((), |_| crate::views::dialog::fresh_id("voice-state"));
 
     let start = {
         let asked = asked.clone();
+        let seek_to = seek_to.clone();
         move |audio: &HtmlAudioElement| {
+            if let Some(at) = seek_to.borrow_mut().take() {
+                audio.set_current_time(at);
+            }
+            audio.set_playback_rate(crate::session::voice_speed());
             if let Ok(promise) = audio.play() {
                 let asked = asked.clone();
                 wasm_bindgen_futures::spawn_local(async move {
@@ -458,6 +646,7 @@ fn audio_player(props: &AudioProps) -> Html {
         let player = player.clone();
         let asked = asked.clone();
         let elapsed = elapsed.clone();
+        let seek_to = seek_to.clone();
         let loaded = url.is_some();
         let is_playing = *playing;
         let explain = explain.clone();
@@ -480,11 +669,148 @@ fn audio_player(props: &AudioProps) -> Html {
                 return;
             }
             asked.set(true);
+            let from = if *elapsed >= total - 0.2 {
+                0.0
+            } else {
+                *elapsed
+            };
+            *seek_to.borrow_mut() = Some(from);
             if let Some(audio) = audio.filter(|_| loaded) {
-                if *elapsed >= total - 0.2 {
-                    audio.set_current_time(0.0);
-                }
                 start(&audio);
+            }
+        })
+    };
+    // Seeking: the position moves at once, and the player with it when its
+    // bytes are here — or where the first play starts when they are not.
+    let seek = {
+        let player = player.clone();
+        let elapsed = elapsed.clone();
+        let seek_to = seek_to.clone();
+        let loaded = url.is_some();
+        Callback::from(move |to: f64| {
+            let to = to.clamp(0.0, total);
+            elapsed.set(to);
+            match player.cast::<HtmlAudioElement>().filter(|_| loaded) {
+                Some(audio) => audio.set_current_time(to),
+                // Without the bytes — before Play, or while they are on their
+                // way after it — the position is where the first play starts
+                // (`start`), not where Play was pressed.
+                None => *seek_to.borrow_mut() = Some(to),
+            }
+        })
+    };
+    let at_pointer = {
+        let wave = wave.clone();
+        move |event: &PointerEvent| {
+            let rect = wave
+                .cast::<web_sys::Element>()
+                .map(|element| element.get_bounding_client_rect());
+            rect.map(|rect| {
+                seek_by_pointer(
+                    f64::from(event.client_x()),
+                    rect.left(),
+                    rect.width(),
+                    total,
+                )
+            })
+        }
+    };
+    // A mouse seeks where it presses. A finger (or a pen) may be starting
+    // a scroll of the chat — the waveform lets the browser pan it
+    // vertically — so it seeks only once it has moved ALONG the waveform,
+    // or when it is lifted where it landed, a tap; and when the browser
+    // takes the touch for a scroll (`pointercancel`), the position is
+    // what it was before the finger came down.
+    let on_wave_down = {
+        let seek = seek.clone();
+        let dragging = dragging.clone();
+        let at_pointer = at_pointer.clone();
+        let player = player.clone();
+        let loaded = url.is_some();
+        let before = *elapsed;
+        Callback::from(move |event: PointerEvent| {
+            if event.button() != 0 {
+                return;
+            }
+            let touch = matches!(event.pointer_type().as_str(), "touch" | "pen");
+            let before = player
+                .cast::<HtmlAudioElement>()
+                .filter(|_| loaded)
+                .map_or(before, |audio| audio.current_time());
+            *dragging.borrow_mut() = Some(WaveDrag {
+                x: f64::from(event.client_x()),
+                y: f64::from(event.client_y()),
+                before,
+                seeking: !touch,
+            });
+            if let Some(target) = event
+                .target()
+                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            {
+                let _ = target.set_pointer_capture(event.pointer_id());
+            }
+            if !touch {
+                if let Some(to) = at_pointer(&event) {
+                    seek.emit(to);
+                }
+            }
+        })
+    };
+    let on_wave_move = {
+        let seek = seek.clone();
+        let dragging = dragging.clone();
+        let at_pointer = at_pointer.clone();
+        Callback::from(move |event: PointerEvent| {
+            let seeking = {
+                let mut drag = dragging.borrow_mut();
+                let Some(drag) = drag.as_mut() else { return };
+                if !drag.seeking {
+                    drag.seeking = along_the_wave(
+                        f64::from(event.client_x()) - drag.x,
+                        f64::from(event.client_y()) - drag.y,
+                    );
+                }
+                drag.seeking
+            };
+            if seeking {
+                if let Some(to) = at_pointer(&event) {
+                    seek.emit(to);
+                }
+            }
+        })
+    };
+    let on_wave_up = {
+        let seek = seek.clone();
+        let dragging = dragging.clone();
+        Callback::from(move |event: PointerEvent| {
+            // A tap: lifted where it landed, never having moved along.
+            if dragging
+                .borrow_mut()
+                .take()
+                .is_some_and(|drag| !drag.seeking)
+            {
+                if let Some(to) = at_pointer(&event) {
+                    seek.emit(to);
+                }
+            }
+        })
+    };
+    let on_wave_cancel = {
+        let seek = seek.clone();
+        let dragging = dragging.clone();
+        Callback::from(move |_: PointerEvent| {
+            if let Some(drag) = dragging.borrow_mut().take().filter(|drag| drag.seeking) {
+                seek.emit(drag.before);
+            }
+        })
+    };
+    let on_wave_key = {
+        let seek = seek.clone();
+        let at = *elapsed;
+        Callback::from(move |event: KeyboardEvent| {
+            if let Some(to) = seek_by_key(&event.key(), at, total) {
+                event.prevent_default();
+                seek.emit(to);
             }
         })
     };
@@ -506,8 +832,19 @@ fn audio_player(props: &AudioProps) -> Html {
     let on_play = {
         let playing = playing.clone();
         let awake = awake.clone();
-        Callback::from(move |_: Event| {
+        let played = played.clone();
+        Callback::from(move |event: Event| {
             playing.set(true);
+            if let Some(audio) = event
+                .target()
+                .and_then(|target| target.dyn_into::<HtmlAudioElement>().ok())
+            {
+                audio.set_playback_rate(crate::session::voice_speed());
+            }
+            if watches {
+                crate::session::mark_voice_played(me, id);
+                played.set(true);
+            }
             if phone_like() {
                 *awake.borrow_mut() = Some(ScreenAwake::hold());
             }
@@ -530,56 +867,106 @@ fn audio_player(props: &AudioProps) -> Html {
             playing.set(false);
             awake.borrow_mut().take();
             asked.set(false);
-            elapsed.set(total);
+            // Back at rest: the whole length, no bar played.
+            elapsed.set(0.0);
         })
     };
-    let on_scrub = {
-        let player = player.clone();
-        let elapsed = elapsed.clone();
-        Callback::from(move |event: InputEvent| {
-            let input: web_sys::HtmlInputElement = event.target_unchecked_into();
-            let to = input.value().parse::<f64>().unwrap_or(0.0);
-            elapsed.set(to);
-            if let Some(audio) = player.cast::<HtmlAudioElement>() {
-                audio.set_current_time(to);
-            }
-        })
-    };
+    let cycle_speed = Callback::from(move |event: MouseEvent| {
+        event.stop_propagation();
+        set_voice_speed(crate::session::next_voice_speed(
+            crate::session::voice_speed(),
+        ));
+    });
+    let keep = Callback::from(|event: MouseEvent| event.stop_propagation());
+
     let loading = *asked && !*playing && url.is_none();
-    let (glyph, label) = if *playing {
-        ("⏸", t("Pause"))
+    let (path, label) = if *playing {
+        (PAUSE_PATH, t("Pause"))
     } else if loading {
-        ("…", t("Loading"))
+        (PLAY_PATH, t("Loading"))
     } else {
-        ("▶", t("Play"))
+        (PLAY_PATH, t("Play"))
     };
+    let levels = fc_text::waveform::levels_or_placeholder(props.attachment.waveform.as_deref());
+    let started = *playing || *elapsed > 0.0;
+    let played_bars = if started {
+        fc_text::waveform::played_bars(
+            (*elapsed * 1000.0).max(0.0) as u64,
+            duration_ms as u64,
+            VOICE_BARS,
+        )
+    } else {
+        0
+    };
+    let shown = if started { *elapsed } else { total };
+    let length = media::time_label(total);
+    let name = if props.attachment.name.is_none() {
+        t1("Voice message, %@", &length)
+    } else {
+        t1("Audio, %@", &length)
+    };
+    let unplayed = watches && !*played;
+    let described: Vec<String> = [
+        watches.then(|| (*state_id).clone()),
+        dimmed.then(|| (*reason_id).clone()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let speed_now = speed_label(*speed);
     html! {
-        <div class={classes!("audio", props.mine.then_some("on-tint"))}
-             aria-label={t1("Audio, %@", &media::time_label(total))}>
-            <button class={classes!("audio-toggle", dimmed.then_some("is-dimmed"))}
+        <div class={classes!("audio", props.mine.then_some("on-tint"), (*playing).then_some("is-playing"))}
+             role="group" aria-label={name}>
+            <button class={classes!("audio-toggle", dimmed.then_some("is-dimmed"), loading.then_some("is-loading"))}
                     onclick={toggle} aria-label={label}
                     aria-disabled={dimmed.then_some("true")}
-                    aria-describedby={dimmed.then(|| (*reason_id).clone())}>{ glyph }</button>
+                    aria-describedby={(!described.is_empty()).then(|| described.join(" "))}>
+                { glyph(path) }
+            </button>
             if dimmed {
                 <span id={(*reason_id).clone()} hidden=true>{ t(PLAY_AFTER) }</span>
             }
-            <div class="audio-track">
-                <input
-                    type="range"
-                    min="0"
-                    max={format!("{total:.2}")}
-                    step="0.1"
-                    value={format!("{:.2}", elapsed.min(total))}
-                    oninput={on_scrub}
-                    aria-label={t("Position")}
-                />
-                <div class="audio-times">
-                    <span>{ media::time_label(*elapsed) }</span>
-                    <span>{ media::time_label(total) }</span>
-                </div>
+            if watches {
+                <span id={(*state_id).clone()} hidden=true>
+                    { if unplayed { t("Not played") } else { t("Played") } }
+                </span>
+            }
+            <div
+                ref={wave}
+                class="audio-wave"
+                role="slider"
+                tabindex="0"
+                aria-label={t("Position")}
+                aria-valuemin="0"
+                aria-valuemax={format!("{:.0}", total.round())}
+                aria-valuenow={format!("{:.0}", elapsed.clamp(0.0, total).round())}
+                aria-valuetext={media::time_label(if started { *elapsed } else { 0.0 })}
+                onpointerdown={on_wave_down}
+                onpointermove={on_wave_move}
+                onpointerup={on_wave_up}
+                onpointercancel={on_wave_cancel}
+                onkeydown={on_wave_key}
+                onclick={keep.clone()}
+                ondblclick={keep}
+            >
+                { waveform_bars(&levels, played_bars) }
+            </div>
+            <div class="audio-meta">
+                <span class="audio-time">{ media::time_label(shown) }</span>
+                if unplayed {
+                    <span class="audio-dot" aria-hidden="true"></span>
+                }
+                // Once started and until it is back at rest — paused part way
+                // included, as on iOS, Android and Windows.
+                if started {
+                    <button type="button" class="audio-speed" onclick={cycle_speed}
+                            aria-label={t1("Playback speed, %@", &speed_now)}>
+                        { speed_now.clone() }
+                    </button>
+                }
             </div>
             <audio ref={player} src={url.unwrap_or_default()} preload="auto"
-                   data-playback="true"
+                   data-playback="true" data-voice-note="true"
                    ontimeupdate={on_time} onplay={on_play} onpause={on_pause} onended={on_ended} />
         </div>
     }

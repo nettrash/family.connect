@@ -681,7 +681,16 @@ async fn audio(file: &File, container: &'static str, job: &Job) -> Result<Prepar
 /// Checked the way the server will check it. A recorder that promised MP4
 /// and wrote something else sends it as a file — heard by nobody's player
 /// here, but not refused, and not lost.
-pub async fn recording(blob: Blob, mime: &str, duration_ms: i64) -> Result<Prepared, PrepError> {
+///
+/// `waveform` is its shape as the recorder heard it (docs/protocol.md, "A
+/// voice note's waveform") — kept only on what goes as audio, and only in
+/// the form the server takes: a waveform on a file is refused (`validation`).
+pub async fn recording(
+    blob: Blob,
+    mime: &str,
+    duration_ms: i64,
+    waveform: Option<String>,
+) -> Result<Prepared, PrepError> {
     within_limit(&blob)?;
     let bytes = head(&blob, 12).await;
     let checks = media::matches_magic(mime, &bytes);
@@ -692,6 +701,7 @@ pub async fn recording(blob: Blob, mime: &str, duration_ms: i64) -> Result<Prepa
         duration_ms: checks.then_some(duration_ms),
         name: (!checks).then(|| "Voice note.m4a".to_string()),
         file: Some(blob),
+        waveform: waveform.filter(|shape| checks && fc_text::waveform::parse(shape).is_some()),
         ..Prepared::default()
     })
 }

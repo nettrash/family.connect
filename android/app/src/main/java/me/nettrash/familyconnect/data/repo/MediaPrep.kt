@@ -99,6 +99,12 @@ class MediaPrep @Inject constructor(
          * and what leaving the chat parks as "not sent" (S2.8).
          */
         val voiceNote: Boolean = false,
+        /**
+         * A voice note's waveform as the wire spells it (#79; docs/protocol.md,
+         * "A voice note's waveform") — the recorder's peaks, made while it
+         * recorded. Null for everything else.
+         */
+        val waveform: String? = null,
     )
 
     /** The item could not be read or decoded at all. */

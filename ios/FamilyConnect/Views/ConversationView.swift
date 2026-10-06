@@ -91,12 +91,16 @@ struct ConversationView: View {
     }
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
+    /// The transcripts a recording's menu asks about (#79).
+    @Environment(AttachmentStore.self) private var attachmentStore
     @Environment(LinkPreviewLoader.self) private var previewLoader
     /// For `callsEnabled` — whether this server rings anybody at all.
     @Environment(AppSession.self) private var session
     @Environment(CallManager.self) private var calls
     /// Which way the leading edge is — where slide-to-cancel slides (S1.1).
     @Environment(\.layoutDirection) private var layoutDirection
+    /// The voice rows' cross-fades, and none under Reduce Motion (S1.1).
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The "app is frontmost" half of ChatPresence. Read here rather than
     /// taken from RootView because this is where the other two facts are,
     /// and all three have to be published together.
@@ -334,6 +338,10 @@ struct ConversationView: View {
         let id = UUID()
         let items: [Any]
     }
+    private struct ExportFile: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
     /// localID of the bubble the floating reaction picker is up over;
     /// nil = no picker. Set/cleared inside withAnimation so the capsule
     /// springs in and out.
@@ -353,6 +361,8 @@ struct ConversationView: View {
     @State private var shareText: ShareText?
     /// An attachment (and any caption) handed to the share sheet.
     @State private var sharePayload: SharePayload?
+    /// A recording on its way to "Save to Files" (#79).
+    @State private var exportFile: ExportFile?
 
     /// Media that is prepared and waiting for the user to press Send —
     /// up to StagedAttachment.maxPerMessage of it, in the order staged,
@@ -955,6 +965,10 @@ struct ConversationView: View {
         }
         .sheet(item: $shareText) { share in
             ShareSheet(text: share.text)
+        }
+        .sheet(item: $exportFile) { file in
+            FileExportPicker(url: file.url)
+                .ignoresSafeArea()
         }
         .sheet(item: $sharePayload) { payload in
             ShareSheet(items: payload.items)
@@ -1655,6 +1669,7 @@ struct ConversationView: View {
                         .accessibilityHidden(voiceRowCoversControls)
                     voiceRow
                 }
+                .animation(voiceRowAnimation, value: voiceRowKey)
                 recordSendSlot
             }
             .padding(.horizontal, 12)
@@ -1935,8 +1950,10 @@ struct ConversationView: View {
                         windowMS: voice.constants.undoWindowMS,
                         clock: voice.clock,
                         onUndo: { voice.undo() })
+                        .transition(.opacity)
                 }
             }
+            .animation(voiceRowAnimation, value: voice.state.undo != nil)
     }
 
     /// The draft as the FIELD writes it: every character typed, deleted,
@@ -2214,14 +2231,15 @@ struct ConversationView: View {
         if voice.isHolding {
             VoiceHoldRow(
                 elapsed: voice.recorder.elapsed,
-                litBars: AudioRecorder.litBars(peak: voice.recorder.peakLevel),
                 armed: voice.isArmed,
                 warning: voice.showsThirtySecondsLeft,
                 height: composerControl)
+                .transition(.opacity)
         } else if voice.isHandsFree {
             VoiceRecordingRow(
                 elapsed: voice.recorder.elapsed,
                 litBars: AudioRecorder.litBars(peak: voice.recorder.peakLevel),
+                peaks: voice.recorder.peaks,
                 besideDraft: voice.isBesideDraft,
                 warning: voice.showsThirtySecondsLeft,
                 stillRecording: voice.showsStillRecording,
@@ -2229,7 +2247,19 @@ struct ConversationView: View {
                 onDelete: { voice.delete() },
                 onStop: { voice.stop() },
                 onMagicTap: { _ = voice.magicTap() })
+                .transition(.opacity)
         }
+    }
+
+    /// Which row the input row shows — what its 150 ms cross-fade follows
+    /// (S1.1 "Motion"; none under Reduce Motion).
+    private var voiceRowKey: Int {
+        voice.isHolding ? 1 : voice.isHandsFree ? 2 : voice.state.undo != nil ? 3 : 0
+    }
+
+    /// The composer's cross-fade between the field and the voice rows.
+    private var voiceRowAnimation: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: Double(RecordRules.slotCrossfadeMS) / 1000)
     }
 
     /// The slot itself (S1.3, S8.1), with the lock floating above it while
@@ -2574,12 +2604,14 @@ struct ConversationView: View {
     /// written before the first byte (S2.5). If it cannot be queued it lands
     /// in review with the error, never lost.
     private func sendVoiceNote(_ recording: AudioRecorder.Recording, replyTo: ReplyToDTO?) -> Bool {
-        let prepared = MediaPrep.Prepared(
+        var prepared = MediaPrep.Prepared(
             fileURL: recording.url,
             mime: MediaPrep.audioMIME(for: recording.url),
             kind: AttachmentDTO.Kind.audio,
             durationMS: Int((recording.duration * 1000).rounded()),
             name: nil)
+        // Its shape, from the recorder's meter, goes up with it (#79).
+        prepared.waveform = recording.waveform
         if coordinator.sendMedia([prepared], caption: "", replyTo: replyTo, mentions: nil, in: chatID) != nil {
             return true
         }
@@ -2612,8 +2644,9 @@ struct ConversationView: View {
         }
         prepare {
             do {
-                let prepared = try await MediaPrep.prepareAudio(
+                var prepared = try await MediaPrep.prepareAudio(
                     from: url, limit: MediaPrep.sizeLimit, isVoiceNote: true)
+                prepared.waveform = entry.waveform
                 guard !Task.isCancelled, StagedAttachment.canAdd(to: staged.count) else {
                     MediaPrep.discard(prepared)
                     ParkedRecordings.shared.settle(entry)
@@ -2649,8 +2682,9 @@ struct ConversationView: View {
             do {
                 // A voice note: recorded to the profile already, so the
                 // audio rules for picked files do not apply to it.
-                let prepared = try await MediaPrep.prepareAudio(
+                var prepared = try await MediaPrep.prepareAudio(
                     from: url, limit: MediaPrep.sizeLimit, isVoiceNote: true)
+                prepared.waveform = recording.waveform
                 guard !Task.isCancelled else {
                     // The chat was left while the copy was being made: a
                     // note in review whose chat was left is not sent (S2.8).
@@ -2714,7 +2748,8 @@ struct ConversationView: View {
                 duration: duration,
                 chatID: chatID,
                 replyTo: replyDraft,
-                caption: captionTaken ? nil : caption)
+                caption: captionTaken ? nil : caption,
+                waveform: note.prepared.waveform)
             guard parked != nil else { continue }
             captionTaken = true
             staged.removeAll { $0.id == note.id }
@@ -2731,7 +2766,7 @@ struct ConversationView: View {
         }
         if ParkedRecordings.shared.park(
             fileAt: recording.url, duration: recording.duration, chatID: chatID,
-            replyTo: replyTo, caption: caption) == nil
+            replyTo: replyTo, caption: caption, waveform: recording.waveform) == nil
         {
             try? FileManager.default.removeItem(at: recording.url)
             composerNotice = String(localized: "The recording stopped unexpectedly.")
@@ -2914,6 +2949,33 @@ struct ConversationView: View {
             onCapturedVideo: stageCapturedVideo,
             onImportFailed: { mediaState = .failed(String(localized: "Couldn't read that file.")) },
             onShareAttachment: { shareAttachment($0, caption: "") })
+    }
+
+    /// "Save to Files" on a voice or video message (#79): the recording
+    /// itself, downloaded if it has to be, handed to the system's own
+    /// export picker as a copy.
+    func saveToFiles(_ attachment: AttachmentDTO) {
+        Task {
+            mediaState = .working(String(localized: "Preparing…"))
+            guard let url = await coordinator.localFileURL(for: attachment) else {
+                mediaState = .failed(String(localized: "Couldn't download that to share."))
+                return
+            }
+            mediaState = .idle
+            exportFile = ExportFile(url: url)
+        }
+    }
+
+    /// What the menu offers for a recording's text: the section's own door,
+    /// asked for this message (#79).
+    private func recordingTranscriptRow(
+        for attachment: AttachmentDTO, message: MessageEntity
+    ) -> TranscriptStore.MenuRow? {
+        let subject = TranscriptSubject(
+            chatID: message.chatID, messageID: message.serverID, senderID: message.senderID)
+        let door = TranscriptSection.door(
+            attachment: attachment, subject: subject, session: session, coordinator: coordinator)
+        return attachmentStore.transcripts.menuRow(for: attachment.id, door: door)
     }
 
     /// Share an attachment as a FILE, downloading it first if this device
@@ -3428,6 +3490,15 @@ struct ConversationView: View {
                         // The SAME two values feed the size call and the
                         // initializer below. Out of step, the overlay
                         // places one menu and draws another.
+                        // A recording's menu (#79): Show text, Playback
+                        // speed on a voice message, Save to Files — and no
+                        // Copy, Edit or Share.
+                        let snapshot = MessageSnapshot(message)
+                        let isRecording = MessagePresentation.isRecordingMessage(snapshot)
+                        let isVoice = MessagePresentation.isVoiceMessage(snapshot)
+                        let transcriptRow: TranscriptStore.MenuRow? = isRecording
+                            ? attachment.flatMap { recordingTranscriptRow(for: $0, message: message) }
+                            : nil
                         let menuSize = MessageContextMenu.size(
                             canReply: canReply,
                             canViewThread: canViewThread,
@@ -3436,7 +3507,10 @@ struct ConversationView: View {
                             canCopy: canCopy,
                             canReport: canReport,
                             blockState: blockState,
-                            page: menuPage)
+                            page: menuPage,
+                            isRecording: isRecording,
+                            transcriptRow: transcriptRow,
+                            offersSpeed: isVoice)
                         floatingMenu(
                             size: menuSize,
                             over: rect,
@@ -3485,6 +3559,22 @@ struct ConversationView: View {
                                 canReply: canReply,
                                 canViewThread: canViewThread,
                                 canOpenFullScreen: isRound,
+                                isRecording: isRecording,
+                                transcriptRow: transcriptRow,
+                                offersSpeed: isVoice,
+                                speedLabel: VoicePlaybackSpeed.shared.label,
+                                onTranscript: {
+                                    dismissReactionPicker()
+                                    if let attachment, let transcriptRow {
+                                        attachmentStore.transcripts.performMenuRow(
+                                            transcriptRow, for: attachment.id)
+                                    }
+                                },
+                                onSpeed: { VoicePlaybackSpeed.shared.cycle() },
+                                onSaveToFiles: {
+                                    dismissReactionPicker()
+                                    if let attachment { saveToFiles(attachment) }
+                                },
                                 canEdit: canEdit,
                                 canCopy: canCopy,
                                 canReport: canReport,

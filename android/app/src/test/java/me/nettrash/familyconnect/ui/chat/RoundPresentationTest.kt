@@ -162,11 +162,14 @@ class RoundPresentationTest {
         assertThat(RoundVideoDrawing.diameter(599)).isEqualTo(200.dp)
         assertThat(RoundVideoDrawing.diameter(600)).isEqualTo(240.dp)
         assertThat(RoundVideoDrawing.diameter(1280)).isEqualTo(240.dp)
-        // Larger than a sticker (160), and the play disc and dot are S5.2's.
+        // Larger than a sticker (160); the play disc, the dot in the capsule
+        // and the one ring are the approved design's (#79 polish: 48, 7, 3,
+        // the ring in the 6 units just outside the edge).
         assertThat(RoundVideoDrawing.COMPACT).isGreaterThan(160.dp)
-        assertThat(RoundVideoDrawing.PLAY_DISC).isEqualTo(44.dp)
-        assertThat(RoundVideoDrawing.UNPLAYED_DOT).isEqualTo(8.dp)
+        assertThat(RoundVideoDrawing.PLAY_DISC).isEqualTo(48.dp)
+        assertThat(RoundVideoDrawing.UNPLAYED_DOT).isEqualTo(7.dp)
         assertThat(RoundVideoDrawing.PROGRESS_RING).isEqualTo(3.dp)
+        assertThat(RoundVideoDrawing.RING_GAP + RoundVideoDrawing.PROGRESS_RING).isAtMost(RoundVideoDrawing.RING_ROOM)
     }
 
     @Test

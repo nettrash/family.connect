@@ -928,9 +928,31 @@ pub struct Attachment {
     /// that is not a video (0052's two CHECKs).
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub round: bool,
+    /// Audio only, and only when the uploader sent one: the recording's
+    /// shape as 48 levels of 0..15, one lowercase hex digit each
+    /// (docs/protocol.md, "A voice note's waveform"). The sender computes
+    /// it; this server checks its form, stores it and echoes it, and never
+    /// decodes a byte to make one. Absent on the wire otherwise — never an
+    /// empty string — so an old client sees exactly the shape it always did.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub waveform: Option<String>,
 }
 
 impl Attachment {
+    /// How many levels a waveform carries, each one hex digit.
+    pub const WAVEFORM_LEVELS: usize = 48;
+
+    /// Whether `value` is a waveform as the wire spells one: EXACTLY
+    /// [`Self::WAVEFORM_LEVELS`] lowercase hex digits and nothing else —
+    /// the same test as 0053's CHECK, asked first so a malformed one is a
+    /// `validation` 400 rather than a 500 from the constraint.
+    pub fn is_waveform(value: &str) -> bool {
+        value.len() == Self::WAVEFORM_LEVELS
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+
     /// The media types accepted for a photo, video or piece of audio,
     /// paired with the kind they belong to. HEIC/HEIF are here because that
     /// is what an iPhone actually produces.
@@ -1083,6 +1105,10 @@ impl Attachment {
             // has no business with it — a note's picture, a pack item's —
             // reads false rather than failing.
             round: row.try_get("round").unwrap_or_default(),
+            // And for the waveform (0053): only audio has one, and a SELECT
+            // that never asked for it — a note's picture, a pack item's, the
+            // assistant's history — reads "none" rather than failing.
+            waveform: row.try_get("waveform").unwrap_or_default(),
         }
     }
 }
@@ -1982,6 +2008,7 @@ mod tests {
             accuracy_m: None,
             sticker: false,
             round: false,
+            waveform: None,
         };
         let json = serde_json::to_value(&photo).expect("serializes");
         assert!(json.get("sticker").is_none(), "{json}");
@@ -2009,6 +2036,77 @@ mod tests {
         }
     }
 
+    /// `waveform` is on the wire when — and only when — the uploader sent
+    /// one, and an attachment without the key (every one a shipped server
+    /// ever sent) reads as having none (protocol.md, "A voice note's
+    /// waveform").
+    #[test]
+    fn the_waveform_is_absent_unless_given() {
+        let note = Attachment {
+            id: 77,
+            kind: "audio".to_string(),
+            mime: "audio/mp4".to_string(),
+            size: 113_402,
+            width: None,
+            height: None,
+            duration_ms: Some(14_200),
+            has_preview: false,
+            name: None,
+            latitude: None,
+            longitude: None,
+            accuracy_m: None,
+            sticker: false,
+            round: false,
+            waveform: None,
+        };
+        let json = serde_json::to_value(&note).expect("serializes");
+        assert!(json.get("waveform").is_none(), "{json}");
+        let back: Attachment = serde_json::from_value(json).expect("parses without the key");
+        assert_eq!(back.waveform, None);
+
+        let shaped = Attachment {
+            waveform: Some("0124689abcddeeedcba987654321001245678aabbba98642".to_string()),
+            ..note
+        };
+        let json = serde_json::to_value(&shaped).expect("serializes");
+        assert_eq!(
+            json["waveform"],
+            "0124689abcddeeedcba987654321001245678aabbba98642"
+        );
+        let back: Attachment = serde_json::from_value(json).expect("parses");
+        assert_eq!(back, shaped);
+    }
+
+    /// The wire's spelling, exactly: 48 lowercase hex digits and nothing
+    /// else — the same test 0053's CHECK makes.
+    #[test]
+    fn a_waveform_is_48_lowercase_hex_digits() {
+        assert!(Attachment::is_waveform(&"0".repeat(48)));
+        assert!(Attachment::is_waveform(&"f".repeat(48)));
+        assert!(Attachment::is_waveform(
+            "0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+        for refused in [
+            String::new(),
+            "0".repeat(47),
+            "0".repeat(49),
+            "0".repeat(96),
+            format!("{}F", "0".repeat(47)),
+            format!("{}g", "0".repeat(47)),
+            format!("{} ", "0".repeat(47)),
+            format!(" {}", "0".repeat(47)),
+            format!("{}\n", "0".repeat(47)),
+            format!("{},", "0".repeat(47)),
+            format!("{}-", "0".repeat(47)),
+            // 48 BYTES that are not 48 characters, and 48 characters that
+            // are not 48 bytes: neither is a waveform.
+            format!("{}é", "0".repeat(46)),
+            format!("{}٣", "0".repeat(47)),
+        ] {
+            assert!(!Attachment::is_waveform(&refused), "{refused:?}");
+        }
+    }
+
     /// The video message as protocol.md draws it: a 480 x 480 MP4 of 23.4 s.
     fn round_video() -> Attachment {
         Attachment {
@@ -2026,6 +2124,7 @@ mod tests {
             accuracy_m: None,
             sticker: false,
             round: false,
+            waveform: None,
         }
     }
 

@@ -41,6 +41,12 @@ pub struct Prepared {
     /// (docs/protocol.md, "Sending one"). Not sent anywhere — it is where a
     /// reload, which keeps no bytes, can fetch them from again.
     pub source_attachment_id: Option<i64>,
+    /// A voice note's shape, 48 hex levels the recorder measured
+    /// (docs/protocol.md, "A voice note's waveform"): sent with the upload,
+    /// and drawn by the chip and the pending bubble before anything has
+    /// gone. None for anything else, and for a note whose recorder heard
+    /// nothing it could measure.
+    pub waveform: Option<String>,
 }
 
 impl Prepared {
@@ -96,6 +102,10 @@ pub struct OutgoingItem {
     /// everything else, and on a row kept by a build from before stickers.
     #[serde(default)]
     pub source_attachment_id: Option<i64>,
+    /// A voice note's shape (`Prepared::waveform`), sent as `waveform=` on
+    /// the upload. Absent on a row kept by a build from before waveforms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waveform: Option<String>,
 }
 
 impl OutgoingItem {
@@ -115,6 +125,7 @@ impl OutgoingItem {
             has_preview: prepared.preview.is_some(),
             attachment_id: None,
             source_attachment_id: prepared.source_attachment_id,
+            waveform: prepared.waveform.clone(),
         }
     }
 
@@ -147,6 +158,7 @@ impl OutgoingItem {
             // The row's to say, not the item's: see `Store::enqueue`.
             sticker: false,
             round: false,
+            waveform: self.waveform.clone(),
         }
     }
 }

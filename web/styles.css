@@ -17,6 +17,14 @@
     --warn: #b45309;
     --soft: #eef0f5;
     --radius: 12px;
+    /* Voice and video messages (#79, the approved design): recording red,
+     * the unplayed bars of a waveform on a panel and on the tinted balloon,
+     * the accent's soft fill behind the speed chip, the circle's shadow. */
+    --rec: #e5484d;
+    --wave-off: #b9c0d0;
+    --mine-wave-off: #8fb1e3;
+    --tint-soft: #dceafd;
+    --shadow: 0 6px 18px rgb(20 24 40 / 16%);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -31,6 +39,11 @@
         --danger: #f2b8b5;
         --warn: #fbbf24;
         --soft: #262631;
+        --rec: #ff6369;
+        --wave-off: #4a4f60;
+        --mine-wave-off: #4f6f9c;
+        --tint-soft: #24405f;
+        --shadow: 0 6px 18px rgb(0 0 0 / 50%);
     }
 }
 
@@ -457,22 +470,114 @@ button.link, .link {
 .file-size { font-size: 12px; opacity: .7; white-space: nowrap; }
 .open-maps { margin-left: auto; font-size: 12px; color: var(--tint); white-space: nowrap; }
 
+/* A VOICE MESSAGE (#79, the approved design): a round accent play button,
+ * the waveform the sender measured — played bars in the accent colour, a
+ * tap or a drag seeks — and under it the time in tabular digits, the
+ * unplayed dot and, while it plays, the speed chip. The balloon is the
+ * bubble's own. */
 .audio {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-rows: 28px auto;
+    column-gap: 10px;
+    row-gap: 2px;
+    align-items: center;
+    width: 280px;
+    max-width: 100%;
+    padding: 2px 2px 0 0;
+}
+.audio-toggle {
+    grid-row: 1 / span 2;
+    position: relative;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    background: var(--tint);
+    color: #fff;
+}
+.audio-toggle .voice-glyph, .local-play .voice-glyph, .round-play svg { width: 18px; height: 18px; display: block; }
+.audio-toggle.is-loading::before {
+    content: "";
+    position: absolute;
+    inset: -3px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    border-top-color: var(--tint);
+    animation: spin 0.9s linear infinite;
+}
+.audio-toggle:focus-visible, .audio-wave:focus-visible, .audio-speed:focus-visible { outline: 2px solid var(--tint); outline-offset: 2px; }
+/* The waveform: the bars of docs/protocol.md, "A voice note's waveform",
+ * each (2 + level) / 17 of the height. Its hit area is the whole strip;
+ * a vertical swipe still scrolls the chat. */
+.audio-wave {
     display: flex;
     align-items: center;
-    gap: 10px;
-    width: 260px;
-    max-width: 100%;
-    padding: 6px 8px;
-    border-radius: var(--radius);
-    background: color-mix(in srgb, var(--ink) 5%, transparent);
-    border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+    gap: 2px;
+    height: 28px;
+    min-width: 0;
+    cursor: pointer;
+    touch-action: pan-y;
+    user-select: none;
+    -webkit-user-select: none;
+    border-radius: 4px;
 }
-.audio-toggle { width: 36px; height: 36px; border-radius: 50%; padding: 0; flex: none; }
-.audio-track { display: grid; gap: 2px; flex: 1; min-width: 0; }
-.audio-track input { width: 100%; accent-color: var(--tint); margin: 0; }
-.audio-times { display: flex; justify-content: space-between; font-size: 11px; font-variant-numeric: tabular-nums; opacity: .75; }
+.audio-wave > i, .chip-wave > i {
+    flex: 1 1 0;
+    min-width: 1px;
+    max-width: 4px;
+    border-radius: 2px;
+    background: var(--wave-off);
+}
+.audio.on-tint .audio-wave > i:not(.is-played) { background: var(--mine-wave-off); }
+.audio-wave > i.is-played, .chip-wave > i.is-played { background: var(--tint); }
+.audio-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 20px;
+    color: var(--muted);
+}
+.audio-time, .chip-time, .recording-time {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 12.5px;
+}
+.audio-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--tint);
+    flex: none;
+}
+.audio-speed {
+    margin-left: auto;
+    padding: 1px 7px;
+    border-radius: 9px;
+    background: var(--tint-soft);
+    color: var(--tint);
+    font-size: 11.5px;
+    font-weight: 700;
+    line-height: 1.5;
+    animation: fade-in 150ms ease-out;
+}
 .audio audio { display: none; }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+/* A finger takes 44 px without the button growing. */
+@media (pointer: coarse) {
+    .audio-toggle::after, .audio-speed::after {
+        content: "";
+        position: absolute;
+        inset: min(0px, calc((100% - 44px) / 2));
+    }
+    .audio-speed { position: relative; }
+}
+@media (forced-colors: active) {
+    .audio-wave > i, .chip-wave > i, .audio-dot, .recording-meter > i { forced-color-adjust: none; background: GrayText; }
+    .audio-wave > i.is-played, .chip-wave > i.is-played, .audio-dot { background: Highlight; }
+}
 /* The text of a recording, under its player (docs/protocol.md, "Transcripts
  * on request"): as wide as the player, selectable, and plainly not the
  * message's own words. */
@@ -619,6 +724,9 @@ button.link, .link {
 .menu-reactions { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
 .menu-emoji { background: transparent; padding: 4px; font-size: 18px; }
 .menu-section { font-size: 11px; color: var(--muted); padding: 6px 8px 2px; border-top: 1px solid var(--line); }
+/* "Playback speed  1×": the item, and the value it is at. */
+.menu > button.menu-value-row { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+.menu-value { color: var(--muted); font-variant-numeric: tabular-nums; }
 .reactor { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; }
 
 /* Not delivered yet, and not delivered at all: neither may look like a
@@ -715,7 +823,8 @@ button.mention { cursor: pointer; }
 .bubble.is-round-video .quote { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--tint); border-radius: 8px; padding: 4px 8px; margin: 0 0 4px; }
 .bubble.is-round-video.is-mine .quote { background: var(--mine); border-color: transparent; border-left-color: var(--tint); }
 .bubble.is-round-video.is-failed { border-color: var(--danger); padding: 4px; }
-.round-video { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 2px 0 4px; max-width: 100%; min-width: 0; }
+/* Room all round for the ring outside the circle and its shadow. */
+.round-video { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 0 0 2px; padding: 6px; max-width: 100%; min-width: 0; }
 .round-frame {
     position: relative;
     width: var(--round-regular, 240px);
@@ -736,10 +845,11 @@ button.mention { cursor: pointer; }
     /* Safari clips a playing <video> to the radius only on its own layer. */
     isolation: isolate;
     background: color-mix(in srgb, var(--ink) 12%, var(--bg));
+    box-shadow: var(--shadow);
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
 }
-.round-face:focus-visible { outline: 2px solid var(--tint); outline-offset: 3px; }
+.round-face:focus-visible { outline: 2px solid var(--tint); outline-offset: 8px; }
 .round-poster, .round-player {
     position: absolute;
     inset: 0;
@@ -754,60 +864,79 @@ button.mention { cursor: pointer; }
     position: absolute;
     inset: 0;
     margin: auto;
-    width: 44px;
-    height: 44px;
+    width: 48px;
+    height: 48px;
     display: grid;
     place-items: center;
     border-radius: 50%;
-    background: rgb(0 0 0 / 40%);
+    background: rgb(0 0 0 / 45%);
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
     color: #fff;
-    font-size: 18px;
-    padding-left: 3px;
+    padding-left: 2px;
     pointer-events: none;
+    transition: opacity 200ms ease-out;
 }
-.round-face.is-dimmed .round-play { opacity: .45; }
+/* Fades out while it plays — and back at a pause. */
+.round-play.is-gone { opacity: 0; }
+.round-face.is-dimmed .round-play:not(.is-gone) { opacity: .45; }
+/* The length at the bottom centre, on a dark translucent capsule — and in
+ * it, until THIS DEVICE has played it, the dot. */
 .round-duration {
     position: absolute;
     left: 50%;
-    bottom: 12px;
+    bottom: 14px;
     transform: translateX(-50%);
-    padding: 1px 8px;
-    border-radius: 999px;
-    background: rgb(0 0 0 / 50%);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgb(0 0 0 / 55%);
     color: #fff;
-    font-size: 12px;
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
     font-variant-numeric: tabular-nums;
     pointer-events: none;
 }
-/* Beside the capsule until THIS DEVICE has played it. */
 .round-dot {
-    position: absolute;
-    top: 50%;
-    left: calc(100% + 4px);
-    width: 8px;
-    height: 8px;
-    margin-top: -4px;
+    flex: none;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
-    background: var(--tint);
+    background: #fff;
 }
+/* ONE ring, OUTSIDE the circle: 6 px past its edge all round, so it never
+ * lies over a face. */
 .round-ring {
     position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
+    inset: -6px;
+    width: calc(100% + 12px);
+    height: calc(100% + 12px);
     pointer-events: none;
+    overflow: visible;
 }
+/* The ring is drawn in its own 100-unit box, 12 px wider than the circle,
+ * so its width is in those units: 1.2 of them is 3 px at 240 across (a
+ * 252 box), 1.42 is 3 px at 200 (a 212 box) (S5.3).
+ * NOT `vector-effect: non-scaling-stroke`: under it Chrome lays the dash
+ * pattern out in screen pixels and ignores `pathLength`, and the one arc
+ * drew as several dashes round the circle. The dash itself is in the box's
+ * units too (round_tile.rs, `ring_dash`). */
 .round-ring circle {
     fill: none;
     stroke: var(--tint);
-    stroke-width: 3px;
+    stroke-width: 1.2px;
     stroke-linecap: round;
-    vector-effect: non-scaling-stroke;
 }
 .round-ring.is-progress circle { transition: stroke-dasharray .25s linear; }
 .round-ring.is-loading, .round-ring.is-sending { animation: spin 0.9s linear infinite; }
-/* The sender's own, going up: a thin neutral ring (S5.6). */
-.round-ring.is-sending circle { stroke: color-mix(in srgb, var(--ink) 40%, transparent); stroke-width: 2px; }
+/* The sender's own, going up: a thin neutral ring, 2 px (S5.6). */
+.round-ring.is-sending circle { stroke: color-mix(in srgb, var(--ink) 40%, transparent); stroke-width: .8px; }
+@media (max-width: 719.98px) {
+    .round-ring circle { stroke-width: 1.42px; }
+    .round-ring.is-sending circle { stroke-width: .95px; }
+}
 /* The expand control: a 28 glyph in a 44 target at the top trailing edge. */
 .round-expand {
     position: absolute;
@@ -837,6 +966,7 @@ button.mention { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
     .round-ring.is-progress circle { transition: none; }
     .round-ring.is-loading, .round-ring.is-sending { animation: none; }
+    .round-play { transition: none; }
 }
 /* Under Increase Contrast the ring and the dot use the system's colours
  * (S6, "Low vision"). */
@@ -847,7 +977,7 @@ button.mention { cursor: pointer; }
 }
 @media (prefers-contrast: more) {
     .round-ring circle { stroke: var(--ink); }
-    .round-dot { background: var(--ink); outline: 1px solid var(--bg); }
+    .round-dot { background: #fff; outline: 1px solid #000; }
 }
 
 /* The panel the composer's sticker button opens: above the box, like the
@@ -1034,60 +1164,66 @@ button.pack-cell:disabled { cursor: default; }
 @keyframes slot-in { from { opacity: 0; transform: scale(.8); } to { opacity: 1; transform: none; } }
 .slot-menu { top: auto; bottom: 100%; right: 0; left: auto; margin-bottom: 6px; }
 
-/* THE RECORDING ROW (S2.4): in the composer's own row, in the field's
- * place, at the same height — Delete, the red dot, the time and the level
- * meter, Stop — before the slot. */
+/* THE RECORDING ROW (S2.4), as the approved design draws it: in the
+ * composer's own row, in the field's place, at the same height — Delete,
+ * the pulsing red dot, the time in monospaced digits, the live waveform
+ * scrolling in from the right, Stop — before the slot. It cross-fades in
+ * over 150 ms (none under Reduce Motion). */
 .recording {
     flex: 1;
     min-width: 0;
     display: flex;
     align-items: center;
     gap: 10px;
-    font-variant-numeric: tabular-nums;
+    min-height: 40px;
+    animation: fade-in 150ms ease-out;
 }
-/* As tall as the slot beside them, border and all, so the row is the
- * composer's own height whichever it shows. */
+/* Round icon buttons, their words kept for screen readers. */
 .recording button.secondary {
     flex: none;
     position: relative;
+    width: 40px;
     height: 40px;
-    padding: 0 12px;
+    padding: 0;
+    border-radius: 50%;
     background: transparent;
-    color: var(--tint);
-    border: 1px solid var(--line);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
+    color: var(--muted);
+    border: 0;
+    display: grid;
+    place-items: center;
 }
-.recording .recording-stop { margin-left: auto; }
-.recording .row-icon { width: 20px; height: 20px; display: none; }
+.recording button.secondary:hover { background: var(--soft); }
+.recording .recording-stop { color: var(--ink); }
+.recording .row-icon { width: 22px; height: 22px; display: block; }
 /* 8 units, between full and 40 % once a second (S2.9). */
 .recording-dot {
     flex: none;
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
-    background: var(--danger);
+    background: var(--rec);
     animation: recording-pulse .5s ease-in-out infinite alternate;
 }
 @keyframes recording-pulse { from { opacity: 1; } to { opacity: .4; } }
 .recording-time { flex: none; }
 .recording-time.is-warning, .recording-left { color: var(--warn); }
-.recording-left { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Five bars, 3 × 16, lit at −50, −40, −30, −20 and −10 dBFS of the peak. */
-.recording-meter { flex: none; display: inline-flex; gap: 2px; align-items: center; height: 16px; }
-.recording-meter .bar { width: 3px; height: 16px; border-radius: 1px; background: var(--line); }
-.recording-meter .bar.is-lit { background: var(--tint); }
-/* On a phone's width the row's buttons are icons with the same labels,
- * and on the narrowest the meter goes first (S2.4). */
-@media (max-width: 720px) {
-    .recording .button-word { display: none; }
-    .recording .row-icon { display: block; }
-    .recording button.secondary { width: 40px; padding: 0; }
+.recording-left { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The live waveform: the newest bar on the right, the oldest scrolling off
+ * the left; the bars on the sent waveform's own scale. */
+.recording-meter, .recording-spacer {
+    flex: 1;
+    min-width: 0;
+    height: 24px;
+    display: flex;
+    gap: 2px;
+    align-items: center;
+    justify-content: flex-end;
+    overflow: hidden;
 }
+.recording-meter > i { flex: none; width: 3px; min-height: 2px; border-radius: 2px; background: var(--rec); opacity: .8; }
+/* On the narrowest the waveform goes first (S2.4). */
 @media (max-width: 360px) {
-    .recording-meter { display: none; }
+    .recording-meter { visibility: hidden; }
 }
 
 /* Read by a screen reader, not drawn: the slot's word, the announcements. */
@@ -1105,68 +1241,105 @@ button.pack-cell:disabled { cursor: default; }
 }
 
 /* A recording's ▶ — a voice note in review, one that was not sent (S2.7,
- * S2.8) — dimmed while another records (S1.7). */
+ * S2.8) — a round accent button, dimmed while another records (S1.7). */
 .local-play {
     flex: none;
     position: relative;
-    background: transparent;
-    color: var(--tint);
-    padding: 4px 8px;
-    font-size: 13px;
-    line-height: 1;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--tint);
+    color: #fff;
 }
+.local-play .voice-glyph { width: 14px; height: 14px; }
 .local-play.is-dimmed, .audio-toggle.is-dimmed { opacity: .5; }
 .local-play + audio { display: none; }
-.staged.is-voice { padding-left: 2px; }
-.staged.is-voice .staged-label { font-variant-numeric: tabular-nums; }
+/* The review chip (S2.7): ▶, the mini waveform, the length, ✕. */
+.staged.is-voice {
+    width: min(360px, 100%);
+    max-width: 360px;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 14px;
+    background: var(--panel);
+    animation: fade-in 150ms ease-out;
+}
+.chip-wave { flex: 1; min-width: 40px; height: 22px; display: flex; align-items: center; gap: 2px; }
+.chip-time { flex: none; color: var(--muted); }
+.staged.is-voice .staged-remove, .not-sent .not-sent-delete {
+    position: relative;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: var(--muted);
+    background: transparent;
+}
+.staged.is-voice .row-icon, .not-sent .row-icon { width: 16px; height: 16px; display: block; }
 
 /* A voice message that was not sent (#79, S2.8): a row of its own above the
- * box, with its own Send and ✕ — never carried by another Send. */
+ * box — the not-sent chip, with its own Send and ✕, never carried by another
+ * Send — and the reply and caption it was recorded with under it. */
 .not-sent {
     flex: none;
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    display: grid;
+    gap: 4px;
     padding: 8px 16px;
     border-top: 1px solid var(--line);
     background: var(--panel);
     font-size: 13px;
+    animation: fade-in 150ms ease-out;
 }
-.not-sent-glyph { flex: none; }
-.not-sent-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
-.not-sent-label { font-variant-numeric: tabular-nums; }
+.not-sent-chip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: min(420px, 100%);
+    padding: 6px 8px;
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
+    border-radius: 14px;
+    background: var(--bg);
+}
+.not-sent-badge { flex: none; color: var(--warn); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.not-sent-text { min-width: 0; display: grid; gap: 2px; padding-inline-start: 8px; }
 .not-sent-quote, .not-sent-caption { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.not-sent .link { flex: none; }
-.not-sent .not-sent-delete { color: var(--muted); }
+.not-sent .not-sent-send { flex: none; font-weight: 600; font-size: 14px; padding: 4px 6px; }
 /* A finger needs room the pointer does not (S1.1: 44 CSS px on a coarse
  * pointer) — the hit area grows, the row does not. */
 @media (pointer: coarse) {
-    .not-sent .link { min-width: 44px; min-height: 44px; }
+    .not-sent .link { position: relative; }
     /* The slot, the recording row's buttons and a recording's ▶ and ✕ take
      * a 44-px finger without growing: the hit area reaches past them. */
     .composer .slot::after,
     .recording button.secondary::after,
     .local-play::after,
+    .not-sent .link::after,
     .staged.is-voice .staged-remove::after {
         content: "";
         position: absolute;
         inset: min(0px, calc((100% - 44px) / 2));
     }
-    .staged.is-voice .staged-remove { position: relative; }
 }
 
+/* Under Reduce Motion nothing pulses, sweeps or fades in: the dot is
+ * steady, and every change is a cut. */
 @media (prefers-reduced-motion: reduce) {
-    .slot-icon, .recording-dot { animation: none; }
+    .slot-icon, .recording-dot, .recording, .staged.is-voice, .not-sent,
+    .audio-speed, .audio-toggle.is-loading::before { animation: none; }
 }
 
-/* In the system's high-contrast colours the dot and the meter are drawn in
- * them, rather than painted over with the background like any other box
+/* In the system's high-contrast colours the dot and the waveform are drawn
+ * in them, rather than painted over with the background like any other box
  * (S6, "Low vision"). */
 @media (forced-colors: active) {
-    .recording-dot, .recording-meter .bar { forced-color-adjust: none; }
+    .recording-dot, .recording-meter > i { forced-color-adjust: none; }
     .recording-dot { background: CanvasText; }
-    .recording-meter .bar { background: GrayText; }
-    .recording-meter .bar.is-lit { background: Highlight; }
+    .recording-meter > i { background: Highlight; }
 }
 
 /* DIMMED, NOT DISABLED (S1.3): it looks unavailable, stays focusable and
@@ -2048,13 +2221,15 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
     pointer-events: none;
     overflow: visible;
 }
-.recorder-ring circle { fill: none; stroke-width: 4px; stroke-linecap: round; }
-.recorder-ring.is-preview circle { stroke: rgb(255 255 255 / 40%); stroke-width: 1px; }
-.recorder-ring.is-recording circle { stroke: #e5484d; }
-.recorder-ring.is-warning circle { stroke: #f5a524; }
-.recorder-ring.is-progress circle { stroke: var(--tint); }
-.recorder-ring.is-recording circle, .recorder-ring.is-warning circle,
-.recorder-ring.is-progress circle { transition: stroke-dasharray .1s linear; }
+/* A thin track all the way round, and on it the arc: red over the minute,
+ * orange in its last ten seconds, the accent while the clip plays back. */
+.recorder-ring circle { fill: none; stroke-linecap: round; }
+.recorder-ring .recorder-track { stroke: rgb(255 255 255 / 25%); stroke-width: 1px; }
+.recorder-ring .recorder-arc { stroke-width: 3px; }
+.recorder-ring.is-recording .recorder-arc { stroke: #e5484d; }
+.recorder-ring.is-warning .recorder-arc { stroke: #f5a524; }
+.recorder-ring.is-progress .recorder-arc { stroke: var(--tint); }
+.recorder-ring .recorder-arc { transition: stroke-dasharray .1s linear; }
 .recorder-dock {
     min-width: 0;
     padding-bottom: max(var(--row-bottom, 0px), env(safe-area-inset-bottom));
@@ -2072,60 +2247,63 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
 }
 .recorder-banner .banner-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recorder-banner-drop { flex: none; min-width: 32px; min-height: 32px; padding: 0; background: transparent; color: #fff; }
+/* The control row, its bottom where the composer's row's is: round
+ * buttons with their words under them, and ONE big slot at the trailing
+ * end, in the Send button's place. */
 .recorder-row {
-    height: var(--row-height, 64px);
+    min-height: var(--row-height, 64px);
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     gap: 8px;
-    padding: 0 max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
+    padding: 8px max(16px, env(safe-area-inset-right)) 4px max(16px, env(safe-area-inset-left));
 }
-.recorder-leading, .recorder-middle { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.recorder-leading, .recorder-middle { display: flex; gap: 12px; align-items: flex-end; min-width: 0; }
 .recorder-middle { flex: 1; justify-content: center; }
+.recorder-item { display: grid; justify-items: center; gap: 4px; position: relative; }
+/* Its line height is the font's (14 at 11), so larger text grows the line. */
+.recorder-caption { font-size: 11px; line-height: 1.273; color: #c9cbd6; text-align: center; white-space: nowrap; }
 .recorder-control {
     position: relative;
-    min-width: 44px;
+    width: 44px;
     height: 44px;
-    padding: 0 11px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
+    padding: 0;
+    display: grid;
+    place-items: center;
     border: 0;
-    border-radius: 22px;
-    background: rgb(255 255 255 / 16%);
-    color: #fff;
+    border-radius: 50%;
+    background: rgb(255 255 255 / 12%);
+    color: #e8e9ef;
 }
 .recorder-control:disabled, .recorder-control.is-dimmed { opacity: .45; }
 .recorder-icon { width: 22px; height: 22px; display: block; flex: none; }
 .recorder-choose { position: relative; }
 .recorder-cameras { top: auto; bottom: 100%; left: 0; right: auto; margin-bottom: 6px; color: var(--ink); }
-/* The slot, in the Send button's own place and size (S3.3). */
+/* The slot, 64 across, in the Send button's place (S3.3): a red disc to
+ * Record, a red disc with a white rounded square to Stop, the accent with
+ * the arrow to Send. */
+.recorder-slot-item { margin-inline-start: auto; }
 .recorder-slot {
     flex: none;
     position: relative;
-    width: 40px;
-    height: 40px;
-    margin-inline-start: auto;
+    width: 64px;
+    height: 64px;
     padding: 0;
     display: grid;
     place-items: center;
-    border: 2px solid #fff;
+    border: 0;
     border-radius: 50%;
-    background: transparent;
+    background: #e5484d;
+    box-shadow: 0 0 0 4px rgb(255 255 255 / 18%);
     color: #fff;
+    transition: background-color 150ms ease-out;
 }
+.recorder-slot .recorder-icon { width: 28px; height: 28px; }
 .recorder-slot.is-dimmed { opacity: .45; }
-.recorder-slot.is-record .recorder-slot-mark { width: 26px; height: 26px; border-radius: 50%; background: #e5484d; }
-.recorder-slot.is-stop .recorder-slot-mark { width: 14px; height: 14px; border-radius: 3px; background: #e5484d; }
-.recorder-slot.is-send { background: var(--tint); border-color: var(--tint); }
+.recorder-slot.is-record .recorder-slot-mark { display: none; }
+.recorder-slot.is-stop .recorder-slot-mark { width: 22px; height: 22px; border-radius: 5px; background: #fff; }
+.recorder-slot.is-send { background: var(--tint); }
 .recorder-slot:focus-visible, .recorder-control:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
-@media (pointer: coarse) {
-    .recorder-slot::after {
-        content: "";
-        position: absolute;
-        inset: min(0px, calc((100% - 44px) / 2));
-    }
-}
+
 /* A pane shorter than 480 — a phone on its side: the controls stand in a
  * column at the trailing edge, the banner above them (S3.3). */
 .recorder.is-column .recorder-pane {
@@ -2145,23 +2323,27 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
 }
 .recorder.is-column .recorder-banner { margin: 0 0 8px; }
 .recorder.is-column .recorder-row {
-    height: auto;
+    min-height: 0;
     flex-direction: column;
     align-items: flex-end;
     padding: 0;
+    gap: 12px;
 }
 .recorder.is-column .recorder-leading, .recorder.is-column .recorder-middle {
     flex-direction: column;
     align-items: flex-end;
 }
-.recorder.is-column .recorder-slot { margin-inline-start: 0; margin-top: auto; }
+.recorder.is-column .recorder-slot-item { margin-inline-start: 0; margin-top: auto; }
 @media (prefers-reduced-motion: reduce) {
     .recorder { animation: none; }
     .recorder-dot { animation: none; }
     .recorder-ring circle { transition: none !important; }
+    .recorder-slot { transition: none; }
 }
 @media (forced-colors: active) {
-    .recorder-ring circle, .recorder-dot, .recorder-slot-mark { forced-color-adjust: none; }
+    .recorder-ring circle, .recorder-dot, .recorder-slot, .recorder-slot-mark { forced-color-adjust: none; }
     .recorder-ring circle { stroke: Highlight !important; }
     .recorder-dot, .recorder-slot-mark { background: CanvasText !important; }
+    .recorder-slot { background: ButtonFace; border: 2px solid ButtonText; }
+    .recorder-slot.is-record .recorder-slot-mark { display: block; width: 26px; height: 26px; border-radius: 50%; }
 }

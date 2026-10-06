@@ -87,10 +87,22 @@ struct RecordSendSlot: View {
     var body: some View {
         let target = max(side, CGFloat(RecordRules.minTargetApplePT))
         ZStack {
+            if isHeld {
+                // The held microphone grows under the finger, red, with a
+                // soft halo — so the hand can see it is recording while it
+                // covers half the button (the approved design).
+                Circle()
+                    .fill(Color.red.opacity(0.2))
+                    .frame(width: side * Self.heldScale + 20, height: side * Self.heldScale + 20)
+                    .accessibilityHidden(true)
+            }
             Image(systemName: symbol)
                 .font(.system(size: glyph))
-                .foregroundStyle(looksDisabled ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.tint))
-                .scaleEffect(isPressed || slot == .heldMicrophone ? 0.88 : 1)
+                .symbolRenderingMode(isHeld ? .palette : .monochrome)
+                .foregroundStyle(
+                    isHeld ? AnyShapeStyle(.white) : looksDisabled ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.tint),
+                    isHeld ? AnyShapeStyle(Color.red) : AnyShapeStyle(.tint))
+                .scaleEffect(isHeld ? Self.heldScale : isPressed ? 0.88 : 1)
                 // Send ↔ microphone is a 150 ms cross-fade, none under Reduce
                 // Motion (S1.1, S1.3).
                 .id(symbol)
@@ -101,6 +113,7 @@ struct RecordSendSlot: View {
         .frame(width: side, height: side)
         .animation(reduceMotion ? nil : .easeInOut(duration: Double(RecordRules.slotCrossfadeMS) / 1000), value: symbol)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isPressed)
+        .animation(reduceMotion ? nil : .spring(duration: 0.2), value: isHeld)
         .overlay {
             // The hit area grows to 44 points; the glyph and the bar do not
             // (S1.1): the control is laid out at the target and padded back
@@ -115,6 +128,12 @@ struct RecordSendSlot: View {
                 .padding(-(target - side) / 2)
         }
     }
+
+    /// How much the held microphone grows under the finger.
+    static let heldScale: CGFloat = 1.35
+
+    /// A finger holds the microphone and it records.
+    private var isHeld: Bool { slot == .heldMicrophone }
 
     private var symbol: String {
         switch slot {

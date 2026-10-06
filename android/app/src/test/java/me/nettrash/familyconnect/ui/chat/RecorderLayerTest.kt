@@ -29,6 +29,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
@@ -162,6 +163,25 @@ class RecorderLayerTest {
         show()
         compose.onNodeWithTag("round-video-recorder")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "Video message"))
+    }
+
+    /**
+     * On a wide window the controls stay a phone's reach apart, centred under
+     * the circle (the approved design caps the row), rather than running out
+     * to the window's two edges.
+     */
+    @Test
+    @org.robolectric.annotation.Config(qualifiers = "w800dp-h1280dp")
+    fun onAWideWindowTheControlsStayTogetherAndCentred() {
+        show()
+        compose.runOnIdle { camera.listener!!.firstFrame() }
+        val close = compose.onNodeWithContentDescription("Close").fetchSemanticsNode().boundsInRoot
+        val record = slot.fetchSemanticsNode().boundsInRoot
+        val window = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        val density = compose.density.density
+        assertThat((record.right - close.left) / density).isAtMost(420f)
+        // Centred: as far in from the left as from the right, within a few units.
+        assertThat(close.left - window.left).isWithin(24f * density).of(window.right - record.right)
     }
 
     @Test

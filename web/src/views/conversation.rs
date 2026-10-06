@@ -1071,13 +1071,16 @@ pub fn conversation(props: &ConversationProps) -> Html {
         Callback::from(move |_: ()| record.emit(!*draft_blank.borrow() || staged > 0))
     };
     // THE WAYS INTO THE VIDEO RECORDER (S1.4–S1.6): offered in a family or
-    // a direct chat, on a server with video messages, on a device with a
-    // camera — and in a browser that cannot record one, the menus say so
-    // instead of opening (S8.7). None of them opens it during a call or
-    // while the composer is busy; a voice message that was not sent does not
-    // stop it — that rule is about voice.
+    // a direct chat, on a server with video messages, on a page that can
+    // capture at all — in a browser that cannot record one ALWAYS, the menus
+    // saying so instead of opening (S1.5, S8.7), whatever cameras it lists;
+    // where it can, on a device with a camera
+    // (`round_video::offers_video_entry`). None of
+    // them opens it during a call or while the composer is busy; a voice
+    // message that was not sent does not stop it — that rule is about voice.
     let probed = *probe;
-    let offers_video = props.round.is_some() && !is_ai && probed.is_some_and(|probe| probe.camera);
+    let offers_video =
+        crate::round_video::offers_video_entry(props.round.is_some(), !is_ai, probed);
     let records_video = probed.is_some_and(|probe| probe.records);
     let open_recorder = {
         let recorder_open = recorder_open.clone();

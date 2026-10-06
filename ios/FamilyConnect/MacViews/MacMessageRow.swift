@@ -119,6 +119,10 @@ struct MacMessageRow: View {
     /// The environment's own openURL, captured BEFORE this row overrides
     /// it: the override defers into this, never into itself.
     @Environment(\.openURL) private var systemOpenURL
+    /// What a recording's "Show text" asks (#79). Optional, as the store's.
+    @Environment(AppSession.self) private var session: AppSession?
+    /// Why a recording's Save… could not finish, said rather than swallowed.
+    @State private var saveFailure: String?
     /// The in-flight deferred link open — non-nil exactly while a first
     /// click waits out the double-click window (see `handleLinkClick`).
     @State private var pendingLinkOpen: Task<Void, Never>?
@@ -335,6 +339,13 @@ struct MacMessageRow: View {
         }
         .onHover { hovering = $0 }
         .contextMenu { rowMenu }
+        .alert("Couldn't save that file",
+               isPresented: Binding(get: { saveFailure != nil },
+                                    set: { if !$0 { saveFailure = nil } })) {
+            Button("OK", role: .cancel) { saveFailure = nil }
+        } message: {
+            if let saveFailure { Text(verbatim: saveFailure) }
+        }
         .sheet(isPresented: $showsEmojiPicker) {
             VStack(spacing: 0) {
                 EmojiPickerView { emoji in
@@ -470,6 +481,12 @@ struct MacMessageRow: View {
             if canViewThread {
                 Button("View thread", action: onOpenThread)
             }
+            // A recording's own items (#79, the approved design): its text,
+            // its speed, Save… — and no Copy or Edit, which have no words to
+            // act on.
+            if isRecording, let attachment = message.attachments.first {
+                recordingItems(attachment)
+            }
             // A click plays a circle in place; the viewer, with scrubbing,
             // is here (#79, S5.4).
             if isRoundVideo, let attachment = message.attachments.first {
@@ -479,12 +496,12 @@ struct MacMessageRow: View {
             // sticker has no body today, and "Edit" must stay off it on
             // the day something else about that changes
             // (`MessagePresentation.offersEdit`).
-            if canEdit, isMine, !isSticker, !isRoundVideo, !message.body.isEmpty {
+            if canEdit, isMine, !isSticker, !isRecording, !message.body.isEmpty {
                 Button("Edit", action: onEdit)
             }
             Divider()
         }
-        if !message.body.isEmpty {
+        if !message.body.isEmpty, !isRecording {
             Button("Copy") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(message.body, forType: .string)
@@ -963,6 +980,64 @@ struct MacMessageRow: View {
 
     /// True when the message is a video message, drawn as a circle.
     private var isRoundVideo: Bool { MessagePresentation.isRoundVideo(message) }
+
+    /// A voice message or a video message — a recording, menu-wise (#79).
+    private var isRecording: Bool { MessagePresentation.isRecordingMessage(message) }
+
+    /// Show text / Hide text, Playback speed (voice) and Save… for a
+    /// recording's menu.
+    @ViewBuilder
+    private func recordingItems(_ attachment: AttachmentDTO) -> some View {
+        if let store = attachmentStore, let session,
+           let row = store.transcripts.menuRow(
+               for: attachment.id,
+               door: TranscriptSection.door(
+                   attachment: attachment, subject: transcriptSubject, session: session,
+                   coordinator: coordinator))
+        {
+            switch row {
+            case .show:
+                Button("Show text") { store.transcripts.performMenuRow(.show, for: attachment.id) }
+            case .hide:
+                Button("Hide text") { store.transcripts.performMenuRow(.hide, for: attachment.id) }
+            }
+        }
+        if MessagePresentation.isVoiceMessage(message) {
+            // A native submenu of the three speeds, the current one ticked.
+            Picker("Playback speed", selection: Binding(
+                get: { VoicePlaybackSpeed.shared.rate },
+                set: { VoicePlaybackSpeed.shared.set($0) }
+            )) {
+                ForEach(VoicePlaybackSpeed.rates, id: \.self) { rate in
+                    Text(verbatim: VoicePlaybackSpeed.label(rate)).tag(rate)
+                }
+            }
+        }
+        Button("Save…") { saveRecording(attachment) }
+    }
+
+    /// Save… for a recording: the file, downloaded if it has to be, written
+    /// where the person chooses — the attachment viewer's Save….
+    private func saveRecording(_ attachment: AttachmentDTO) {
+        Task {
+            guard let source = await coordinator.localFileURL(for: attachment) else {
+                saveFailure = String(localized: "The file could not be downloaded.")
+                return
+            }
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = attachment.name
+                ?? ChatSyncCoordinator.fallbackName(for: attachment)
+            guard panel.runModal() == .OK, let destination = panel.url else { return }
+            do {
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: source, to: destination)
+            } catch {
+                saveFailure = error.localizedDescription
+            }
+        }
+    }
 
     /// No fill behind the content — emoji-only or media-only. Everything
     /// that adapts to "nothing behind me" keys off this, never off one

@@ -82,10 +82,33 @@ impl RoundLimits {
 /// What this browser and this device can do about video messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Probe {
-    /// The device has a camera at all.
+    /// The page can capture at all: `navigator.mediaDevices` is there. Not on
+    /// an insecure (`http://`) page, where neither a voice nor a video
+    /// message can be recorded (S1.2 **can record**).
+    pub captures: bool,
+    /// The device has a camera: `enumerateDevices` lists one ([`has_camera`]).
     pub camera: bool,
     /// This browser can record one the way the profile says (S8.7).
     pub records: bool,
+}
+
+/// Whether "Record Video Message" is in the paperclip's menu and the
+/// microphone's (S1.5, S1.6): a family or a direct chat, on a server that
+/// sends the video-message keys, on a page that can capture at all, once the
+/// probe has answered — and then ALWAYS in a browser whose probe fails,
+/// where it is shown to explain "This browser can't record video messages.
+/// Voice messages work.": no camera listing gates that sentence (WebKit
+/// lists none before a grant). Where the probe passes, only on a device
+/// with a camera. On an insecure page voice messages do not work either, so
+/// nothing is offered there to say they do.
+pub fn offers_video_entry(
+    server_has_round: bool,
+    family_or_direct: bool,
+    probe: Option<Probe>,
+) -> bool {
+    server_has_round
+        && family_or_direct
+        && probe.is_some_and(|probe| probe.captures && (!probe.records || probe.camera))
 }
 
 /// THE DECISION (S8.7): H.264 at 480 × 480 in real time and AAC both
@@ -134,24 +157,54 @@ pub async fn picture_config() -> Option<Object> {
 /// made at.
 const SOUND_RATE: u32 = 48_000;
 
-/// Whether this device has a camera — `enumerateDevices` lists its kind
-/// before any permission is given (just not its name).
+/// How many devices of `kind` (`videoinput`, `audioinput`) `enumerateDevices`
+/// lists — counted by kind, whatever their ids and labels; None where there
+/// is no listing (an insecure page, or one that failed).
+///
+/// Before a grant Chromium and Firefox list at most ONE device of each kind
+/// there is, with no id and no label (w3c mediacapture-main, "creating a
+/// list of device info objects": "truncate cameraList to its first item"),
+/// and none of a kind the device does not have. WebKit lists no camera at
+/// all until a capture is granted (bugs.webkit.org 259465) — but WebKit
+/// fails the probe (S8.7) and gets the explaining item whatever it lists
+/// ([`offers_video_entry`]).
+async fn listed(kind: &str) -> Option<usize> {
+    let listing = media_devices()?.enumerate_devices().ok()?;
+    let listed = JsFuture::from(listing).await.ok()?;
+    Some(
+        Array::from(&listed)
+            .iter()
+            .filter(|device| {
+                Reflect::get(device, &JsValue::from_str("kind"))
+                    .ok()
+                    .and_then(|kind| kind.as_string())
+                    .is_some_and(|listed| listed == kind)
+            })
+            .count(),
+    )
+}
+
+/// Whether this device has a camera: `enumerateDevices` lists one
+/// ([`listed`]). No camera listed — or no listing — is no camera (S1.2).
 pub async fn has_camera() -> bool {
-    let Some(devices) = media_devices() else {
-        return false;
-    };
-    let Ok(listing) = devices.enumerate_devices() else {
-        return false;
-    };
-    let Ok(listed) = JsFuture::from(listing).await else {
-        return false;
-    };
-    Array::from(&listed).iter().any(|device| {
-        Reflect::get(&device, &JsValue::from_str("kind"))
-            .ok()
-            .and_then(|kind| kind.as_string())
-            .is_some_and(|kind| kind == "videoinput")
-    })
+    listed("videoinput")
+        .await
+        .is_some_and(|cameras| cameras > 0)
+}
+
+/// Whether this device is KNOWN to have a microphone: `enumerateDevices`
+/// lists one ([`listed`]) — what a camera that was not found offers a voice
+/// message by (S3.6).
+pub async fn has_microphone() -> bool {
+    listed("audioinput")
+        .await
+        .is_some_and(|microphones| microphones > 0)
+}
+
+/// Whether this page can capture at all: `navigator.mediaDevices` is only
+/// there in a secure context.
+pub fn captures() -> bool {
+    media_devices().is_some()
 }
 
 thread_local! {
@@ -165,13 +218,15 @@ pub async fn probe() -> Probe {
     if let Some(known) = PROBED.with(|probed| *probed.borrow()) {
         return known;
     }
-    let camera = has_camera().await;
+    let captures = captures();
+    let camera = captures && has_camera().await;
     let webkit = is_webkit();
     let frames = has_frame_callbacks();
     // Asked only where the answer could still matter.
     let h264 = !webkit && frames && picture_config().await.is_some();
     let aac = h264 && webcodecs::aac_supported(SOUND_RATE, 1, VOICE_NOTE_BITRATE).await;
     let answer = Probe {
+        captures,
         camera,
         records: records(webkit, h264, aac, frames),
     };
@@ -214,6 +269,9 @@ pub enum Closed {
     Refused(Refusal),
     /// Another app has it (S3.6).
     Busy,
+    /// There is no camera — or no microphone — to open (S3.6): a device
+    /// gone since the probe, or one the listing was wrong about.
+    Missing,
     /// Anything else.
     Failed,
 }
@@ -381,6 +439,9 @@ fn closed(name: &str) -> Option<Closed> {
     match name {
         "NotAllowedError" | "SecurityError" | "PermissionDeniedError" => None,
         "NotReadableError" | "TrackStartError" | "AbortError" => Some(Closed::Busy),
+        // Asked by `facingMode` (an ideal), these say no such device exists;
+        // a camera chosen by its id has already been given up for any.
+        "NotFoundError" | "DevicesNotFoundError" | "OverconstrainedError" => Some(Closed::Missing),
         _ => Some(Closed::Failed),
     }
 }

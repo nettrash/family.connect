@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 30.
+ * Room database, version 32.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -47,7 +47,7 @@ fun interface LocalDataWiper {
         GonePackItemEntity::class,
         TranscriptEntity::class,
     ],
-    version = 30,
+    version = 32,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -528,6 +528,39 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v31: whether a message's stored attachment set knows the video
+         * message flag (#79; docs/audio-video-messages-2026-10-04.md, S5.8).
+         *
+         * One column, NOT NULL DEFAULT 0, because 0 is the truth for every
+         * row already here: a build before #79 wrote each received set back
+         * with only the fields it knew, so a circle it cached reads as a
+         * plain video. The flag itself rides inside `attachmentsJson` and
+         * needs no column; this one only says which rows have to be read
+         * again (`MessageRepository.repairUnknownRoundFlags`). Byte-matches
+         * the entity's @ColumnInfo default, which Room validates on launch.
+         */
+        val MIGRATION_30_31: Migration = object : Migration(30, 31) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentsKnowRound INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v32: a queued voice note's WAVEFORM (#79; docs/protocol.md, "A voice
+         * note's waveform") — the 48 hex digits the upload carries, kept with
+         * the bytes so a retry after a process death sends the same shape the
+         * sender's own bubble drew. Nullable TEXT with no default: every row
+         * already queued is a photo, a file or a note recorded before there
+         * were waveforms, and goes up without one. Byte-matches the entity,
+         * which Room validates on launch.
+         */
+        val MIGRATION_31_32: Migration = object : Migration(31, 32) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE pending_attachments ADD COLUMN waveform TEXT")
+            }
+        }
+
         val MIGRATION_26_27: Migration = object : Migration(26, 27) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE notes ADD COLUMN mentionsJson TEXT")
@@ -625,6 +658,8 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_27_28,
                 MIGRATION_28_29,
                 MIGRATION_29_30,
+                MIGRATION_30_31,
+                MIGRATION_31_32,
             )
         }
     }

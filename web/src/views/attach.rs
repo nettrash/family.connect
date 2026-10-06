@@ -79,7 +79,9 @@ pub struct MenuProps {
     pub offers_record: bool,
     /// "Record Video Message" is offered, right below "Record Voice
     /// Message": a family or a direct chat, on a server with video messages,
-    /// on a device with a camera (S1.5).
+    /// on a page that can capture — in a browser that cannot record one
+    /// always, to explain; elsewhere on a device with a camera (S1.5,
+    /// `round_video::offers_video_entry`).
     #[prop_or_default]
     pub offers_video: bool,
     /// Why it cannot open the recorder right now — a call, or a browser that
@@ -351,8 +353,10 @@ struct VoiceChipProps {
     on_explain: Callback<String>,
 }
 
-/// A voice note in review (S2.7): "[▶] Voice message · 0:42 [✕]", and while
-/// it plays "[❚❚] 0:12 / 0:42". ✕ — "Delete recording" — asks first at ten
+/// A voice note in review (S2.7), drawn as the approved design's chip: the
+/// round ▶, its mini waveform — played bars in the accent colour as it plays
+/// — its length, and ✕. A screen reader hears "Voice message · 0:42", and
+/// while it plays "0:12 / 0:42". ✕ — "Delete recording" — asks first at ten
 /// seconds or more.
 #[function_component(VoiceChip)]
 fn voice_chip(props: &VoiceChipProps) -> Html {
@@ -368,6 +372,7 @@ fn voice_chip(props: &VoiceChipProps) -> Html {
         ),
         None => label(&props.item),
     };
+    let shown = playing.map_or(total, f64::floor);
     let remove = {
         let on_remove = props.on_remove.clone();
         let asking = asking.clone();
@@ -391,8 +396,10 @@ fn voice_chip(props: &VoiceChipProps) -> Html {
                     Callback::from(move |at: Option<f64>| playing.set(at))
                 }}
             />
-            <span class="staged-label">{ words }</span>
-            <button class="staged-remove" onclick={remove} aria-label={t("Delete recording")}>{ "✕" }</button>
+            { chip_wave(props.item.waveform.as_deref(), *playing, duration_ms, CHIP_BARS) }
+            <span class="chip-time" aria-hidden="true">{ media::time_label(shown) }</span>
+            <span class="staged-label visually-hidden">{ words }</span>
+            <button class="staged-remove" onclick={remove} aria-label={t("Delete recording")}>{ icon(CROSS) }</button>
             if *asking {
                 <Confirm
                     title={t("Delete this recording?")}
@@ -416,6 +423,30 @@ fn voice_chip(props: &VoiceChipProps) -> Html {
     }
 }
 
+/// How many bars a review chip's waveform has, and a not-sent chip's,
+/// which shares its row with more.
+const CHIP_BARS: usize = 32;
+const NOT_SENT_BARS: usize = 24;
+
+/// A chip's mini waveform: the note's own shape — or the placeholder — in
+/// `count` bars, the part played so far in the accent colour.
+fn chip_wave(waveform: Option<&str>, at: Option<f64>, duration_ms: i64, count: usize) -> Html {
+    let levels =
+        fc_text::waveform::bars(&fc_text::waveform::levels_or_placeholder(waveform), count);
+    let played = at.map_or(0, |at| {
+        fc_text::waveform::played_bars(
+            (at * 1000.0).max(0.0) as u64,
+            duration_ms.max(0) as u64,
+            levels.len(),
+        )
+    });
+    html! {
+        <span class="chip-wave" aria-hidden="true">
+            { crate::views::attachments::waveform_bars(&levels, played) }
+        </span>
+    }
+}
+
 #[derive(Properties, PartialEq)]
 pub struct LocalAudioProps {
     /// The recording's own bytes, on this device.
@@ -430,7 +461,7 @@ pub struct LocalAudioProps {
     pub on_progress: Callback<Option<f64>>,
 }
 
-/// ▶ and ❚❚ for a recording that is still on this device — a voice note in
+/// The round accent ▶ and ❚❚ for a recording that is still on this device — a voice note in
 /// review, one that was not sent (S2.7, S2.8). It plays the LOCAL bytes,
 /// pausing anything else that plays; and on a phone's browser it keeps the
 /// screen on while it plays, so the lock does not hide the tab halfway
@@ -525,10 +556,10 @@ pub fn local_audio(props: &LocalAudioProps) -> Html {
             on_progress.emit(None);
         })
     };
-    let (glyph, word) = if *playing {
-        ("❚❚", t("Pause"))
+    let (path, word) = if *playing {
+        (crate::views::attachments::PAUSE_PATH, t("Pause"))
     } else {
-        ("▶", t("Play"))
+        (crate::views::attachments::PLAY_PATH, t("Play"))
     };
     html! {
         <>
@@ -541,7 +572,7 @@ pub fn local_audio(props: &LocalAudioProps) -> Html {
                 disabled={url.is_none()}
                 onclick={toggle}
             >
-                <span aria-hidden="true">{ glyph }</span>
+                { crate::views::attachments::glyph(path) }
             </button>
             if props.dimmed {
                 <span id={(*reason_id).clone()} hidden=true>{ t(PLAY_AFTER) }</span>
@@ -654,18 +685,76 @@ pub struct RecordingProps {
 /// How often the row looks at the clock and the meter — the apps' 200 ms.
 const ROW_TICK_MS: u32 = 200;
 
-/// The recording row (S2.4): it takes the field's place in the composer's
-/// own row, at the same height — Delete, a red dot, the time in monospaced
-/// digits and the level meter, Stop — before the slot, which is the Send
-/// arrow. The clock ticks HERE, so a recording redraws this row and not the
-/// chat. Esc, which is Stop, is the composer's to hear: focus is on the slot.
+/// The fewest bars the live waveform keeps: the last eight seconds at one
+/// bar a tick — a phone's row, and before the row has been measured.
+pub const LIVE_BARS: usize = 40;
+
+/// The most it keeps, whatever the window: a strip 5 000 px wide.
+const MOST_LIVE_BARS: usize = 1_000;
+
+/// One live bar and the gap after it, in CSS pixels (`.recording-meter`:
+/// 3 px bars, 2 px apart).
+const LIVE_BAR_PITCH: f64 = 5.0;
+
+/// How many bars fill a live waveform `width` CSS pixels wide, so that the
+/// strip is full once the recording has gone on that long — on a wide
+/// window as on a phone — and the oldest are cut off at its left edge.
+pub fn live_bars_for(width: f64) -> usize {
+    if !width.is_finite() || width <= 0.0 {
+        return LIVE_BARS;
+    }
+    // n bars and n - 1 gaps: (n * 5 - 2) >= width; one more, half cut.
+    let fill = ((width + 2.0) / LIVE_BAR_PITCH).ceil() as usize + 1;
+    fill.clamp(LIVE_BARS, MOST_LIVE_BARS)
+}
+
+/// Under Reduce Motion the live waveform does not scroll by: it steps once a
+/// second, a bar a second, as the video ring steps (S6).
+const STILL_TICKS: u32 = 1_000 / ROW_TICK_MS;
+
+/// The live waveform after one more bar: `level` on the right, the oldest
+/// gone off the left once there are `keep`.
+pub fn live_scroll(bars: &[u8], level: u8, keep: usize) -> Vec<u8> {
+    let mut next: Vec<u8> = bars.to_vec();
+    next.push(level);
+    if next.len() > keep {
+        next.drain(..next.len() - keep);
+    }
+    next
+}
+
+fn reduced_motion() -> bool {
+    web_sys::window()
+        .and_then(|window| {
+            window
+                .match_media("(prefers-reduced-motion: reduce)")
+                .ok()
+                .flatten()
+        })
+        .is_some_and(|query| query.matches())
+}
+
+/// The recording row (S2.4) as the approved design draws it: it takes the
+/// field's place in the composer's own row, at the same height — Delete, a
+/// pulsing red dot, the time in monospaced digits, the LIVE waveform from
+/// the meter scrolling in from the right, Stop — before the slot, which is
+/// the Send arrow. Its buttons are icons that keep their words for screen
+/// readers. The clock ticks HERE, so a recording redraws this row and not
+/// the chat. Esc, which is Stop, is the composer's to hear: focus is on the
+/// slot.
 #[function_component(RecordingRow)]
 pub fn recording_row(props: &RecordingProps) -> Html {
     let elapsed = use_state(|| 0.0_f64);
-    let lit = use_state(|| 0usize);
+    let live = use_state(Vec::<u8>::new);
+    // How many bars the strip holds, measured as it records: a window made
+    // wider mid-recording fills its new width too.
+    let keep = use_state(|| LIVE_BARS);
+    let strip = use_node_ref();
     {
         let elapsed = elapsed.clone();
-        let lit = lit.clone();
+        let live = live.clone();
+        let keep = keep.clone();
+        let strip = strip.clone();
         let meter = props.meter.clone();
         let on_cap = props.on_cap.clone();
         let on_warning = props.on_warning.clone();
@@ -676,11 +765,36 @@ pub fn recording_row(props: &RecordingProps) -> Html {
             let capped = std::cell::Cell::new(false);
             let warned = std::cell::Cell::new(false);
             let silent = std::cell::Cell::new(false);
+            let still = reduced_motion();
+            let ticks = std::cell::Cell::new(0u32);
+            let loudest = std::cell::Cell::new(0f32);
+            let bars = std::cell::RefCell::new(Vec::<u8>::new());
+            let held = std::cell::Cell::new(LIVE_BARS);
             let tick = move || {
                 let now = recorder::now_ms() - started;
                 elapsed.set(now.max(0.0));
                 if let Some(meter) = &meter {
-                    lit.set(recorder::lit_bars(meter.take_peak()));
+                    loudest.set(loudest.get().max(meter.take_peak()));
+                    ticks.set(ticks.get() + 1);
+                    // The strip as wide as it is now — or, while the
+                    // warning has its place, as it last was.
+                    let room = strip
+                        .cast::<web_sys::Element>()
+                        .map_or(held.get(), |strip| {
+                            live_bars_for(strip.get_bounding_client_rect().width())
+                        });
+                    if held.replace(room) != room {
+                        keep.set(room);
+                    }
+                    if !still || ticks.get() % STILL_TICKS == 1 {
+                        let next = live_scroll(
+                            &bars.borrow(),
+                            recorder::live_level(loudest.replace(0.0)),
+                            room,
+                        );
+                        *bars.borrow_mut() = next.clone();
+                        live.set(next);
+                    }
                     let quiet = now >= record::SILENCE_WARNING_AFTER_MS as f64 && !meter.heard();
                     if quiet != silent.get() {
                         silent.set(quiet);
@@ -707,7 +821,7 @@ pub fn recording_row(props: &RecordingProps) -> Html {
             <button type="button" class="secondary recording-delete" aria-label={t("Delete recording")}
                     title={t("Delete recording")} onclick={props.on_delete.reform(|_: MouseEvent| ())}>
                 { icon(TRASH) }
-                <span class="button-word">{ t("Delete") }</span>
+                <span class="visually-hidden">{ t("Delete") }</span>
             </button>
             <span class="recording-dot" aria-hidden="true"></span>
             <span class={classes!("recording-time", warning.then_some("is-warning"))} aria-live="off">
@@ -717,27 +831,31 @@ pub fn recording_row(props: &RecordingProps) -> Html {
                 // Words as well as colour (WCAG 1.4.1), in the meter's place.
                 <span class="recording-left">{ t("30 seconds left") }</span>
             } else if props.meter.is_some() {
-                <span class="recording-meter" aria-hidden="true">
-                    { for (0..5).map(|bar| html! {
-                        <span class={classes!("bar", (bar < *lit).then_some("is-lit"))}></span>
+                <span ref={strip} class="recording-meter" aria-hidden="true"
+                      data-keep={keep.to_string()}>
+                    { for live.iter().map(|level| html! {
+                        <i data-level={level.to_string()}
+                           style={format!("height:{:.1}%", fc_text::waveform::bar_fraction(*level) * 100.0)}></i>
                     }) }
                 </span>
+            } else {
+                <span class="recording-spacer" aria-hidden="true"></span>
             }
             if !props.beside_draft {
                 <button type="button" class="secondary recording-stop" aria-label={t("Stop recording")}
                         title={t("Stop recording")} onclick={props.on_stop.reform(|_: MouseEvent| ())}>
                     { icon(STOP) }
-                    <span class="button-word">{ t("Stop") }</span>
+                    <span class="visually-hidden">{ t("Stop") }</span>
                 </button>
             }
         </div>
     }
 }
 
-/// The recording row's pictures, for the phone's width, where its buttons
-/// are icons with the same labels (S2.4).
+/// The recording row's and the chips' pictures, drawn inline.
 const TRASH: &str = "M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z";
-const STOP: &str = "M7 7h10v10H7z";
+const STOP: &str = "M8 6h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z";
+const CROSS: &str = "M18.3 5.71 12 12.01 5.7 5.7 4.29 7.11 10.59 13.4l-6.3 6.3 1.41 1.41 6.3-6.29 6.29 6.29 1.42-1.41-6.3-6.3 6.3-6.29z";
 
 fn icon(path: &'static str) -> Html {
     html! {
@@ -764,19 +882,19 @@ pub struct NotSentProps {
     pub on_explain: Callback<String>,
 }
 
-/// A voice message that was not sent (the plan for #79, S2.8): "Voice
-/// message not sent · 0:42", the reply it was recorded under and its
-/// caption, with its ▶ to listen to it first, its own Send — which sends it
-/// with THAT reply and caption and nothing else — and its own ✕, which asks
-/// first at ten seconds or more.
+/// A voice message that was not sent (the plan for #79, S2.8), drawn as the
+/// approved design's not-sent chip: "Not sent", its ▶, its mini waveform and
+/// length, its own Send — which sends it with THAT reply and caption and
+/// nothing else — and its own ✕, which asks first at ten seconds or more;
+/// the reply it was recorded under and its caption under it. A screen reader
+/// hears "Voice message not sent · 0:42".
 #[function_component(NotSentRow)]
 pub fn not_sent_row(props: &NotSentProps) -> Html {
     let asking = use_state(|| false);
+    let playing = use_state(|| Option::<f64>::None);
     let row = props.row.clone();
-    let label = t1(
-        "Voice message not sent · %@",
-        &media::time_label(row.duration_ms.max(0) as f64 / 1000.0),
-    );
+    let length = media::time_label(row.duration_ms.max(0) as f64 / 1000.0);
+    let label = t1("Voice message not sent · %@", &length);
     let send = {
         let on_send = props.on_send.clone();
         let row = row.clone();
@@ -795,25 +913,36 @@ pub fn not_sent_row(props: &NotSentProps) -> Html {
             }
         })
     };
+    let shown = playing.map_or(length.clone(), |at| media::time_label(at.floor()));
     html! {
         <div class="not-sent" role="group" aria-label={label.clone()}>
-            <span class="not-sent-glyph" aria-hidden="true">{ "🎤" }</span>
-            <span class="not-sent-text">
-                <span class="not-sent-label">{ label }</span>
-                if let Some(quote) = props.quote.clone() {
-                    <span class="not-sent-quote">{ quote }</span>
-                }
-                if !row.caption.is_empty() {
-                    <span class="not-sent-caption">{ row.caption.clone() }</span>
-                }
-            </span>
-            <LocalAudio
-                blob={row.note.file.clone()}
-                dimmed={props.recording}
-                on_explain={props.on_explain.clone()}
-            />
-            <button class="link not-sent-send" aria-label={t("Send voice message")} onclick={send}>{ t("Send") }</button>
-            <button class="link not-sent-delete" aria-label={t("Delete recording")} onclick={delete}>{ "✕" }</button>
+            <div class="not-sent-chip">
+                <span class="not-sent-badge" aria-hidden="true">{ t("Not sent") }</span>
+                <LocalAudio
+                    blob={row.note.file.clone()}
+                    dimmed={props.recording}
+                    on_explain={props.on_explain.clone()}
+                    on_progress={{
+                        let playing = playing.clone();
+                        Callback::from(move |at: Option<f64>| playing.set(at))
+                    }}
+                />
+                { chip_wave(row.note.waveform.as_deref(), *playing, row.duration_ms, NOT_SENT_BARS) }
+                <span class="chip-time" aria-hidden="true">{ shown }</span>
+                <button class="link not-sent-send" aria-label={t("Send voice message")} onclick={send}>{ t("Send") }</button>
+                <button class="link not-sent-delete" aria-label={t("Delete recording")} onclick={delete}>{ icon(CROSS) }</button>
+            </div>
+            <span class="not-sent-label visually-hidden">{ label }</span>
+            if props.quote.is_some() || !row.caption.is_empty() {
+                <span class="not-sent-text">
+                    if let Some(quote) = props.quote.clone() {
+                        <span class="not-sent-quote">{ quote }</span>
+                    }
+                    if !row.caption.is_empty() {
+                        <span class="not-sent-caption">{ row.caption.clone() }</span>
+                    }
+                </span>
+            }
             if *asking {
                 <Confirm
                     title={t("Delete this recording?")}
@@ -983,6 +1112,45 @@ mod tests {
             "https://example.com/a\nHTTP://EXAMPLE.ORG"
         );
         assert_eq!(web_links("file:///tmp/folder"), "");
+    }
+
+    /// THE LIVE WAVEFORM scrolls in from the right: each new bar on the
+    /// right, and the oldest off the left once the row is full.
+    #[wasm_bindgen_test]
+    fn the_live_waveform_scrolls_in_from_the_right() {
+        assert_eq!(live_scroll(&[], 7, LIVE_BARS), vec![7]);
+        assert_eq!(live_scroll(&[1, 2], 3, LIVE_BARS), vec![1, 2, 3]);
+        let full: Vec<u8> = (0..LIVE_BARS as u8).collect();
+        let next = live_scroll(&full, 15, LIVE_BARS);
+        assert_eq!(next.len(), LIVE_BARS);
+        assert_eq!(next[0], 1, "the oldest went");
+        assert_eq!(*next.last().unwrap(), 15, "the newest on the right");
+        // A wider strip keeps more: nothing goes until it is full.
+        let wide = live_scroll(&full, 15, 300);
+        assert_eq!(wide.len(), LIVE_BARS + 1);
+        assert_eq!(wide[0], 0, "nothing went");
+    }
+
+    /// THE LIVE WAVEFORM FILLS ITS STRIP, however wide the window: as many
+    /// bars as 3 px bars 2 px apart need to cover it — never fewer than a
+    /// phone's 40, never more than a 5 000 px strip's.
+    #[wasm_bindgen_test]
+    fn the_live_waveform_keeps_as_many_bars_as_its_strip_is_wide() {
+        assert_eq!(live_bars_for(0.0), LIVE_BARS, "not yet measured");
+        assert_eq!(live_bars_for(f64::NAN), LIVE_BARS);
+        assert_eq!(live_bars_for(120.0), LIVE_BARS, "a phone's");
+        for width in [200.0, 640.0, 1_200.0, 2_345.5] {
+            let bars = live_bars_for(width);
+            assert!(
+                bars as f64 * 5.0 - 2.0 >= width,
+                "{bars} bars cover {width} px"
+            );
+            assert!(
+                (bars as f64 - 2.0) * 5.0 - 2.0 < width,
+                "and no more than one spare: {bars} for {width} px"
+            );
+        }
+        assert_eq!(live_bars_for(1.0e9), 1_000, "bounded");
     }
 
     #[wasm_bindgen_test]

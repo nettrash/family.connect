@@ -178,6 +178,18 @@ final class MessageEntity {
     var attachmentLatitude: Double?
     var attachmentLongitude: Double?
     var attachmentAccuracyM: Int?
+    /// Whether the stored set was written by a build that reads the video
+    /// message flag (`round`, #79). A build that predates it wrote its
+    /// cached set back with only the fields it knew
+    /// (docs/audio-video-messages-2026-10-04.md, S5.8), so a circle that
+    /// arrived before the upgrade is stored as a plain video — and the
+    /// catch-up only ever ADDS, so nothing would read it again: it drew
+    /// square for good. False on every row such a build wrote (the
+    /// lightweight migration's default), true from the first set this
+    /// build writes; `ChatSyncCoordinator.repairUnknownRoundFlags` reads
+    /// the false ones that could be circles once more. A defaulted
+    /// column, so a lightweight migration.
+    var attachmentsKnowRound: Bool = false
     /// The call this message records, when it is one (docs/protocol.md,
     /// "Voice calls" and "Video"): `completed`, `missed`, `declined` or
     /// `failed`, the seconds it lasted when it was ever answered, and
@@ -241,6 +253,9 @@ final class MessageEntity {
         attachmentLatitude = first.latitude
         attachmentLongitude = first.longitude
         attachmentAccuracyM = first.accuracyM
+        // Every set this build writes was decoded by a build that knows
+        // the flag — the server's copy or this device's own send.
+        attachmentsKnowRound = true
     }
 
     /// Take the whole set back off the row.

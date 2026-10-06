@@ -77,6 +77,13 @@ final class PendingMediaItemEntity {
     /// a circle, not a square video — and drawn round at once from the
     /// local poster (S5.6). Defaulted, so a lightweight migration.
     var isRound: Bool = false
+    /// A voice note's waveform, as the upload sends it (`waveform=`, #79,
+    /// docs/protocol.md, "A voice note's waveform"): held here so a send
+    /// resumed after a relaunch — or finished by the background session —
+    /// still carries it, and so the sender's own bubble draws its shape
+    /// before the server has answered. nil for everything else. Defaulted,
+    /// so a lightweight migration.
+    var waveform: String?
 
     // MARK: - Locations
 
@@ -126,6 +133,7 @@ final class PendingMediaItemEntity {
         accuracyM: Int? = nil,
         sticker: Bool = false,
         isRound: Bool = false,
+        waveform: String? = nil,
         createdAt: Date = Date()
     ) {
         self.itemID = itemID
@@ -145,6 +153,7 @@ final class PendingMediaItemEntity {
         self.accuracyM = accuracyM
         self.sticker = sticker
         self.isRound = isRound
+        self.waveform = waveform
         self.createdAt = createdAt
     }
 }
@@ -185,7 +194,8 @@ extension PendingMediaItemEntity {
             longitude: longitude,
             accuracyM: accuracyM,
             sticker: sticker,
-            isRound: isRound)
+            isRound: isRound,
+            waveform: waveform)
     }
 
     /// This item as the wire shape, once its bytes are on the server.
@@ -209,6 +219,7 @@ extension PendingMediaItemEntity {
             longitude: longitude,
             accuracyM: accuracyM,
             sticker: sticker,
-            isRound: isRound)
+            isRound: isRound,
+            waveform: waveform)
     }
 }

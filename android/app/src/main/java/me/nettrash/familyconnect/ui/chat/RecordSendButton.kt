@@ -48,6 +48,19 @@
 package me.nettrash.familyconnect.ui.chat
 
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.snap
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import me.nettrash.familyconnect.data.repo.Waveform
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -456,13 +469,16 @@ private fun SlotFace(slot: Slot, interactions: MutableInteractionSource) {
         else -> false
     }
     val colors = MaterialTheme.colorScheme
+    // 150 ms cross-fades (S1.3, the approved design); none without animations.
+    val steady = animationsRemoved()
+    val fade = if (steady) snap<Color>() else tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt())
     val container by animateColorAsState(
         targetValue = when {
             held -> colors.error
             live -> colors.primary
             else -> colors.surfaceContainerHighest
         },
-        animationSpec = tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt()),
+        animationSpec = fade,
         label = "slotContainer",
     )
     val content by animateColorAsState(
@@ -471,20 +487,29 @@ private fun SlotFace(slot: Slot, interactions: MutableInteractionSource) {
             live -> colors.onPrimary
             else -> colors.onSurfaceVariant
         },
-        animationSpec = tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt()),
+        animationSpec = fade,
         label = "slotContent",
     )
     // Draw-only, so nothing beside it moves: the held microphone swells
-    // under the finger, a slot with nothing to do settles back.
+    // under the finger — visibly, 1.35× with a soft red halo (the approved
+    // design) — and a slot with nothing to do settles back. None of it moves
+    // without animations: it simply is the size it ends at.
+    val motion = if (steady) snap<Float>() else tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt())
     val scale by animateFloatAsState(
         targetValue = when {
-            held -> 1.2f
+            held -> HELD_SCALE
             live -> 1f
             else -> 0.9f
         },
-        animationSpec = tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt()),
+        animationSpec = motion,
         label = "slotScale",
     )
+    val halo by animateFloatAsState(
+        targetValue = if (held) 1f else 0f,
+        animationSpec = motion,
+        label = "slotHalo",
+    )
+    val haloColor = colors.error
     val glyph = when (slot) {
         Slot.StopRecording -> SlotGlyph.STOP
         Slot.Microphone, Slot.HeldMicrophone, is Slot.Dimmed -> SlotGlyph.MICROPHONE
@@ -497,6 +522,15 @@ private fun SlotFace(slot: Slot, interactions: MutableInteractionSource) {
                 scaleX = scale
                 scaleY = scale
             }
+            .drawBehind {
+                // A 10-unit ring of the recording red at 20 %, outside the disc.
+                if (halo > 0f) {
+                    drawCircle(
+                        color = haloColor.copy(alpha = 0.2f * halo),
+                        radius = size.minDimension / 2f + HELD_HALO.toPx() / HELD_SCALE,
+                    )
+                }
+            }
             .clip(CircleShape)
             .background(container)
             .indication(interactions, ripple()),
@@ -504,7 +538,7 @@ private fun SlotFace(slot: Slot, interactions: MutableInteractionSource) {
     ) {
         Crossfade(
             targetState = glyph,
-            animationSpec = tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt()),
+            animationSpec = if (steady) snap() else tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt()),
             label = "slotGlyph",
         ) { shown ->
             Icon(
@@ -523,6 +557,10 @@ private fun SlotFace(slot: Slot, interactions: MutableInteractionSource) {
 
 private enum class SlotGlyph { SEND, MICROPHONE, STOP }
 
+/** The held microphone's size under the finger, and its halo (the approved design). */
+internal const val HELD_SCALE = 1.35f
+private val HELD_HALO = 10.dp
+
 /**
  * A lock glyph over an up chevron, 8 dp above the held microphone and
  * outside the bar, so the bar keeps its height (S2.3). Not focusable: it
@@ -530,23 +568,32 @@ private enum class SlotGlyph { SEND, MICROPHONE, STOP }
  */
 @Composable
 private fun LockHint() {
-    val gap = with(LocalDensity.current) { 8.dp.roundToPx() }
+    // Clear of the swollen microphone and its halo, then the design's 8.
+    val gap = with(LocalDensity.current) { (8.dp + 44.dp * (HELD_SCALE - 1f) / 2f + HELD_HALO).roundToPx() }
     Popup(
         popupPositionProvider = remember(gap) { AboveTheSlot(gap, alignTrailing = false) },
         properties = PopupProperties(focusable = false, clippingEnabled = false),
     ) {
+        // The design's pill: 36 wide, a lock over an up chevron, quiet ink on
+        // the panel colour, with a soft shadow so it floats.
         Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shadowElevation = 2.dp,
-            modifier = Modifier.semantics { hideFromAccessibility() },
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surface,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            shadowElevation = 6.dp,
+            tonalElevation = 3.dp,
+            modifier = Modifier
+                .width(36.dp)
+                .semantics { hideFromAccessibility() }
+                .testTag("voice-lock-pill"),
         ) {
             Column(
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                modifier = Modifier.padding(vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Icon(Icons.Filled.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
-                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(Icons.Filled.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = null, modifier = Modifier.size(16.dp))
             }
         }
     }
@@ -615,45 +662,75 @@ internal fun animationsRemoved(): Boolean {
     }
 }
 
-/** 8 dp, pulsing between 100 % and 40 % once a second; steady without animations (S2.9). */
+/** The recording dot, pulsing between 100 % and 35 % once a second; steady without animations (S2.9). */
 @Composable
-private fun RecordingDot(steady: Boolean) {
+internal fun RecordingDot(
+    steady: Boolean,
+    size: androidx.compose.ui.unit.Dp = 10.dp,
+    color: Color = MaterialTheme.colorScheme.error,
+) {
     val alpha = if (steady) {
         1f
     } else {
         val pulse = rememberInfiniteTransition(label = "recordingDot")
         pulse.animateFloat(
             initialValue = 1f,
-            targetValue = 0.4f,
-            animationSpec = infiniteRepeatable(tween(500), RepeatMode.Reverse),
+            targetValue = 0.35f,
+            animationSpec = infiniteRepeatable(tween(1_000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
             label = "recordingDotAlpha",
         ).value
     }
     Box(
         modifier = Modifier
-            .size(8.dp)
+            .size(size)
             .graphicsLayer { this.alpha = alpha }
-            .background(MaterialTheme.colorScheme.error, CircleShape),
+            .background(color, CircleShape)
+            .testTag("voice-recording-dot"),
     )
 }
 
-/** Five bars, 3 × 16 dp, lit at −50…−10 dBFS of the peak (S2.9). Decoration to TalkBack. */
+/**
+ * The LIVE waveform (the approved design): the meter's newest peaks as bars,
+ * 3 × up to 24 units, 2 apart, in the recording red, scrolling in from the
+ * trailing edge as each tick adds one. Without animations it does not scroll:
+ * it steps once a second, as the circles' rings do (S6). Decoration to
+ * TalkBack — the timer and the announcements carry the meaning.
+ */
 @Composable
-private fun LevelMeter(level: Int) {
-    val ink = MaterialTheme.colorScheme.onSurface
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.semantics { hideFromAccessibility() },
+internal fun LiveWaveform(levels: List<Int>, modifier: Modifier = Modifier, steady: Boolean = animationsRemoved()) {
+    val red = MaterialTheme.colorScheme.error
+    val latest by rememberUpdatedState(levels)
+    var stepped by remember { mutableStateOf(levels) }
+    if (steady) {
+        LaunchedEffect(Unit) {
+            while (true) {
+                stepped = latest
+                delay(1_000)
+            }
+        }
+    }
+    val shown = if (steady) stepped else levels
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    Canvas(
+        modifier = modifier
+            .height(24.dp)
+            .semantics { hideFromAccessibility() }
+            .testTag("voice-live-waveform"),
     ) {
-        repeat(VoiceNoteRules.LEVEL_BARS_DBFS.size) { bar ->
-            Box(
-                modifier = Modifier
-                    .size(width = 3.dp, height = 16.dp)
-                    .background(
-                        if (bar < level) ink else ink.copy(alpha = 0.2f),
-                        RoundedCornerShape(1.5.dp),
-                    ),
+        val bar = 3.dp.toPx()
+        val gap = 2.dp.toPx()
+        val fits = ((size.width + gap) / (bar + gap)).toInt()
+        val recent = shown.takeLast(fits)
+        // Newest at the trailing edge; the rest run back from it.
+        recent.asReversed().forEachIndexed { back, level ->
+            val height = (size.height * Waveform.barFraction(level)).toFloat()
+            val fromEnd = size.width - bar - back * (bar + gap)
+            val x = if (rtl) size.width - bar - fromEnd else fromEnd
+            drawRoundRect(
+                color = red.copy(alpha = 0.8f),
+                topLeft = Offset(x, (size.height - height) / 2f),
+                size = Size(bar, height),
+                cornerRadius = CornerRadius(bar / 2f, bar / 2f),
             )
         }
     }
@@ -665,55 +742,127 @@ private fun RecordingClock(recordedMs: Long) {
     val warning = VoiceNoteRules.showsTimeWarning(recordedMs)
     Text(
         text = VoiceNoteRules.clock(recordedMs),
-        style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
-        color = if (warning) VoiceWarningOrange else MaterialTheme.colorScheme.onSurface,
+        style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum", fontFamily = FontFamily.Monospace),
+        color = if (warning) voiceWarning() else MaterialTheme.colorScheme.onSurface,
         maxLines = 1,
     )
 }
 
 /**
- * The middle of a recording row: the level meter — or, in its place, the
- * line that matters more (S2.3, S2.5, S2.9). The meter goes first when the
+ * The orange of a warning, readable on the composer in either theme: the
+ * design's #C2620C on a light surface, #F5A524 on a dark one — words beside it
+ * too, never colour alone (S2.5).
+ */
+@Composable
+internal fun voiceWarning(): Color =
+    if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) Color(0xFFF5A524) else Color(0xFFC2620C)
+
+/**
+ * The middle of a recording row: the live waveform — or, in its place, the
+ * line that matters more (S2.3, S2.5, S2.9). The waveform goes first when the
  * row is too narrow for it.
  */
 @Composable
-private fun MiddleOfTheRow(level: Int, line: ChatViewModel.VoiceLine?, modifier: Modifier = Modifier) {
+private fun MiddleOfTheRow(levels: List<Int>, line: ChatViewModel.VoiceLine?, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier = modifier, contentAlignment = Alignment.CenterStart) {
         when (line) {
-            ChatViewModel.VoiceLine.THIRTY_SECONDS_LEFT -> Text(
-                text = stringResource(R.string.s_thirty_seconds_left),
-                style = MaterialTheme.typography.bodySmall,
-                color = VoiceWarningOrange,
+            null -> if (maxWidth >= 27.dp) LiveWaveform(levels, Modifier.fillMaxWidth())
+            else -> VoiceLineText(line)
+        }
+    }
+}
+
+/** One of the lines that take the waveform's (or the slide hint's) place. */
+@Composable
+private fun VoiceLineText(line: ChatViewModel.VoiceLine) {
+    when (line) {
+        ChatViewModel.VoiceLine.THIRTY_SECONDS_LEFT -> Text(
+            text = stringResource(R.string.s_thirty_seconds_left),
+            style = MaterialTheme.typography.bodySmall,
+            color = voiceWarning(),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        ChatViewModel.VoiceLine.STILL_RECORDING -> Text(
+            text = stringResource(R.string.s_still_recording_tap_send),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        ChatViewModel.VoiceLine.CANT_HEAR -> Text(
+            text = stringResource(R.string.s_cant_hear_microphone_muted),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * "‹ Slide to cancel", its words shimmering from the quiet tone to the ink and
+ * back every 2.2 s (the approved design) — and simply quiet, still words,
+ * without animations.
+ */
+@Composable
+internal fun SlideToCancel(modifier: Modifier = Modifier, steady: Boolean = animationsRemoved()) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val ink = MaterialTheme.colorScheme.onSurface
+    val text = stringResource(R.string.s_slide_to_cancel)
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+            contentDescription = null,
+            tint = muted,
+            modifier = Modifier.size(18.dp),
+        )
+        if (steady) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelLarge,
+                color = muted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("voice-slide-steady"),
             )
-            ChatViewModel.VoiceLine.STILL_RECORDING -> Text(
-                text = stringResource(R.string.s_still_recording_tap_send),
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+        } else {
+            val sweep = rememberInfiniteTransition(label = "slideShimmer")
+            val at by sweep.animateFloat(
+                initialValue = 2f,
+                targetValue = -1f,
+                animationSpec = infiniteRepeatable(tween(2_200, easing = LinearEasing)),
+                label = "slideShimmerAt",
             )
-            ChatViewModel.VoiceLine.CANT_HEAR -> Text(
-                text = stringResource(R.string.s_cant_hear_microphone_muted),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            null -> if (maxWidth >= 27.dp) LevelMeter(level)
+            BoxWithConstraints {
+                val width = with(LocalDensity.current) { maxWidth.toPx().coerceAtLeast(1f) }
+                val brush = Brush.linearGradient(
+                    colors = listOf(muted, ink, muted),
+                    start = Offset(width * (at - 0.5f), 0f),
+                    end = Offset(width * (at + 0.5f), 0f),
+                )
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.labelLarge.copy(brush = brush),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.testTag("voice-slide-shimmer"),
+                )
+            }
         }
     }
 }
 
 /**
  * S2.3's hold row, in the field's place while a finger holds the
- * microphone: the red dot, the timer, the level meter and "‹ Slide to
- * cancel" — red, and "Release to cancel", once cancel is armed.
+ * microphone (the approved design): the pulsing red dot, the timer and
+ * "‹ Slide to cancel" shimmering — red, and "Release to cancel", once cancel
+ * is armed. A line that matters more (still recording, can't hear) takes the
+ * hint's place. The lock pill floats above the slot (RecordSendButton).
  */
 @Composable
 internal fun HoldRow(
     recordedMs: Long,
-    level: Int,
+    @Suppress("UNUSED_PARAMETER") level: Int,
     line: ChatViewModel.VoiceLine?,
     armed: Boolean,
     modifier: Modifier = Modifier,
@@ -725,61 +874,51 @@ internal fun HoldRow(
         } else {
             MaterialTheme.colorScheme.surfaceContainerHigh
         },
+        animationSpec = if (steady) snap() else tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt()),
         label = "holdRow",
     )
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(24.dp))
             .background(container)
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         RecordingDot(steady)
         RecordingClock(recordedMs)
-        MiddleOfTheRow(level, line, Modifier.weight(1f))
-        if (armed) {
-            Text(
+        when {
+            armed -> Text(
                 text = stringResource(R.string.s_release_to_cancel),
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onErrorContainer,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
-        } else {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
-                Text(
-                    text = stringResource(R.string.s_slide_to_cancel),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            line != null -> Box(Modifier.weight(1f)) { VoiceLineText(line) }
+            else -> SlideToCancel(Modifier.weight(1f), steady = steady)
         }
     }
 }
 
 /**
- * S2.4's recording row, hands-free: Delete leading, the dot, the timer and
- * the meter in the middle, Stop before the slot — no Stop when it started
+ * S2.4's recording row, hands-free (the approved design): Delete leading,
+ * the pulsing dot, the timer and the live waveform in the middle, Stop
+ * before the slot — which is the Send arrow — and no Stop when it started
  * beside words or staged items, where the SLOT is Stop (row 3).
  */
 @Composable
 internal fun RecordingRow(
     recordedMs: Long,
-    level: Int,
+    @Suppress("UNUSED_PARAMETER") level: Int,
     line: ChatViewModel.VoiceLine?,
     besideDraft: Boolean,
     onDelete: () -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
+    /** The meter's newest peaks as waveform levels, oldest first (ChatViewModel.voiceLevels). */
+    levels: List<Int> = emptyList(),
 ) {
     val steady = animationsRemoved()
     Row(
@@ -794,16 +933,18 @@ internal fun RecordingRow(
             Icon(
                 imageVector = Icons.Outlined.Delete,
                 contentDescription = stringResource(R.string.s_delete_recording),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         RecordingDot(steady)
         RecordingClock(recordedMs)
-        MiddleOfTheRow(level, line, Modifier.weight(1f))
+        MiddleOfTheRow(levels, line, Modifier.weight(1f))
         if (!besideDraft) {
             IconButton(onClick = onStop) {
                 Icon(
                     imageVector = Icons.Filled.Stop,
                     contentDescription = stringResource(R.string.s_stop_recording),
+                    tint = MaterialTheme.colorScheme.onSurface,
                 )
             }
         }
@@ -813,8 +954,8 @@ internal fun RecordingRow(
 /**
  * S2.6's Undo row, in the FIELD's place only — the paperclip, stickers and
  * `@ai` stay usable beside it: "[Undo] Sending voice message · 0:12", with a
- * 2-dp line along its bottom emptying over the window; without animations,
- * "Sending in 5" instead, once a second and never announced.
+ * thin accent line along its bottom draining over the window; without
+ * animations, "Sending in 5" instead, once a second and never announced.
  */
 @Composable
 internal fun UndoRow(
@@ -825,6 +966,7 @@ internal fun UndoRow(
     modifier: Modifier = Modifier,
     steady: Boolean = animationsRemoved(),
 ) {
+    val accent = MaterialTheme.colorScheme.primary
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(24.dp))
@@ -837,10 +979,13 @@ internal fun UndoRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            TextButton(onClick = onUndo) { Text(stringResource(R.string.s_undo)) }
+            TextButton(onClick = onUndo) {
+                Text(stringResource(R.string.s_undo), fontWeight = FontWeight.SemiBold, color = accent)
+            }
             Text(
                 text = stringResource(R.string.s_sending_voice_message, VoiceNoteRules.clock(recordedMs)),
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
@@ -866,13 +1011,22 @@ internal fun UndoRow(
             LaunchedEffect(Unit) {
                 left.animateTo(0f, tween(windowMs.toInt().coerceAtLeast(0), easing = LinearEasing))
             }
+            // The design's line: 2 units, 12 in from each end, 3 above the bottom.
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .fillMaxWidth(left.value)
-                    .height(2.dp)
-                    .background(MaterialTheme.colorScheme.primary),
-            )
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, bottom = 3.dp)
+                    .testTag("voice-undo-drain"),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(left.value)
+                        .height(2.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(accent),
+                )
+            }
         }
     }
 }

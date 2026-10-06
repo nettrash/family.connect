@@ -678,14 +678,24 @@ impl Drop for Microphone {
     }
 }
 
-fn lit(root: &Element) -> u32 {
-    root.query_selector_all(".recording-meter .bar.is-lit")
-        .map(|bars| bars.length())
-        .unwrap_or(0)
+/// The newest bar of the live waveform — its level, 0 to 15 — and how many
+/// bars there are.
+fn newest(root: &Element) -> (u8, u32) {
+    let bars = root
+        .query_selector_all(".recording-meter > i")
+        .expect("a valid selector");
+    let level = bars
+        .item(bars.length().saturating_sub(1))
+        .and_then(|bar| bar.dyn_into::<Element>().ok())
+        .and_then(|bar| bar.get_attribute("data-level"))
+        .and_then(|level| level.parse().ok())
+        .unwrap_or(0);
+    (level, bars.length())
 }
 
-/// THE LEVEL METER AND THE SILENCE WARNING (S2.9): five bars, lit by the
-/// peak the tap hears; three seconds of nothing above digital silence says
+/// THE LIVE WAVEFORM AND THE SILENCE WARNING (S2.9, the approved design):
+/// the peak the tap hears scrolls in from the right as bars on the sent
+/// waveform's own scale; three seconds of nothing above digital silence says
 /// "We can't hear anything. Is the microphone muted?" — shown, said, the
 /// notice line itself quiet while it records — and the line goes when sound
 /// arrives. The recording goes on throughout.
@@ -697,14 +707,17 @@ async fn the_meter_lights_and_silence_is_said_until_sound_arrives() {
     let handle = render(&root, props_with(vec![message(1)], None, on_action));
     TimeoutFuture::new(50).await;
     start_from_the_slot(&root).await;
-    assert_eq!(
-        root.query_selector_all(".recording-meter .bar")
-            .unwrap()
-            .length(),
-        5
+    assert!(
+        root.query_selector(".recording-meter").unwrap().is_some(),
+        "the live waveform"
+    );
+    assert!(
+        until(1_000, || newest(&root).1 >= 2).await,
+        "it scrolls in: {} bars",
+        newest(&root).1
     );
     TimeoutFuture::new(500).await;
-    assert_eq!(lit(&root), 0, "silence lights nothing");
+    assert_eq!(newest(&root).0, 0, "silence stands at nothing");
     assert!(notice(&root).is_empty(), "not before three seconds");
 
     let later = ClockAhead::by(3_000.0);
@@ -725,9 +738,31 @@ async fn the_meter_lights_and_silence_is_said_until_sound_arrives() {
         "gone once sound arrives"
     );
     assert!(
-        until(2_000, || lit(&root) >= 4).await,
-        "a loud tone lights the bars: {}",
-        lit(&root)
+        until(2_000, || newest(&root).0 >= 12).await,
+        "a loud tone stands tall: level {}",
+        newest(&root).0
+    );
+    // The strip keeps as many bars as fill IT — on this 600 px pane more
+    // than a phone's 40, so it is never half empty on a wide window — and
+    // never more.
+    let strip = query(&root, ".recording-meter");
+    let width = strip.get_bounding_client_rect().width();
+    let keep: usize = strip
+        .get_attribute("data-keep")
+        .and_then(|keep| keep.parse().ok())
+        .unwrap_or(0);
+    assert_eq!(
+        keep,
+        crate::views::attach::live_bars_for(width),
+        "the strip's own width: {width} px"
+    );
+    assert!(
+        keep > crate::views::attach::LIVE_BARS,
+        "{keep} for {width} px"
+    );
+    assert!(
+        newest(&root).1 as usize <= keep,
+        "never more than the row keeps"
     );
     drop(later);
     click_labelled(&root, ".recording button", "Delete");

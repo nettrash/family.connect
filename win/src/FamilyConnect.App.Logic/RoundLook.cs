@@ -15,8 +15,9 @@ namespace FamilyConnect.App.Logic;
 /// and until it lands a neutral disc of the same size holds the row's height.
 /// </para>
 /// <para>
-/// <b>THIS VERSION PLAYS IT IN THE VIEWER</b> (S5.3): the square clip inside a ring painted over its corners, on the
-/// viewer's solid backdrop. Playing inside the thread waits for the clipping trial (Blocked 1).
+/// <b>THIS VERSION PLAYS IT IN THE VIEWER</b> (S5.3): the square clip with its corners painted in the viewer's solid
+/// backdrop, exactly one accent ring OUTSIDE the edge running round as it plays (the approved design of 2026-10-05), and a
+/// play disc that fades out while it does. Playing inside the thread waits for the clipping trial (Blocked 1).
 /// </para>
 /// </remarks>
 public static class RoundLook
@@ -24,13 +25,13 @@ public static class RoundLook
     /// <summary>The circle in a conversation, in effective pixels (S5.2: Windows is never compact).</summary>
     public const double Diameter = 240;
 
-    /// <summary>The play disc in the middle of the circle.</summary>
-    public const double PlayDisc = 44;
+    /// <summary>The play disc in the middle of the circle: the approved design's 48 (the 44 target the circle itself exceeds).</summary>
+    public const double PlayDisc = 48;
 
     /// <summary>The accent dot beside the duration while this device has not played it.</summary>
     public const double Dot = 8;
 
-    /// <summary>The ring round the edge: the accent while it plays, a neutral one while one of the reader's own uploads.</summary>
+    /// <summary>The ring outside the edge: the accent as it plays in the viewer, a neutral one while one of the reader's own uploads.</summary>
     public const double Ring = 3;
 
     /// <summary>The largest circle the viewer draws: the recording's own 480 pixels.</summary>
@@ -53,9 +54,12 @@ public static class RoundLook
     /// </summary>
     public static bool ShowsDot(bool mine, bool played) => !mine && !played;
 
-    /// <summary>Its value: "Not played" while the dot shows, and nothing otherwise — the reader's own circles included (S6).</summary>
+    /// <summary>
+    /// Its value: "Not played" while the dot shows and "Played" once this device has played it — on someone else's circle
+    /// only; the reader's own say neither (S6), as a voice message's do not (<see cref="VoiceLook.Status"/>).
+    /// </summary>
     public static string? Value(bool mine, bool played, IStringCatalog say) =>
-        ShowsDot(mine, played) ? say.Get("Not played") : null;
+        mine ? null : played ? say.Get("Played") : say.Get("Not played");
 
     /// <summary>How near the end a clip counts as played through: the viewer clock's own tick, and Play's restart rule.</summary>
     public const double EndSlackSeconds = 0.25;
@@ -71,6 +75,28 @@ public static class RoundLook
     public static bool PlayedThrough(bool seenPlaying, double position, double total) =>
         seenPlaying && double.IsFinite(total) && total > 0 && double.IsFinite(position)
             && position >= total - EndSlackSeconds;
+
+    /// <summary>
+    /// How far round the viewer's ONE accent ring is drawn, 0 to 1: nothing before this opening has seen it play, as far as it
+    /// has played while it plays or is paused part way — and NOTHING once it has finished, when the circle is back to its
+    /// poster and play disc (the approved design hides the ring at the end rather than leaving a full one round it).
+    /// </summary>
+    /// <param name="seenPlaying">Whether this opening has seen it playing.</param>
+    /// <param name="playing">Whether it is playing now.</param>
+    /// <param name="position">Where it is, in seconds.</param>
+    /// <param name="total">How long it is, in seconds — 0 or less when unknown.</param>
+    public static double ViewerRing(bool seenPlaying, bool playing, double position, double total)
+    {
+        if (!seenPlaying || !double.IsFinite(total) || total <= 0 || !double.IsFinite(position))
+        {
+            return 0;
+        }
+        if (!playing && position >= total - EndSlackSeconds)
+        {
+            return 0;
+        }
+        return Math.Clamp(position / total, 0, 1);
+    }
 
     /// <summary>
     /// The circle the viewer plays it in: as large as the room left by the viewer's own bars allows, never larger than
@@ -90,6 +116,81 @@ public static class RoundLook
         var room = Math.Min(width - 2 * Margin, height - Math.Max(0, chrome) - 2 * Margin);
         return Math.Floor(Math.Clamp(room, ViewerSmallest, ViewerLargest));
     }
+}
+
+/// <summary>The shape the recorder's one big slot button takes (the approved design: Record → Stop → Send).</summary>
+public enum SlotShape
+{
+    /// <summary>A plain red disc: Record.</summary>
+    RecordDisc,
+
+    /// <summary>A red disc with a white rounded square on it: Stop.</summary>
+    StopSquare,
+
+    /// <summary>An accent disc with the Send arrow: Send.</summary>
+    SendArrow,
+}
+
+/// <summary>
+/// How the video-message recorder is drawn (the approved design of 2026-10-05, "Recording a video message"): ONE big slot
+/// button where Send is, smaller round buttons with captions beside it, and the ring outside the circle — a thin track all
+/// the way round, red filling over the minute while it records, the accent while the clip plays back in REVIEW.
+/// </summary>
+public static class RecorderLook
+{
+    /// <summary>The big slot button: 64 across, with a faint 4-wide halo round it.</summary>
+    public const double Slot = 64;
+
+    /// <summary>The halo round the slot.</summary>
+    public const double Halo = 4;
+
+    /// <summary>Stop's white rounded square on the red disc, and its corners.</summary>
+    public const double StopSquare = 22;
+
+    /// <summary>The corner radius of Stop's square.</summary>
+    public const double StopCorner = 5;
+
+    /// <summary>The smaller round buttons beside the slot — Close or Delete, Switch camera or Retake.</summary>
+    public const double Side = 44;
+
+    /// <summary>The thin track ring's stroke, drawn where the progress ring runs.</summary>
+    public const double Track = 1;
+
+    /// <summary>The slot's shape in each stage: Stop while recording, Send in review, Record otherwise.</summary>
+    public static SlotShape Shape(RecorderStage stage) => stage switch
+    {
+        RecorderStage.Recording => SlotShape.StopSquare,
+        RecorderStage.Review => SlotShape.SendArrow,
+        _ => SlotShape.RecordDisc,
+    };
+
+    /// <summary>The caption under the slot: "Record", "Stop" or "Send".</summary>
+    public static string Caption(RecorderStage stage, IStringCatalog say) => Shape(stage) switch
+    {
+        SlotShape.StopSquare => say.Get("Stop"),
+        SlotShape.SendArrow => say.Get("Send"),
+        _ => say.Get("Record"),
+    };
+
+    /// <summary>The slot's target: the disc and its halo.</summary>
+    public const double SlotTarget = Slot + 2 * Halo;
+
+    /// <summary>The gap between a round button and its caption.</summary>
+    public const double CaptionGap = 2;
+
+    /// <summary>
+    /// How far above the conversation's bottom edge the slot's column (the slot, the gap, its caption) sits so that the SLOT is
+    /// centred where Send is (S3.3: the pointer never moves) — with the caption's height as it is MEASURED at the reader's
+    /// text size, never a guess, which would put the slot off Send's centre by the difference.
+    /// </summary>
+    /// <param name="sendCentreFromBottom">How far Send's centre is above the conversation's bottom edge.</param>
+    /// <param name="captionHeight">The caption's measured height.</param>
+    public static double SlotColumnBottom(double sendCentreFromBottom, double captionHeight) =>
+        sendCentreFromBottom - SlotTarget / 2 - CaptionGap - Math.Max(0, captionHeight);
+
+    /// <summary>Whether the thin track ring is drawn: wherever the circle shows a picture or a clip.</summary>
+    public static bool ShowsTrack(RecorderStage stage) =>
+        stage is RecorderStage.Preview or RecorderStage.Recording or RecorderStage.Review;
 }
 
 /// <summary>What is playing through this client's shared player, or its viewer.</summary>

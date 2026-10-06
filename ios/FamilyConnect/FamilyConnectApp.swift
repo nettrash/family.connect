@@ -429,6 +429,7 @@ struct FamilyConnectApp: App {
             session.clearRoundVideoPlays = {
                 NowPlaying.shared.pauseAll()
                 RoundVideoPlays.shared.removeAll()
+                RoundVideoPlays.voiceNotes.removeAll()
             }
             coordinator.bind(attachmentStore: attachments)
             // Logout wipes the store; faces must go with it, or the next

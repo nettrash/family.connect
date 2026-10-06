@@ -39,12 +39,16 @@ class AppDatabaseMigrationsTest {
      * nobody read.
      */
     @Test
-    fun `the transcripts migration is the last one and reaches the current schema`() {
+    fun `the waveform migration is the last one and reaches the current schema`() {
         val last = AppDatabase.ALL_MIGRATIONS.last()
-        assertThat(last).isSameInstanceAs(AppDatabase.MIGRATION_29_30)
-        assertThat(last.endVersion).isEqualTo(30)
-        // And the sticker-pack one is still registered right before it.
+        assertThat(last).isSameInstanceAs(AppDatabase.MIGRATION_31_32)
+        assertThat(last.endVersion).isEqualTo(32)
+        // And the round-flag, transcripts and sticker-pack ones are still registered right before it.
         assertThat(AppDatabase.ALL_MIGRATIONS[AppDatabase.ALL_MIGRATIONS.size - 2])
+            .isSameInstanceAs(AppDatabase.MIGRATION_30_31)
+        assertThat(AppDatabase.ALL_MIGRATIONS[AppDatabase.ALL_MIGRATIONS.size - 3])
+            .isSameInstanceAs(AppDatabase.MIGRATION_29_30)
+        assertThat(AppDatabase.ALL_MIGRATIONS[AppDatabase.ALL_MIGRATIONS.size - 4])
             .isSameInstanceAs(AppDatabase.MIGRATION_28_29)
     }
 

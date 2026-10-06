@@ -275,6 +275,10 @@ struct VideoMessageRecorderView: View {
     /// Black at 70 % — over the conversation only 30 % on a regular width,
     /// so the message being answered stays readable — and opaque under Reduce
     /// Transparency. It takes all input (S3.3).
+    /// The window darkens almost to black behind the recorder (the approved
+    /// design), so the circle is the one bright thing on screen.
+    static let scrimOpacity: Double = 0.86
+
     private func scrim(size: CGSize, pane: CGRect) -> some View {
         let whole = CGRect(origin: .zero, size: size)
         let dimPane = !isCompactWidth && pane != whole && !reduceTransparency
@@ -289,7 +293,7 @@ struct VideoMessageRecorderView: View {
                     .frame(width: pane.width, height: pane.height)
                     .offset(x: pane.minX, y: pane.minY)
             } else {
-                Color.black.opacity(reduceTransparency ? 1 : 0.7)
+                Color.black.opacity(reduceTransparency ? 1 : Self.scrimOpacity)
             }
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
@@ -447,16 +451,21 @@ struct VideoMessageRecorderView: View {
 
     // MARK: The circle
 
+    /// How far outside the circle its track ring runs, and the progress
+    /// over it (the approved design): off the picture, never over a face.
+    static let ringOutset: CGFloat = 8
+
     @ViewBuilder
     private func circle(_ d: CGFloat) -> some View {
         ZStack {
             Circle().fill(Color.white.opacity(0.08))
+                .frame(width: d, height: d)
             circleContent(d)
                 .frame(width: d, height: d)
                 .clipShape(Circle())
             ring(d)
         }
-        .frame(width: d + 8, height: d + 8)
+        .frame(width: d + 2 * Self.ringOutset + 4, height: d + 2 * Self.ringOutset + 4)
     }
 
     @ViewBuilder
@@ -525,42 +534,48 @@ struct VideoMessageRecorderView: View {
         .accessibilityAction { session.playPause() }
     }
 
-    /// 4 units wide, just OUTSIDE the circle, so it never covers a face
-    /// (S3.3). It steps once a second under Reduce Motion (S6).
+    /// A thin track ring just OUTSIDE the circle, so it never covers a face
+    /// (S3.3), and over it the progress: red filling clockwise over the
+    /// minute while recording, the tint while the clip plays back in
+    /// review. It steps once a second under Reduce Motion (S6).
     @ViewBuilder
     private func ring(_ d: CGFloat) -> some View {
-        let frame = d + 4
-        switch state.phase {
-        case .preview:
-            Circle()
-                .stroke(Color.white.opacity(0.4), lineWidth: 1)
-                .frame(width: d + 1, height: d + 1)
-                .accessibilityHidden(true)
-        case .recording, .finishing:
-            let recorded = state.recordedMS(atMS: session.nowMS)
-            let shown = reduceMotion ? recorded / 1000 * 1000 : recorded
-            let progress = state.capMS == 0 ? 1 : min(1, Double(shown) / Double(state.capMS))
-            Circle()
-                .trim(from: 0, to: progress)
-                .stroke(ringColor, style: StrokeStyle(lineWidth: 4, lineCap: .butt))
-                .rotationEffect(.degrees(-90))
-                .frame(width: frame, height: frame)
-                .accessibilityHidden(true)
-        case .review(let duration):
-            if session.isPlaying || session.playbackProgress > 0 {
-                let seconds = Double(duration) / 1000
-                let raw = session.playbackProgress
-                let progress = reduceMotion && seconds > 0 ? (raw * seconds).rounded(.down) / seconds : raw
+        let frame = d + 2 * Self.ringOutset
+        ZStack {
+            switch state.phase {
+            case .preview, .recording, .finishing, .review:
+                Circle()
+                    .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                    .frame(width: frame, height: frame)
+            default:
+                EmptyView()
+            }
+            switch state.phase {
+            case .recording, .finishing:
+                let recorded = state.recordedMS(atMS: session.nowMS)
+                let shown = reduceMotion ? recorded / 1000 * 1000 : recorded
+                let progress = state.capMS == 0 ? 1 : min(1, Double(shown) / Double(state.capMS))
                 Circle()
                     .trim(from: 0, to: progress)
-                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 4, lineCap: .butt))
+                    .stroke(ringColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                     .frame(width: frame, height: frame)
-                    .accessibilityHidden(true)
+            case .review(let duration):
+                if session.isPlaying || session.playbackProgress > 0 {
+                    let seconds = Double(duration) / 1000
+                    let raw = session.playbackProgress
+                    let progress = reduceMotion && seconds > 0 ? (raw * seconds).rounded(.down) / seconds : raw
+                    Circle()
+                        .trim(from: 0, to: progress)
+                        .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: frame, height: frame)
+                }
+            default:
+                EmptyView()
             }
-        default:
-            EmptyView()
         }
+        .accessibilityHidden(true)
     }
 
     /// Red, filling clockwise from 12 o'clock; orange from the warning —
@@ -632,21 +647,30 @@ struct VideoMessageRecorderView: View {
         .frame(maxWidth: vertical ? nil : 560)
     }
 
+    /// Close in the preview, Delete once something is recorded — the
+    /// leading place, a small round button with its caption (the approved
+    /// design).
     @ViewBuilder
     private var leadingControls: some View {
         switch state.phase {
         case .asking, .refused, .preview:
-            roundButton("xmark", label: String(localized: "Close")) { session.close() }
+            roundButton(
+                "xmark", label: String(localized: "Close"), caption: String(localized: "Close")
+            ) { session.close() }
         case .recording, .finishing:
-            roundButton("trash", label: String(localized: "Delete recording")) { session.delete() }
+            roundButton(
+                "trash", label: String(localized: "Delete recording"), caption: String(localized: "Delete")
+            ) { session.delete() }
         case .review:
-            roundButton("trash", label: String(localized: "Delete")) { session.delete() }
-            roundButton("arrow.counterclockwise", label: String(localized: "Retake")) { session.retake() }
+            roundButton(
+                "trash", label: String(localized: "Delete"), caption: String(localized: "Delete")
+            ) { session.delete() }
         case .closed:
             EmptyView()
         }
     }
 
+    /// Switch camera while it previews and records, Retake in review.
     @ViewBuilder
     private var middleControls: some View {
         switch state.phase {
@@ -662,25 +686,35 @@ struct VideoMessageRecorderView: View {
             #if os(iOS)
             // Swapped without a break, iPhone and iPad only (S3.5).
             if session.engine.canSwitchCamera {
-                roundButton("arrow.triangle.2.circlepath.camera", label: String(localized: "Switch camera")) {
-                    session.switchCamera()
-                }
+                switchCameraButton
             }
             #else
             EmptyView()
             #endif
+        case .review:
+            roundButton(
+                "arrow.counterclockwise", label: String(localized: "Retake"),
+                caption: String(localized: "Retake")
+            ) { session.retake() }
         default:
             EmptyView()
         }
     }
 
+    #if os(iOS)
+    private var switchCameraButton: some View {
+        roundButton(
+            "arrow.triangle.2.circlepath.camera", label: String(localized: "Switch camera"),
+            caption: String(localized: "Switch")
+        ) { session.switchCamera() }
+    }
+    #endif
+
     @ViewBuilder
     private var cameraChoice: some View {
         #if os(iOS)
         if session.engine.canSwitchCamera {
-            roundButton("arrow.triangle.2.circlepath.camera", label: String(localized: "Switch camera")) {
-                session.switchCamera()
-            }
+            switchCameraButton
         }
         #else
         // A desktop with more than one camera chooses among their system
@@ -704,13 +738,14 @@ struct VideoMessageRecorderView: View {
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 44, height: 44)
-                    .background(Color.white.opacity(0.18), in: Circle())
+                    .background(Color.white.opacity(Self.smallButtonFill), in: Circle())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
             .accessibilityLabel("Choose camera")
             .help("Choose camera")
+            .captioned(String(localized: "Switch"))
         }
         #endif
     }
@@ -719,7 +754,10 @@ struct VideoMessageRecorderView: View {
     /// sentence while a not-sent voice message waits (S3.4).
     private var voiceInsteadButton: some View {
         let dimmed = session.request.notSent()
-        return roundButton("mic", label: String(localized: "Record a voice message instead"), dimmed: dimmed) {
+        return roundButton(
+            "mic", label: String(localized: "Record a voice message instead"),
+            caption: String(localized: "Voice message"), dimmed: dimmed
+        ) {
             session.voiceInstead()
         }
         .accessibilityValue(dimmed ? Text(verbatim: ComposerSlot.Dimmed.notSent.notice) : Text(""))
@@ -750,8 +788,10 @@ struct VideoMessageRecorderView: View {
         #endif
     }
 
-    /// Record (a red disc) — dimmed until the first frame — then Stop, then
-    /// Send, always in the Send button's place (S3.4).
+    /// ONE big button in the Send button's place (S3.4, the approved
+    /// design): a red disc — Record, dimmed until the first frame — then a
+    /// red disc with a white rounded square — Stop — then a disc in the tint
+    /// with the Send arrow. 64 across, inside a faint halo, with its caption.
     @ViewBuilder
     private var slot: some View {
         switch state.phase {
@@ -759,67 +799,82 @@ struct VideoMessageRecorderView: View {
             Button {
                 session.record()
             } label: {
-                ZStack {
-                    Circle().stroke(Color.white, lineWidth: 3).frame(width: 56, height: 56)
-                    Circle().fill(Color.red).frame(width: 44, height: 44)
-                }
-                .frame(width: 60, height: 60)
-                .contentShape(Circle())
-                .opacity(state.canRecord ? 1 : 0.4)
+                bigDisc(fill: AnyShapeStyle(Color.red)) { EmptyView() }
+                    .opacity(state.canRecord ? 1 : 0.4)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Record")
             .help("Record")
             .slotFocus($slotReadFocus, $slotKeyFocus)
+            .captioned(String(localized: "Record"))
         case .recording, .finishing:
             Button {
                 session.stop()
             } label: {
-                ZStack {
-                    Circle().stroke(Color.white, lineWidth: 3).frame(width: 56, height: 56)
-                    RoundedRectangle(cornerRadius: 4).fill(Color.red).frame(width: 22, height: 22)
+                bigDisc(fill: AnyShapeStyle(Color.red)) {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.white)
+                        .frame(width: 22, height: 22)
                 }
-                .frame(width: 60, height: 60)
-                .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Stop recording")
             .help("Stop recording")
             .slotFocus($slotReadFocus, $slotKeyFocus)
+            .captioned(String(localized: "Stop"))
         case .review:
             Button {
                 session.send()
             } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 52))
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(.white, Color.accentColor)
-                    .frame(width: 60, height: 60)
-                    .contentShape(Circle())
+                bigDisc(fill: AnyShapeStyle(.tint)) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 26, weight: .bold))
+                        .foregroundStyle(.white)
+                }
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Send video message")
             .help("Send video message")
             .slotFocus($slotReadFocus, $slotKeyFocus)
+            .captioned(String(localized: "Send"))
         default:
-            Color.clear.frame(width: 60, height: 60)
+            Color.clear.frame(width: Self.bigSide, height: Self.bigSide)
+                .captioned(nil)
         }
     }
 
+    /// The big button's side, and the small ones'.
+    static let bigSide: CGFloat = 64
+    static let smallSide: CGFloat = 44
+    static let smallButtonFill: Double = 0.14
+
+    private func bigDisc<Glyph: View>(fill: AnyShapeStyle, @ViewBuilder glyph: () -> Glyph) -> some View {
+        ZStack {
+            Circle().fill(fill)
+            glyph()
+        }
+        .frame(width: Self.bigSide, height: Self.bigSide)
+        // The faint halo that sets it apart from the small buttons.
+        .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 4).padding(-4))
+        .contentShape(Circle())
+    }
+
     private func roundButton(
-        _ symbol: String, label: String, dimmed: Bool = false, action: @escaping () -> Void
+        _ symbol: String, label: String, caption: String? = nil, dimmed: Bool = false,
+        action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(.white.opacity(dimmed ? 0.4 : 1))
-                .frame(width: 44, height: 44)
-                .background(Color.white.opacity(dimmed ? 0.08 : 0.18), in: Circle())
+                .frame(width: Self.smallSide, height: Self.smallSide)
+                .background(Color.white.opacity(dimmed ? 0.06 : Self.smallButtonFill), in: Circle())
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text(verbatim: label))
         .help(Text(verbatim: label))
+        .captioned(caption)
     }
 
     // MARK: Focus and keys
@@ -1017,3 +1072,37 @@ final class MacWindowCloseGuard: NSObject, NSWindowDelegate {
     }
 }
 #endif
+
+/// A recorder control with its caption under it — words as well as a glyph,
+/// in the dim white of the approved design. The caption is the button's own
+/// label to a screen reader already, so it is hidden from one. Nil keeps the
+/// caption's height, so the three columns line up.
+private extension View {
+    func captioned(_ caption: String?) -> some View {
+        VStack(spacing: 4) {
+            self
+            RecorderCaption(text: caption)
+        }
+    }
+}
+
+/// The words under a recorder control. They grow with the text size up to
+/// `largestType` and no further: the glyphs above them are fixed, and four
+/// columns of words at the largest sizes outgrow a phone's width — "Voice
+/// message" came out "Voice…" and Record "Rec…". The screen reader reads
+/// each button's own label at any size.
+struct RecorderCaption: View {
+    let text: String?
+
+    static let largestType = DynamicTypeSize.accessibility1
+
+    var body: some View {
+        Text(verbatim: text ?? " ")
+            .font(.caption2)
+            .foregroundStyle(.white.opacity(0.62))
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .accessibilityHidden(true)
+            .dynamicTypeSize(...Self.largestType)
+    }
+}

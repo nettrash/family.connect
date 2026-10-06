@@ -1054,6 +1054,19 @@ pub fn upload_query(item: &OutgoingItem) -> String {
             String::from(js_sys::encode_uri_component(name))
         ));
     }
+    // A voice note's shape (docs/protocol.md, "A voice note's waveform"):
+    // on audio only, and only in the one form the server takes — anything
+    // else is a `validation` 400 the outbox could never get past, so a shape
+    // that is not exactly 48 lowercase hex digits is left off and the bubble
+    // draws the placeholder. A server from before waveforms ignores the
+    // parameter, as it ignores every query parameter it does not know.
+    if let Some(waveform) = item
+        .waveform
+        .as_deref()
+        .filter(|shape| item.kind == "audio" && fc_text::waveform::parse(shape).is_some())
+    {
+        query.push(format!("waveform={waveform}"));
+    }
     query.join("&")
 }
 
@@ -1742,6 +1755,7 @@ mod tests {
             has_preview: false,
             attachment_id: None,
             source_attachment_id: None,
+            waveform: None,
         }
     }
 
@@ -1869,6 +1883,60 @@ mod tests {
             upload_query(&place),
             "kind=location&latitude=55.7558000&longitude=37.6173000",
             "no accuracy is no accuracy, never zero"
+        );
+    }
+
+    /// A VOICE NOTE'S SHAPE rides the upload's query (docs/protocol.md, "A
+    /// voice note's waveform"): on audio, exactly as the 48 hex digits it
+    /// is — and never on anything else, nor in a form the server would
+    /// refuse with a 400 no retry gets past.
+    #[wasm_bindgen_test]
+    fn a_voice_notes_waveform_rides_the_upload_query_and_nothing_else_does() {
+        let shape = "0123456789abcdef".repeat(3);
+        let mut note = item("audio", -4);
+        note.duration_ms = Some(4200);
+        note.waveform = Some(shape.clone());
+        assert_eq!(
+            upload_query(&note),
+            format!("kind=audio&duration_ms=4200&waveform={shape}")
+        );
+        for wrong in [
+            String::new(),
+            shape.to_uppercase(),
+            shape[..47].to_string(),
+            format!("{shape}0"),
+            "g".repeat(48),
+        ] {
+            note.waveform = Some(wrong.clone());
+            assert_eq!(
+                upload_query(&note),
+                "kind=audio&duration_ms=4200",
+                "{wrong:?} is left off"
+            );
+        }
+        let mut file = item("file", -5);
+        file.name = Some("a.bin".into());
+        file.waveform = Some(shape);
+        assert_eq!(upload_query(&file), "kind=file&name=a.bin");
+    }
+
+    /// A row kept by a build from before waveforms still reads, and one
+    /// without a shape is stored without the key.
+    #[wasm_bindgen_test]
+    fn an_outgoing_item_keeps_its_waveform_across_a_reload() {
+        let mut note = item("audio", -6);
+        let bare = serde_json::to_value(&note).unwrap();
+        assert!(bare.get("waveform").is_none(), "{bare}");
+        let old: OutgoingItem = serde_json::from_value(bare).unwrap();
+        assert_eq!(old.waveform, None);
+        note.waveform = Some("f".repeat(48));
+        let kept: OutgoingItem =
+            serde_json::from_value(serde_json::to_value(&note).unwrap()).unwrap();
+        assert_eq!(kept.waveform, note.waveform);
+        assert_eq!(
+            kept.as_attachment().waveform,
+            note.waveform,
+            "the pending bubble draws it"
         );
     }
 

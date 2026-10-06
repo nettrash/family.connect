@@ -55,6 +55,8 @@ mod round_record_tests;
 #[cfg(test)]
 mod round_tests;
 #[cfg(test)]
+mod voice_design_tests;
+#[cfg(test)]
 mod voice_tests;
 
 use fc_text::i18n::{t, t1, tn};

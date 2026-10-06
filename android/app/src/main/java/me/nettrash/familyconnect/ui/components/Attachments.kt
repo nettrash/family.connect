@@ -53,25 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.Spacer
-import android.media.MediaPlayer
-import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.core.net.toUri
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -225,6 +207,10 @@ fun AttachmentGroup(
      * so a line under it has to say which video it is the text of.
      */
     recordingFooter: @Composable (AttachmentDto, Int?) -> Unit = { _, _ -> },
+    /** The reader's own message: a voice message shows no unplayed dot (#79). */
+    isMine: Boolean = false,
+    /** The server has the message. */
+    acked: Boolean = true,
 ) {
     val media = AttachmentAlbum.media(attachments)
     val rows = AttachmentAlbum.rows(attachments)
@@ -268,6 +254,8 @@ fun AttachmentGroup(
                 // never media-only), so this is always true here — one rule
                 // passed everywhere rather than two rules to keep in step.
                 onBalloon = onBalloon,
+                isMine = isMine,
+                acked = acked,
             )
             if (item.isAudio) recordingFooter(item, null)
         }
@@ -497,6 +485,10 @@ fun AttachmentBlock(
     showMapPreviews: Boolean = true,
     /** False when this tile IS the message — see [AttachmentGroup]. */
     onBalloon: Boolean = true,
+    /** The reader's own message: a voice message shows no unplayed dot (#79). */
+    isMine: Boolean = false,
+    /** The server has the message; before that a voice message is the sender's own on its way up. */
+    acked: Boolean = true,
 ) {
     if (attachment.isLocation) {
         // A location has no bytes at all, so none of the download machinery
@@ -511,12 +503,14 @@ fun AttachmentBlock(
     } else if (attachment.isAudio) {
         // Audio has nothing to look at, so it gets a player rather than a
         // tile or a document row (protocol.md, "Audio").
-        AudioPlayerRow(
+        VoiceMessageRow(
             attachment = attachment,
             streamUrl = streamUrl,
             onLongPress = onLongPress,
             onDoubleTap = onDoubleTap,
             modifier = modifier,
+            isMine = isMine,
+            acked = acked,
         )
     } else if (attachment.isFile) {
         FileRow(
@@ -954,193 +948,3 @@ private val BADGE_SCRIM = Color.Black.copy(alpha = 0.45f)
 private const val MIN_RATIO = 0.6f
 private const val MAX_RATIO = 1.9f
 
-/**
- * A piece of audio inside a bubble: play, elapsed/total, and a scrubber.
- *
- * Deliberately NOT a waveform — that is a second artefact the sender would
- * have to generate, upload and version, for something the ear does not need
- * and the protocol therefore does not carry (protocol.md, "Audio").
- *
- * MediaPlayer rather than ExoPlayer, for the same reason VideoView plays the
- * videos: `setDataSource(context, uri, headers)` carries the Authorization
- * header the stream needs, and adding a player library for one row would be
- * a large dependency for a small feature.
- *
- * iOS/macOS counterpart: ios/FamilyConnect/Views/AudioPlayerView.swift
- */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun AudioPlayerRow(
-    attachment: AttachmentDto,
-    streamUrl: suspend (Long) -> Pair<String, Map<String, String>>?,
-    onLongPress: () -> Unit,
-    onDoubleTap: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val ink = LocalContentColor.current
-
-    val totalMs = (attachment.durationMs ?: 0).coerceAtLeast(1)
-    var player by remember(attachment.id) { mutableStateOf<MediaPlayer?>(null) }
-    var isPlaying by remember(attachment.id) { mutableStateOf(false) }
-    var positionMs by remember(attachment.id) { mutableIntStateOf(0) }
-    var scrubbing by remember(attachment.id) { mutableStateOf(false) }
-
-    // #79, S1.7, S4 and S5.3: one thing plays at a time across the app, and
-    // nothing plays over a recording — starting one pauses this, and while it
-    // runs the play button is dimmed and says why. The coordinator is the
-    // app's now-playing owner (NowPlaying), which also pauses this when the
-    // audio focus goes or the headphones come out; only a preview or a test
-    // composes the row without one, and it then plays as it always has.
-    val coordinator = me.nettrash.familyconnect.ui.chat.LocalPlaybackCoordinator.current
-    val gate = me.nettrash.familyconnect.ui.chat.LocalRecordingGate.current
-    val pauseThis: () -> Unit = remember(attachment.id) {
-        {
-            player?.runCatching { if (isPlaying) pause() }
-            isPlaying = false
-        }
-    }
-    LaunchedEffect(gate.recording) { if (gate.recording && isPlaying) pauseThis() }
-
-    // Release with the composable, or a scrolled-away bubble keeps the
-    // decoder and the socket open.
-    DisposableEffect(attachment.id) {
-        onDispose {
-            coordinator?.stopped(pauseThis)
-            player?.runCatching { release() }
-            player = null
-        }
-    }
-
-    LaunchedEffect(isPlaying) {
-        while (isPlaying) {
-            if (!scrubbing) positionMs = player?.currentPosition ?: positionMs
-            delay(200)
-        }
-    }
-
-    Row(
-        modifier = modifier
-            .widthIn(max = attachmentMaxWidth())
-            .clip(RoundedCornerShape(12.dp))
-            .background(ink.copy(alpha = 0.10f))
-            .border(1.dp, ink.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
-            .combinedClickable(
-                onClick = {},
-                onLongClick = onLongPress,
-                onDoubleClick = onDoubleTap,
-            )
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        val waitsForTheRecording = stringResource(R.string.s_play_after_recording)
-        IconButton(
-            onClick = {
-                // Dimmed, not disabled: it says why (S1.7).
-                if (gate.recording) {
-                    gate.explain()
-                    return@IconButton
-                }
-                val active = player
-                if (isPlaying && active != null) {
-                    active.pause()
-                    isPlaying = false
-                    coordinator?.stopped(pauseThis)
-                    return@IconButton
-                }
-                scope.launch {
-                    val ready = active ?: createPlayer(context, attachment, streamUrl) {
-                        isPlaying = false
-                        positionMs = totalMs
-                        coordinator?.stopped(pauseThis)
-                    }
-                    if (ready == null) return@launch
-                    player = ready
-                    // Replaying after it ran to the end: without this the
-                    // button does nothing, the item being already at its end.
-                    if (positionMs >= totalMs - 200) {
-                        ready.seekTo(0)
-                        positionMs = 0
-                    }
-                    ready.start()
-                    isPlaying = true
-                    coordinator?.started(pauseThis)
-                }
-            },
-            modifier = Modifier.semantics { if (gate.recording) stateDescription = waitsForTheRecording },
-        ) {
-            Icon(
-                imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                contentDescription = stringResource(
-                    if (isPlaying) R.string.s_pause else R.string.s_play,
-                ),
-                tint = ink.copy(alpha = if (gate.recording) 0.38f else 1f),
-            )
-        }
-        Column(modifier = Modifier.weight(1f)) {
-            Slider(
-                value = positionMs.coerceIn(0, totalMs).toFloat(),
-                onValueChange = {
-                    scrubbing = true
-                    positionMs = it.toInt()
-                },
-                onValueChangeFinished = {
-                    scrubbing = false
-                    player?.seekTo(positionMs)
-                },
-                valueRange = 0f..totalMs.toFloat(),
-                // The row's ink rule (see above): with the default M3
-                // colors the primary track/thumb can sit near-invisible
-                // on the tinted own balloon under dynamic color.
-                colors = SliderDefaults.colors(
-                    thumbColor = ink,
-                    activeTrackColor = ink,
-                    inactiveTrackColor = ink.copy(alpha = 0.24f),
-                ),
-            )
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = formatMillis(positionMs.toLong()),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = ink.copy(alpha = 0.75f),
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = formatMillis(totalMs.toLong()),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = ink.copy(alpha = 0.75f),
-                )
-            }
-        }
-    }
-}
-
-/**
- * A MediaPlayer pointed at the stream, with the auth header attached.
- * Returns null when it cannot be prepared — a bubble that will not play is
- * better than a crash.
- */
-private suspend fun createPlayer(
-    context: android.content.Context,
-    attachment: AttachmentDto,
-    streamUrl: suspend (Long) -> Pair<String, Map<String, String>>?,
-    onCompleted: () -> Unit,
-): MediaPlayer? {
-    val entry = streamUrl(attachment.id) ?: return null
-    return withContext(Dispatchers.IO) {
-        runCatching {
-            MediaPlayer().apply {
-                setDataSource(context, entry.first.toUri(), entry.second)
-                setOnCompletionListener { onCompleted() }
-                prepare()
-            }
-        }.getOrNull()
-    }
-}
-
-private fun formatMillis(ms: Long): String {
-    val whole = (ms / 1000).coerceAtLeast(0)
-    return "%d:%02d".format(whole / 60, whole % 60)
-}

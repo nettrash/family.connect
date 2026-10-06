@@ -305,7 +305,17 @@
     "Pick when it ends, or turn the end off.": {},
     "Pick when it starts.": {},
     "Pinning…": {},
-    "Position": {},
+    "Position": {
+      "de": "Wiedergabeposition",
+      "en": "Position",
+      "es": "Posición de reproducción",
+      "fr": "Position de lecture",
+      "ja": "再生位置",
+      "ru": "Позиция воспроизведения",
+      "sr": "Позиција репродукције",
+      "sr-Latn": "Pozicija reprodukcije",
+      "zh-Hans": "播放位置"
+    },
     "Remove %@": {},
     "Remove sticker": {
       "de": "Sticker entfernen",

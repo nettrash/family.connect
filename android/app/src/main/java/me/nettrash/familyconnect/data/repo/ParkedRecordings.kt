@@ -77,6 +77,12 @@ data class ParkedRecording(
      * entry Phase 0 wrote.
      */
     val sending: Boolean = false,
+    /**
+     * Its waveform as the wire spells it (#79; docs/protocol.md, "A voice
+     * note's waveform"): the not-sent row draws it, and its Send uploads it.
+     * Absent on every entry written before there were waveforms.
+     */
+    val waveform: String? = null,
 ) {
     companion object {
         private val json = Json {
@@ -171,6 +177,8 @@ class ParkedRecordings internal constructor(
         session: Long,
         /** A released note entering its Undo window (S2.6), not a not-sent row. */
         sending: Boolean = false,
+        /** Its waveform (#79), kept with it so the row and the eventual send both have it. */
+        waveform: String? = null,
     ): ParkedRecording? = lock.withLock {
         var kept: ParkedRecording? = null
         epoch.whileCurrent(session) {
@@ -192,6 +200,7 @@ class ParkedRecordings internal constructor(
                         replyTo = replyTo,
                         caption = caption,
                         sending = sending,
+                        waveform = waveform,
                     )
                     settings.updateParkedRecordings { it + entry }
                     kept = entry

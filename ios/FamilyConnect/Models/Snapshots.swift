@@ -754,9 +754,30 @@ nonisolated enum MessagePresentation {
     ///
     /// Nor on a VIDEO MESSAGE (docs/protocol.md, "Video messages"): a circle
     /// has no balloon either, and `PATCH` on one is `validation` too.
+    ///
+    /// Nor on a VOICE MESSAGE with no words (#79, the approved design's
+    /// long-press menu): there is no text to edit, and Edit would open the
+    /// composer on an empty draft over a recording.
     static func offersEdit(_ message: MessageSnapshot, currentUserID: Int64) -> Bool {
         message.serverID != nil && message.senderID == currentUserID && !isSticker(message)
-            && !isRoundVideo(message)
+            && !isRoundVideo(message) && !isVoiceMessage(message)
+    }
+
+    /// True when a message is a recording and nothing else: exactly ONE
+    /// audio attachment and no words (#79). Its menu offers what acts on a
+    /// recording — Show text, Playback speed, Save — and none of Copy, Edit
+    /// or Select Text, which have nothing to act on. Words beside it make it
+    /// an ordinary message again, menu and all.
+    static func isVoiceMessage(_ message: MessageSnapshot) -> Bool {
+        guard message.attachments.count == 1, let only = message.attachments.first,
+              only.kind == AttachmentDTO.Kind.audio
+        else { return false }
+        return message.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// A voice message or a video message: a recording, menu-wise.
+    static func isRecordingMessage(_ message: MessageSnapshot) -> Bool {
+        isVoiceMessage(message) || isRoundVideo(message)
     }
 
     /// True when a message IS a video message, drawn as a circle with no

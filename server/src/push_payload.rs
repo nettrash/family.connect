@@ -908,6 +908,7 @@ mod tests {
                     accuracy_m: None,
                     sticker: false,
                     round: false,
+                    waveform: None,
                 }),
                 ..protocol_message()
             }
@@ -1014,6 +1015,7 @@ mod tests {
                 accuracy_m: None,
                 sticker: false,
                 round: false,
+                waveform: None,
             }
         }
         fn with_attachments(list: Vec<crate::models::Attachment>) -> Message {
@@ -1243,6 +1245,7 @@ mod tests {
                 accuracy_m: None,
                 sticker,
                 round: false,
+                waveform: None,
             }
         }
         fn carrying(picture: crate::models::Attachment) -> Message {
@@ -1290,6 +1293,7 @@ mod tests {
                 accuracy_m: None,
                 sticker: false,
                 round,
+                waveform: None,
             }
         }
         fn carrying(videos: Vec<crate::models::Attachment>) -> Message {

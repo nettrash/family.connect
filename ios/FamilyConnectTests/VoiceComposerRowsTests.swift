@@ -38,7 +38,7 @@ struct VoiceComposerRowsTests {
     ])
     func holdRow(armed: Bool, warning: Bool) throws {
         let h = try height(VoiceHoldRow(
-            elapsed: 272, litBars: 3, armed: armed, warning: warning, height: Self.control))
+            elapsed: 272, armed: armed, warning: warning, height: Self.control))
         #expect(h == Int(Self.control), "the hold row is \(h) points tall")
     }
 

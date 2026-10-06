@@ -57,6 +57,27 @@ pub fn ring_progress(elapsed: f64, total: f64, reduced_motion: bool) -> f64 {
     (at / total).clamp(0.0, 1.0)
 }
 
+/// The ring's radius in its own 100-unit box (`viewBox="0 0 100 100"`),
+/// which reaches 6 px past the circle all round (styles.css `.round-ring`):
+/// just OUTSIDE the edge, at 200 across and at 240.
+const RING_RADIUS: f64 = 48.5;
+
+/// The ring's `stroke-dasharray` for `percent` of the way round: an arc that
+/// long, then a gap as long as the whole edge — ONE arc. Both are in the
+/// box's own units, the edge's true length worked out here, so that nothing
+/// leans on `pathLength`: under `vector-effect: non-scaling-stroke` Chrome
+/// ignored it and laid "25 100" out in screen pixels, a row of dashes round
+/// the circle (styles.css `.round-ring`).
+pub fn ring_dash(percent: f64) -> String {
+    let edge = 2.0 * std::f64::consts::PI * RING_RADIUS;
+    let percent = if percent.is_finite() {
+        percent.clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    format!("{:.2} {edge:.2}", edge * percent / 100.0)
+}
+
 fn reduced_motion() -> bool {
     web_sys::window()
         .and_then(|window| {
@@ -337,7 +358,10 @@ pub fn round_video_tile(props: &RoundProps) -> Html {
     };
 
     let loading = *asked && !*playing && url.is_none();
-    let unplayed = !props.mine && !*played && id > 0;
+    // Whose dot this is: somebody else's video, on the server, with somebody
+    // signed in to have played it.
+    let watches = !props.mine && id > 0 && me != 0;
+    let unplayed = watches && !*played;
     let duration = media::time_label(total);
     let progress = ring_progress(*elapsed, total, reduced_motion());
     let ring = if props.sending {
@@ -371,7 +395,7 @@ pub fn round_video_tile(props: &RoundProps) -> Html {
                     aria-disabled={dimmed.then_some("true")}
                     aria-describedby={
                         let mut said = Vec::new();
-                        if unplayed { said.push((*not_played_id).clone()); }
+                        if watches { said.push((*not_played_id).clone()); }
                         if dimmed { said.push((*reason_id).clone()); }
                         (!said.is_empty()).then(|| said.join(" "))
                     }
@@ -393,23 +417,32 @@ pub fn round_video_tile(props: &RoundProps) -> Html {
                             ontimeupdate={on_time}
                         />
                     }
-                    if !*playing && !loading {
-                        <span class="round-play" aria-hidden="true">{ "▶" }</span>
-                    }
+                    // The play disc fades out while it plays or loads, and
+                    // back at a pause (none of the fading under Reduce
+                    // Motion, styles.css).
+                    <span class={classes!("round-play", (*playing || loading).then_some("is-gone"))}
+                          aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path fill="currentColor" d={crate::views::attachments::PLAY_PATH} />
+                        </svg>
+                    </span>
                     <span class="round-duration" aria-hidden="true">
                         { if *started { media::time_label(*elapsed) } else { duration.clone() } }
                         if unplayed {
                             <span class="round-dot"></span>
                         }
                     </span>
-                    if let Some((kind, length)) = ring {
-                        <svg class={classes!("round-ring", kind)} viewBox="0 0 100 100" aria-hidden="true">
-                            <circle cx="50" cy="50" r="48.5" pathLength="100"
-                                stroke-dasharray={format!("{length:.2} 100")}
-                                transform="rotate(-90 50 50)" />
-                        </svg>
-                    }
                 </button>
+                // ONE ring, OUTSIDE the edge — never over a face — and drawn
+                // only while there is something to show: going up, loading,
+                // or how far it has played.
+                if let Some((kind, length)) = ring {
+                    <svg class={classes!("round-ring", kind)} viewBox="0 0 100 100" aria-hidden="true">
+                        <circle cx="50" cy="50" r={RING_RADIUS.to_string()}
+                            stroke-dasharray={ring_dash(length)}
+                            transform="rotate(-90 50 50)" />
+                    </svg>
+                }
                 if *started {
                     <button type="button" class="round-expand" onclick={open}
                             title={t("Open Full Screen")} aria-label={t("Open Full Screen")}>
@@ -417,8 +450,10 @@ pub fn round_video_tile(props: &RoundProps) -> Html {
                     </button>
                 }
             </div>
-            if unplayed {
-                <span id={(*not_played_id).clone()} hidden=true>{ t("Not played") }</span>
+            if watches {
+                <span id={(*not_played_id).clone()} hidden=true>
+                    { if unplayed { t("Not played") } else { t("Played") } }
+                </span>
             }
             if dimmed {
                 <span id={(*reason_id).clone()} hidden=true>{ t(PLAY_AFTER) }</span>
@@ -461,6 +496,19 @@ mod tests {
         assert_eq!(ring_progress(-1.0, 20.0, false), 0.0);
         assert_eq!(ring_progress(3.0, 0.0, false), 0.0);
         assert_eq!(ring_progress(f64::NAN, 20.0, false), 0.0);
+    }
+
+    /// The ring is one arc of the edge's true length, then a gap of the
+    /// whole edge — never a pattern that repeats round the circle — and
+    /// never more than all of it.
+    #[wasm_bindgen_test]
+    fn the_ring_is_one_arc_measured_along_the_edge() {
+        assert_eq!(ring_dash(0.0), "0.00 304.73");
+        assert_eq!(ring_dash(25.0), "76.18 304.73");
+        assert_eq!(ring_dash(100.0), "304.73 304.73");
+        assert_eq!(ring_dash(140.0), "304.73 304.73");
+        assert_eq!(ring_dash(-5.0), "0.00 304.73");
+        assert_eq!(ring_dash(f64::NAN), "0.00 304.73");
     }
 
     /// Both diameters come from the shared rule: 200 and 240.

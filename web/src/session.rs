@@ -5,8 +5,9 @@
 //! the tab is one left behind on a shared machine. Closing the tab is a
 //! sign-out. Two small things are kept by the DEVICE instead, in
 //! `localStorage`, and none is a credential or a word anybody wrote: the
-//! board's seen-marks, which stickers were used last, and which video
-//! messages were played here — the last two of which a sign-out takes.
+//! board's seen-marks, which stickers were used last, which video and voice
+//! messages were played here — the last three of which a sign-out takes —
+//! and the speed voice messages play at.
 //!
 //! Every accessor is total. Storage can be absent or throw — a private
 //! window, a browser configured to block site data — and a chat client that
@@ -173,9 +174,40 @@ struct SavedPlayed {
     ids: Vec<i64>,
 }
 
+/// Which voice messages this DEVICE has played, as that account — the voice
+/// bubble's unplayed dot, kept exactly as the video messages' is (the
+/// approved design for #79: "the dot means you haven't played it yet";
+/// never a receipt, never sent).
+const VOICE_PLAYED_KEY: &str = "fc.voice.played";
+
 thread_local! {
     static PLAYED_HERE: std::cell::RefCell<SavedPlayed> =
         std::cell::RefCell::new(SavedPlayed::default());
+    static VOICE_PLAYED_HERE: std::cell::RefCell<SavedPlayed> =
+        std::cell::RefCell::new(SavedPlayed::default());
+}
+
+/// Which played list: a video message's or a voice message's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Played {
+    Round,
+    Voice,
+}
+
+impl Played {
+    fn key(self) -> &'static str {
+        match self {
+            Played::Round => ROUND_PLAYED_KEY,
+            Played::Voice => VOICE_PLAYED_KEY,
+        }
+    }
+
+    fn here(self) -> &'static std::thread::LocalKey<std::cell::RefCell<SavedPlayed>> {
+        match self {
+            Played::Round => &PLAYED_HERE,
+            Played::Voice => &VOICE_PLAYED_HERE,
+        }
+    }
 }
 
 /// `played` with `id` in it: newest (largest id) first, once each, and the
@@ -201,14 +233,14 @@ fn played_in(played: &[i64], id: i64) -> bool {
             && played.iter().min().is_some_and(|oldest| id < *oldest))
 }
 
-fn played_list(user_id: i64) -> Vec<i64> {
+fn played_list(kind: Played, user_id: i64) -> Vec<i64> {
     let stored = lasting()
-        .and_then(|storage| storage.get_item(ROUND_PLAYED_KEY).ok()?)
+        .and_then(|storage| storage.get_item(kind.key()).ok()?)
         .and_then(|json| serde_json::from_str::<SavedPlayed>(&json).ok())
         .filter(|saved| saved.user_id == user_id)
         .map(|saved| saved.ids)
         .unwrap_or_default();
-    let here = PLAYED_HERE.with(|here| {
+    let here = kind.here().with(|here| {
         let here = here.borrow();
         if here.user_id == user_id {
             here.ids.clone()
@@ -220,26 +252,92 @@ fn played_list(user_id: i64) -> Vec<i64> {
         .fold(played_with(&stored, 0), |ids, id| played_with(&ids, *id))
 }
 
-/// Whether this device has played video message `id` as `user_id`. Nobody
-/// signed in, and a provisional id, have played nothing.
-pub fn round_played(user_id: i64, id: i64) -> bool {
-    user_id != 0 && id > 0 && played_in(&played_list(user_id), id)
+fn is_played(kind: Played, user_id: i64, id: i64) -> bool {
+    user_id != 0 && id > 0 && played_in(&played_list(kind, user_id), id)
 }
 
-/// Video message `id` was played to its end on this device, as `user_id`:
-/// its dot goes, here and in every tab of this browser that draws it next.
-pub fn mark_round_played(user_id: i64, id: i64) {
+fn mark_played(kind: Played, user_id: i64, id: i64) {
     if user_id == 0 || id <= 0 {
         return;
     }
     let saved = SavedPlayed {
         user_id,
-        ids: played_with(&played_list(user_id), id),
+        ids: played_with(&played_list(kind, user_id), id),
     };
     if let (Some(storage), Ok(json)) = (lasting(), serde_json::to_string(&saved)) {
-        let _ = storage.set_item(ROUND_PLAYED_KEY, &json);
+        let _ = storage.set_item(kind.key(), &json);
     }
-    PLAYED_HERE.with(|here| *here.borrow_mut() = saved);
+    kind.here().with(|here| *here.borrow_mut() = saved);
+}
+
+/// Whether this device has played video message `id` as `user_id`. Nobody
+/// signed in, and a provisional id, have played nothing.
+pub fn round_played(user_id: i64, id: i64) -> bool {
+    is_played(Played::Round, user_id, id)
+}
+
+/// Video message `id` was played to its end on this device, as `user_id`:
+/// its dot goes, here and in every tab of this browser that draws it next.
+pub fn mark_round_played(user_id: i64, id: i64) {
+    mark_played(Played::Round, user_id, id);
+}
+
+/// Whether this device has played voice message `id` as `user_id` — the
+/// voice bubble's dot, by the video message's rules.
+pub fn voice_played(user_id: i64, id: i64) -> bool {
+    is_played(Played::Voice, user_id, id)
+}
+
+/// Voice message `id` started playing on this device, as `user_id`: its dot
+/// goes.
+pub fn mark_voice_played(user_id: i64, id: i64) {
+    mark_played(Played::Voice, user_id, id);
+}
+
+/// The speed voice messages play at on this device — 1×, 1.5× or 2×, the
+/// bubble's speed chip — kept in `localStorage` like the marks above, and
+/// not a sign-out's to take: it is the DEVICE's preference, not anybody's
+/// words. Anything unreadable is 1×.
+const VOICE_SPEED_KEY: &str = "fc.voice.speed";
+
+thread_local! {
+    static VOICE_SPEED_HERE: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+}
+
+/// The speeds the chip goes through, in order.
+pub const VOICE_SPEEDS: [f64; 3] = [1.0, 1.5, 2.0];
+
+/// What `stored` says the speed is: one of [`VOICE_SPEEDS`], or 1×.
+pub fn voice_speed_of(stored: Option<&str>) -> f64 {
+    stored
+        .and_then(|text| text.trim().parse::<f64>().ok())
+        .filter(|speed| VOICE_SPEEDS.contains(speed))
+        .unwrap_or(1.0)
+}
+
+/// The speed after `speed`: 1× → 1.5× → 2× → 1×.
+pub fn next_voice_speed(speed: f64) -> f64 {
+    let at = VOICE_SPEEDS
+        .iter()
+        .position(|known| *known == speed)
+        .unwrap_or(VOICE_SPEEDS.len() - 1);
+    VOICE_SPEEDS[(at + 1) % VOICE_SPEEDS.len()]
+}
+
+pub fn voice_speed() -> f64 {
+    if let Some(speed) = VOICE_SPEED_HERE.get() {
+        return speed;
+    }
+    let stored = lasting().and_then(|storage| storage.get_item(VOICE_SPEED_KEY).ok()?);
+    voice_speed_of(stored.as_deref())
+}
+
+pub fn set_voice_speed(speed: f64) {
+    let speed = voice_speed_of(Some(&speed.to_string()));
+    if let Some(storage) = lasting() {
+        let _ = storage.set_item(VOICE_SPEED_KEY, &speed.to_string());
+    }
+    VOICE_SPEED_HERE.set(Some(speed));
 }
 
 pub fn token() -> Option<String> {
@@ -266,10 +364,12 @@ pub fn clear() {
     // are for.
     if let Some(storage) = lasting() {
         let _ = storage.remove_item(PACK_RECENTS_KEY);
-        // And which video messages this person has played (S5.2).
+        // And which video and voice messages this person has played (S5.2).
         let _ = storage.remove_item(ROUND_PLAYED_KEY);
+        let _ = storage.remove_item(VOICE_PLAYED_KEY);
     }
     PLAYED_HERE.with(|here| *here.borrow_mut() = SavedPlayed::default());
+    VOICE_PLAYED_HERE.with(|here| *here.borrow_mut() = SavedPlayed::default());
 }
 
 /// The account whose join request this tab was waiting on. A refusal is
@@ -539,6 +639,76 @@ mod tests {
     fn clear_played_for_test(local: &web_sys::Storage) {
         let _ = local.remove_item(ROUND_PLAYED_KEY);
         PLAYED_HERE.with(|here| *here.borrow_mut() = SavedPlayed::default());
+    }
+
+    /// A VOICE MESSAGE'S DOT is kept as a video message's is — the device's,
+    /// per account, gone at sign-out — and in a list of its own: playing a
+    /// voice message never takes the dot off a video message with the same
+    /// id, nor the other way round.
+    #[wasm_bindgen_test]
+    fn played_voice_messages_are_the_devices_and_apart_from_the_videos() {
+        let local = lasting().expect("local storage in the test browser");
+        let (was_voice, was_round) = (
+            local.get_item(VOICE_PLAYED_KEY).expect("reads"),
+            local.get_item(ROUND_PLAYED_KEY).expect("reads"),
+        );
+        clear();
+        assert!(!voice_played(9301, 71));
+        mark_voice_played(9301, 71);
+        assert!(voice_played(9301, 71), "played");
+        assert!(!round_played(9301, 71), "a video's dot is its own");
+        assert!(!voice_played(9302, 71), "another account's is its own");
+        mark_round_played(9301, 72);
+        assert!(!voice_played(9301, 72));
+        VOICE_PLAYED_HERE.with(|here| *here.borrow_mut() = SavedPlayed::default());
+        assert!(voice_played(9301, 71), "a restart keeps it");
+        mark_voice_played(0, 73);
+        assert!(!voice_played(0, 73), "nobody signed in plays nothing");
+        mark_voice_played(9301, -2);
+        assert!(!voice_played(9301, -2), "nor does an outbox id");
+        clear();
+        assert!(!voice_played(9301, 71), "gone at sign-out");
+        assert!(local.get_item(VOICE_PLAYED_KEY).expect("reads").is_none());
+        for (key, value) in [(VOICE_PLAYED_KEY, was_voice), (ROUND_PLAYED_KEY, was_round)] {
+            if let Some(value) = value {
+                let _ = local.set_item(key, &value);
+            }
+        }
+    }
+
+    /// THE SPEED CHIP goes 1× → 1.5× → 2× → 1×, is remembered by the device
+    /// across a reload and a sign-out, and anything unreadable is 1×.
+    #[wasm_bindgen_test]
+    fn the_voice_speed_is_the_devices_and_goes_round_three_steps() {
+        assert_eq!(next_voice_speed(1.0), 1.5);
+        assert_eq!(next_voice_speed(1.5), 2.0);
+        assert_eq!(next_voice_speed(2.0), 1.0);
+        assert_eq!(next_voice_speed(3.0), 1.0, "an unknown speed starts again");
+        assert_eq!(voice_speed_of(None), 1.0);
+        assert_eq!(voice_speed_of(Some("1.5")), 1.5);
+        assert_eq!(voice_speed_of(Some("2")), 2.0);
+        for wrong in ["", "fast", "0.5", "NaN", "3"] {
+            assert_eq!(voice_speed_of(Some(wrong)), 1.0, "{wrong:?}");
+        }
+        let local = lasting().expect("local storage in the test browser");
+        let was = local.get_item(VOICE_SPEED_KEY).expect("reads");
+        set_voice_speed(1.5);
+        assert_eq!(voice_speed(), 1.5);
+        VOICE_SPEED_HERE.set(None);
+        assert_eq!(voice_speed(), 1.5, "a reload keeps it");
+        clear();
+        VOICE_SPEED_HERE.set(None);
+        assert_eq!(voice_speed(), 1.5, "a sign-out does not take it");
+        set_voice_speed(1.0);
+        match was {
+            Some(value) => {
+                let _ = local.set_item(VOICE_SPEED_KEY, &value);
+            }
+            None => {
+                let _ = local.remove_item(VOICE_SPEED_KEY);
+            }
+        }
+        VOICE_SPEED_HERE.set(None);
     }
 
     /// STORAGE CAN THROW, and every access to the recents is guarded: a

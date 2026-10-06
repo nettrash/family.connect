@@ -203,6 +203,12 @@
                             <Button x:Name="RecordingDelete" VerticalAlignment="Center" />
                             <Ellipse x:Name="RecordingDot" Grid.Column="1" Width="8" Height="8" VerticalAlignment="Center" Fill="{ThemeResource SystemFillColorCriticalBrush}" AutomationProperties.AccessibilityView="Raw" />
                             <TextBlock x:Name="RecordingTime" Grid.Column="2" VerticalAlignment="Center" Typography.NumeralAlignment="Tabular" />
+                            <!--
+                                The live waveform (the approved design of 2026-10-05): the newest peaks scrolling in from the right, in the
+                                recording red, where Windows lets a second reader measure the microphone (VoiceMeter) — and not drawn
+                                at all where it does not, nor with Windows' animations off. "30 seconds left" takes its place from 4:30.
+                            -->
+                            <StackPanel x:Name="RecordingLevels" Grid.Column="3" Height="24" Orientation="Horizontal" Spacing="2" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="0.8" AutomationProperties.AccessibilityView="Raw" Visibility="Collapsed" />
                             <TextBlock x:Name="RecordingWarning" Grid.Column="3" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource SystemFillColorCautionBrush}" Visibility="Collapsed" />
                             <Button x:Name="RecordingStop" Grid.Column="4" VerticalAlignment="Center" />
                         </Grid>
@@ -360,9 +366,16 @@
                 over its corners, on the viewer's solid backdrop — the mask's fill IS that backdrop, set with it in code.
                 Drawn over the player and never hit-tested, so nothing it covers stops answering.
             -->
+            <!--
+                Exactly ONE accent ring, OUTSIDE the edge, running round with the clip (the approved design of 2026-10-05), and a
+                play disc in the middle that fades out while it plays — at once with Windows' animations off.
+            -->
             <Grid x:Name="ViewerRoundFrame" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" Visibility="Collapsed">
-                <Path x:Name="ViewerRoundMask" />
-                <Ellipse x:Name="ViewerRoundRing" StrokeThickness="3" Stroke="{ThemeResource AccentFillColorDefaultBrush}" />
+                <Path x:Name="ViewerRoundMask" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                <Path x:Name="ViewerRoundRing" StrokeThickness="3" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stroke="{ThemeResource AccentFillColorDefaultBrush}" />
+                <Border x:Name="ViewerRoundDisc" Width="56" Height="56" CornerRadius="28" Background="#73000000" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <FontIcon Glyph="&#xE768;" FontSize="20" Foreground="White" Margin="3,0,0,0" />
+                </Border>
             </Grid>
             <!-- What a circle that could not be had says, over its poster; a click asks again. -->
             <Button x:Name="ViewerRoundRetry" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="14,10" Background="#B3000000" BorderThickness="0" Foreground="White" Visibility="Collapsed">

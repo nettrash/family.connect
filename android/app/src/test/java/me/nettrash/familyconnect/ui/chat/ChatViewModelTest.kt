@@ -79,6 +79,7 @@ import me.nettrash.familyconnect.data.repo.LocationProvider
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageBody
 import me.nettrash.familyconnect.data.repo.VoiceRecorder
+import me.nettrash.familyconnect.data.repo.Waveform
 import me.nettrash.familyconnect.data.repo.ParkedRecordings
 import me.nettrash.familyconnect.data.repo.ParkedRecording
 import me.nettrash.familyconnect.data.repo.SessionEpoch
@@ -134,6 +135,9 @@ class ChatViewModelTest {
         const val NOON = 1_786_795_200_000L
         const val MINUTE = 60_000L
         const val DAY = 86_400_000L
+
+        /** A voice note's waveform as the wire spells it (#79). */
+        const val WAVE = "0124689abcddeeedcba987654321001245678aabbba98642"
     }
 
     private val dispatcher = StandardTestDispatcher()
@@ -4373,5 +4377,148 @@ class ChatViewModelTest {
         settings.setRoundVideoLimits(60_000, 12_582_912)
         runCurrent()
         assertThat(viewModel.roundVideoOffered.value).isTrue()
+    }
+
+    // -- #79 polish: the voice note's waveform (protocol.md, "A voice note's waveform") --
+
+    /** The recorder's waveform goes with the note into review, and with it into "not sent". */
+    @Test
+    fun theRecordersWaveformGoesIntoReviewAndThenIntoNotSent() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recorder.waveform = WAVE
+        recording(viewModel, 3_000)
+
+        viewModel.stopRecording()
+        val note = viewModel.awaitStaged { it.voiceNote }
+        assertThat(note.waveform).isEqualTo(WAVE)
+
+        viewModel.screenAttached()
+        viewModel.screenDetached(changingConfigurations = false)
+        runCurrent()
+        assertThat(viewModel.awaitNotSent().single().waveform).isEqualTo(WAVE)
+    }
+
+    /** The Send arrow's note uploads the waveform the recorder made of its meter. */
+    @Test
+    fun aSentVoiceMessageUploadsItsWaveform() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recorder.waveform = WAVE
+
+        tap(viewModel)
+        pastTheGuard()
+        recorder.elapsed = 4_200
+        viewModel.activateSlot(finger)
+        runCurrent()
+
+        assertThat(awaitAudioRow().attachmentList.single().waveform).isEqualTo(WAVE)
+        realTimeUntil { attachmentApi.uploadedWaveforms.isNotEmpty() }
+        assertThat(attachmentApi.uploadedWaveforms.single()).isEqualTo(WAVE)
+    }
+
+    /** A not-sent message's Send uploads the waveform it was parked with. */
+    @Test
+    fun aNotSentMessageSendsTheWaveformItWasParkedWith() = recordingTest {
+        val source = File.createTempFile("voice-", ".m4a", app.cacheDir)
+            .apply { writeBytes(FakeVoiceRecorder.M4A_HEAD + ByteArray(4096) { 3 }) }
+        val id = requireNotNull(
+            parked.park(CHAT, source, 3_000, null, "", epoch.current(), waveform = WAVE),
+        ).id
+        val viewModel = newViewModel()
+        runCurrent()
+
+        viewModel.sendNotSent(id)
+        realTimeUntil { attachmentApi.uploadedWaveforms.isNotEmpty() }
+
+        assertThat(attachmentApi.uploadedWaveforms.single()).isEqualTo(WAVE)
+    }
+
+    /** The hands-free row's live waveform is the meter's peaks as levels, newest last. */
+    @Test
+    fun theLiveWaveformScrollsInTheMetersPeaks() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recorder.amplitude = 0
+        tap(viewModel)
+        advanceTimeBy(ChatViewModel.VOICE_TICK_MS)
+        runCurrent()
+        recorder.amplitude = Waveform.FULL_SCALE
+        advanceTimeBy(ChatViewModel.VOICE_TICK_MS)
+        runCurrent()
+
+        val levels = viewModel.voiceLevels.value
+        assertThat(levels.last()).isEqualTo(Waveform.MAX_LEVEL)
+        assertThat(levels).contains(0)
+        assertThat(levels.size).isAtMost(ChatViewModel.LIVE_LEVELS)
+
+        viewModel.cancelRecording()
+        assertThat(viewModel.voiceLevels.value).isEmpty()
+    }
+
+    /**
+     * A voice message's Save (#79): its bytes, downloaded if need be, copied
+     * into the document the system's save screen made — and named as a sound
+     * file, never "photo-77.jpg".
+     */
+    @Test
+    fun aVoiceMessageSavesIntoTheDocumentThePersonChose() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        runCurrent()
+        val note = AttachmentDto(id = 77, kind = AttachmentDto.KIND_AUDIO, mime = "audio/mp4", size = 6, durationMs = 3_000)
+        assertThat(note.fallbackFileName).isEqualTo("voice-77.m4a")
+        attachmentApi.downloadHandler = { _, _, destination ->
+            destination.parentFile?.mkdirs()
+            destination.writeBytes(byteArrayOf(1, 2, 3, 4, 5, 6))
+            ApiResult.Ok(Unit)
+        }
+        val chosen = File(app.cacheDir, "chosen-${System.nanoTime()}.m4a")
+
+        val saved = viewModel.saveToDocument(note, android.net.Uri.fromFile(chosen))
+
+        assertThat(saved).isTrue()
+        assertThat(chosen.readBytes()).isEqualTo(byteArrayOf(1, 2, 3, 4, 5, 6))
+        assertThat(viewModel.mediaState.value).isEqualTo(ChatViewModel.MediaSendState.Idle)
+    }
+
+    @Test
+    fun aVoiceMessageThatCannotBeDownloadedSaysSo() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        runCurrent()
+        val note = AttachmentDto(id = 78, kind = AttachmentDto.KIND_AUDIO, mime = "audio/mp4", size = 6, durationMs = 3_000)
+
+        val saved = viewModel.saveToDocument(note, android.net.Uri.fromFile(File(app.cacheDir, "never.m4a")))
+
+        assertThat(saved).isFalse()
+        assertThat(failure(viewModel)).isEqualTo(app.getString(R.string.e_download_to_save_failed))
+    }
+
+    /**
+     * The save screen makes the document BEFORE anything is copied, so a Save
+     * that cannot go on must take it away again — not leave an empty
+     * "voice-78.m4a" where the person chose to save.
+     */
+    @Test
+    fun aVoiceMessageThatCannotBeSavedLeavesNoEmptyDocument() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        runCurrent()
+        val note = AttachmentDto(id = 78, kind = AttachmentDto.KIND_AUDIO, mime = "audio/mp4", size = 6, durationMs = 3_000)
+        val created = File(app.cacheDir, "created-${System.nanoTime()}.m4a").apply { createNewFile() }
+
+        val saved = viewModel.saveToDocument(note, android.net.Uri.fromFile(created))
+
+        assertThat(saved).isFalse()
+        assertThat(created.exists()).isFalse()
+    }
+
+    @Test
+    fun anOrphanedDocumentIsDiscarded() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        runCurrent()
+        val created = File(app.cacheDir, "orphan-${System.nanoTime()}.m4a").apply { createNewFile() }
+
+        viewModel.discardDocument(android.net.Uri.fromFile(created))
+
+        assertThat(created.exists()).isFalse()
     }
 }

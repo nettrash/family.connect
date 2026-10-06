@@ -61,6 +61,8 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -113,6 +115,7 @@ import me.nettrash.familyconnect.data.repo.AssistantFailure
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.repo.VoiceRecorder
+import me.nettrash.familyconnect.data.repo.Waveform
 import kotlinx.coroutines.Job
 import me.nettrash.familyconnect.data.repo.LocationProvider
 import me.nettrash.familyconnect.data.repo.MediaPrep
@@ -1863,6 +1866,15 @@ class ChatViewModel @Inject constructor(
     private val _voiceLevel = MutableStateFlow(0)
     val voiceLevel: StateFlow<Int> = _voiceLevel
 
+    /**
+     * The hands-free row's LIVE waveform (#79, the approved design): the
+     * newest [LIVE_LEVELS] peaks as waveform levels, 0–15, oldest first — the
+     * same measure the note's own waveform is made of, so what scrolls in
+     * while recording is what the reader will see.
+     */
+    private val _voiceLevels = MutableStateFlow<List<Int>>(emptyList())
+    val voiceLevels: StateFlow<List<Int>> = _voiceLevels
+
     /** The recording row's line, shown in the level meter's place. */
     enum class VoiceLine {
         /** From 4:30: "30 seconds left", and the timer turns orange (S2.5). */
@@ -2378,7 +2390,7 @@ class ChatViewModel @Inject constructor(
                         MediaSendState.Failed(appContext.getString(R.string.e_prepare_failed))
                     return@launch
                 }
-                val note = prepared.withRecordedLength(entry.durationMs)
+                val note = prepared.withRecordedLength(entry.durationMs).withWaveform(entry.waveform)
                 val queued = messageRepository.sendMedia(
                     listOf(note),
                     entry.caption,
@@ -2581,6 +2593,7 @@ class ChatViewModel @Inject constructor(
         _recordingMs.value = 0
         _voiceLine.value = null
         _voiceLevel.value = 0
+        _voiceLevels.value = emptyList()
         if (!held) _voiceEffects.tryEmit(VoiceEffect.FocusSlot)
         if (voiceEnv.assistive) {
             // The app's own voice stays out of the note (S6): with TalkBack the
@@ -2622,6 +2635,7 @@ class ChatViewModel @Inject constructor(
         val amplitude = voiceRecorder.maxAmplitude()
         if (VoiceNoteRules.isHeard(amplitude)) heardSound = true
         _voiceLevel.value = VoiceNoteRules.levelBars(amplitude)
+        _voiceLevels.value = (_voiceLevels.value + Waveform.level(Waveform.dbfs(amplitude))).takeLast(LIVE_LEVELS)
         refreshLine(elapsed)
     }
 
@@ -2688,7 +2702,7 @@ class ChatViewModel @Inject constructor(
         startedByTouchTap = false
         val ticket = reviewTicket()
         appScope.launch {
-            when (val handOff = dispatchRecording(kept.file, kept.durationMs, quote, ticket)) {
+            when (val handOff = dispatchRecording(kept.file, kept.durationMs, kept.waveform, quote, ticket)) {
                 HandOff.Queued -> perform(told)
                 HandOff.NothingThere -> Unit
                 is HandOff.Failed -> notQueued(handOff.error)
@@ -2702,28 +2716,38 @@ class ChatViewModel @Inject constructor(
      * never lost (S2.5) — or, once the chat has been left, waits as "not sent".
      * Queued once the outbox has it; otherwise Failed with the error shown.
      */
-    private suspend fun dispatchRecording(file: File, durationMs: Long, quote: ReplyToDto?, ticket: Int?): HandOff {
+    private suspend fun dispatchRecording(
+        file: File,
+        durationMs: Long,
+        waveform: String?,
+        quote: ReplyToDto?,
+        ticket: Int?,
+    ): HandOff {
         val prepared = try {
             mediaPrep.prepareAudio(Uri.fromFile(file), voiceNote = true)
         } catch (_: Exception) {
             // The recording itself, as recorded: it is the voice-note profile
             // already, which is all preparing would have checked.
-            if (file.exists() && backToReview(ticket, rawVoiceNote(file, durationMs), quote, R.string.e_prepare_failed)) {
+            if (file.exists() &&
+                backToReview(ticket, rawVoiceNote(file, durationMs, waveform), quote, R.string.e_prepare_failed)
+            ) {
                 return HandOff.Failed(R.string.e_prepare_failed)
             }
             failed(R.string.e_prepare_failed)
-            parked.park(chatId, file, durationMs, quote, caption = "", session = session)
+            parked.park(chatId, file, durationMs, quote, caption = "", session = session, waveform = waveform)
             return HandOff.Failed(R.string.e_prepare_failed)
         }
         file.delete()
-        val note = prepared.withRecordedLength(durationMs)
+        val note = prepared.withRecordedLength(durationMs).withWaveform(waveform)
         val queued = messageRepository.sendMedia(listOf(note), "", chatId, quote, null)
         if (queued == null) {
             if (note.file.exists() && backToReview(ticket, note, quote, R.string.e_send_failed)) {
                 return HandOff.Failed(R.string.e_send_failed)
             }
             failed(R.string.e_send_failed)
-            if (note.file.exists()) parked.park(chatId, note.file, durationMs, quote, caption = "", session = session)
+            if (note.file.exists()) {
+                parked.park(chatId, note.file, durationMs, quote, caption = "", session = session, waveform = waveform)
+            }
             return HandOff.Failed(R.string.e_send_failed)
         }
         return HandOff.Queued
@@ -2756,7 +2780,7 @@ class ChatViewModel @Inject constructor(
     }
 
     /** A recording staged as it was recorded — what review holds when preparing it failed. */
-    private fun rawVoiceNote(file: File, durationMs: Long): MediaPrep.Prepared = MediaPrep.Prepared(
+    private fun rawVoiceNote(file: File, durationMs: Long, waveform: String?): MediaPrep.Prepared = MediaPrep.Prepared(
         file = file,
         mime = "audio/mp4",
         kind = AttachmentDto.KIND_AUDIO,
@@ -2765,6 +2789,7 @@ class ChatViewModel @Inject constructor(
         durationMs = durationMs.toInt(),
         previewJpeg = null,
         voiceNote = true,
+        waveform = waveform,
     )
 
     /**
@@ -2798,7 +2823,10 @@ class ChatViewModel @Inject constructor(
         }
         val quote = _replyDraft.getAndUpdate { null }
         undoNote = appScope.async {
-            parked.park(chatId, kept.file, kept.durationMs, quote, caption = "", session = session, sending = true)
+            parked.park(
+                chatId, kept.file, kept.durationMs, quote, caption = "", session = session, sending = true,
+                waveform = kept.waveform,
+            )
         }
         undoTimer?.cancel()
         undoTimer = viewModelScope.launch {
@@ -2851,7 +2879,7 @@ class ChatViewModel @Inject constructor(
                 parked.file(entry).copyTo(File.createTempFile("voice-", ".m4a", dir), overwrite = true)
             }.getOrNull()
             if (copy != null &&
-                backToReview(ticket, rawVoiceNote(copy, entry.durationMs), entry.replyTo, R.string.e_prepare_failed)
+                backToReview(ticket, rawVoiceNote(copy, entry.durationMs, entry.waveform), entry.replyTo, R.string.e_prepare_failed)
             ) {
                 parked.remove(entry.id)
                 return HandOff.Failed(R.string.e_prepare_failed)
@@ -2861,7 +2889,7 @@ class ChatViewModel @Inject constructor(
             parked.markNotSent(entry.id)
             return HandOff.Failed(R.string.e_prepare_failed)
         }
-        val note = prepared.withRecordedLength(entry.durationMs)
+        val note = prepared.withRecordedLength(entry.durationMs).withWaveform(entry.waveform)
         val queued = messageRepository.sendMedia(listOf(note), "", chatId, entry.replyTo, null)
         if (queued == null) {
             if (note.file.exists() && backToReview(ticket, note, entry.replyTo, R.string.e_send_failed)) {
@@ -2906,7 +2934,7 @@ class ChatViewModel @Inject constructor(
                 parked.markNotSent(entry.id, caption = left?.caption, replyTo = left?.quote)
                 return@launch
             }
-            val note = prepared.withRecordedLength(entry.durationMs)
+            val note = prepared.withRecordedLength(entry.durationMs).withWaveform(entry.waveform)
             val arrival = arrive(flight) {
                 stage(note, keepRefused = true).also { staged ->
                     // Its reply first, in the same breath: the composer is whole
@@ -3091,7 +3119,7 @@ class ChatViewModel @Inject constructor(
         // left primed, it would quote the next text as well.
         val quote = _replyDraft.getAndUpdate { null }
         appScope.launch {
-            parked.park(chatId, kept.file, kept.durationMs, quote, caption = "", session = session)
+            parked.park(chatId, kept.file, kept.durationMs, quote, caption = "", session = session, waveform = kept.waveform)
         }
     }
 
@@ -3131,6 +3159,7 @@ class ChatViewModel @Inject constructor(
                     replyTo = if (index == 0) quote else null,
                     caption = if (index == 0) caption else "",
                     session = session,
+                    waveform = note.waveform,
                 )
             }
         }
@@ -3167,22 +3196,28 @@ class ChatViewModel @Inject constructor(
                 if (left == null) {
                     park(kept)
                 } else {
-                    parked.park(chatId, kept.file, kept.durationMs, left.quote, left.caption, session = session)
+                    parked.park(
+                        chatId, kept.file, kept.durationMs, left.quote, left.caption, session = session,
+                        waveform = kept.waveform,
+                    )
                 }
                 return@launch
             }
             kept.file.delete()
-            val note = prepared.withRecordedLength(kept.durationMs)
+            val note = prepared.withRecordedLength(kept.durationMs).withWaveform(kept.waveform)
             when (val arrival = arrive(flight) { stage(note, keepRefused = true) }) {
                 Arrival.Staged -> if (notice != null) {
                     _mediaState.value = MediaSendState.Notice(appContext.getString(notice))
                 }
                 // A full strip (ten attachments) does not get to delete it.
-                Arrival.Refused -> park(VoiceRecorder.Recording(note.file, kept.durationMs))
+                Arrival.Refused -> park(VoiceRecorder.Recording(note.file, kept.durationMs, kept.waveform))
                 is Arrival.Left -> {
                     // The strip is not busy with it any more, whoever comes back.
                     _mediaState.compareAndSet(MediaSendState.Preparing, MediaSendState.Idle)
-                    parked.park(chatId, note.file, kept.durationMs, arrival.quote, arrival.caption, session = session)
+                    parked.park(
+                        chatId, note.file, kept.durationMs, arrival.quote, arrival.caption, session = session,
+                        waveform = kept.waveform,
+                    )
                 }
             }
         }
@@ -3198,6 +3233,7 @@ class ChatViewModel @Inject constructor(
         _recordingMs.value = null
         _voiceLine.value = null
         _voiceLevel.value = 0
+        _voiceLevels.value = emptyList()
         stillRecordingUntil = 0L
     }
 
@@ -3228,6 +3264,10 @@ class ChatViewModel @Inject constructor(
     /** The recorder's own clock, where the file cannot say how long it is. */
     private fun MediaPrep.Prepared.withRecordedLength(recordedMs: Long): MediaPrep.Prepared =
         if (durationMs != null) this else copy(durationMs = recordedMs.toInt())
+
+    /** The recorder's waveform (#79), which preparing the file cannot know: it is the meter's. */
+    private fun MediaPrep.Prepared.withWaveform(waveform: String?): MediaPrep.Prepared =
+        if (waveform == null) this else copy(waveform = waveform)
 
     /**
      * Prepare and send a picked document. Nothing is re-encoded — a file
@@ -3685,6 +3725,55 @@ class ChatViewModel @Inject constructor(
         return result
     }
 
+    /**
+     * A voice message's Save (#79): download if needed, then copy into the
+     * document the person just created through the system's own save screen
+     * (ACTION_CREATE_DOCUMENT) — Android's "Save to Files". That screen is
+     * the confirmation; a failure says so in the strip. True when saved.
+     */
+    suspend fun saveToDocument(attachment: AttachmentDto, destination: Uri): Boolean {
+        _mediaState.value = MediaSendState.Working(appContext.getString(R.string.s_preparing))
+        val file = attachments.fileFor(attachment)
+        if (file == null) {
+            // The save screen has already made the document: an empty file
+            // with the recording's name must not be left where it was saved.
+            discardDocument(destination)
+            _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_download_to_save_failed))
+            return false
+        }
+        val copied = withContext(Dispatchers.IO) {
+            runCatching {
+                appContext.contentResolver.openOutputStream(destination, "w")?.use { output ->
+                    file.inputStream().use { input -> input.copyTo(output) }
+                } != null
+            }.getOrDefault(false)
+        }
+        if (!copied) discardDocument(destination)
+        _mediaState.value = if (copied) {
+            MediaSendState.Idle
+        } else {
+            MediaSendState.Failed(appContext.getString(R.string.e_save_failed))
+        }
+        return copied
+    }
+
+    /**
+     * Remove a document the system's save screen made but nothing was put
+     * in — a failed Save, or one whose recording was lost. Best effort: a
+     * provider that refuses keeps it, and there is nothing more to say.
+     */
+    suspend fun discardDocument(destination: Uri) {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                if (destination.scheme == android.content.ContentResolver.SCHEME_FILE) {
+                    destination.path?.let { File(it).delete() }
+                } else {
+                    android.provider.DocumentsContract.deleteDocument(appContext.contentResolver, destination)
+                }
+            }
+        }
+    }
+
     /** The user declined (or the system refused) the storage permission. */
     fun reportSaveNeedsPermission() {
         _mediaState.value = MediaSendState.Failed(
@@ -3798,6 +3887,9 @@ class ChatViewModel @Inject constructor(
 
         /** The recording's timer, level meter and line refresh this often (S2.9's 200 ms tick). */
         const val VOICE_TICK_MS = 200L
+
+        /** How many of the newest peaks the live waveform keeps: more than the widest row draws. */
+        const val LIVE_LEVELS = 96
 
         const val READ_DEBOUNCE_MS = 500L
         const val TYPING_THROTTLE_MS = 3_000L

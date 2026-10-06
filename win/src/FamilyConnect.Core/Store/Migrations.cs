@@ -304,8 +304,24 @@ public static class Migrations
     ];
 
     /// <summary>
+    /// Step 7: which VOICE MESSAGES this device has played, for the dot beside an unplayed voice bubble (the approved design
+    /// of 2026-10-05) — step 6's table for circles, one over, so neither kind pushes the other out. New, so nothing held is
+    /// read again.
+    /// </summary>
+    private static readonly string[] Seven =
+    [
+        """
+        -- The voice messages THIS DEVICE has played, by attachment. Never on the wire, wiped at sign-out with the rest of
+        -- the cache, and only the newest few thousand are kept (PlayedVoiceStore).
+        CREATE TABLE played_voice (
+            attachment_id INTEGER PRIMARY KEY
+        )
+        """,
+    ];
+
+    /// <summary>
     /// Every step, in order. The index is the version it upgrades FROM, so
     /// <c>All.Count</c> is the schema this build expects.
     /// </summary>
-    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five, Six];
+    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five, Six, Seven];
 }

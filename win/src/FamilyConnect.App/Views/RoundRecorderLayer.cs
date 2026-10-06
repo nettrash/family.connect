@@ -126,7 +126,7 @@ internal sealed class RoundRecorderLayer
     private readonly Border playDisc = new() { Width = 56, Height = 56, CornerRadius = new CornerRadius(28), Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x99, 0, 0, 0)) };
     private readonly Border maskCard = new();
     private readonly Microsoft.UI.Xaml.Shapes.Path mask = new();
-    private readonly Ellipse ringThin = new() { StrokeThickness = 1, Stroke = new SolidColorBrush(Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)) };
+    private readonly Ellipse ringThin = new() { StrokeThickness = RecorderLook.Track, Stroke = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)) };
     private readonly Microsoft.UI.Xaml.Shapes.Path ringArc = new() { StrokeThickness = RoundVideoRules.RingWidth, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round };
     private readonly Ellipse ringFull = new() { StrokeThickness = RoundVideoRules.RingWidth };
     private readonly Grid banner = new() { ColumnSpacing = 8, Padding = new Thickness(12, 6, 6, 6), CornerRadius = new CornerRadius(8), MaxWidth = 420 };
@@ -141,9 +141,15 @@ internal sealed class RoundRecorderLayer
     private readonly Button cameraButton = new();
     private readonly Button voiceButton = new();
     private readonly Button settingsButton = new();
-    private readonly Button slot = new() { Width = 44, Height = 44, Padding = new Thickness(0), CornerRadius = new CornerRadius(22), Background = new SolidColorBrush(Colors.Transparent), BorderThickness = new Thickness(0), IsHoldingEnabled = false };
-    private readonly Ellipse slotDisc = new() { Width = 40, Height = 40 };
-    private readonly FontIcon slotGlyph = new() { FontSize = 16, Foreground = new SolidColorBrush(Colors.White) };
+    private readonly Button slot = new() { Width = SlotTarget, Height = SlotTarget, Padding = new Thickness(0), CornerRadius = new CornerRadius(SlotTarget / 2), Background = new SolidColorBrush(Colors.Transparent), BorderThickness = new Thickness(0), IsHoldingEnabled = false };
+    private readonly Ellipse slotHalo = new() { Width = SlotTarget, Height = SlotTarget, Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF)) };
+    private readonly Ellipse slotDisc = new() { Width = RecorderLook.Slot, Height = RecorderLook.Slot };
+    private readonly Rectangle slotSquare = new() { Width = RecorderLook.StopSquare, Height = RecorderLook.StopSquare, RadiusX = RecorderLook.StopCorner, RadiusY = RecorderLook.StopCorner, Fill = new SolidColorBrush(Colors.White) };
+    private readonly FontIcon slotGlyph = new() { FontSize = 24, Foreground = new SolidColorBrush(Colors.White) };
+    private readonly TextBlock slotCaption = new() { FontSize = 11, HorizontalAlignment = HorizontalAlignment.Center, Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x9D, 0xA0, 0xAD)) };
+
+    /// <summary>The slot's target: the 64 disc and the faint halo round it (the approved design).</summary>
+    private const double SlotTarget = RecorderLook.SlotTarget;
     private readonly TextBlock liveLine = new() { Opacity = 0, IsHitTestVisible = false, Width = 1, Height = 1 };
     private string? settingsPage;
 
@@ -796,8 +802,10 @@ internal sealed class RoundRecorderLayer
         {
             Diagnostics.Write($"asking about transparency effects: {e.GetType().Name}");
         }
-        scrimAround.Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(transparent ? (byte)0xB3 : (byte)0xFF, 0, 0, 0));
-        scrimPane.Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(transparent ? (byte)0x4D : (byte)0xFF, 0, 0, 0));
+        // The whole window darkened, the conversation as much as the rest (the approved design): what is recorded is the
+        // circle, and nothing behind it should compete with it.
+        scrimAround.Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(transparent ? (byte)0xD9 : (byte)0xFF, 0x0B, 0x0C, 0x10));
+        scrimPane.Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(transparent ? (byte)0xD9 : (byte)0xFF, 0x0B, 0x0C, 0x10));
         root.Children.Add(scrimAround);
         root.Children.Add(scrimPane);
         root.Children.Add(content);
@@ -884,23 +892,25 @@ internal sealed class RoundRecorderLayer
         content.Children.Add(stack);
         content.Children.Add(controls);
 
-        // The control row: the leading control, the middle ones, and the slot where Send is.
-        Name(closeButton, say.Get("Close"), say.Get("Close"));
+        // The control row: the leading control, the middle ones, and the slot where Send is — round buttons with captions under
+        // them, the slot the one big one (the approved design).
+        Round(closeButton, 0xE711, say.Get("Close"), say.Get("Close"));
         closeButton.Click += (_, _) => Run(flow.CloseButton());
-        Name(deleteButton, say.Get("Delete"), say.Get("Delete recording"));
+        Round(deleteButton, 0xE74D, say.Get("Delete"), say.Get("Delete recording"));
         deleteButton.Click += (_, _) => Run(flow.Delete(Now));
-        Name(retakeButton, say.Get("Retake"), say.Get("Retake"));
+        Round(retakeButton, 0xE72C, say.Get("Retake"), say.Get("Retake"));
         retakeButton.Click += (_, _) => Run(flow.Retake(Now));
-        leading.Children.Add(closeButton);
-        leading.Children.Add(deleteButton);
-        leading.Children.Add(retakeButton);
-        Name(cameraButton, say.Get("Choose camera"), say.Get("Choose camera"));
+        leading.Children.Add(Captioned(closeButton));
+        leading.Children.Add(Captioned(deleteButton));
+        // Retake stands where the camera button does: the middle of the row, as the design has it.
+        middle.Children.Add(Captioned(retakeButton));
+        // It opens the cameras by their names (S3.5) — on a desktop there may be more than two. A desktop's camera button opens a LIST of its cameras (S3.5: "Choose camera"), so that is its name; it is captioned
+        // with what it is about rather than the phones' "Switch", which would promise a flip.
+        Round(cameraButton, 0xE89E, say.Get("Camera"), say.Get("Choose camera"));
         cameraButton.Click += (_, _) => ChooseCamera();
-        voiceButton.Content = new FontIcon { Glyph = ((char)ComposerButton.MicrophoneGlyph).ToString(), FontSize = 16 };
-        AutomationProperties.SetName(voiceButton, say.Get("Record a voice message instead"));
-        ToolTipService.SetToolTip(voiceButton, say.Get("Record a voice message instead"));
+        Round(voiceButton, ComposerButton.MicrophoneGlyph, string.Empty, say.Get("Record a voice message instead"));
         voiceButton.Click += (_, _) => Run(flow.VoiceInstead(hooks.NotSentWaits()));
-        Name(settingsButton, say.Get("Open Settings"), say.Get("Open Settings"));
+        Round(settingsButton, 0xE713, say.Get("Settings"), say.Get("Open Settings"));
         settingsButton.Click += (_, _) =>
         {
             if (settingsPage is { } page)
@@ -908,25 +918,81 @@ internal sealed class RoundRecorderLayer
                 _ = Launcher.LaunchUriAsync(new Uri(page));
             }
         };
-        middle.Children.Add(cameraButton);
-        middle.Children.Add(voiceButton);
-        middle.Children.Add(settingsButton);
-        var face = new Grid { Width = 40, Height = 40 };
+        middle.Children.Add(Captioned(cameraButton));
+        middle.Children.Add(Captioned(voiceButton));
+        middle.Children.Add(Captioned(settingsButton));
+        var face = new Grid { Width = SlotTarget, Height = SlotTarget };
+        face.Children.Add(slotHalo);
         face.Children.Add(slotDisc);
-        slotGlyph.HorizontalAlignment = HorizontalAlignment.Center;
-        slotGlyph.VerticalAlignment = VerticalAlignment.Center;
+        foreach (var centred in new FrameworkElement[] { slotHalo, slotDisc, slotSquare, slotGlyph })
+        {
+            centred.HorizontalAlignment = HorizontalAlignment.Center;
+            centred.VerticalAlignment = VerticalAlignment.Center;
+        }
+        face.Children.Add(slotSquare);
         face.Children.Add(slotGlyph);
         slot.Content = face;
         slot.Click += (_, _) => Run(flow.Slot(Now));
+        AutomationProperties.SetAccessibilityView(slotCaption, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        slotColumn.Children.Add(slot);
+        slotColumn.Children.Add(slotCaption);
         controls.Children.Add(leading);
         controls.Children.Add(middle);
-        controls.Children.Add(slot);
+        controls.Children.Add(slotColumn);
     }
 
-    private static void Name(Button button, string words, string name)
+    /// <summary>The slot and its caption, one column: what the layout places where Send is.</summary>
+    private readonly StackPanel slotColumn = new() { Spacing = RecorderLook.CaptionGap, VerticalAlignment = VerticalAlignment.Bottom };
+
+    /// <summary>
+    /// One of the smaller round buttons: a glyph in Segoe Fluent Icons on the design's faint disc, 44 across, its caption kept
+    /// in its <see cref="Button.Tag"/> for <see cref="Captioned"/>, and the name a screen reader hears.
+    /// </summary>
+    private static void Round(Button button, int glyph, string caption, string name)
     {
-        button.Content = words;
+        button.Content = new FontIcon { Glyph = ((char)glyph).ToString(), FontSize = 16 };
+        button.Width = RecorderLook.Side;
+        button.Height = RecorderLook.Side;
+        button.Padding = new Thickness(0);
+        button.CornerRadius = new CornerRadius(RecorderLook.Side / 2);
+        button.BorderThickness = new Thickness(0);
+        button.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF));
+        button.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xE8, 0xE9, 0xEF));
+        button.HorizontalAlignment = HorizontalAlignment.Center;
+        button.Tag = caption;
         AutomationProperties.SetName(button, name);
+        ToolTipService.SetToolTip(button, name);
+    }
+
+    /// <summary>A round button with its caption under it — a caption a screen reader never meets twice: the button says its name.</summary>
+    private static StackPanel Captioned(Button button)
+    {
+        var caption = new TextBlock
+        {
+            // An uncaptioned button keeps an empty line (a no-break space) so every button in the row stands as high.
+            Text = button.Tag is string { Length: > 0 } words ? words : "\u00A0",
+            FontSize = 11,
+            // Its own height at the reader's text size — a fixed one cut the bottom off from 150 %.
+            HorizontalAlignment = HorizontalAlignment.Center,
+            TextAlignment = TextAlignment.Center,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x9D, 0xA0, 0xAD)),
+        };
+        AutomationProperties.SetAccessibilityView(caption, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        var column = new StackPanel { Spacing = RecorderLook.CaptionGap, MinWidth = 56, VerticalAlignment = VerticalAlignment.Bottom };
+        column.Children.Add(button);
+        column.Children.Add(caption);
+        return column;
+    }
+
+    /// <summary>A round button shown or not — with its caption, which is the column it stands in.</summary>
+    private static void Show(Button button, bool shown)
+    {
+        var visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+        if (button.Parent is FrameworkElement column)
+        {
+            column.Visibility = visibility;
+        }
+        button.Visibility = visibility;
     }
 
     /// <summary>"Choose camera" (S3.5): the cameras by their system names, the one in use checked; the choice is remembered here.</summary>
@@ -1016,17 +1082,21 @@ internal sealed class RoundRecorderLayer
             controls.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             Place(leading, 0, 0);
             Place(middle, 0, 1);
-            Place(slot, 0, 2);
+            Place(slotColumn, 0, 2);
             controls.VerticalAlignment = VerticalAlignment.Bottom;
             controls.HorizontalAlignment = HorizontalAlignment.Stretch;
-            // On the composer's row, the slot exactly where Send is, so the pointer and the thumb never move (S3.3).
+            // On the composer's row, the big slot CENTRED where Send is, so the pointer never moves (S3.3), and its caption
+            // under it.
             var left = row is { } card ? card.X + 6 - conversation.X : 16;
-            var right = send is { } at ? conversation.Right - at.Right : 22;
-            var bottom = send is { } there ? conversation.Bottom - there.Bottom : 18;
+            var right = send is { } at ? conversation.Right - (at.X + at.Width / 2) - SlotTarget / 2 : 22;
+            // The slot's caption as tall as it is at the reader's text size, MEASURED, so the slot itself is centred on Send.
+            slotCaption.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            var caption = slotCaption.DesiredSize.Height;
+            var bottom = send is { } there ? RecorderLook.SlotColumnBottom(conversation.Bottom - (there.Y + there.Height / 2), caption) : 4;
             controls.Margin = new Thickness(Math.Max(0, left), 0, Math.Max(0, right), Math.Max(0, bottom));
-            controls.Height = 44;
+            controls.Height = double.NaN;
             controls.Width = double.NaN;
-            stack.Margin = new Thickness(24, 12, 24, Math.Max(0, bottom) + 44 + 16);
+            stack.Margin = new Thickness(24, 12, 24, Math.Max(0, bottom) + SlotTarget + RecorderLook.CaptionGap + caption + 16);
             stack.VerticalAlignment = VerticalAlignment.Bottom;
             leading.Orientation = Orientation.Horizontal;
             middle.Orientation = Orientation.Horizontal;
@@ -1067,7 +1137,7 @@ internal sealed class RoundRecorderLayer
             Place(banner, 0, 0);
             Place(leading, 1, 0);
             Place(middle, 2, 0);
-            Place(slot, 3, 0);
+            Place(slotColumn, 3, 0);
         }
     }
 
@@ -1088,8 +1158,9 @@ internal sealed class RoundRecorderLayer
             inner.Width = diameter;
             inner.Height = diameter;
         }
-        ringThin.Width = diameter + 2;
-        ringThin.Height = diameter + 2;
+        // The thin track lies exactly where the progress ring runs: OUTSIDE the edge, the arc drawn over it.
+        ringThin.Width = diameter + RoundVideoRules.RingWidth;
+        ringThin.Height = diameter + RoundVideoRules.RingWidth;
         ringFull.Width = diameter + 2 * RoundVideoRules.RingWidth;
         ringFull.Height = diameter + 2 * RoundVideoRules.RingWidth;
         var clip = RoundVideoRules.Clip;
@@ -1174,7 +1245,7 @@ internal sealed class RoundRecorderLayer
         }
 
         // The ring (S3.4): thin white in PREVIEW; red filling clockwise from 12, orange from the warning; the accent while playing.
-        ringThin.Visibility = stage == RecorderStage.Preview ? Visibility.Visible : Visibility.Collapsed;
+        ringThin.Visibility = RecorderLook.ShowsTrack(stage) ? Visibility.Visible : Visibility.Collapsed;
         double? fraction = null;
         Brush? ringBrush = null;
         if (stage == RecorderStage.Recording)
@@ -1196,17 +1267,16 @@ internal sealed class RoundRecorderLayer
 
         // The control row (S3.4).
         var noPicture = stage is RecorderStage.Opening or RecorderStage.Refused or RecorderStage.Unavailable or RecorderStage.Preview;
-        closeButton.Visibility = noPicture ? Visibility.Visible : Visibility.Collapsed;
-        deleteButton.Visibility = stage is RecorderStage.Recording or RecorderStage.Review ? Visibility.Visible : Visibility.Collapsed;
-        retakeButton.Visibility = stage == RecorderStage.Review ? Visibility.Visible : Visibility.Collapsed;
-        cameraButton.Visibility = stage is RecorderStage.Preview or RecorderStage.Unavailable && RoundVideoRules.OffersCameraChoice(cameras.Count)
-            ? Visibility.Visible : Visibility.Collapsed;
+        Show(closeButton, noPicture);
+        Show(deleteButton, stage is RecorderStage.Recording or RecorderStage.Review);
+        Show(retakeButton, stage == RecorderStage.Review);
+        Show(cameraButton, stage is RecorderStage.Preview or RecorderStage.Unavailable && RoundVideoRules.OffersCameraChoice(cameras.Count));
         var voice = noPicture && flow.Refused != RecorderRefusal.Microphone;
-        voiceButton.Visibility = voice ? Visibility.Visible : Visibility.Collapsed;
+        Show(voiceButton, voice);
         var notSent = voice && hooks.NotSentWaits();
         voiceButton.Opacity = notSent ? 0.4 : 1;
         AutomationProperties.SetHelpText(voiceButton, notSent ? say.Get("Send or delete the voice message that wasn't sent first.") : string.Empty);
-        settingsButton.Visibility = stage == RecorderStage.Refused && settingsPage is not null ? Visibility.Visible : Visibility.Collapsed;
+        Show(settingsButton, stage == RecorderStage.Refused && settingsPage is not null);
         DrawSlot(stage);
         KeepFocus();
     }
@@ -1253,37 +1323,30 @@ internal sealed class RoundRecorderLayer
         return false;
     }
 
-    /// <summary>The slot (S3.4, S8.6): Record E7C8 on a red disc, dimmed until the first frame; Stop E71A; Send E724, dimmed until the clip is ready.</summary>
+    /// <summary>
+    /// The one big slot (S3.4, S8.6; the approved design): a red disc to Record — dimmed until the first frame — the same
+    /// disc with a white rounded square on it to Stop, and the accent disc with the Send arrow — dimmed until the clip is
+    /// ready — with "Record", "Stop" or "Send" under it. Red is the system's critical fill and the accent the app's own.
+    /// </summary>
     private void DrawSlot(RecorderStage stage)
     {
         var resources = Application.Current.Resources;
-        string name;
-        int glyph;
-        bool live;
-        Brush fill;
-        switch (stage)
+        var shape = RecorderLook.Shape(stage);
+        var (name, live, fill) = shape switch
         {
-            case RecorderStage.Recording:
-                name = say.Get("Stop recording");
-                glyph = ComposerButton.StopGlyph;
-                live = true;
-                fill = (Brush)resources["SystemFillColorCriticalBrush"];
-                break;
-            case RecorderStage.Review:
-                name = say.Get("Send video message");
-                glyph = ComposerButton.SendGlyph;
-                live = flow.ClipReady;
-                fill = (Brush)resources["AccentFillColorDefaultBrush"];
-                break;
-            default:
-                name = say.Get("Record");
-                glyph = 0xE7C8;
-                live = stage == RecorderStage.Preview && flow.HasPicture;
-                fill = (Brush)resources["SystemFillColorCriticalBrush"];
-                break;
-        }
-        slotGlyph.Glyph = ((char)glyph).ToString();
+            SlotShape.StopSquare => (say.Get("Stop recording"), true, (Brush)resources["SystemFillColorCriticalBrush"]),
+            SlotShape.SendArrow => (say.Get("Send video message"), flow.ClipReady, (Brush)resources["AccentFillColorDefaultBrush"]),
+            _ => (say.Get("Record"), stage == RecorderStage.Preview && flow.HasPicture, (Brush)resources["SystemFillColorCriticalBrush"]),
+        };
         slotDisc.Fill = fill;
+        slotSquare.Visibility = shape == SlotShape.StopSquare ? Visibility.Visible : Visibility.Collapsed;
+        slotGlyph.Visibility = shape == SlotShape.SendArrow ? Visibility.Visible : Visibility.Collapsed;
+        slotGlyph.Glyph = ((char)ComposerButton.SendGlyph).ToString();
+        // On the accent, the ink the accent pairs with — white on the deep shade, black on the pale one the dark theme draws.
+        slotGlyph.Foreground = shape == SlotShape.SendArrow && resources.TryGetValue("TextOnAccentFillColorPrimaryBrush", out var ink) && ink is Brush onAccent
+            ? onAccent
+            : new SolidColorBrush(Colors.White);
+        slotCaption.Text = RecorderLook.Caption(stage, say);
         slot.Opacity = live ? 1 : 0.4;
         if (!Equals(AutomationProperties.GetName(slot), name))
         {

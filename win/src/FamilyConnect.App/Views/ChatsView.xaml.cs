@@ -126,6 +126,10 @@ public sealed partial class ChatsView : UserControl
     /// <summary>"30 seconds left" said once a recording, as it is shown (S2.5).</summary>
     private bool warnedThirtySeconds;
 
+    /// <summary>The live waveform's newest peaks, and whether it may move — not with Windows' animations off.</summary>
+    private readonly LiveLevels liveLevels = new(160);
+    private bool levelsMove;
+
     /// <summary>The red dot's pulse while something records (S2.9), and whether the row's buttons are icons for want of room (S2.4).</summary>
     private Animation.Storyboard? recordingPulse;
     private bool? recordingRowNarrow;
@@ -196,6 +200,15 @@ public sealed partial class ChatsView : UserControl
     private Brush? viewerBackdrop;
     private readonly Dictionary<string, BitmapImage?> stagedPosters = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// What each send on its way that carries one staged file turned out to be, read once from this device's own staging: a
+    /// voice note's shape and length — drawn as the bubble it will be — or null for anything else.
+    /// </summary>
+    private readonly Dictionary<string, PendingVoice?> stagedVoices = new(StringComparer.Ordinal);
+
+    /// <summary>A voice note on its way, as its staging has it: the waveform measured from it and its length.</summary>
+    private sealed record PendingVoice(string? Waveform, int? DurationMs);
+
     /// <summary>The default output device changing — headphones pulled, a headset gone — which pauses what plays (S4).</summary>
     private readonly Windows.Foundation.TypedEventHandler<object, Windows.Media.Devices.DefaultAudioRenderDeviceChangedEventArgs> onOutputChanged;
 
@@ -219,12 +232,30 @@ public sealed partial class ChatsView : UserControl
     private readonly Action<SessionState> onSession;
 
     /// <summary>
-    /// The one recording playing — one at a time — and the latest row drawn for each, which a redraw replaces; ended, it
-    /// sits at its end rather than looking paused at the start.
+    /// The one recording playing — one at a time — and EVERY copy drawn of each (the conversation's and the thread panel's
+    /// bubble of the same note), each added as it is drawn and dropped as it leaves the screen; ended, it sits at its end
+    /// rather than looking paused at the start.
     /// </summary>
     private readonly Windows.Media.Playback.MediaPlayer audio = new();
-    private readonly Dictionary<long, AudioRow> audioRows = new();
+    private readonly DrawnCopies<long, AudioRow> audioRows = new();
     private long? playingAudio;
+
+    /// <summary>
+    /// Voice messages (the approved design of 2026-10-05): which ones this device has played — the dot's own knowledge, kept
+    /// in the cache and so this account's — and the speed chosen on this device, 1×, 1.5× or 2×.
+    /// </summary>
+    private readonly PlayedVoiceStore playedVoice;
+    private double voiceRate = VoiceSpeedSetting.Rate;
+
+    /// <summary>The rate last asked of the player — given again once a new source has OPENED, which may reset it to 1×.</summary>
+    private double playerRate = 1.0;
+
+    /// <summary>
+    /// Where each idle bubble's waveform was SEEKED to (it shows that much lit and that time, and Play starts there), and where
+    /// the note just started is to begin once the player has opened it.
+    /// </summary>
+    private readonly Dictionary<long, double> seekedAudio = new();
+    private double? startAudioAt;
     private long fetchingAudio;
     private bool audioAtEnd;
     private bool movingTrack;
@@ -240,6 +271,9 @@ public sealed partial class ChatsView : UserControl
     private int fetchingLocal;
     private readonly Dictionary<StagedMedia, LocalRow> stagedRows = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<string, LocalRow> parkedRows = new(StringComparer.Ordinal);
+
+    /// <summary>The waveforms of voice messages that were not sent, measured from their bytes once per run; null while measuring or when none could be.</summary>
+    private readonly Dictionary<string, string?> parkedShapes = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The place under each drawn recording where its text goes (docs/protocol.md, "Transcripts on request"), by
@@ -330,6 +364,7 @@ public sealed partial class ChatsView : UserControl
             Diagnostics.Write($"sweeping voice messages that were not sent: {e.GetType().Name}");
         }
         playedRounds = new PlayedRoundStore(connection.Cache);
+        playedVoice = new PlayedVoiceStore(connection.Cache);
 
         ChatsHeading.Text = say.Get("Chats");
         EmptyListText.Text = say.Get("No chats yet");
@@ -419,6 +454,15 @@ public sealed partial class ChatsView : UserControl
         ViewerOverlay.PreviewKeyDown += OnViewerKey;
         // A video message's own controls under its circle (S5.3, S5.4): play and pause, and scrubbing.
         ViewerRoundPlay.Click += (_, _) => ToggleViewerRound();
+        // A click on the circle itself plays and pauses it, as the design's tile does: the play disc fades as it goes.
+        ViewerVideo.Tapped += (_, e) =>
+        {
+            if (viewerRound && !viewerRoundFailed)
+            {
+                e.Handled = true;
+                ToggleViewerRound();
+            }
+        };
         AutomationProperties.SetName(ViewerRoundSeek, say.Get("Position"));
         ViewerRoundSeek.ValueChanged += (_, e) =>
         {
@@ -538,6 +582,29 @@ public sealed partial class ChatsView : UserControl
             if (!gone)
             {
                 AudioEnded();
+            }
+        });
+        // A new source may come up at 1× whatever was set before it opened: the speed is given again once it has, and a
+        // bubble seeked while idle starts where it was put.
+        audio.MediaOpened += (_, _) => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (gone)
+            {
+                return;
+            }
+            ApplyRate(playerRate);
+            if (startAudioAt is { } at && playingAudio is not null)
+            {
+                startAudioAt = null;
+                try
+                {
+                    audio.PlaybackSession.Position = TimeSpan.FromSeconds(at);
+                }
+                catch (Exception e)
+                {
+                    Diagnostics.Write($"starting a recording part way: {e.GetType().Name}");
+                }
+                ShowPlayback();
             }
         });
         // Headphones pulled or a headset gone: what was playing in the ear must not carry on out of the speakers (S4). Raised on
@@ -695,6 +762,7 @@ public sealed partial class ChatsView : UserControl
             Diagnostics.Write($"letting go of the output device: {e.GetType().Name}");
         }
         stagedPosters.Clear();
+        stagedVoices.Clear();
         locationHunt?.Cancel();
         // A transcode nobody is waiting for any more is minutes of an encoder for nothing: every chat's is called off.
         foreach (var strip in strips.Values)
@@ -1931,27 +1999,150 @@ public sealed partial class ChatsView : UserControl
         flyout.ShowAt(anchor);
     }
 
+    /// <summary>
+    /// A message's menu, in the order <see cref="MessageMenu.Actions"/> gives — then Safety. A voice or video message offers
+    /// what does something for a recording (the approved design of 2026-10-05): the reactions first, Reply, Show text where it
+    /// can be asked for, Playback speed for a voice message, Save…, Open Full Screen for a video message — and no Copy or
+    /// Edit, because there is no text. Every other message's menu is what it always was.
+    /// </summary>
     private MenuFlyout MenuFor(ConversationModel chat, Bubble bubble, bool assistantChat, long? assistantId, FrameworkElement anchor, ThreadModel? inThread = null)
+    {
+        var menu = new MenuFlyout();
+        FillMenu(menu, chat, bubble, assistantChat, assistantId, anchor, inThread);
+        // Filled again as it opens: whether "Show text" can be asked, and whether it would show or hide, is decided then —
+        // the place for a recording's text is registered only once it is on screen, after this menu was made.
+        menu.Opening += (_, _) => FillMenu(menu, chat, bubble, assistantChat, assistantId, anchor, inThread);
+        return menu;
+    }
+
+    private void FillMenu(MenuFlyout menu, ConversationModel chat, Bubble bubble, bool assistantChat, long? assistantId, FrameworkElement anchor, ThreadModel? inThread)
     {
         var say = services.Say;
         var message = bubble.Message;
-        var menu = new MenuFlyout();
-
-        var reply = new MenuFlyoutItem { Text = say.Get("Reply") };
-        // On the thread's panel a reply is its composer: whatever the row, a send from there answers the root.
-        reply.Click += (_, _) =>
+        menu.Items.Clear();
+        var recording = MessageMenu.Recording(message) is not null ? message.Media[0] : null;
+        var textHost = recording is not null && transcriptHosts.TryGetValue(recording.Id, out var hosts) && hosts.Count > 0
+            ? hosts[0]
+            : null;
+        var actions = MessageMenu.Actions(
+            message, ConversationModel.MayEdit(bubble), inThread is not null, offersText: textHost is not null);
+        foreach (var action in actions)
         {
-            if (inThread is not null)
+            switch (action)
             {
-                ThreadComposer.Focus(FocusState.Programmatic);
+                case MessageAction.Reply:
+                {
+                    var reply = new MenuFlyoutItem { Text = say.Get("Reply") };
+                    // On the thread's panel a reply is its composer: whatever the row, a send from there answers the root.
+                    reply.Click += (_, _) =>
+                    {
+                        if (inThread is not null)
+                        {
+                            ThreadComposer.Focus(FocusState.Programmatic);
+                        }
+                        else
+                        {
+                            StartReply(message);
+                        }
+                    };
+                    menu.Items.Add(reply);
+                    break;
+                }
+                case MessageAction.React:
+                    menu.Items.Add(ReactItem(chat, message, anchor, inThread));
+                    break;
+                case MessageAction.ShowText when textHost is not null
+                                                 && MessageMenu.TextItemFor(connection.Transcripts.Look(textHost.Attachment.Id)) is not TextItem.None:
+                {
+                    // "Show text" — or "Hide text" while it is shown — offered exactly where the words under the recording offer
+                    // it: not while it is being asked for, nor after a failure the row offers no "Try Again" for.
+                    var open = MessageMenu.TextItemFor(connection.Transcripts.Look(textHost.Attachment.Id)) == TextItem.Hide;
+                    var text = new MenuFlyoutItem { Text = say.Get(open ? "Hide text" : "Show text") };
+                    text.Click += (_, _) =>
+                    {
+                        if (open)
+                        {
+                            connection.Transcripts.Hide(textHost.Attachment.Id);
+                        }
+                        else
+                        {
+                            _ = AskTranscriptAsync(textHost);
+                        }
+                    };
+                    menu.Items.Add(text);
+                    break;
+                }
+                case MessageAction.PlaybackSpeed:
+                {
+                    // The device's one speed, the current one checked: what the chip on a playing bubble goes round.
+                    var speed = new MenuFlyoutSubItem { Text = say.Get("Playback speed") };
+                    foreach (var rate in VoiceSpeed.Rates)
+                    {
+                        var item = new RadioMenuFlyoutItem
+                        {
+                            Text = VoiceSpeed.Label(rate, say),
+                            GroupName = "voice-speed",
+                            IsChecked = rate == voiceRate,
+                        };
+                        var chosen = rate;
+                        item.Click += (_, _) => SetVoiceRate(chosen);
+                        speed.Items.Add(item);
+                    }
+                    menu.Items.Add(speed);
+                    break;
+                }
+                case MessageAction.Save when recording is not null:
+                {
+                    var save = new MenuFlyoutItem { Text = say.Get("Save…") };
+                    save.Click += (_, _) => _ = SaveAttachmentAsync(recording);
+                    menu.Items.Add(save);
+                    break;
+                }
+                case MessageAction.OpenFullScreen when message.RoundVideo is { } circle:
+                {
+                    // A circle opens full screen from its menu too (S5.4) — the viewer, with scrubbing.
+                    var full = new MenuFlyoutItem { Text = say.Get("Open Full Screen") };
+                    full.Click += (_, _) => OpenRound(circle);
+                    menu.Items.Add(full);
+                    break;
+                }
+                case MessageAction.Copy:
+                {
+                    var copy = new MenuFlyoutItem { Text = say.Get("Copy") };
+                    copy.Click += (_, _) =>
+                    {
+                        var package = new DataPackage();
+                        package.SetText(message.Body);
+                        Clipboard.SetContent(package);
+                    };
+                    menu.Items.Add(copy);
+                    break;
+                }
+                case MessageAction.ViewThread:
+                {
+                    // "View thread" on any member of a chain — the root and every reply — opens the same chain.
+                    var chain = new MenuFlyoutItem { Text = say.Get("View thread") };
+                    chain.Click += (_, _) => _ = OpenThreadAsync(message.Id);
+                    menu.Items.Add(chain);
+                    break;
+                }
+                case MessageAction.Edit:
+                {
+                    // Editing is the chat's, and not offered on the panel rather than offered inert.
+                    var edit = new MenuFlyoutItem { Text = say.Get("Edit") };
+                    edit.Click += (_, _) => StartEdit(message);
+                    menu.Items.Add(edit);
+                    break;
+                }
             }
-            else
-            {
-                StartReply(message);
-            }
-        };
-        menu.Items.Add(reply);
+        }
+        AddSafety(menu, message, assistantChat, assistantId, mayReport: inThread is null);
+    }
 
+    /// <summary>React ▸: the capsule's emoji, the reader's own checked, and "More reactions…" for any other.</summary>
+    private MenuFlyoutSubItem ReactItem(ConversationModel chat, MessageDto message, FrameworkElement anchor, ThreadModel? inThread)
+    {
+        var say = services.Say;
         var react = new MenuFlyoutSubItem { Text = say.Get("React") };
         var mine = Reactions.Mine(message.Reactions ?? [], Reader);
         foreach (var emoji in Reactions.Capsule(mine))
@@ -1970,44 +2161,7 @@ public sealed partial class ChatsView : UserControl
         // Any emoji of the catalogue — the one already held takes it off, as a tap on it anywhere does.
         more.Click += (_, _) => EmojiPicker.Show(anchor, say, emoji => _ = ActAsync(() => React(chat, inThread, message.Id, emoji)));
         react.Items.Add(more);
-        menu.Items.Add(react);
-
-        // A circle opens full screen from its menu too (S5.4) — the viewer, with scrubbing; and it has no Edit, which
-        // MayEdit already says.
-        if (message.RoundVideo is { } circle)
-        {
-            var full = new MenuFlyoutItem { Text = say.Get("Open Full Screen") };
-            full.Click += (_, _) => OpenRound(circle);
-            menu.Items.Add(full);
-        }
-
-        if (message.Body.Length > 0 && message.Call is null)
-        {
-            var copy = new MenuFlyoutItem { Text = say.Get("Copy") };
-            copy.Click += (_, _) =>
-            {
-                var package = new DataPackage();
-                package.SetText(message.Body);
-                Clipboard.SetContent(package);
-            };
-            menu.Items.Add(copy);
-        }
-        // "View thread" on any member of a chain — the root and every reply — opens the same chain.
-        if (inThread is null && (message.ThreadRootId is not null || message.ReplyCount is not null))
-        {
-            var chain = new MenuFlyoutItem { Text = say.Get("View thread") };
-            chain.Click += (_, _) => _ = OpenThreadAsync(message.Id);
-            menu.Items.Add(chain);
-        }
-        // Editing is the chat's, and not offered on the panel rather than offered inert.
-        if (inThread is null && ConversationModel.MayEdit(bubble))
-        {
-            var edit = new MenuFlyoutItem { Text = say.Get("Edit") };
-            edit.Click += (_, _) => StartEdit(message);
-            menu.Items.Add(edit);
-        }
-        AddSafety(menu, message, assistantChat, assistantId, mayReport: inThread is null);
-        return menu;
+        return react;
     }
 
     /// <summary>
@@ -2157,6 +2311,23 @@ public sealed partial class ChatsView : UserControl
         {
             return PendingRoundElement(chat, row);
         }
+        // One voice note with no words: drawn as the bubble it will be. Its staging says so — read once, and the plain
+        // balloon drawn meanwhile is put in its place as soon as it has.
+        string? lone = null;
+        if (row.Body.Length == 0 && row.PollOptions is null && (row.StagedFiles ?? row.PendingFiles) is [var handle])
+        {
+            if (stagedVoices.TryGetValue(handle, out var known))
+            {
+                if (known is { } voice)
+                {
+                    return PendingVoiceElement(chat, row, voice);
+                }
+            }
+            else
+            {
+                lone = handle;
+            }
+        }
         var say = services.Say;
         var resources = Application.Current.Resources;
         var stack = new StackPanel { Spacing = 4 };
@@ -2217,7 +2388,7 @@ public sealed partial class ChatsView : UserControl
                 Foreground = Palette.Ink(),
             });
         }
-        return new Border
+        var balloon = new Border
         {
             Child = stack,
             Padding = new Thickness(12, 8, 12, 8),
@@ -2228,6 +2399,108 @@ public sealed partial class ChatsView : UserControl
             Background = Palette.Surface(ActualTheme),
             Opacity = row.Failed ? 0.9 : 0.6,
         };
+        if (lone is not null)
+        {
+            _ = LearnPendingVoiceAsync(chat, row, lone, balloon);
+        }
+        return balloon;
+    }
+
+    /// <summary>
+    /// Whether the one file a send on its way carries is a voice note — read from this device's staging, never the server —
+    /// and, if it is, the plain balloon drawn meanwhile replaced by the voice bubble where it stands.
+    /// </summary>
+    private async Task LearnPendingVoiceAsync(ConversationModel chat, OutboxRow row, string handle, FrameworkElement drawn)
+    {
+        try
+        {
+            var store = connection.Staging;
+            var staged = await Task.Run(() => store.Read(handle));
+            if (gone)
+            {
+                return;
+            }
+            PendingVoice? voice = staged is not null && VoiceLook.IsPendingVoice(row.Body, [staged.Kind])
+                ? new PendingVoice(staged.Waveform, staged.DurationMs)
+                : null;
+            if (stagedVoices.Count >= 32)
+            {
+                stagedVoices.Clear();
+            }
+            stagedVoices[handle] = voice;
+            if (voice is not null && drawn.Parent is Panel parent && parent.Children.IndexOf(drawn) is var at and >= 0)
+            {
+                parent.Children[at] = PendingVoiceElement(chat, row, voice);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a voice message on its way: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// The reader's own voice note on its way: the bubble it will be — the balloon's white disc, the shape measured from the
+    /// recording (or the neutral one) and its length — fainter, and under it "Sending…" or, refused, Try Again and Delete.
+    /// Nothing to press in it yet: the note is not anywhere to be played from until it lands.
+    /// </summary>
+    private FrameworkElement PendingVoiceElement(ConversationModel chat, OutboxRow row, PendingVoice voice)
+    {
+        var say = services.Say;
+        var surface = Palette.Surface(ActualTheme);
+        var disc = new Grid { Width = VoiceLook.PlayDisc, Height = VoiceLook.PlayDisc, VerticalAlignment = VerticalAlignment.Center };
+        disc.Children.Add(new Ellipse { Fill = Palette.Ink() });
+        disc.Children.Add(new FontIcon
+        {
+            Glyph = ((char)0xE768).ToString(),
+            FontSize = 16,
+            Foreground = surface,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        AutomationProperties.SetAccessibilityView(disc, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        var rest = new SolidColorBrush(Windows.UI.Color.FromArgb(0x73, 0xFF, 0xFF, 0xFF));
+        var wave = WaveformBars(
+            VoiceLook.Bars(voice.Waveform, VoiceLook.BarCount(VoiceLook.WaveWidth)), VoiceLook.WaveHeight, rest, out _);
+        var length = MediaText.TimeLabel(VoiceNotes.TotalSeconds(voice.DurationMs));
+        var time = new TextBlock
+        {
+            Text = length,
+            FontSize = 12,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xD9, 0xFF, 0xFF, 0xFF)),
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        Typography.SetNumeralAlignment(time, FontNumeralAlignment.Tabular);
+        var right = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        right.Children.Add(new Grid { Height = 32, Children = { wave } });
+        right.Children.Add(time);
+        Grid.SetColumn(right, 1);
+        var line = new Grid { ColumnSpacing = 10 };
+        line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        line.Children.Add(disc);
+        line.Children.Add(right);
+        // One group Narrator meets as what it is: "Voice message, 0:42" — the foot under it says where it stands.
+        var balloon = new NamedGroup
+        {
+            Width = VoiceLook.Width,
+            Padding = new Thickness(8, 6, 12, 6),
+            CornerRadius = new CornerRadius(14),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Background = surface,
+            Opacity = row.Failed ? 0.9 : 0.6,
+        };
+        balloon.Children.Add(line);
+        AutomationProperties.SetName(balloon, say.Format("Voice message, %@", length));
+        var column = new StackPanel
+        {
+            Spacing = 3,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(72, 8, 0, 0),
+        };
+        column.Children.Add(balloon);
+        column.Children.Add(PendingFoot(chat, row));
+        return column;
     }
 
     // ---- attachments ---------------------------------------------------------------------------
@@ -2741,6 +3014,9 @@ public sealed partial class ChatsView : UserControl
         {
             // Over its poster, with the way back (S5.3).
             viewerRoundFailed = true;
+            // Its "Try again" stands where the disc is.
+            viewerDiscShown = false;
+            ViewerRoundDisc.Opacity = 0;
             ViewerRoundRetry.Visibility = Visibility.Visible;
             ViewerRoundBar.Visibility = Visibility.Collapsed;
             return;
@@ -3682,7 +3958,7 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     private void ShowPlayDimming()
     {
-        foreach (var toggle in audioRows.Values.Select(row => row.Toggle)
+        foreach (var toggle in audioRows.All.Select(row => row.Toggle)
                      .Concat(stagedRows.Values.Select(row => row.Toggle))
                      .Concat(parkedRows.Values.Select(row => row.Toggle)))
         {
@@ -3949,13 +4225,18 @@ public sealed partial class ChatsView : UserControl
     private DispatcherQueueTimer RecordingClock()
     {
         var timer = DispatcherQueue.CreateTimer();
-        timer.Interval = TimeSpan.FromMilliseconds(250);
+        // An eighth of a second: the clock reads whole seconds, and the live waveform scrolls a bar a tick.
+        timer.Interval = TimeSpan.FromMilliseconds(125);
         timer.Tick += (_, _) =>
         {
             if (recorder is not { } running)
             {
                 timer.Stop();
                 return;
+            }
+            if (running.TakePeakDbfs() is { } peak)
+            {
+                liveLevels.Push(peak);
             }
             if (VoiceNotes.IsDone(running.Elapsed))
             {
@@ -3974,12 +4255,13 @@ public sealed partial class ChatsView : UserControl
 
     /// <summary>
     /// The clock, "0:42" — never announced (S6) — and from 4:30 "30 seconds left" beside it in orange, said once: words as well
-    /// as colour (S2.5, WCAG 1.4.1). Windows draws no level meter in this version (S2.9), so the words take its place.
+    /// as colour (S2.5, WCAG 1.4.1), in the live waveform's place — the line under it moves no more from there.
     /// </summary>
     private void ShowRecording()
     {
         var elapsed = recorder?.Elapsed ?? TimeSpan.Zero;
         RecordingTime.Text = VoiceNotes.Clock(elapsed);
+        DrawLevels();
         if (!VoiceNotes.Warns(elapsed))
         {
             return;
@@ -3998,11 +4280,78 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>
+    /// The live waveform (the approved design: it "scrolls in from the right"): the newest peaks the meter heard, a bar a tick,
+    /// in the recording red, as many as the row has room for — and none at all where there is no meter, where the row is too
+    /// narrow (the level meter goes first, S2.4), from 4:30 when "30 seconds left" takes its place, and with Windows'
+    /// animations off, where a line sweeping across the row is exactly the motion that was asked away.
+    /// </summary>
+    private void DrawLevels()
+    {
+        var room = RecordingLevels.Parent is Grid { ColumnDefinitions.Count: > 3 } row ? row.ColumnDefinitions[3].ActualWidth : 0;
+        var count = VoiceLook.BarCount(room);
+        var shown = recorder is not null && liveLevels.Heard > 0 && count >= 8
+            && RecordingWarning.Visibility != Visibility.Visible && levelsMove;
+        RecordingLevels.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+        if (!shown)
+        {
+            return;
+        }
+        var red = Palette.Themed("SystemFillColorCriticalBrush", 0xFF, 0xC4, 0x2B, 0x1C);
+        while (RecordingLevels.Children.Count > count)
+        {
+            RecordingLevels.Children.RemoveAt(0);
+        }
+        while (RecordingLevels.Children.Count < count)
+        {
+            RecordingLevels.Children.Insert(0, new Microsoft.UI.Xaml.Shapes.Rectangle
+            {
+                Width = VoiceLook.BarWidth,
+                RadiusX = VoiceLook.BarWidth / 2,
+                RadiusY = VoiceLook.BarWidth / 2,
+                Fill = red,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+        }
+        var levels = liveLevels.Bars(count);
+        for (var i = 0; i < count; i++)
+        {
+            ((FrameworkElement)RecordingLevels.Children[i]).Height = VoiceLook.BarHeight(levels[i], RecordingLevels.Height);
+        }
+    }
+
+    /// <summary>
+    /// <paramref name="element"/> fading in over the design's 150 ms — the recording row over the field and back, a chip
+    /// arriving — or simply there with Windows' animations off.
+    /// </summary>
+    private static void FadeIn(UIElement element)
+    {
+        if (!StickerImaging.AnimationsWanted())
+        {
+            element.Opacity = 1;
+            return;
+        }
+        var fade = new Animation.DoubleAnimation
+        {
+            From = 0,
+            To = 1,
+            Duration = new Duration(TimeSpan.FromMilliseconds(ComposerButton.SlotCrossfadeMs)),
+        };
+        Animation.Storyboard.SetTarget(fade, element);
+        Animation.Storyboard.SetTargetProperty(fade, "Opacity");
+        var board = new Animation.Storyboard();
+        board.Children.Add(fade);
+        board.Begin();
+    }
+
+    /// <summary>
     /// The recording row in place of the field and the buttons beside it (S2.4) — at the height the row had, so nothing above
     /// it moves — with its middle Stop only when the slot is not Stop already, and focus on the slot, where it stays.
     /// </summary>
     private void ShowRecordingRow()
     {
+        liveLevels.Clear();
+        levelsMove = StickerImaging.AnimationsWanted();
+        RecordingLevels.Children.Clear();
         RecordingRow.MinHeight = Math.Max(ComposerBox.ActualHeight, ComposerTools.ActualHeight);
         RecordingStop.Visibility = recordingBesideDraft ? Visibility.Collapsed : Visibility.Visible;
         RecordingWarning.Visibility = Visibility.Collapsed;
@@ -4012,6 +4361,7 @@ public sealed partial class ChatsView : UserControl
         ComposerBox.Visibility = Visibility.Collapsed;
         SuggestionScroller.Visibility = Visibility.Collapsed;
         RecordingRow.Visibility = Visibility.Visible;
+        FadeIn(RecordingRow);
         FitRecordingRow();
         StartPulse();
         AttachButton.IsEnabled = false;
@@ -4141,6 +4491,8 @@ public sealed partial class ChatsView : UserControl
         DrawSlot();
         try
         {
+            // Its shape goes up with it (docs/protocol.md, "A voice note's waveform"), measured from the note itself.
+            note = await VoiceShape.ShapedAsync(note);
             handle = await Task.Run(() => store.Stage(note));
             chat.Send(
                 string.Empty, replyToMessageId: replyTo, pendingFiles: [handle],
@@ -4218,8 +4570,12 @@ public sealed partial class ChatsView : UserControl
         }
         StopPulse();
         RecordingRow.Visibility = Visibility.Collapsed;
+        RecordingLevels.Visibility = Visibility.Collapsed;
+        RecordingLevels.Children.Clear();
         ComposerBox.Visibility = Visibility.Visible;
         ComposerTools.Visibility = Visibility.Visible;
+        FadeIn(ComposerBox);
+        FadeIn(ComposerTools);
         AttachButton.IsEnabled = !finding;
         DrawSuggestions();
         ShowCallButtons();
@@ -4345,7 +4701,10 @@ public sealed partial class ChatsView : UserControl
             return RecordingFate.Discard;
         }
         if (fate == RecordingFate.Review && !gone && open?.ChatId == chatId
-            && VoiceNotes.Staged(bytes, recorded.Elapsed) is { } staged && Staging(chatId).Add(staged))
+            && VoiceNotes.Staged(bytes, recorded.Elapsed) is { } note
+            // Measured before it is shown, so its chip draws its own shape and a Send from review carries it.
+            && await VoiceShape.ShapedAsync(note) is var staged
+            && !gone && open?.ChatId == chatId && keepsRecordings && Staging(chatId).Add(staged))
         {
             DrawStaging();
             // The field comes back, focused, for an optional caption (S2.7).
@@ -4529,27 +4888,100 @@ public sealed partial class ChatsView : UserControl
     private FrameworkElement NotSentRow(ConversationModel chat, ParkedRecording entry)
     {
         var say = services.Say;
-        var resources = Application.Current.Resources;
-        var secondary = (Brush)resources["TextFillColorSecondaryBrush"];
-        var grid = new Grid { ColumnSpacing = 10 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        // A microphone, in Segoe Fluent Icons.
-        grid.Children.Add(new FontIcon
+        var secondary = Palette.SecondaryText();
+        // The approved design's not-sent chip: "Not sent" in the caution colour, ▶, the note's mini waveform, its length,
+        // Send and ✕ — and under them the reply it was recorded under and its caption, when it has them.
+        var notSent = new TextBlock
         {
-            Glyph = ((char)0xE720).ToString(),
-            FontSize = 16,
-            Foreground = secondary,
+            Text = say.Get("Not sent"),
+            FontSize = 12.5,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Palette.Themed("SystemFillColorCautionBrush", 0xFF, 0x9D, 0x5D, 0x00),
             VerticalAlignment = VerticalAlignment.Center,
-        });
-        var lines = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
-        var idle = NotSent.Line(entry.DurationMs, say);
-        var line = new TextBlock { Text = idle, TextTrimming = TextTrimming.CharacterEllipsis };
-        Typography.SetNumeralAlignment(line, FontNumeralAlignment.Tabular);
+        };
+        // Its ▶ (S2.8): the note as it would be sent, from this device.
+        var shape = parkedShapes.TryGetValue(entry.Id, out var known) ? known : null;
+        var player = ChipPlayer(shape, entry.DurationMs, NotSentChipBars);
+        player.Toggle.Click += (_, _) => _ = ToggleLocalAsync(null, entry);
+        parkedRows[entry.Id] = new LocalRow(
+            player.Toggle, player.Glyph, player.Time, player.Time.Text, VoiceNotes.TotalSeconds(entry.DurationMs),
+            player.Bars, player.Played, player.Quiet);
+        DimPlay(player.Toggle);
+        if (!parkedShapes.ContainsKey(entry.Id))
+        {
+            _ = MeasureParkedAsync(entry);
+        }
+        var send = new Button
+        {
+            Content = new TextBlock
+            {
+                Text = say.Get("Send"),
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = Palette.Themed("AccentTextFillColorPrimaryBrush", 0xFF, 0x1E, 0x5B, 0xC6),
+            },
+            Padding = new Thickness(8, 4, 8, 4),
+            // A 44 target (S1.1) that reaches past the chip's line rather than making it taller.
+            MinHeight = ComposerButton.MinTargetWindowsEpx,
+            Margin = new Thickness(0, VoiceLook.Reach(32), 0, VoiceLook.Reach(32)),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTipService.SetToolTip(send, say.Get("Send voice message"));
+        AutomationProperties.SetName(send, say.Get("Send voice message"));
+        send.Click += (_, _) => _ = SendParkedAsync(chat, entry);
+        var delete = ChipCross(say.Get("Delete recording"));
+        delete.Click += (_, _) => _ = DeleteParkedAsync(entry);
+        var line = new Grid { ColumnSpacing = 10 };
+        // The mini waveform's place: its bars are drawn again, fewer, when the chip is narrower than the mockup's.
+        var wave = new Grid { VerticalAlignment = VerticalAlignment.Center };
+        wave.Children.Add(player.Wave);
+        var lines = new StackPanel { Spacing = 2 };
         lines.Children.Add(line);
+        ChipFit? laid = null;
+        void Lay(ChipFit fit)
+        {
+            if (laid is { } was && was.LabelAbove == fit.LabelAbove && was.Bars == fit.Bars)
+            {
+                return;
+            }
+            if (laid?.LabelAbove != fit.LabelAbove)
+            {
+                // "Not sent" on the line, or — in a longer language or at a large text size — on a line of its own above it.
+                line.Children.Clear();
+                line.ColumnDefinitions.Clear();
+                lines.Children.Remove(notSent);
+                var columns = new List<FrameworkElement>();
+                if (fit.LabelAbove)
+                {
+                    lines.Children.Insert(0, notSent);
+                }
+                else
+                {
+                    columns.Add(notSent);
+                }
+                columns.AddRange([player.Toggle, wave, player.Time, send, delete]);
+                for (var at = 0; at < columns.Count; at++)
+                {
+                    line.ColumnDefinitions.Add(new ColumnDefinition
+                    {
+                        Width = ReferenceEquals(columns[at], wave) ? new GridLength(1, GridUnitType.Star) : GridLength.Auto,
+                    });
+                    Place(line, columns[at], at);
+                }
+            }
+            if (laid?.Bars != fit.Bars && parkedRows.TryGetValue(entry.Id, out var row) && row.Toggle == player.Toggle)
+            {
+                // The WHOLE shape at the bars that fit, never the mockup's 22 cut off at the column's edge.
+                var known = parkedShapes.TryGetValue(entry.Id, out var measured) ? measured : null;
+                wave.Children.Clear();
+                wave.Children.Add(WaveformBars(VoiceLook.Bars(known, fit.Bars), VoiceLook.ChipWaveHeight, row.RestInk, out var bars));
+                row.Bars = bars;
+                ShowLocal();
+            }
+            laid = fit;
+        }
+        Lay(new ChipFit(LabelAbove: false, NotSentChipBars));
         // The reply it was recorded under — which is the one it goes with, whatever the composer is primed with now.
         if (entry.ReplyToMessageId is { } replyId && connection.Chats.Message(replyId) is { } answered)
         {
@@ -4573,40 +5005,60 @@ public sealed partial class ChatsView : UserControl
                 TextTrimming = TextTrimming.CharacterEllipsis,
             });
         }
-        Grid.SetColumn(lines, 1);
-        grid.Children.Add(lines);
-        // Its ▶ (S2.8): the note as it would be sent, from this device.
-        var (play, glyph) = PlayButton();
-        play.Click += (_, _) => _ = ToggleLocalAsync(null, entry);
-        parkedRows[entry.Id] = new LocalRow(play, glyph, line, idle, VoiceNotes.TotalSeconds(entry.DurationMs));
-        DimPlay(play);
-        Grid.SetColumn(play, 2);
-        grid.Children.Add(play);
-        var send = new Button { Content = say.Get("Send"), VerticalAlignment = VerticalAlignment.Center };
-        if (resources.TryGetValue("AccentButtonStyle", out var accent) && accent is Style accented)
+        var chip = VoiceChipBox(lines, warning: true);
+        // Said as one: "Voice message not sent · 0:42".
+        AutomationProperties.SetName(chip, NotSent.Line(entry.DurationMs, say));
+        // The mockup's min(360, 100%): as wide as the room up to 360, and laid out for that width — again whenever the room
+        // or the text size changes (the length's own size follows the text size).
+        var host = new Grid();
+        host.Children.Add(chip);
+        void Fit()
         {
-            send.Style = accented;
+            var room = host.ActualWidth;
+            if (gone || !double.IsFinite(room) || room <= 0)
+            {
+                return;
+            }
+            var width = Math.Min(VoiceLook.ChipWidth, room);
+            chip.Width = width;
+            var inner = width - chip.Padding.Left - chip.Padding.Right - chip.BorderThickness.Left - chip.BorderThickness.Right;
+            var natural = new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity);
+            double Natural(FrameworkElement element)
+            {
+                element.Measure(natural);
+                return element.DesiredSize.Width;
+            }
+            var others = Natural(player.Toggle) + Natural(player.Time) + Natural(send) + Natural(delete);
+            Lay(VoiceLook.FitNotSent(inner, others, Natural(notSent), line.ColumnSpacing, NotSentChipBars));
         }
-        ToolTipService.SetToolTip(send, say.Get("Send voice message"));
-        AutomationProperties.SetName(send, say.Get("Send voice message"));
-        send.Click += (_, _) => _ = SendParkedAsync(chat, entry);
-        Grid.SetColumn(send, 3);
-        grid.Children.Add(send);
-        var delete = new Button { Content = "✕", Padding = new Thickness(8, 4, 8, 4), VerticalAlignment = VerticalAlignment.Center };
-        ToolTipService.SetToolTip(delete, say.Get("Delete recording"));
-        AutomationProperties.SetName(delete, say.Get("Delete recording"));
-        delete.Click += (_, _) => _ = DeleteParkedAsync(entry);
-        Grid.SetColumn(delete, 4);
-        grid.Children.Add(delete);
-        return new Border
+        host.SizeChanged += (_, _) => Fit();
+        player.Time.SizeChanged += (_, _) => Fit();
+        return host;
+    }
+
+    /// <summary>
+    /// The shape of a voice message that was not sent: kept with nothing but its bytes, so it is measured from them once per
+    /// run (<see cref="VoiceShape"/>) and the bars its row draws now — however many fit the chip — are given it.
+    /// </summary>
+    private async Task MeasureParkedAsync(ParkedRecording entry)
+    {
+        parkedShapes[entry.Id] = null;
+        try
         {
-            Child = grid,
-            Padding = new Thickness(10, 6, 6, 6),
-            CornerRadius = new CornerRadius(8),
-            Background = (Brush)resources["CardBackgroundFillColorDefaultBrush"],
-            BorderBrush = (Brush)resources["CardStrokeColorDefaultBrush"],
-            BorderThickness = new Thickness(1),
-        };
+            var media = await Task.Run(() => parked.Staged(entry));
+            var shape = media is null ? null : await VoiceShape.MeasureAsync(media.Bytes);
+            parkedShapes[entry.Id] = shape;
+            // The bars its row draws NOW — fitted to the chip's width, perhaps drawn again since this began.
+            if (gone || shape is null || !parkedRows.TryGetValue(entry.Id, out var row))
+            {
+                return;
+            }
+            Reshape(row.Bars, shape, VoiceLook.ChipWaveHeight);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"measuring a voice message that was not sent: {e.GetType().Name}");
+        }
     }
 
     /// <summary>
@@ -4655,6 +5107,10 @@ public sealed partial class ChatsView : UserControl
                 ShowProblem(say.Get("Something went wrong. Try again."));
                 return;
             }
+            // Its shape goes up with it: the one its row drew, or measured now from the same bytes.
+            media = parkedShapes.TryGetValue(entry.Id, out var shape) && shape is not null
+                ? media with { Waveform = shape }
+                : await VoiceShape.ShapedAsync(media);
             handle = await Task.Run(() => store.Stage(media));
             if (gone || open != chat)
             {
@@ -4768,96 +5224,173 @@ public sealed partial class ChatsView : UserControl
         }
     }
 
-    /// <summary>One recording's row as drawn, so playback can keep it up to date.</summary>
-    private sealed record AudioRow(long Id, Button Toggle, FontIcon Glyph, Slider Track, TextBlock Elapsed, double Total);
+    /// <summary>One recording's bubble as drawn, so playback can keep it up to date: its button, its seek, its bars and its words.</summary>
+    private sealed record AudioRow(
+        long Id,
+        Button Toggle,
+        FontIcon Glyph,
+        Slider Track,
+        TextBlock Time,
+        double Total,
+        Microsoft.UI.Xaml.Shapes.Rectangle[] Bars,
+        Brush PlayedInk,
+        Brush RestInk,
+        Button Speed,
+        TextBlock SpeedText,
+        Ellipse? Dot,
+        FrameworkElement Card,
+        bool Mine);
 
     /// <summary>
-    /// A recording, drawn the way the Apple apps draw one (ios <c>AudioPlayerView</c>): a round play button, a scrubber, and
-    /// where it is and how long it is under that — deliberately no waveform (docs/protocol.md, "Audio"). Downloaded rather
-    /// than streamed: a player here cannot put the session's Authorization on the requests it would make.
+    /// A recording, drawn as the approved design of 2026-10-05 draws a voice message: a round accent play button, the waveform
+    /// the sender measured (docs/protocol.md, "A voice note's waveform" — the neutral placeholder when there is none), its
+    /// played bars in the accent as it plays, the time in tabular digits — where it is while it plays, its length at rest —
+    /// a speed chip while it plays, and a dot until this device has played someone else's. Downloaded rather than streamed:
+    /// a player here cannot put the session's Authorization on the requests it would make.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>THE WAVEFORM IS THE SEEK.</b> A slider lies over the bars with its own track and thumb drawn in nothing, so a click
+    /// or a drag on the waveform seeks, the arrow keys step it, and Narrator hears an adjustable "Position" — a control every
+    /// assistive technology already knows, rather than a picture of one. Its focus rectangle is Windows' own.
+    /// </para>
+    /// <para>
+    /// <b>NOTHING IN THE READER'S OWN BALLOON IS DRAWN IN THE ACCENT</b>, which is the balloon: there the button is white with
+    /// the balloon's colour in it, the played bars white and the rest white at 45 %.
+    /// </para>
+    /// </remarks>
     private FrameworkElement AudioElement(AttachmentDto attachment, bool mine, MessageDto message, string? chatKind)
     {
         var say = services.Say;
         var resources = Application.Current.Resources;
         var total = VoiceNotes.TotalSeconds(attachment.DurationMs);
-        // An own balloon is filled with the accent, so nothing in it may be drawn in the accent too.
-        var ink = mine ? Palette.Ink() : (Brush)resources["AccentFillColorDefaultBrush"];
+        var accent = Palette.Themed("AccentFillColorDefaultBrush", 0xFF, 0x1E, 0x5B, 0xC6);
+        var white = Palette.Ink();
+        var played = mine || HasPlayedVoice(attachment.Id);
+
+        // The round play button: a 40 disc in a 44 target.
         var glyph = new FontIcon
         {
-            FontSize = 14,
-            Foreground = mine ? Palette.Surface(ActualTheme) : (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
+            Glyph = ((char)0xE768).ToString(),
+            FontSize = 16,
+            Foreground = mine ? Palette.Surface(ActualTheme) : Palette.Themed("TextOnAccentFillColorPrimaryBrush", 0xFF, 0xFF, 0xFF, 0xFF),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
         };
-        var disc = new Grid { Width = 32, Height = 32 };
-        disc.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse { Fill = ink });
+        var disc = new Grid { Width = VoiceLook.PlayDisc, Height = VoiceLook.PlayDisc };
+        disc.Children.Add(new Ellipse { Fill = mine ? white : accent });
         disc.Children.Add(glyph);
-        // The disc is 32; the target around it is 44.
         var toggle = new Button
         {
             Content = disc,
-            Width = 44,
-            Height = 44,
+            Width = ComposerButton.MinTargetWindowsEpx,
+            Height = ComposerButton.MinTargetWindowsEpx,
             Padding = new Thickness(0),
-            CornerRadius = new CornerRadius(22),
+            CornerRadius = new CornerRadius(ComposerButton.MinTargetWindowsEpx / 2.0),
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             BorderThickness = new Thickness(0),
             VerticalAlignment = VerticalAlignment.Center,
         };
+        Grid.SetRowSpan(toggle, 2);
+
+        // The waveform, and the invisible slider over it that makes it the seek.
+        var restInk = mine
+            ? new SolidColorBrush(Windows.UI.Color.FromArgb(0x73, 0xFF, 0xFF, 0xFF))
+            : Palette.Themed("TextFillColorDisabledBrush", 0x5C, 0x80, 0x80, 0x80);
+        var playedInk = mine ? white : accent;
+        var barsPanel = WaveformBars(
+            VoiceLook.Bars(attachment.Waveform, VoiceLook.BarCount(VoiceLook.WaveWidth)), VoiceLook.WaveHeight, restInk, out var bars);
         var track = new Slider
         {
             Minimum = 0,
             Maximum = total,
             StepFrequency = 0.1,
+            SmallChange = 1,
+            LargeChange = 5,
             IsThumbToolTipEnabled = false,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(-2, 0, -2, 0),
         };
+        InvisibleTrack(track);
         AutomationProperties.SetName(track, say.Get("Position"));
-        if (mine)
+        var wave = new Grid { Height = 32, Width = VoiceLook.WaveWidth, VerticalAlignment = VerticalAlignment.Bottom };
+        wave.Children.Add(barsPanel);
+        wave.Children.Add(track);
+        Grid.SetColumn(wave, 1);
+
+        // Under it: the time, the dot, and the speed chip at the end.
+        var time = new TextBlock
         {
-            foreach (var key in new[] { "SliderTrackValueFill", "SliderTrackValueFillPointerOver", "SliderTrackValueFillPressed", "SliderThumbBackground", "SliderThumbBackgroundPointerOver", "SliderThumbBackgroundPressed" })
+            Text = MediaText.TimeLabel(total),
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = mine ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xD9, 0xFF, 0xFF, 0xFF)) : Palette.SecondaryText(),
+        };
+        Typography.SetNumeralAlignment(time, FontNumeralAlignment.Tabular);
+        Ellipse? dot = null;
+        var meta = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 2, 0, 0) };
+        meta.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        meta.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        meta.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        meta.Children.Add(time);
+        if (VoiceLook.ShowsDot(mine, played))
+        {
+            // THIS DEVICE's own knowledge, kept per account and never sent — and never on the reader's own.
+            dot = new Ellipse
             {
-                track.Resources[key] = ink;
-            }
+                Width = VoiceLook.Dot,
+                Height = VoiceLook.Dot,
+                Fill = accent,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            AutomationProperties.SetAccessibilityView(dot, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+            Grid.SetColumn(dot, 1);
+            meta.Children.Add(dot);
         }
-        var elapsed = new TextBlock { FontSize = 11, Opacity = 0.75 };
-        var length = new TextBlock { FontSize = 11, Opacity = 0.75, Text = MediaText.TimeLabel(total), HorizontalAlignment = HorizontalAlignment.Right };
-        if (mine)
-        {
-            elapsed.Foreground = ink;
-            length.Foreground = ink;
-        }
-        var times = new Grid();
-        times.Children.Add(elapsed);
-        times.Children.Add(length);
-        var lines = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        lines.Children.Add(track);
-        lines.Children.Add(times);
-        var row = new Grid { ColumnSpacing = 10 };
+        var (speed, speedText) = SpeedChip(mine);
+        Grid.SetColumn(speed, 2);
+        meta.Children.Add(speed);
+        Grid.SetColumn(meta, 1);
+        Grid.SetRow(meta, 1);
+
+        var row = new Grid { ColumnSpacing = 10 - (ComposerButton.MinTargetWindowsEpx - VoiceLook.PlayDisc) / 2 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         row.Children.Add(toggle);
-        Grid.SetColumn(lines, 1);
-        row.Children.Add(lines);
-        var card = new Border
+        row.Children.Add(wave);
+        row.Children.Add(meta);
+        // The balloon is the bubble: the card adds no fill of its own, and reaches into the balloon's 12-wide padding so the
+        // disc sits 8 from its edge and the whole balloon is VoiceLook.Width across.
+        // A group Narrator meets — "Voice message, 0:42", "Not played" — which a Border, with no automation peer, never is.
+        var card = new NamedGroup
         {
-            Child = row,
-            Width = 260,
-            Padding = new Thickness(8, 6, 8, 6),
-            CornerRadius = new CornerRadius(12),
-            BorderThickness = new Thickness(1),
-            Background = mine
-                ? new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(0x24, 0xFF, 0xFF, 0xFF))
-                : (Brush)resources["SubtleFillColorSecondaryBrush"],
-            BorderBrush = mine
-                ? new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(0x29, 0xFF, 0xFF, 0xFF))
-                : (Brush)resources["CardStrokeColorDefaultBrush"],
+            Width = VoiceLook.Width - 14,
+            Margin = new Thickness(-6, -2, -4, -2),
         };
-        AutomationProperties.SetName(card, say.Format("Audio, %@", MediaText.TimeLabel(total)));
+        card.Children.Add(row);
+        AutomationProperties.SetName(card, VoiceLook.Name(attachment, say));
+        if (VoiceLook.Status(mine, played, say) is { } status)
+        {
+            AutomationProperties.SetItemStatus(card, status);
+        }
 
-        var drawn = new AudioRow(attachment.Id, toggle, glyph, track, elapsed, total);
-        audioRows[attachment.Id] = drawn;
+        var drawn = new AudioRow(attachment.Id, toggle, glyph, track, time, total, bars, playedInk, restInk, speed, speedText, dot, card, mine);
+        // Every copy on the screen is kept up to date — this one from now, and whenever it comes back — and none once it goes.
+        audioRows.Add(attachment.Id, drawn);
+        card.Loaded += (_, _) =>
+        {
+            if (!gone)
+            {
+                audioRows.Add(drawn.Id, drawn);
+            }
+        };
+        card.Unloaded += (_, _) => audioRows.Remove(drawn.Id, drawn);
         DimPlay(toggle);
         toggle.Click += (_, _) => _ = ToggleAudioAsync(attachment);
-        // While the thumb is held, playback does not fight it for the position.
+        speed.Click += (_, _) => SetVoiceRate(VoiceSpeed.Next(voiceRate));
+        // While the waveform is held, playback does not fight it for the position.
         track.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, _) => scrubbingAudio = true), true);
         track.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, _) => scrubbingAudio = false), true);
         track.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler((_, _) => scrubbingAudio = false), true);
@@ -4867,15 +5400,226 @@ public sealed partial class ChatsView : UserControl
             {
                 return;
             }
-            elapsed.Text = MediaText.TimeLabel(e.NewValue);
             if (playingAudio == drawn.Id)
             {
                 audioAtEnd = false;
                 audio.PlaybackSession.Position = TimeSpan.FromSeconds(e.NewValue);
+                PaintVoice(drawn, active: true, e.NewValue);
+                return;
             }
+            // Seeked while idle: the bars light to there and the time says it — on every copy — and Play starts there.
+            seekedAudio[drawn.Id] = e.NewValue;
+            ShowAudio(drawn.Id);
         };
         ShowAudio(drawn.Id);
         return WithTranscript(card, attachment, mine, message, chatKind);
+    }
+
+    /// <summary>
+    /// A waveform's bars, left to right, each <see cref="VoiceLook.BarWidth"/> wide with rounded ends and as tall as its level
+    /// says, centred on the line — drawn in <paramref name="ink"/> and handed back so playback can light them.
+    /// </summary>
+    private static StackPanel WaveformBars(byte[] levels, double height, Brush ink, out Microsoft.UI.Xaml.Shapes.Rectangle[] bars)
+    {
+        var panel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = VoiceLook.BarGap,
+            Height = height,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            IsHitTestVisible = false,
+        };
+        AutomationProperties.SetAccessibilityView(panel, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        bars = new Microsoft.UI.Xaml.Shapes.Rectangle[levels.Length];
+        for (var i = 0; i < levels.Length; i++)
+        {
+            bars[i] = new Microsoft.UI.Xaml.Shapes.Rectangle
+            {
+                Width = VoiceLook.BarWidth,
+                Height = VoiceLook.BarHeight(levels[i], height),
+                RadiusX = VoiceLook.BarWidth / 2,
+                RadiusY = VoiceLook.BarWidth / 2,
+                Fill = ink,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            panel.Children.Add(bars[i]);
+        }
+        return panel;
+    }
+
+    /// <summary>New levels for bars already drawn — a waveform measured after its row was — at the same count and height.</summary>
+    private static void Reshape(Microsoft.UI.Xaml.Shapes.Rectangle[] bars, string? waveform, double height)
+    {
+        var levels = VoiceLook.Bars(waveform, bars.Length);
+        for (var i = 0; i < bars.Length; i++)
+        {
+            bars[i].Height = VoiceLook.BarHeight(levels[i], height);
+        }
+    }
+
+    /// <summary>A slider whose track and thumb are drawn in nothing: the waveform under it is what is seen, its focus rectangle Windows' own.</summary>
+    private static void InvisibleTrack(Slider track)
+    {
+        var none = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        foreach (var key in new[]
+                 {
+                     "SliderTrackFill", "SliderTrackFillPointerOver", "SliderTrackFillPressed", "SliderTrackFillDisabled",
+                     "SliderTrackValueFill", "SliderTrackValueFillPointerOver", "SliderTrackValueFillPressed", "SliderTrackValueFillDisabled",
+                     "SliderThumbBackground", "SliderThumbBackgroundPointerOver", "SliderThumbBackgroundPressed", "SliderThumbBackgroundDisabled",
+                     "SliderThumbBorderBrush", "SliderThumbBorderBrushPointerOver", "SliderThumbBorderBrushPressed", "SliderThumbBorderBrushDisabled",
+                     "SliderOuterThumbBackground", "SliderTickBarFill", "SliderTickBarFillDisabled",
+                 })
+        {
+            track.Resources[key] = none;
+        }
+    }
+
+    /// <summary>
+    /// The speed chip (1×, 1.5×, 2×): the accent's own soft capsule with the accent's text, or white on white in the reader's
+    /// balloon — hidden until its bubble plays.
+    /// </summary>
+    private (Button Chip, TextBlock Text) SpeedChip(bool mine)
+    {
+        var accentColour = Palette.ThemeAccent();
+        var text = new TextBlock
+        {
+            Text = VoiceSpeed.Label(voiceRate, services.Say),
+            FontSize = 11.5,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            Foreground = mine ? Palette.Ink() : Palette.Themed("AccentTextFillColorPrimaryBrush", 0xFF, 0x1E, 0x5B, 0xC6),
+        };
+        Typography.SetNumeralAlignment(text, FontNumeralAlignment.Tabular);
+        // The capsule is what is drawn; the button round it is the 44 target S1.1 asks for, reaching past the capsule (and
+        // leftwards, so the capsule stays at the end of the line) rather than making the time's line any taller.
+        var capsule = new Border
+        {
+            Child = text,
+            Padding = new Thickness(7, 1, 7, 2),
+            CornerRadius = new CornerRadius(9),
+            Background = new SolidColorBrush(mine
+                ? Windows.UI.Color.FromArgb(0x38, 0xFF, 0xFF, 0xFF)
+                : Windows.UI.Color.FromArgb(0x2E, accentColour.R, accentColour.G, accentColour.B)),
+        };
+        var reach = VoiceLook.Reach(SpeedCapsuleHeight);
+        var chip = new Button
+        {
+            Content = capsule,
+            Padding = new Thickness(0),
+            MinHeight = ComposerButton.MinTargetWindowsEpx,
+            MinWidth = ComposerButton.MinTargetWindowsEpx,
+            Margin = new Thickness(0, reach, 0, reach),
+            HorizontalContentAlignment = HorizontalAlignment.Right,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            BorderThickness = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            Visibility = Visibility.Collapsed,
+        };
+        TargetOnly(chip);
+        AutomationProperties.SetName(chip, VoiceSpeed.Name(voiceRate, services.Say));
+        ToolTipService.SetToolTip(chip, services.Say.Get("Playback speed"));
+        return (chip, text);
+    }
+
+    /// <summary>The speed chip's capsule as drawn at 100 % text: 11.5-px digits and their padding.</summary>
+    private const double SpeedCapsuleHeight = 19;
+
+    /// <summary>
+    /// A button that is only a TARGET round something drawn smaller inside it: nothing of its own is painted as the pointer
+    /// passes or presses, so the 44 square never shows — what is drawn is the capsule or glyph it carries.
+    /// </summary>
+    private static void TargetOnly(Button button)
+    {
+        var none = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        foreach (var key in new[]
+                 {
+                     "ButtonBackground", "ButtonBackgroundPointerOver", "ButtonBackgroundPressed", "ButtonBackgroundDisabled",
+                     "ButtonBorderBrush", "ButtonBorderBrushPointerOver", "ButtonBorderBrushPressed", "ButtonBorderBrushDisabled",
+                 })
+        {
+            button.Resources[key] = none;
+        }
+    }
+
+    /// <summary>The speed chosen — by the chip or the menu — kept on this device, applied to what plays, and every chip told.</summary>
+    private void SetVoiceRate(double rate)
+    {
+        voiceRate = VoiceSpeed.Normal(rate);
+        VoiceSpeedSetting.Rate = voiceRate;
+        if (playingAudio is not null)
+        {
+            ApplyRate(voiceRate);
+        }
+        foreach (var row in audioRows.All)
+        {
+            row.SpeedText.Text = VoiceSpeed.Label(voiceRate, services.Say);
+            AutomationProperties.SetName(row.Speed, VoiceSpeed.Name(voiceRate, services.Say));
+        }
+    }
+
+    /// <summary>
+    /// A bubble's look at <paramref name="at"/> seconds: its played bars lit, the time where it is — or, at rest, every bar
+    /// quiet and its whole length — and the speed chip only while it is the one playing.
+    /// </summary>
+    private void PaintVoice(AudioRow row, bool active, double at, bool seeked = false)
+    {
+        var shown = active || seeked;
+        var lit = shown ? VoiceLook.PlayedBars(at, row.Total, row.Bars.Length) : 0;
+        for (var i = 0; i < row.Bars.Length; i++)
+        {
+            var ink = i < lit ? row.PlayedInk : row.RestInk;
+            if (!ReferenceEquals(row.Bars[i].Fill, ink))
+            {
+                row.Bars[i].Fill = ink;
+            }
+        }
+        row.Time.Text = VoiceLook.Time(shown, at, row.Total);
+        var speed = VoiceLook.ShowsSpeed(active) ? Visibility.Visible : Visibility.Collapsed;
+        if (row.Speed.Visibility != speed)
+        {
+            row.Speed.Visibility = speed;
+        }
+    }
+
+    /// <summary>Whether this device has played this voice message; a cache that cannot be read draws no dot rather than a wrong one.</summary>
+    private bool HasPlayedVoice(long attachmentId)
+    {
+        try
+        {
+            return playedVoice.Played(attachmentId);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading what was played: {e.GetType().Name}");
+            return true;
+        }
+    }
+
+    /// <summary>A voice message starts playing here: remembered, and its dot goes — on every copy drawn of it.</summary>
+    private void MarkVoicePlayed(long attachmentId)
+    {
+        try
+        {
+            if (!playedVoice.MarkPlayed(attachmentId))
+            {
+                return;
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"remembering what was played: {e.GetType().Name}");
+            return;
+        }
+        foreach (var row in audioRows.Of(attachmentId).Where(row => !row.Mine))
+        {
+            if (row.Dot is { } dot)
+            {
+                dot.Visibility = Visibility.Collapsed;
+            }
+            AutomationProperties.SetItemStatus(row.Card, VoiceLook.Status(mine: false, played: true, services.Say) ?? string.Empty);
+        }
     }
 
     /// <summary>
@@ -5213,17 +5957,51 @@ public sealed partial class ChatsView : UserControl
         (audio.Source as Windows.Media.Core.MediaSource)?.Dispose();
         audio.Source = Windows.Media.Core.MediaSource.CreateFromStream(stream, attachment.Mime ?? VoiceNotes.Mime);
         playingAudio = attachment.Id;
+        // Where its waveform was put while it was idle, once the player has opened it (MediaOpened), or the start.
+        var from = VoiceLook.StartAt(
+            seekedAudio.Remove(attachment.Id, out var seeked) ? seeked : null, VoiceNotes.TotalSeconds(attachment.DurationMs));
+        startAudioAt = from > 0 ? from : null;
+        ApplyRate(voiceRate);
         audio.Play();
+        // Played here: its dot goes now, as the mockup's does, and stays gone on this device.
+        MarkVoicePlayed(attachment.Id);
         ShowPlayback();
     }
 
-    /// <summary>The row for one recording: its glyph, and where it is — the start unless it is the one playing.</summary>
+    /// <summary>The player's speed: the device's choice for a voice message in the chat, 1× for a note of one's own being reviewed.</summary>
+    private void ApplyRate(double rate)
+    {
+        playerRate = rate;
+        try
+        {
+            audio.PlaybackSession.PlaybackRate = rate;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"setting the playback speed: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// Every copy drawn of one recording: its glyph, and where it is — where it plays, where it was seeked to while idle, or
+    /// its start.
+    /// </summary>
     private void ShowAudio(long id)
     {
-        if (gone || !audioRows.TryGetValue(id, out var row))
+        if (gone)
         {
             return;
         }
+        foreach (var row in audioRows.Of(id))
+        {
+            ShowAudio(row);
+        }
+    }
+
+    /// <summary>One copy of a recording's row: its glyph, and where it is.</summary>
+    private void ShowAudio(AudioRow row)
+    {
+        var id = row.Id;
         var active = playingAudio == id;
         var running = active && AudioRunning;
         // Play and Pause, in Segoe Fluent Icons.
@@ -5231,13 +6009,18 @@ public sealed partial class ChatsView : UserControl
         AutomationProperties.SetName(row.Toggle, running ? services.Say.Get("Pause") : services.Say.Get("Play"));
         if (active && scrubbingAudio)
         {
+            // The waveform under the pointer is drawn by the seek itself.
             return;
         }
-        var at = !active ? 0 : audioAtEnd ? row.Total : Math.Min(audio.PlaybackSession.Position.TotalSeconds, row.Total);
+        // Played through, it is at rest again — every bar quiet and its whole length — and Play starts it from the top.
+        var inProgress = active && !audioAtEnd;
+        // Not playing, it shows where its waveform was seeked to, if it was — or rests at its start.
+        var seeked = !active && seekedAudio.TryGetValue(id, out var put) ? Math.Clamp(put, 0, row.Total) : 0;
+        var at = inProgress ? Math.Min(audio.PlaybackSession.Position.TotalSeconds, row.Total) : seeked;
         movingTrack = true;
         row.Track.Value = at;
         movingTrack = false;
-        row.Elapsed.Text = MediaText.TimeLabel(at);
+        PaintVoice(row, inProgress, at, seeked: seeked > 0);
     }
 
     private void ShowPlayback()
@@ -5279,6 +6062,8 @@ public sealed partial class ChatsView : UserControl
         playingParked = null;
         audioAtEnd = false;
         scrubbingAudio = false;
+        seekedAudio.Clear();
+        startAudioAt = null;
         audio.Pause();
         (audio.Source as Windows.Media.Core.MediaSource)?.Dispose();
         audio.Source = null;
@@ -5287,8 +6072,17 @@ public sealed partial class ChatsView : UserControl
         parkedRows.Clear();
     }
 
-    /// <summary>A staged or not-sent note's row as drawn — its ▶, the line that becomes "0:12 / 0:42", its name and length — so playback can keep it up to date.</summary>
-    private sealed record LocalRow(Button Toggle, FontIcon Glyph, TextBlock Line, string Idle, double Total);
+    /// <summary>
+    /// A staged or not-sent note's chip as drawn — its ▶, its time (the length at rest, where it is while it plays), its mini
+    /// waveform and the inks its bars are lit and quiet in — so playback can keep it up to date.
+    /// </summary>
+    private sealed record LocalRow(
+        Button Toggle, FontIcon Glyph, TextBlock Line, string Idle, double Total,
+        Microsoft.UI.Xaml.Shapes.Rectangle[] Bars, Brush PlayedInk, Brush RestInk)
+    {
+        /// <summary>The bars as drawn now: a not-sent chip draws them again, fewer, when it is narrower than the mockup's.</summary>
+        public Microsoft.UI.Xaml.Shapes.Rectangle[] Bars { get; set; } = Bars;
+    }
 
     private bool LocalActive => playingStaged is not null || playingParked is not null;
 
@@ -5374,6 +6168,8 @@ public sealed partial class ChatsView : UserControl
         audio.Source = Windows.Media.Core.MediaSource.CreateFromStream(stream, VoiceNotes.Mime);
         playingStaged = staged;
         playingParked = staged is null ? entry?.Id : null;
+        startAudioAt = null;
+        ApplyRate(1.0);
         audio.Play();
         ShowLocal();
     }
@@ -5391,7 +6187,22 @@ public sealed partial class ChatsView : UserControl
         var name = running ? services.Say.Get("Pause") : services.Say.Get("Play");
         AutomationProperties.SetName(row.Toggle, name);
         ToolTipService.SetToolTip(row.Toggle, name);
-        row.Line.Text = VoiceNotes.PlayingLabel(audio.PlaybackSession.Position.TotalSeconds, row.Total);
+        var at = audio.PlaybackSession.Position.TotalSeconds;
+        row.Line.Text = VoiceLook.Time(active: true, at, row.Total);
+        LightBars(row.Bars, VoiceLook.PlayedBars(at, row.Total, row.Bars.Length), row.PlayedInk, row.RestInk);
+    }
+
+    /// <summary>The first <paramref name="lit"/> bars in the played ink, the rest quiet.</summary>
+    private static void LightBars(Microsoft.UI.Xaml.Shapes.Rectangle[] bars, int lit, Brush played, Brush rest)
+    {
+        for (var i = 0; i < bars.Length; i++)
+        {
+            var ink = i < lit ? played : rest;
+            if (!ReferenceEquals(bars[i].Fill, ink))
+            {
+                bars[i].Fill = ink;
+            }
+        }
     }
 
     /// <summary>The note that was playing is not the one any more — ended, or something else pressed: its row goes back to ▶ and its name.</summary>
@@ -5408,6 +6219,7 @@ public sealed partial class ChatsView : UserControl
         AutomationProperties.SetName(row.Toggle, services.Say.Get("Play"));
         ToolTipService.SetToolTip(row.Toggle, services.Say.Get("Play"));
         row.Line.Text = row.Idle;
+        LightBars(row.Bars, 0, row.PlayedInk, row.RestInk);
     }
 
     /// <summary>
@@ -6907,7 +7719,14 @@ public sealed partial class ChatsView : UserControl
         var played = HasPlayed(video.Id);
         var white = new SolidColorBrush(Microsoft.UI.Colors.White);
         var face = new Grid { Width = Diameter, Height = Diameter };
-        face.Children.Add(new Ellipse { Fill = (Brush)resources["ControlFillColorSecondaryBrush"] });
+        // The approved design's soft shadow, cast by the circle itself — a drop shadow masked by the disc's own shape.
+        // It is hung OUTSIDE the button, whose rounded corners would clip it to the circle. The mask takes the disc's ALPHA,
+        // so the disc is a SOLID neutral: a translucent control fill (about 50 % in light, 8 % in dark) would cast a shadow
+        // of half or a twelfth of the design's strength — next to none in the dark theme it was made deeper for.
+        var ground = new Ellipse { Fill = Palette.Themed("SolidBackgroundFillColorTertiaryBrush", 0xFF, 0xF9, 0xF9, 0xF9) };
+        var shadow = new Grid { Width = Diameter, Height = Diameter, IsHitTestVisible = false };
+        face.Children.Add(ground);
+        CastShadow(shadow, ground, Diameter);
         var poster = new Ellipse();
         face.Children.Add(poster);
         var disc = new Grid
@@ -6917,7 +7736,7 @@ public sealed partial class ChatsView : UserControl
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        disc.Children.Add(new Ellipse { Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(140, 0, 0, 0)) });
+        disc.Children.Add(new Ellipse { Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0x73, 0, 0, 0)) });
         // Play, in Segoe Fluent Icons — a glyph, not a sentence; nudged right so the triangle looks centred.
         disc.Children.Add(new FontIcon
         {
@@ -6929,39 +7748,39 @@ public sealed partial class ChatsView : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         });
         face.Children.Add(disc);
-        var foot = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 6,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            Margin = new Thickness(0, 0, 0, 18),
-        };
+        // The badge, at the bottom centre on a dark capsule: the length and — until this device has played someone else's
+        // circle — a white dot beside it, inside the capsule (the approved design).
+        var badge = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         if (RoundLook.Capsule(video) is { } length)
         {
-            foot.Children.Add(new Border
-            {
-                CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(8, 2, 8, 3),
-                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(153, 0, 0, 0)),
-                Child = new TextBlock { Text = length, FontSize = 12, Foreground = white },
-            });
+            var words = new TextBlock { Text = length, FontSize = 12, Foreground = white, VerticalAlignment = VerticalAlignment.Center };
+            Typography.SetNumeralAlignment(words, FontNumeralAlignment.Tabular);
+            badge.Children.Add(words);
         }
         if (RoundLook.ShowsDot(mine, played))
         {
             // THIS DEVICE's own knowledge: kept per account, never sent, wiped at sign-out (S5.2) — and never on the
             // reader's own circles.
-            foot.Children.Add(new Ellipse
+            badge.Children.Add(new Ellipse
             {
                 Width = RoundLook.Dot,
                 Height = RoundLook.Dot,
-                Fill = (Brush)resources["AccentFillColorDefaultBrush"],
+                Fill = white,
                 VerticalAlignment = VerticalAlignment.Center,
             });
         }
-        if (foot.Children.Count > 0)
+        if (badge.Children.Count > 0)
         {
-            face.Children.Add(foot);
+            face.Children.Add(new Border
+            {
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(8, 2, 8, 3),
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x8C, 0, 0, 0)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Margin = new Thickness(0, 0, 0, 14),
+                Child = badge,
+            });
         }
         // A button, so Tab reaches it and Enter or Space opens it like a click; drawn as nothing but the circle.
         var circle = new Button
@@ -6986,7 +7805,11 @@ public sealed partial class ChatsView : UserControl
             heart();
         };
         _ = ShowPosterAsync(poster, video);
-        return circle;
+        var standing = new Grid { HorizontalAlignment = circle.HorizontalAlignment };
+        AutomationProperties.SetAccessibilityView(shadow, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        standing.Children.Add(shadow);
+        standing.Children.Add(circle);
+        return standing;
     }
 
     /// <summary>The square poster, filling its ellipse — the same small copy the viewer shows while the video loads.</summary>
@@ -7059,6 +7882,35 @@ public sealed partial class ChatsView : UserControl
         }
     }
 
+    /// <summary>
+    /// A soft shadow under a disc (the approved design's <c>0 6px 18px</c>): a composition drop shadow masked by the disc's own
+    /// alpha, hung on <paramref name="host"/> behind it — deeper in the dark theme, where a light one would not show. A
+    /// machine where composition cannot do it simply draws the circle without one.
+    /// </summary>
+    private void CastShadow(Grid host, Ellipse shape, double diameter)
+    {
+        try
+        {
+            var compositor = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(host).Compositor;
+            var drop = compositor.CreateDropShadow();
+            drop.BlurRadius = 18;
+            drop.Offset = new System.Numerics.Vector3(0, 6, 0);
+            // The mockup's rgba(20,24,40,.16) in light and rgba(0,0,0,.5) in dark — at full strength, the mask being opaque.
+            drop.Color = ActualTheme == ElementTheme.Dark
+                ? Windows.UI.Color.FromArgb(0x80, 0x00, 0x00, 0x00)
+                : Windows.UI.Color.FromArgb(0x29, 0x14, 0x18, 0x28);
+            drop.Mask = shape.GetAlphaMask();
+            var sprite = compositor.CreateSpriteVisual();
+            sprite.Size = new System.Numerics.Vector2((float)diameter, (float)diameter);
+            sprite.Shadow = drop;
+            Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.SetElementChildVisual(host, sprite);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"a video message's shadow: {e.GetType().Name}");
+        }
+    }
+
     /// <summary>A circle, in the viewer: its circle, and its own bar under it.</summary>
     /// <remarks>Only ever handed what <see cref="MessageDto.RoundVideo"/> found — S5.1's test of the whole message.</remarks>
     private void OpenRound(AttachmentDto video) => OpenViewer([video], 0, round: true);
@@ -7075,6 +7927,11 @@ public sealed partial class ChatsView : UserControl
         viewerRoundStarted = false;
         viewerRoundFailed = false;
         viewerRoundClock?.Stop();
+        // A new opening: no ring yet, and the play disc in the middle until it plays.
+        viewerDiscFade?.Stop();
+        viewerDiscShown = true;
+        ViewerRoundDisc.Opacity = 1;
+        DrawViewerRing(0);
         ViewerRoundRetry.Visibility = Visibility.Collapsed;
         ViewerRoundBar.Visibility = Visibility.Collapsed;
         ViewerRoundFrame.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
@@ -7114,10 +7971,14 @@ public sealed partial class ChatsView : UserControl
         var diameter = RoundLook.ViewerDiameter(ViewerOverlay.ActualWidth, ViewerOverlay.ActualHeight, ViewerRoundChrome);
         ViewerVideo.Width = diameter;
         ViewerVideo.Height = diameter;
-        ViewerRoundFrame.Width = diameter;
-        ViewerRoundFrame.Height = diameter;
-        ViewerRoundRing.Width = diameter;
-        ViewerRoundRing.Height = diameter;
+        // The frame reaches past the circle by the ring and its gap: the ring runs OUTSIDE the edge, never over the picture.
+        viewerRoundDiameter = diameter;
+        var outer = diameter + 2 * (ViewerRingGap + RoundLook.Ring);
+        ViewerRoundFrame.Width = outer;
+        ViewerRoundFrame.Height = outer;
+        ViewerRoundMask.Width = diameter;
+        ViewerRoundMask.Height = diameter;
+        DrawViewerRing(viewerRingAt);
         ViewerRoundRetryText.MaxWidth = Math.Max(120, diameter - 60);
         // Everything in the square that is not the circle: the corners, filled with the backdrop.
         var corners = new GeometryGroup { FillRule = FillRule.EvenOdd };
@@ -7129,6 +7990,84 @@ public sealed partial class ChatsView : UserControl
             RadiusY = diameter / 2,
         });
         ViewerRoundMask.Data = corners;
+    }
+
+    /// <summary>The gap between the viewer's circle and the ring round it.</summary>
+    private const double ViewerRingGap = 3;
+
+    /// <summary>The viewer circle's size, how far round its ring is drawn, and whether its play disc is showing.</summary>
+    private double viewerRoundDiameter;
+    private double viewerRingAt;
+    private bool viewerDiscShown = true;
+    private Animation.Storyboard? viewerDiscFade;
+
+    /// <summary>
+    /// The ring outside the viewer's circle, clockwise from 12 o'clock to <paramref name="fraction"/> — whole as it reaches the
+    /// end, nothing before it starts or once it has finished (<see cref="RoundLook.ViewerRing"/>): exactly one ring, the
+    /// accent, and only while it has something to say.
+    /// </summary>
+    private void DrawViewerRing(double fraction)
+    {
+        viewerRingAt = fraction;
+        var diameter = viewerRoundDiameter;
+        if (fraction <= 0 || diameter <= 0)
+        {
+            ViewerRoundRing.Visibility = Visibility.Collapsed;
+            return;
+        }
+        var outer = diameter + 2 * (ViewerRingGap + RoundLook.Ring);
+        var centre = outer / 2;
+        var radius = diameter / 2 + ViewerRingGap + RoundLook.Ring / 2;
+        Geometry ring;
+        if (fraction >= 0.999)
+        {
+            ring = new EllipseGeometry { Center = new Windows.Foundation.Point(centre, centre), RadiusX = radius, RadiusY = radius };
+        }
+        else
+        {
+            var (x, y) = RoundVideoRules.RingPoint(fraction, radius, centre);
+            var figure = new PathFigure { StartPoint = new Windows.Foundation.Point(centre, centre - radius), IsClosed = false };
+            figure.Segments.Add(new ArcSegment
+            {
+                Point = new Windows.Foundation.Point(x, y),
+                Size = new Windows.Foundation.Size(radius, radius),
+                IsLargeArc = fraction > 0.5,
+                SweepDirection = SweepDirection.Clockwise,
+            });
+            var path = new PathGeometry();
+            path.Figures.Add(figure);
+            ring = path;
+        }
+        ViewerRoundRing.Data = ring;
+        ViewerRoundRing.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>The viewer circle's play disc, faded in or out over 150 ms — or simply there or not with Windows' animations off.</summary>
+    private void ShowViewerDisc(bool shown)
+    {
+        if (shown == viewerDiscShown)
+        {
+            return;
+        }
+        viewerDiscShown = shown;
+        viewerDiscFade?.Stop();
+        viewerDiscFade = null;
+        var to = shown ? 1.0 : 0.0;
+        if (!StickerImaging.AnimationsWanted())
+        {
+            ViewerRoundDisc.Opacity = to;
+            return;
+        }
+        var fade = new Animation.DoubleAnimation
+        {
+            To = to,
+            Duration = new Duration(TimeSpan.FromMilliseconds(ComposerButton.SlotCrossfadeMs)),
+        };
+        Animation.Storyboard.SetTarget(fade, ViewerRoundDisc);
+        Animation.Storyboard.SetTargetProperty(fade, "Opacity");
+        viewerDiscFade = new Animation.Storyboard();
+        viewerDiscFade.Children.Add(fade);
+        viewerDiscFade.Begin();
     }
 
     /// <summary>The clip is in: its bar comes up, and a clock keeps it — and the played dot — up to date.</summary>
@@ -7197,6 +8136,11 @@ public sealed partial class ChatsView : UserControl
             }
             ViewerRoundTime.Text = $"{MediaText.TimeLabel(at)} / {MediaText.TimeLabel(total)}";
             ViewerRoundGlyph.Glyph = ((char)(playing ? 0xE769 : 0xE768)).ToString();
+            // The one accent ring round the edge, as far as it has played — none before it starts — and the disc out of the
+            // way while it plays.
+            // Finished, it goes with the rest of the playback look: the circle is back to its poster and disc (the mockup).
+            DrawViewerRing(RoundLook.ViewerRing(viewerRoundStarted, playing, at, total));
+            ShowViewerDisc(!playing);
             var label = services.Say.Get(playing ? "Pause" : "Play");
             if (!string.Equals(AutomationProperties.GetName(ViewerRoundPlay), label, StringComparison.Ordinal))
             {
@@ -8316,7 +9260,7 @@ public sealed partial class ChatsView : UserControl
             var item = strip.Items[index];
             if (VoiceNotes.IsRecorded(item))
             {
-                StagingStrip.Children.Add(ChipBox(StagedNoteChip(strip, item)));
+                StagingStrip.Children.Add(StagedNoteChip(strip, item));
                 continue;
             }
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
@@ -8356,60 +9300,147 @@ public sealed partial class ChatsView : UserControl
     };
 
     /// <summary>
-    /// A voice note in review (S2.7): "[▶] Voice message · 0:42 [✕]" — ▶ plays it from this device, "[❚❚] 0:12 / 0:42" while
-    /// it does, and ✕ ("Delete recording") deletes it, asking first from ten seconds, because it cannot be made again.
+    /// A voice note in review (S2.7), as the approved design draws it: a chip of its own above the field — a round ▶, the note's
+    /// mini waveform, its length, and ✕ ("Delete recording"). ▶ plays it from this device and lights the bars as it goes,
+    /// the time counting up; ✕ deletes it, asking first from ten seconds, because it cannot be made again.
     /// </summary>
     private FrameworkElement StagedNoteChip(ComposerStaging strip, StagedMedia item)
     {
         var say = services.Say;
-        var idle = ComposerStaging.Label(item, say, services.Culture);
-        var (toggle, glyph) = PlayButton();
-        var line = new TextBlock
-        {
-            Text = idle,
-            VerticalAlignment = VerticalAlignment.Center,
-            MaxWidth = 220,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-        };
-        Typography.SetNumeralAlignment(line, FontNumeralAlignment.Tabular);
-        var remove = new Button { Content = "✕", Padding = new Thickness(6, 2, 6, 2), VerticalAlignment = VerticalAlignment.Center };
-        ToolTipService.SetToolTip(remove, say.Get("Delete recording"));
-        AutomationProperties.SetName(remove, say.Get("Delete recording"));
-        toggle.Click += (_, _) => _ = ToggleLocalAsync(item, null);
+        var player = ChipPlayer(item.Waveform, item.DurationMs, StagedChipBars);
+        var remove = ChipCross(say.Get("Delete recording"));
+        player.Toggle.Click += (_, _) => _ = ToggleLocalAsync(item, null);
         remove.Click += (_, _) => _ = DeleteStagedNoteAsync(strip, item);
-        stagedRows[item] = new LocalRow(toggle, glyph, line, idle, VoiceNotes.TotalSeconds(item.DurationMs));
-        DimPlay(toggle);
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        row.Children.Add(toggle);
-        row.Children.Add(line);
-        row.Children.Add(remove);
-        return row;
+        stagedRows[item] = new LocalRow(
+            player.Toggle, player.Glyph, player.Time, player.Time.Text, VoiceNotes.TotalSeconds(item.DurationMs),
+            player.Bars, player.Played, player.Quiet);
+        DimPlay(player.Toggle);
+        var row = new Grid { ColumnSpacing = 10 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Place(row, player.Toggle, 0);
+        Place(row, player.Wave, 1);
+        Place(row, player.Time, 2);
+        Place(row, remove, 3);
+        var chip = VoiceChipBox(row, warning: false);
+        // What it is, said as one: "Voice message · 0:42".
+        AutomationProperties.SetName(chip, ComposerStaging.Label(item, say, services.Culture));
+        return chip;
+    }
+
+    /// <summary>How many bars a review chip's mini waveform has, and a not-sent row's: the mockup's 34 and 22.</summary>
+    private const int StagedChipBars = 34;
+
+    private const int NotSentChipBars = 22;
+
+    /// <summary>One child into one column of a one-row grid.</summary>
+    private static void Place(Grid grid, FrameworkElement child, int column)
+    {
+        Grid.SetColumn(child, column);
+        grid.Children.Add(child);
     }
 
     /// <summary>
-    /// A small ▶ that becomes ❚❚ while its note plays, named for what it does next — in a 44-epx target that reaches past
-    /// the row it sits in rather than making it taller (S1.1: the hit area grows, the visual does not).
+    /// A chip's player: a 30 accent disc with ▶ (❚❚ while it plays) in a 44 target that reaches past the chip rather than
+    /// making it taller, the mini waveform — the note's own shape, or the neutral one until it is known — and its length in
+    /// tabular digits.
     /// </summary>
-    private (Button Toggle, FontIcon Glyph) PlayButton()
+    private (Button Toggle, FontIcon Glyph, FrameworkElement Wave, Microsoft.UI.Xaml.Shapes.Rectangle[] Bars, TextBlock Time, Brush Played, Brush Quiet)
+        ChipPlayer(string? waveform, int? durationMs, int barCount)
     {
         var say = services.Say;
+        var accent = Palette.Themed("AccentFillColorDefaultBrush", 0xFF, 0x1E, 0x5B, 0xC6);
         // Play, in Segoe Fluent Icons.
-        var glyph = new FontIcon { Glyph = ((char)0xE768).ToString(), FontSize = 14 };
+        var glyph = new FontIcon
+        {
+            Glyph = ((char)0xE768).ToString(),
+            FontSize = 12,
+            Foreground = Palette.Themed("TextOnAccentFillColorPrimaryBrush", 0xFF, 0xFF, 0xFF, 0xFF),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var disc = new Grid { Width = 30, Height = 30 };
+        disc.Children.Add(new Ellipse { Fill = accent });
+        disc.Children.Add(glyph);
+        var target = ComposerButton.MinTargetWindowsEpx;
         var toggle = new Button
         {
-            Content = glyph,
-            Width = ComposerButton.MinTargetWindowsEpx,
-            Height = ComposerButton.MinTargetWindowsEpx,
-            Margin = new Thickness(-6),
+            Content = disc,
+            Width = target,
+            Height = target,
+            Margin = new Thickness(-(target - 30) / 2.0),
             Padding = new Thickness(0),
-            CornerRadius = new CornerRadius(ComposerButton.MinTargetWindowsEpx / 2.0),
+            CornerRadius = new CornerRadius(target / 2.0),
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             BorderThickness = new Thickness(0),
             VerticalAlignment = VerticalAlignment.Center,
         };
         ToolTipService.SetToolTip(toggle, say.Get("Play"));
         AutomationProperties.SetName(toggle, say.Get("Play"));
-        return (toggle, glyph);
+        var rest = Palette.Themed("TextFillColorDisabledBrush", 0x5C, 0x80, 0x80, 0x80);
+        var wave = WaveformBars(VoiceLook.Bars(waveform, barCount), VoiceLook.ChipWaveHeight, rest, out var bars);
+        var time = new TextBlock
+        {
+            Text = MediaText.TimeLabel(VoiceNotes.TotalSeconds(durationMs)),
+            FontSize = 12.5,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Palette.SecondaryText(),
+        };
+        Typography.SetNumeralAlignment(time, FontNumeralAlignment.Tabular);
+        return (toggle, glyph, wave, bars, time, accent, rest);
+    }
+
+    /// <summary>A chip's ✕ as the line holds it: the mockup's 28.</summary>
+    private const double ChipCrossSize = 28;
+
+    /// <summary>A chip's ✕: a small round button with the name it is given, its target 44.</summary>
+    private static Button ChipCross(string name)
+    {
+        var cross = new Button
+        {
+            // Cancel, in Segoe Fluent Icons.
+            Content = new FontIcon { Glyph = ((char)0xE711).ToString(), FontSize = 11 },
+            // The mockup's 28 in the line, a 44 target (S1.1) reaching past it.
+            Width = ComposerButton.MinTargetWindowsEpx,
+            Height = ComposerButton.MinTargetWindowsEpx,
+            Margin = new Thickness(VoiceLook.Reach(ChipCrossSize)),
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(ComposerButton.MinTargetWindowsEpx / 2.0),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTipService.SetToolTip(cross, name);
+        AutomationProperties.SetName(cross, name);
+        return cross;
+    }
+
+    /// <summary>
+    /// A voice note's chip: the card's own fill with a hairline round it, 14 round — and, for one that was not sent, that
+    /// hairline taken towards the caution colour, which its "Not sent" is written in.
+    /// </summary>
+    private static NamedGroup VoiceChipBox(FrameworkElement content, bool warning)
+    {
+        var stroke = Palette.Themed("CardStrokeColorDefaultBrush", 0x0F, 0x00, 0x00, 0x00);
+        if (warning && Palette.Themed("SystemFillColorCautionBrush", 0xFF, 0x9D, 0x5D, 0x00) is SolidColorBrush caution)
+        {
+            stroke = new SolidColorBrush(Windows.UI.Color.FromArgb(0x73, caution.Color.R, caution.Color.G, caution.Color.B));
+        }
+        // A group Narrator meets by its name ("Voice message not sent · 0:42"), which a Border never is.
+        var chip = new NamedGroup
+        {
+            MaxWidth = VoiceLook.ChipWidth,
+            Padding = new Thickness(8, 6, 8, 6),
+            CornerRadius = new CornerRadius(14),
+            BorderThickness = new Thickness(1),
+            BorderBrush = stroke,
+            Background = Palette.Themed("CardBackgroundFillColorDefaultBrush", 0xB3, 0xFF, 0xFF, 0xFF),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        chip.Children.Add(content);
+        return chip;
     }
 
     /// <summary>A note in review's ✕: gone — after "Delete this recording?" from ten seconds — and said (S2.7, S6).</summary>

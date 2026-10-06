@@ -258,4 +258,37 @@ class AndroidVoiceRecorderTest {
         assertThat(recorder.isRecording).isFalse()
         assertThat(shadowOf(audioManager).lastAbandonedAudioFocusRequest).isNotNull()
     }
+
+    /**
+     * The waveform (#79; protocol.md, "A voice note's waveform") is the meter
+     * the composer read: every read is a peak, the first after a start is
+     * dropped (MediaRecorder answers 0 to it whatever was heard), and the
+     * rest go with the recording as the wire's 48 digits. Robolectric's
+     * recorder hears nothing, so every peak is silence: level 0.
+     */
+    @Test
+    fun `the meter's reads become the recording's waveform`() {
+        recorder.start(Heard())
+        val shadow = shadowOf(made.single())
+        shadow.writeSound()
+        repeat(6) { recorder.maxAmplitude() }
+
+        val kept = recorder.stop()!!
+
+        assertThat(kept.waveform).isEqualTo("0".repeat(48))
+    }
+
+    @Test
+    fun `a recording whose meter was never read has no waveform, and the next one starts afresh`() {
+        recorder.start(Heard())
+        shadowOf(made.last()).writeSound()
+        recorder.maxAmplitude()
+        assertThat(recorder.stop()!!.waveform).isNull()
+
+        recorder.start(Heard())
+        shadowOf(made.last()).writeSound()
+        // One read: the dropped first of THIS recording, not a peak left from the last.
+        recorder.maxAmplitude()
+        assertThat(recorder.stop()!!.waveform).isNull()
+    }
 }

@@ -23,6 +23,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -566,6 +567,14 @@ interface SettingsRepository {
     suspend fun resetKeepingServerUrl()
 }
 
+/**
+ * How fast voice messages play on this device (#79) — 1, 1.5 or 2. Read and
+ * written by the now-playing owner (ui/chat/NowPlaying.kt, StoredVoiceSpeed)
+ * outside SettingsState, so a change never re-emits the app's settings; named
+ * here so a sign-out keeps it with the other voice-message choices.
+ */
+val VOICE_PLAYBACK_SPEED_KEY = floatPreferencesKey("voice_playback_speed")
+
 @Singleton
 class DataStoreSettingsRepository @Inject constructor(
     private val dataStore: DataStore<Preferences>,
@@ -1019,6 +1028,8 @@ class DataStoreSettingsRepository @Inject constructor(
             val keepHeldReleaseTaught = prefs[Keys.HELD_RELEASE_TAUGHT]
             val keepVoiceCoachMarkShown = prefs[Keys.VOICE_COACH_MARK_SHOWN]
             val keepRoundPreviewTaught = prefs[Keys.ROUND_PREVIEW_TAUGHT]
+            // The voice-message speed is this device's too (#79).
+            val keepVoiceSpeed = prefs[VOICE_PLAYBACK_SPEED_KEY]
             prefs.clear()
             keepUrl?.let { prefs[Keys.SERVER_URL] = it }
             keepPushToken?.let { prefs[Keys.PUSH_TOKEN] = it }
@@ -1028,6 +1039,7 @@ class DataStoreSettingsRepository @Inject constructor(
             keepHeldReleaseTaught?.let { prefs[Keys.HELD_RELEASE_TAUGHT] = it }
             keepVoiceCoachMarkShown?.let { prefs[Keys.VOICE_COACH_MARK_SHOWN] = it }
             keepRoundPreviewTaught?.let { prefs[Keys.ROUND_PREVIEW_TAUGHT] = it }
+            keepVoiceSpeed?.let { prefs[VOICE_PLAYBACK_SPEED_KEY] = it }
         }
     }
 }

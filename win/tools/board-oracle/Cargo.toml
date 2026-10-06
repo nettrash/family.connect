@@ -23,6 +23,12 @@
 # video's arithmetic (issue #79). Apple and Android are held to all of it, Windows to everything but
 # the hold; copy it to the same two places as the media-plan file, and CI compares all three.
 #
+#     cd win/tools/board-oracle && cargo run --quiet -- waveform > ../../tests/FamilyConnect.Core.Tests/Fixtures/waveform-vectors.json
+#
+# The fifth prints fc_text::waveform — a voice note's 48 levels: from metered peaks, off the wire,
+# and as bars (issue #79). Every port is held to all of it; copy it to the same two places, and CI
+# compares all three.
+#
 # and the C# suite (OracleTests) will fail on anything the port no longer matches. Its own
 # workspace on purpose: joining web/'s would put a native binary in the wasm crate's tree.
 [package]

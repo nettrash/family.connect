@@ -438,6 +438,12 @@ Attachment {"id": 34, "kind": "photo|video|audio|file|location", "mime": "image/
              respect — a square H.264/AAC MP4 — drawn as a circle by a client that
              knows the flag and as a video by one that does not. Set by the send and
              never changed; never beside "sticker" — see "Video messages"
+           — plus "waveform": "02469bdfeca8…" (48 lowercase hex digits) on a piece of
+             AUDIO whose uploader sent one (2026-10-06): the shape of the recording, so a
+             voice note draws before a byte of it is downloaded. Absent on every other
+             kind, and on audio uploaded without one — a picked sound file usually, or
+             anything from a client that predates it. Set by the upload and never
+             changed — see "A voice note's waveform"
 Poll      {"poll_seq": 88, "closed": false,
            "options": [{"id": 5, "text": "Pizza", "votes": [7, 9]},
                        {"id": 6, "text": "Pasta", "votes": []}]}
@@ -3911,7 +3917,14 @@ words are cleaned and bounded on their way in, as a lookup's are.
 **A failure costs the weather, never the greeting.** The places are fetched at the same time, under
 **one deadline of 8 seconds** for all of them together (each request also keeps its own
 `timeout_secs`). A place whose geocoding or forecast fails, times out, finds nothing or has no entry
-for its date is left out, and the others are still used. If none is left, the request to the model
+for its date is left out, and the others are still used. *Amended 2026-10-06:* before a request
+counts as failed, one that failed FAST — an answer in under 2 seconds with a `5xx` or a `429`, or a
+connection that broke — is asked once more after 750 ms, inside the same deadline. Open-Meteo's
+free API answers `503` "The service is overloaded" in short bursts, and on the first morning of
+greetings one of two places was lost to exactly that while the other, asked in the same second, came
+back. A slow failure is never repeated (it has spent its time), and nothing is asked a third time. A
+lookup's weather — the geocoding and the forecast of "Asking for the weather" — retries the same way,
+within its own timeout. If none is left, the request to the model
 is **byte for byte** the request with no places at all — the server's tests pin that, the way they
 pin the request without lookups — and the greeting is the usual one.
 
@@ -4751,6 +4764,10 @@ It carries `duration_ms` like a video, and **no preview**: `has_preview` is alwa
 `PUT /attachments/{id}/preview` on one is `invalid_attachment`. There is nothing to look at. A
 client draws a play control, the duration, and a scrubber — deliberately not a waveform, which
 would be a second artefact to generate, upload and version for something the ear does not need.
+(*Amended 2026-10-06, #79:* a voice note now carries a waveform after all — not an artefact
+uploaded beside it, but 48 characters in the upload's query string, which the server stores and
+echoes and never computes. See "A voice note's waveform" below. Everything else in this paragraph
+stands: still no preview, still `invalid_attachment` for one.)
 
 The accepted types for `kind=audio` are `audio/mp4`, `audio/m4a`, `audio/mpeg`, `audio/wav` and
 `audio/ogg`, and the magic-number check applies, as it does to photos and video: the declared type must
@@ -4761,6 +4778,88 @@ play — AVFoundation has no Ogg reader, so an Ogg recording does not play on iO
 
 `name` is optional for audio, unlike a file: a voice note has no name worth showing (its duration
 is its identity), but a track picked from disk does, and a client that has one may send it.
+
+##### A voice note's waveform
+
+*Added 2026-10-06 (#79).* A voice bubble that is a play button and a grey bar until its bytes arrive
+does not look like a voice message. Every member's device meters the recording's level while it
+records anyway — that is how it notices a muted microphone (`docs/audio-video-messages-2026-10-04.md`,
+and `fc_text::record`'s −60 dBFS silence floor) — so the sender keeps those peaks, reduces them to 48
+small numbers and sends them with the upload. The reader draws the shape at once, from the message
+itself, before anything is downloaded and whether or not it ever is.
+
+```
+POST /attachments?kind=audio&duration_ms=14200&waveform=0124689abcddeeedcba987654321001245678aabbba98642   (Content-Type: audio/mp4)
+  → 201 {attachment: {id: 77, kind: "audio", mime: "audio/mp4", size: 113402, duration_ms: 14200,
+                      has_preview: false,
+                      waveform: "0124689abcddeeedcba987654321001245678aabbba98642"}}
+```
+
+**The format is exact.** `waveform` is EXACTLY 48 characters, each a LOWERCASE hexadecimal digit
+(`0`–`9`, `a`–`f`). Character `i` (from 0) is the LEVEL of the `i`-th of 48 equal slices of the
+recording, in time order, on a scale of 4 dB per step from −60 dBFS (`0`, the floor that counts as
+digital silence) to full scale, 0 dBFS (`f`, 15) — rounded, so `0` is anything below −58 dBFS and `f`
+anything from −2 dBFS up. Nothing else is accepted: no uppercase, no
+separator, no other length, no other count of levels. One character per level keeps it legible in a
+log and copyable into a test, and 48 is enough for the widest bubble any client draws (a client
+drawing fewer bars reduces them — below — rather than the wire carrying a width).
+
+**How the sender computes it** — once, in double precision, from the PEAK levels it metered while
+recording, sampled at a fixed interval (whatever interval that platform's meter runs at; a peak per
+interval, not an average):
+
+1. Each peak `p`, in dBFS, becomes a level: `x = (min(max(p, −60), 0) + 60) ÷ 4`, then
+   `level = ⌊x⌋ + 1` when `x − ⌊x⌋ ≥ 0.5` and `⌊x⌋` otherwise (round half UP). A peak that is
+   not a number is silence (level 0); `+∞` is 15 and `−∞` is 0. This uses one addition and an exact
+   division by 4 and nothing else, so every platform reaches the same integer — no logarithm is
+   taken here. (A platform whose meter reports linear amplitude converts it to dBFS first, with its
+   own logarithm; that conversion is the meter's, not this rule's.)
+2. With `n` peaks, slice `i` covers peaks `s = ⌊i × n ÷ 48⌋` up to (not including)
+   `max(s + 1, ⌊(i + 1) × n ÷ 48⌋)`, in integer arithmetic. Its level is the HIGHEST level among
+   them. Fewer than 48 peaks is allowed — a peak then covers several slices — and no peaks at all
+   is 48 zeros.
+3. Each level is written as one lowercase hex digit, slice 0 first.
+
+`fc_text::waveform` in `web/text` is the reference (`from_peaks`, `parse`, and what the reader does
+with the result), and `waveform-vectors.json` — printed from it by the oracle and copied beside the
+Apple, Android and Windows tests — holds every port to the same bytes.
+
+**What the server does** — checks and stores; it decodes nothing and measures nothing:
+
+- `waveform` is accepted only when the upload IS audio — `kind=audio` by its media type, the kind
+  the server itself derives. On a photo, a video (a video message included), a file or a location it
+  is `validation` (400), and nothing is stored: a waveform on anything else would be drawn by nobody
+  and believed by nothing.
+- On audio, anything but 48 lowercase hex digits — empty, 47 or 49, `F`, a space, a comma — is
+  `validation` (400), before a byte of the body is written. A sender that has a broken waveform has
+  a bug, and silently dropping it would hide the bug behind a placeholder on every member's screen.
+- It is stored (migration 0053, a nullable column with a `CHECK` that says the same two things) and
+  carried as `"waveform"` on the Attachment on every read that carries the attachment whole: the
+  upload's answer, the send, the `message` frame, history, threads, the edits feed. The chat list's
+  `last_message` preview carries it no more than it carries `duration_ms` — a row draws no bubble.
+- Absent — the key, not an empty string — whenever it was not given. It is never added later: there
+  is no request that sets one, and a re-upload is a new attachment.
+
+**What a reader does.** It draws the 48 levels as bars, reduced to as many bars as fit (slice `j` of
+`b` bars takes the highest of the levels `⌊j × 48 ÷ b⌋` up to `max(that + 1, ⌊(j + 1) × 48 ÷ b⌋)`,
+the same rule as step 2), each bar `(2 + level) ÷ 17` of the waveform's height, so silence is still
+a visible stub. While it plays, the first `⌊position_ms × b ÷ duration_ms⌋` bars are drawn as played
+(the accent colour) and the rest as unplayed. A piece of audio WITHOUT a waveform — a picked file, an
+old message, an old client's — is drawn with a neutral placeholder, every bar at level 4: a flat row
+that claims no shape rather than an invented one. A value a reader cannot parse (it never should
+see one) is the placeholder too, never an error. A screen reader is told nothing about the bars —
+the play control's label and the duration already say what there is.
+
+**A picked sound file may carry none.** Computing one means decoding the file, which a client may do
+but need not; the placeholder is a complete answer. A video message carries none either: it is a
+video, and draws its own picture.
+
+**What old clients and old servers do.** A client that has never heard of `waveform` ignores the key,
+as it ignores every unknown one, and draws its play control and scrubber as before. A SERVER that
+predates it ignores the unknown query parameter — `POST /attachments` refuses none — and answers
+without the key: the upload succeeds and the note simply has no waveform for anyone but its sender,
+whose own device may keep drawing the levels it computed. So a client may send `waveform` to any
+server, and must never treat its absence on the answer as a failure.
 
 #### Files
 
@@ -5646,7 +5745,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Query: `kind` (`photo`\|`video`\|`audio`\|`file`\|`location`), `width`, `height`, `duration_ms`, `name`, `latitude`, `longitude`, `accuracy_m`. `name` is REQUIRED for `kind=file` (1–255 characters) and optional on audio and a location; `latitude` and `longitude` are REQUIRED for `kind=location` and refused on anything else. A location sends **no body** — it is metadata only. → `201 {attachment: Attachment}`. A sticker or a pack item is uploaded here as `kind=photo`, its bytes unprepared (see "Sticker pack"). A video message is uploaded here as `kind=video` with its square `width`, `height` and its `duration_ms`, which are what the send checks it by (see "Video messages"). Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a media type not accepted on a photo/video/audio, 400 when the bytes do not match the declared type, a file has no name, or a location has no or out-of-range coordinates), `not_in_family`. |
+| `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Query: `kind` (`photo`\|`video`\|`audio`\|`file`\|`location`), `width`, `height`, `duration_ms`, `name`, `latitude`, `longitude`, `accuracy_m`, `waveform`. `name` is REQUIRED for `kind=file` (1–255 characters) and optional on audio and a location; `latitude` and `longitude` are REQUIRED for `kind=location` and refused on anything else. `waveform` (2026-10-06) is optional on audio and refused on anything else: exactly 48 lowercase hex digits, echoed on the Attachment (see "A voice note's waveform"); malformed, or on a kind that is not audio, it is `validation` (400). A location sends **no body** — it is metadata only. → `201 {attachment: Attachment}`. A sticker or a pack item is uploaded here as `kind=photo`, its bytes unprepared (see "Sticker pack"). A video message is uploaded here as `kind=video` with its square `width`, `height` and its `duration_ms`, which are what the send checks it by (see "Video messages"). Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a media type not accepted on a photo/video/audio, 400 when the bytes do not match the declared type, a file has no name, or a location has no or out-of-range coordinates), `validation` (400, a `waveform` that is malformed or not on audio), `not_in_family`. |
 | `PUT /attachments/{id}/preview` | Raw JPEG bytes of the downscaled photo or poster frame → `204`. Uploader only, and never on a `file`, `audio` or `location` (`invalid_attachment`). IDEMPOTENT and not closed by the message that claims the attachment: a repeat overwrites the stored preview and sets `has_preview` to true, which is what lets a client finish a poster upload that failed (see "Photos, videos, audio, files and locations"). Errors: `attachment_not_found`, `attachment_too_large`, `invalid_attachment`. |
 | `GET /attachments/{id}` | → `200` with the stored bytes and their `Content-Type`. A location has none and answers `invalid_attachment` (400). A `file` additionally gets `Content-Disposition: attachment; filename=…` (sanitised) and `X-Content-Type-Options: nosniff`, so an uploaded document can never render or execute from the server's own origin. Readable by the uploader always, by every member of the chat once a message claims it, and by every member of the family once a board note or the family's pack does; anyone else gets `404 attachment_not_found`. Sends `ETag` and `Cache-Control: private, max-age=31536000, immutable`, and honours `If-None-Match` with `304`. Honours a single-byte-range `Range` request with `206` + `Content-Range` (`416` for a range past the end) — that is how a video player seeks, and without it scrubbing a 90 MB clip re-downloads it from the start. A multi-range or unrecognised `Range` is ignored and the whole body sent, per RFC 9110. |
 | `GET /attachments/{id}/preview` | → `200` with the preview JPEG, same access rules. `404` when there is no preview yet. |

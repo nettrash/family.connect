@@ -839,7 +839,14 @@ impl Actions {
                         return;
                     };
                     let duration_ms = recorded.duration_ms;
-                    match crate::prep::recording(recorded.blob, recorded.mime, duration_ms).await {
+                    match crate::prep::recording(
+                        recorded.blob,
+                        recorded.mime,
+                        duration_ms,
+                        recorded.waveform,
+                    )
+                    .await
+                    {
                         Ok(note) => this.handle(Action::ParkStopped {
                             session,
                             chat_id,

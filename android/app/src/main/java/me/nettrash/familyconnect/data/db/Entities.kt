@@ -163,6 +163,12 @@ data class PendingAttachmentEntity(
     @ColumnInfo(defaultValue = "0") val posterUploaded: Boolean = false,
     /** Answered upload failures spent on THIS item. */
     @ColumnInfo(defaultValue = "0") val uploadAttempts: Int = 0,
+    /**
+     * A voice note's waveform, the wire's 48 hex digits (#79; docs/protocol.md,
+     * "A voice note's waveform"), sent as `waveform=` with the upload. Null
+     * for everything else, and for a note recorded where nothing was measured.
+     */
+    val waveform: String? = null,
 )
 
 @Entity(
@@ -345,6 +351,24 @@ data class MessageEntity(
      * columns; [attachmentList] reads through both.
      */
     val attachmentsJson: String? = null,
+    /**
+     * Whether the stored set was written by a build that reads the video
+     * message flag (`round`, #79). A build before it wrote every received
+     * set back with only the fields it knew
+     * (docs/audio-video-messages-2026-10-04.md, S5.8), so a circle that
+     * arrived before the upgrade is stored as a plain video — and the
+     * catch-up only ever ADDS, so nothing would read it again: it drew
+     * square for good. `MessageRepository.repairUnknownRoundFlags` reads
+     * the false rows that could be circles once more.
+     *
+     * The SQL default is 0 — every row an older build wrote, as
+     * MIGRATION_30_31 leaves it — while the Kotlin default is TRUE: every
+     * entity this build constructs carries a set this build decoded (its
+     * own send, or the server's copy), so it knows the flag, and a write
+     * site added later cannot forget to say so. The UPDATEs that rewrite a
+     * set (the ack, an edit, an own send's uploads) set it too.
+     */
+    @ColumnInfo(defaultValue = "0") val attachmentsKnowRound: Boolean = true,
 ) {
     /** The wire shape back out of the call columns, or null for a message that is not a call. */
     val call: CallDto?
@@ -605,6 +629,8 @@ fun PendingAttachmentEntity.placeholderDto(): me.nettrash.familyconnect.data.net
         latitude = latitude,
         longitude = longitude,
         accuracyM = accuracyM,
+        // The sender's own bubble draws its shape from the first frame.
+        waveform = waveform,
     )
 
 /** This item as the wire shape, once its bytes are on the server. */
@@ -623,6 +649,10 @@ fun PendingAttachmentEntity.uploadedDto(): me.nettrash.familyconnect.data.net.dt
         latitude = latitude,
         longitude = longitude,
         accuracyM = accuracyM,
+        // Kept from the queue, so the bubble keeps its shape across the claim;
+        // the server's echo (absent from a server before waveforms) has the
+        // last word once the message arrives back.
+        waveform = waveform,
     )
 }
 

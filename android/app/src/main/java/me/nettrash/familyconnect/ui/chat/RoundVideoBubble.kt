@@ -14,13 +14,15 @@
  *  - The square POSTER fills it; until it lands, a neutral disc. Only the
  *    poster is fetched to draw it — a tile never downloads a video to draw
  *    itself (protocol.md).
- *  - On it: the length in a capsule at the bottom, a 44 dp play disc in the
- *    middle, and an 8 dp accent dot beside the capsule until THIS DEVICE has
- *    played somebody else's circle.
+ *  - On a soft shadow (the approved design): the length in a dark
+ *    translucent capsule at the bottom centre, with a white dot in it until
+ *    THIS DEVICE has played somebody else's circle, and a 48 dp play disc in
+ *    the middle that fades out while it plays.
  *  - A tap PLAYS IT IN PLACE through a TextureView — the one platform video
  *    surface a Compose clip can make round; a SurfaceView would punch a
- *    square hole — with a 3 dp accent ring running round the edge, a loading
- *    ring while the stream starts and a sentence when it fails
+ *    square hole — with exactly ONE 3 dp accent ring running round just
+ *    outside the edge, a loading ring while the stream starts and a sentence
+ *    when it fails
  *    (RoundVideoPlayback.kt has the rules). While it plays, an expand
  *    control at its top trailing edge opens the existing full-screen viewer,
  *    which the message menu also offers.
@@ -34,9 +36,15 @@
 package me.nettrash.familyconnect.ui.chat
 
 import android.graphics.SurfaceTexture
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
 import android.view.Surface
 import android.view.TextureView
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -109,15 +117,29 @@ object RoundVideoDrawing {
 
     fun diameter(windowWidthDp: Int): Dp = if (windowWidthDp >= WIDE_FROM) REGULAR else COMPACT
 
-    val PLAY_DISC: Dp = 44.dp
-    val UNPLAYED_DOT: Dp = 8.dp
+    val PLAY_DISC: Dp = 48.dp
+    val UNPLAYED_DOT: Dp = 7.dp
     val PROGRESS_RING: Dp = 3.dp
+
+    /**
+     * The room round the circle for its ONE accent ring, which runs just
+     * OUTSIDE the edge (the approved design) so it never covers a face: a
+     * 1.5-unit gap, then the 3-unit ring.
+     */
+    val RING_GAP: Dp = 1.5.dp
+    val RING_ROOM: Dp = 6.dp
+
+    /** The soft shadow the circle sits on, with no balloon behind it. */
+    val SHADOW: Dp = 6.dp
     val EXPAND_TARGET: Dp = 44.dp
     val EXPAND_GLYPH: Dp = 28.dp
 }
 
-/** The wash under everything drawn on a picture — play disc, capsule, the failed line. */
+/** The wash under everything drawn on a picture — play disc, the failed line. */
 private val SCRIM = Color.Black.copy(alpha = 0.45f)
+
+/** The length capsule's dark translucent ground (the approved design). */
+private val BADGE = Color.Black.copy(alpha = 0.55f)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -183,6 +205,7 @@ internal fun RoundVideoBubble(
     // Resolved out here: a semantics block is not a composable context.
     val label = stringResource(R.string.s_video_message_a11y, formatDuration(durationMs))
     val notPlayed = stringResource(R.string.s_not_played)
+    val playedWord = stringResource(R.string.s_played)
     val waitsForTheRecording = stringResource(R.string.s_play_after_recording)
     val playLabel = stringResource(
         if (phase == RoundVideoPlayback.Phase.PLAYING) R.string.s_pause else R.string.s_play,
@@ -194,10 +217,34 @@ internal fun RoundVideoBubble(
         onOpenFullScreen()
     }
 
-    Box(modifier = modifier.size(diameter).testTag("round-video-${attachment.id}")) {
+    val discAlpha by animateFloatAsState(
+        targetValue = if (phase == RoundVideoPlayback.Phase.PLAYING) 0f else 1f,
+        animationSpec = if (reducedMotion) snap() else tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt()),
+        label = "roundPlayDisc",
+    )
+    // Room for the ring outside the edge, so nothing the bubble clips to cuts it.
+    Box(
+        modifier = modifier
+            .size(diameter + RoundVideoDrawing.RING_ROOM * 2)
+            .testTag("round-video-frame-${attachment.id}")
+            .outsideRing(diameter = diameter, color = accent) {
+                if (playingOrPaused) {
+                    RoundVideoRules.progress(
+                        positionMs = playback!!.positionMs,
+                        durationMs = durationMs,
+                        stepped = reducedMotion,
+                    )
+                } else {
+                    null
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+    Box(modifier = Modifier.size(diameter).testTag("round-video-${attachment.id}")) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .shadow(RoundVideoDrawing.SHADOW, CircleShape, clip = false)
                 .clip(CircleShape)
                 // The neutral disc of the final size, until the poster lands
                 // (S5.2) — never a placeholder of another shape.
@@ -225,6 +272,9 @@ internal fun RoundVideoBubble(
                     when {
                         gate.recording && playback != null -> stateDescription = waitsForTheRecording
                         showsDot -> stateDescription = notPlayed
+                        // Somebody else's, played here: "Played", as the voice
+                        // bubble says and every other client's circle does.
+                        !isMine && acked -> stateDescription = playedWord
                     }
                     if (playback != null) {
                         customActions = listOf(
@@ -274,22 +324,35 @@ internal fun RoundVideoBubble(
                         modifier = Modifier.padding(horizontal = 28.dp),
                     )
                 }
-                RoundVideoPlayback.Phase.PLAYING -> Unit
-                RoundVideoPlayback.Phase.IDLE, RoundVideoPlayback.Phase.PAUSED -> if (!sending) {
+                RoundVideoPlayback.Phase.PLAYING,
+                RoundVideoPlayback.Phase.IDLE,
+                RoundVideoPlayback.Phase.PAUSED,
+                -> if (!sending && discAlpha > 0f) {
                     Box(
-                        modifier = Modifier.size(RoundVideoDrawing.PLAY_DISC).clip(CircleShape).background(SCRIM),
+                        modifier = Modifier
+                            .size(RoundVideoDrawing.PLAY_DISC)
+                            .graphicsLayer { alpha = discAlpha }
+                            .clip(CircleShape)
+                            .background(SCRIM)
+                            .testTag("round-video-play-disc"),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White)
                     }
                 }
             }
-            // The capsule at the bottom centre, inside the circle, with the
-            // dot beside it.
+            // The capsule at the bottom centre, inside the circle: the length,
+            // and the white dot in it until it has been played.
             Row(
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 14.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(BADGE)
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                    .testTag("round-video-badge"),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 val shownMs = if (playingOrPaused) {
                     // Whole seconds under reduced motion: the ring steps, so
@@ -300,42 +363,23 @@ internal fun RoundVideoBubble(
                 }
                 Text(
                     text = if (sending) stringResource(R.string.s_sending_ellipsis) else formatDuration(shownMs),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
                     color = Color.White,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(SCRIM)
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
                 )
                 if (showsDot) {
                     Box(
                         modifier = Modifier
                             .size(RoundVideoDrawing.UNPLAYED_DOT)
                             .clip(CircleShape)
-                            .background(accent)
+                            .background(Color.White)
                             .testTag("round-video-unplayed"),
                     )
                 }
             }
         }
         if (playingOrPaused) {
-            val fraction = RoundVideoRules.progress(
-                positionMs = playback!!.positionMs,
-                durationMs = durationMs,
-                stepped = reducedMotion,
-            )
-            Canvas(modifier = Modifier.fillMaxSize().testTag("round-video-progress")) {
-                val stroke = RoundVideoDrawing.PROGRESS_RING.toPx()
-                drawArc(
-                    color = accent,
-                    startAngle = -90f,
-                    sweepAngle = 360f * fraction,
-                    useCenter = false,
-                    topLeft = Offset(stroke / 2, stroke / 2),
-                    size = Size(size.width - stroke, size.height - stroke),
-                    style = Stroke(width = stroke),
-                )
-            }
+            // The ring itself is drawn by the box round this one, outside the edge.
+            Box(Modifier.fillMaxSize().testTag("round-video-progress"))
             // The expand control, while it plays (S5.4): a 28 dp glyph in a
             // 44 dp target at the circle's top trailing edge.
             Box(
@@ -368,6 +412,7 @@ internal fun RoundVideoBubble(
                 modifier = Modifier.fillMaxSize().testTag("round-video-sending"),
             )
         }
+    }
     }
 }
 
@@ -404,6 +449,28 @@ private fun VideoSurface(playback: RoundVideoPlayback) {
             }
         },
         modifier = Modifier.fillMaxSize(),
+    )
+}
+
+/**
+ * The circle's ONE progress ring (the approved design): [RoundVideoDrawing.PROGRESS_RING]
+ * wide, [RoundVideoDrawing.RING_GAP] OUTSIDE the edge of a [diameter] circle
+ * centred in this box, running clockwise from 12 o'clock to [fraction] — or
+ * nothing while [fraction] is null (at rest).
+ */
+internal fun Modifier.outsideRing(diameter: Dp, color: Color, fraction: () -> Float?): Modifier = drawWithContent {
+    drawContent()
+    val shown = fraction() ?: return@drawWithContent
+    val stroke = RoundVideoDrawing.PROGRESS_RING.toPx()
+    val radius = diameter.toPx() / 2f + RoundVideoDrawing.RING_GAP.toPx() + stroke / 2f
+    drawArc(
+        color = color,
+        startAngle = -90f,
+        sweepAngle = 360f * shown,
+        useCenter = false,
+        topLeft = Offset(center.x - radius, center.y - radius),
+        size = Size(radius * 2, radius * 2),
+        style = Stroke(width = stroke, cap = StrokeCap.Round),
     )
 }
 

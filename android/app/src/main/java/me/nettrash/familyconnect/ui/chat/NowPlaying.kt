@@ -19,7 +19,10 @@
  *    pauses, so a message never jumps out of the phone's speaker (S4).
  *  - THE DOT. Which round videos THIS DEVICE has played (S5.2): kept per
  *    account — in the settings store, which a sign-out clears — never sent,
- *    and remembered for the newest 5 000.
+ *    and remembered for the newest 5 000. Voice messages keep a dot of their
+ *    own the same way (#79, the approved design), under a key of their own.
+ *  - THE VOICE SPEED. 1×, 1.5× or 2× (#79): a choice of this DEVICE, kept
+ *    across a sign-out like the other voice-message choices.
  */
 
 package me.nettrash.familyconnect.ui.chat
@@ -50,6 +53,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import me.nettrash.familyconnect.data.settings.VOICE_PLAYBACK_SPEED_KEY
 import me.nettrash.familyconnect.di.AppScope
 
 /**
@@ -179,10 +183,12 @@ interface PlayedRoundVideos {
 class StoredPlayedRoundVideos(
     private val dataStore: DataStore<Preferences>,
     private val scope: CoroutineScope,
+    /** [KEY] for the circles; [VOICE_KEY] for the voice messages' own dots. */
+    private val key: Preferences.Key<String> = KEY,
 ) : PlayedRoundVideos {
 
     override val ids: StateFlow<Set<Long>> = dataStore.data
-        .map { it[KEY] }
+        .map { it[key] }
         .distinctUntilChanged()
         .map(PlayedRoundVideos::decode)
         .stateIn(scope, SharingStarted.Eagerly, emptySet())
@@ -190,14 +196,65 @@ class StoredPlayedRoundVideos(
     override fun markPlayed(attachmentId: Long) {
         scope.launch {
             dataStore.edit { prefs ->
-                val now = PlayedRoundVideos.decode(prefs[KEY])
-                if (attachmentId !in now) prefs[KEY] = PlayedRoundVideos.encode(PlayedRoundVideos.trim(now + attachmentId))
+                val now = PlayedRoundVideos.decode(prefs[key])
+                if (attachmentId !in now) prefs[key] = PlayedRoundVideos.encode(PlayedRoundVideos.trim(now + attachmentId))
             }
         }
     }
 
     companion object {
         val KEY = stringPreferencesKey("played_round_videos")
+
+        /** Which VOICE messages this device has played (#79) — per account, like the circles'. */
+        val VOICE_KEY = stringPreferencesKey("played_voice_messages")
+    }
+}
+
+/**
+ * How fast voice messages play on THIS DEVICE (#79): 1×, then 1.5×, then 2×,
+ * then 1× again — the speed chip and the menu's "Playback speed" step it, and
+ * every voice bubble plays at it.
+ */
+interface VoiceSpeed {
+    val speed: StateFlow<Float>
+
+    fun set(speed: Float)
+
+    /** The next step: 1× → 1.5× → 2× → 1×. */
+    fun step() = set(next(speed.value))
+
+    /** A test's, a preview's: forgotten with the process. */
+    class InMemory(initial: Float = STEPS.first()) : VoiceSpeed {
+        private val state = MutableStateFlow(normalised(initial))
+        override val speed: StateFlow<Float> = state
+        override fun set(speed: Float) {
+            state.value = normalised(speed)
+        }
+    }
+
+    companion object {
+        val STEPS: List<Float> = listOf(1f, 1.5f, 2f)
+
+        fun next(speed: Float): Float = STEPS[(STEPS.indexOf(normalised(speed)) + 1) % STEPS.size]
+
+        /** Anything stored that is not one of the steps reads as 1×. */
+        fun normalised(speed: Float?): Float = STEPS.firstOrNull { it == speed } ?: STEPS.first()
+    }
+}
+
+/** The device's [VoiceSpeed], in the settings store — kept across a sign-out (SettingsRepository). */
+class StoredVoiceSpeed(
+    private val dataStore: DataStore<Preferences>,
+    private val scope: CoroutineScope,
+) : VoiceSpeed {
+
+    override val speed: StateFlow<Float> = dataStore.data
+        .map { VoiceSpeed.normalised(it[VOICE_PLAYBACK_SPEED_KEY]) }
+        .distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, VoiceSpeed.STEPS.first())
+
+    override fun set(speed: Float) {
+        scope.launch { dataStore.edit { it[VOICE_PLAYBACK_SPEED_KEY] = VoiceSpeed.normalised(speed) } }
     }
 }
 
@@ -210,4 +267,6 @@ class NowPlaying @Inject constructor(
 ) : PlaybackCoordinator(
     interruptions = SystemAudioInterruptions(context),
     played = StoredPlayedRoundVideos(dataStore, scope),
+    playedVoice = StoredPlayedRoundVideos(dataStore, scope, StoredPlayedRoundVideos.VOICE_KEY),
+    voiceSpeed = StoredVoiceSpeed(dataStore, scope),
 )
