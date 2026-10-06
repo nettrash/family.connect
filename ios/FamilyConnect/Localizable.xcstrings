@@ -21873,6 +21873,7 @@
     },
     "Next time, letting go will send it." : {
       "comment" : "Shown once, the first time on a device a held microphone is let go: the recording is kept to listen to this time, and from then on letting go sends it after a 5-second Undo (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -27522,6 +27523,7 @@
     },
     "Recording locked" : {
       "comment" : "Announced when a held voice recording is locked by sliding up: it carries on hands-free, and letting go does nothing (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -27998,6 +28000,7 @@
     },
     "Release to cancel" : {
       "comment" : "The held-microphone row once the finger has slid far enough to cancel (the row turns red): lifting the finger now deletes the recording (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -29715,6 +29718,7 @@
     },
     "Review Before Sending" : {
       "comment" : "Settings switch under \"Voice Messages\", off by default and for this device only: letting go of a held microphone keeps the recording to listen to instead of sending it after 5 seconds. Android writes it \"Review before sending\" (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -30991,6 +30995,7 @@
     },
     "Sending in %lld" : {
       "comment" : "With Reduce Motion on, replaces the emptying line in the Undo row: counts down the seconds until the voice message is sent (5, 4, 3, 2, 1). Not announced (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -31044,6 +31049,7 @@
     },
     "Sending voice message · %@" : {
       "comment" : "Takes the field's place for 5 seconds after a held microphone is let go, beside Undo, with a line emptying along its bottom edge; the recording is sent when the 5 seconds pass. %@ is its length, for example 0:12. iPhone, iPad and Android (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -32126,6 +32132,7 @@
     },
     "Slide to cancel" : {
       "comment" : "In the row shown while the microphone is held: sliding the finger toward the text field cancels the recording. Drawn after a ‹ chevron that points that way. iPhone, iPad and Android (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -33105,6 +33112,7 @@
     },
     "Still recording. Tap Send when you're done." : {
       "comment" : "Shown for 3 seconds when a held microphone is let go after less than a second: the recording carries on hands-free. Send is the arrow in the Send slot (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -38951,6 +38959,7 @@
     },
     "Undo" : {
       "comment" : "Button at the start of the row shown for 5 seconds after a held microphone is let go (\"Sending voice message · 0:12\"): it keeps the recording to listen to instead of sending it. Nothing has left the device yet. iPhone, iPad and Android (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -40962,6 +40971,7 @@
     },
     "Voice Messages" : {
       "comment" : "Header of the Settings section holding \"Review Before Sending\". iPhone, iPad and Android; Android writes it \"Voice messages\" (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -41226,6 +41236,7 @@
     },
     "We didn't hear anything." : {
       "comment" : "Shown when a held microphone is let go after a recording in which nothing rose above silence: it is kept to listen to rather than sent (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -41769,6 +41780,7 @@
     },
     "When you hold the microphone to talk, letting go keeps the message for you to check instead of sending it." : {
       "comment" : "Footer under \"Review Before Sending\" in Settings (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -43148,6 +43160,7 @@
     },
     "You can also hold the microphone while you talk." : {
       "comment" : "One-time tip above the microphone on iPhone, iPad and Android, after the first voice message sent with a tap: holding the microphone records while held, like a walkie-talkie (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -43359,6 +43372,7 @@
     },
     "You can record now." : {
       "comment" : "Shown after the microphone permission is allowed from the prompt a held microphone raised: that hold recorded nothing, and the next tap or hold records (#79).",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
