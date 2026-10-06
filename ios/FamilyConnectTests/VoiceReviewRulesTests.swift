@@ -47,8 +47,6 @@ struct VoiceReviewRulesTests {
         try #require(UIDevice.current.userInterfaceIdiom == .phone, "these run on an iPhone simulator")
         let expected: [(RecordGesture.Haptic, SensoryFeedback)] = [
             (.light, .impact(weight: .light, intensity: 0.6)),
-            (.medium, .impact(weight: .medium, intensity: 1.0)),
-            (.selection, .selection),
             (.success, .success),
             (.warning, .warning),
         ]
@@ -57,11 +55,6 @@ struct VoiceReviewRulesTests {
             #expect(VoiceHaptics.feedback(for: cue) == pair.1, "\(pair.0) played the wrong feedback")
         }
         #expect(VoiceHaptics.feedback(for: nil) == nil)
-        // The hold's start must be told apart from the tap's (S2.9) — by the
-        // intensity, since this SDK's weights compare equal.
-        let tap = VoiceHaptics.feedback(for: .init(haptic: .light, serial: 0))
-        let hold = VoiceHaptics.feedback(for: .init(haptic: .medium, serial: 1))
-        #expect(tap != hold, "a hold starts with the same buzz as a tap")
     }
     #endif
 }

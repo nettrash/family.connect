@@ -8,17 +8,15 @@
 //  empty, the Send arrow or the Stop square while a voice message records.
 //
 //  A CLICK, NEVER A HOLD. A click records hands-free and the same slot sends
-//  it (S8.3; `AudioRecorder`'s header has always said why a mouse must not be
-//  held down for the length of a message). So this is an ordinary SwiftUI
-//  button whose action is the reducer's `activate` — the phone's UIKit
-//  control exists only because a finger can slide.
+//  it (S8.3). So this is an ordinary SwiftUI button whose action is the
+//  reducer's `activate` — and since 2026-10-06 that is every platform's
+//  rule: the phone's walkie-talkie hold is gone too.
 //
-//  WHAT THE PHONE HAS THAT A MAC DOES NOT: the hold, the Undo window that
-//  only a released hold opens, haptics, the coach mark and the Review Before
-//  Sending setting. What it has that the phone does not: a tooltip in every
-//  state — the slot had none, and no accessibility label either — and
-//  `.contextMenu`, which is safe here because a Mac has no touch hold for it
-//  to claim (S1.6, "Where it plugs in").
+//  WHAT THE PHONE HAS THAT A MAC DOES NOT: haptics. What it has that the
+//  phone does not: a tooltip in every state — the slot had none, and no
+//  accessibility label either — and `.contextMenu`, which is safe here
+//  because a Mac has no touch hold for it to claim (S1.6, "Where it plugs
+//  in").
 //
 //  RETURN IS NOT THIS BUTTON'S SHORTCUT. Return activates the slot on rows 2
 //  to 5 only, and the composer binds it to a hidden button that asks the
@@ -46,7 +44,7 @@ nonisolated enum MacRecordSlot {
     static func symbol(for slot: ComposerSlot) -> String {
         switch slot {
         case .stopRecording: "stop.circle.fill"
-        case .microphone, .dimmed, .heldMicrophone: "mic.circle.fill"
+        case .microphone, .dimmed: "mic.circle.fill"
         case .recorder, .sendVoice, .save, .send, .sendDisabled: "arrow.up.circle.fill"
         }
     }
@@ -78,7 +76,7 @@ nonisolated enum MacRecordSlot {
     /// the composer's own Send rule — false while a location is being found.
     static func isDisabled(_ slot: ComposerSlot, canSend: Bool) -> Bool {
         switch slot {
-        case .sendDisabled, .save(enabled: false), .recorder, .heldMicrophone: true
+        case .sendDisabled, .save(enabled: false), .recorder: true
         case .send: !canSend
         case .sendVoice, .stopRecording, .save(enabled: true), .dimmed, .microphone: false
         }
@@ -100,7 +98,7 @@ nonisolated enum MacRecordSlot {
 
     /// What activating the slot does — a click, VO-Space, Full Keyboard
     /// Access's Space, or Return on rows 2 to 5 (S1.3). A click records
-    /// hands-free: a Mac has no hold (S8.3).
+    /// hands-free (S8.3).
     enum Activation: Equatable {
         /// Today's Send: the words and staged items go.
         case send
@@ -122,7 +120,7 @@ nonisolated enum MacRecordSlot {
         case .send: sendGuarded ? .nothing : .send
         case .save(enabled: true): .save
         case .sendVoice, .stopRecording, .microphone, .dimmed: .voice
-        case .save(enabled: false), .sendDisabled, .heldMicrophone, .recorder: .nothing
+        case .save(enabled: false), .sendDisabled, .recorder: .nothing
         }
     }
 

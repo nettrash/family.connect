@@ -48,7 +48,6 @@ class RecordStringsTest {
     fun everyAnnouncementIsTheReferencesOwn() {
         val all = listOf(
             RecordGesture.Announcement.Recording,
-            RecordGesture.Announcement.RecordingLocked,
             RecordGesture.Announcement.RecordingDeleted,
             RecordGesture.Announcement.VoiceMessageSent,
             RecordGesture.Announcement.ReadyToReview(42_000),
@@ -66,7 +65,7 @@ class RecordStringsTest {
     @Test
     fun everySlotLabelIsTheReferencesOwn() {
         val all = listOf(
-            Slot.Recorder, Slot.HeldMicrophone, Slot.SendVoice, Slot.StopRecording, Slot.Save(true),
+            Slot.Recorder, Slot.SendVoice, Slot.StopRecording, Slot.Save(true),
             Slot.Save(false), Slot.Send, Slot.SendDisabled, Slot.Dimmed(ComposerSlot.Dimmed.CALL),
             Slot.Dimmed(ComposerSlot.Dimmed.BUSY), Slot.Dimmed(ComposerSlot.Dimmed.NOT_SENT), Slot.Microphone,
         )

@@ -26,7 +26,7 @@ import Testing
 struct MacRecordSlotTests {
 
     private static let slots: [ComposerSlot] = [
-        .recorder, .heldMicrophone, .sendVoice, .stopRecording, .save(enabled: true), .save(enabled: false),
+        .recorder, .sendVoice, .stopRecording, .save(enabled: true), .save(enabled: false),
         .send, .sendDisabled, .dimmed(.call), .dimmed(.busy), .dimmed(.notSent), .microphone,
     ]
 
@@ -65,7 +65,7 @@ struct MacRecordSlotTests {
             let expected: String
             switch slot {
             case .stopRecording: expected = "stop.circle.fill"
-            case .microphone, .dimmed, .heldMicrophone: expected = "mic.circle.fill"
+            case .microphone, .dimmed: expected = "mic.circle.fill"
             default: expected = "arrow.up.circle.fill"
             }
             #expect(MacRecordSlot.symbol(for: slot) == expected, "\(slot)")
@@ -289,7 +289,7 @@ struct MacVoiceMenuTests {
 
     @Test("during a recording it stays enabled — pressed again it stops into review — whatever else is true")
     func recordingStopsIt() {
-        for recording in [ComposerSlot.Recording.handsFree, .handsFreeBesideDraft, .held] {
+        for recording in [ComposerSlot.Recording.handsFree, .handsFreeBesideDraft] {
             #expect(MacVoiceMenu.isEnabled(ComposerSlot.Inputs(recording: recording)), "\(recording)")
             #expect(MacVoiceMenu.isEnabled(ComposerSlot.Inputs(
                 recording: recording, editing: true, call: true, busy: true, notSent: true)),

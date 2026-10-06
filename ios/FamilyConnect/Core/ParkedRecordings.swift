@@ -59,13 +59,11 @@ final class ParkedRecordings {
         /// parked; never sent without the note.
         let caption: String?
         let createdAt: Date
-        /// Marked at a release that sends, for as long as its Undo window
-        /// runs; the outbox hand-off or Undo removes the entry, and a hand-off
-        /// that fails `settle`s it (S2.6). The launch sweep honours it too —
-        /// an entry still marked sending at launch becomes an ordinary "not
-        /// sent" row, never an orphan swept away while its sender believes it
-        /// went.
-        var sending: Bool
+        // An index written while the hold existed (before 2026-10-06) also
+        // carries `sending`, the mark of a note in its Undo window. Decoding
+        // ignores the key, so such an entry — one a crash left inside the
+        // window — is an ordinary "not sent" row: what the launch sweep
+        // made of it then, too.
         /// Its waveform, as the recorder measured it — drawn on the row's
         /// mini waveform and sent with the note (#79). Absent from an index
         /// written before it existed, which decodes as nil: the row draws
@@ -119,15 +117,6 @@ final class ParkedRecordings {
         return currentEntries().filter { $0.chatID == chatID }
     }
 
-    /// The chat's voice messages waiting in "not sent" rows — every entry
-    /// but one a release is holding through its Undo window. That one is not
-    /// "not sent" while the window runs: it has the Undo row, and it is on its
-    /// way out (S2.6). It joins these only if its hand-off does not happen
-    /// (`settle`), or a crash leaves it marked (the launch `sweep`).
-    func waiting(for chatID: Int64) -> [Entry] {
-        entries(for: chatID).filter { !$0.sending }
-    }
-
     /// Where an entry's file is, if it is still there.
     func fileURL(for entry: Entry) -> URL? {
         guard let key = account(), let directory = try? directory(for: key) else { return nil }
@@ -168,7 +157,6 @@ final class ParkedRecordings {
         chatID: Int64,
         replyTo: ReplyToDTO?,
         caption: String?,
-        sending: Bool = false,
         waveform: String? = nil
     ) -> Entry? {
         guard let key = account(), let directory = try? directory(for: key) else { return nil }
@@ -190,7 +178,6 @@ final class ParkedRecordings {
             replyTo: replyTo,
             caption: words,
             createdAt: now(),
-            sending: sending,
             waveform: waveform)
         var entries = load(key)
         entries.append(entry)
@@ -217,21 +204,6 @@ final class ParkedRecordings {
         revision += 1
     }
 
-    /// A "sending" entry whose hand-off to the outbox did not happen: it
-    /// becomes an ordinary "not sent" row, to be sent or deleted — never an
-    /// orphan, and never a note its sender believes went (S2.6).
-    func settle(_ entry: Entry) {
-        guard let key = account() else { return }
-        var entries = load(key)
-        guard let index = entries.firstIndex(where: { $0.id == entry.id }),
-              entries[index].sending
-        else { return }
-        entries[index].sending = false
-        _ = save(entries, for: key)
-        cache = (key, entries)
-        revision += 1
-    }
-
     /// Sign-out: every parked recording of every account on this device.
     func removeAll() {
         if let root = try? root() {
@@ -242,10 +214,9 @@ final class ParkedRecordings {
     }
 
     /// At launch. Deletes the files no entry names and drops the entries
-    /// whose file is gone; turns an entry still marked "sending" into an
-    /// ordinary not-sent one (S2.6); and deletes other accounts'
-    /// directories — a sign-out whose clear never finished. With nobody
-    /// signed in it does nothing at all, rather than guess.
+    /// whose file is gone; and deletes other accounts' directories — a
+    /// sign-out whose clear never finished. With nobody signed in it does
+    /// nothing at all, rather than guess.
     ///
     /// Returns how many files and directories it removed.
     @discardableResult
@@ -259,11 +230,8 @@ final class ParkedRecordings {
         }
         guard let directory = try? directory(for: key) else { return removed }
         let before = load(key)
-        var entries = before.filter {
+        let entries = before.filter {
             manager.fileExists(atPath: directory.appendingPathComponent($0.fileName).path)
-        }
-        for index in entries.indices where entries[index].sending {
-            entries[index].sending = false
         }
         let named = Set(entries.map(\.fileName)).union([Self.indexName])
         for file in (try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []

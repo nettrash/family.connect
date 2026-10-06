@@ -637,7 +637,7 @@ struct VideoDoorTests {
     func thisBuildRecords() {
         #expect(VideoDoor.thisBuildRecords)
         let open = VideoDoor.Inputs(
-            slot: ComposerSlot.Inputs(), familyOrDirectChat: true, undoWindow: false,
+            slot: ComposerSlot.Inputs(), familyOrDirectChat: true,
             serverOffersRound: true, hasCamera: true, encoderProbePasses: true)
         #expect(VideoDoor.of(open) == .shown)
         var oldServer = open

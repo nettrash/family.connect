@@ -54,7 +54,6 @@ import PhotosUI
 import QuickLook
 import SwiftData
 import SwiftUI
-import TipKit
 import UniformTypeIdentifiers
 
 @MainActor @Observable
@@ -244,10 +243,10 @@ struct ConversationView: View {
     @State private var showAssistantConsent = false
     @State private var afterAssistantConsent: (() -> Void)?
     @State private var showCamera = false
-    /// The voice half of the composer (#79, Phase 1): the recorder, the
-    /// shared hold rules and the Undo window. Its `id` is this composer's
+    /// The voice half of the composer (#79, Phase 1): the recorder and the
+    /// shared recording rules. Its `id` is this composer's
     /// name to the app's one-recording rule (VoiceRecordingArbiter), stable
-    /// for the life of the view, so a late release can never end another
+    /// for the life of the view, so a late tap can never end another
     /// composer's recording.
     @State private var voice = VoiceComposer()
     /// Where this conversation lies in the window — what the video
@@ -256,9 +255,8 @@ struct ConversationView: View {
     /// When the video button last appeared: it ignores activation for
     /// 600 ms after (S1.1, S1.4).
     @State private var videoDoorShownAtMS: UInt64 = 0
-    /// A line the voice flow shows — "Next time, letting go will send it.",
-    /// "We didn't hear anything.", the too-short and five-minute sentences
-    /// (S2.3, S2.5) — and when it goes again.
+    /// A line the voice flow shows — the too-short and five-minute
+    /// sentences (S2.5) — and when it goes again.
     @State private var voiceHint: RecordGesture.Hint?
     @State private var voiceHintToken = UUID()
     /// The notice line is the microphone's denial: it offers Open Settings
@@ -899,7 +897,13 @@ struct ConversationView: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            inputBar
+            // Not there at all while the window's video recorder is open
+            // (decision 41): on the owner's iPhone this inset was drawn OVER
+            // the root's recorder layer, undimmed, the composer's Send on top
+            // of Record. Its height stays, so the thread does not move.
+            ComposerUnlessRecording(open: videoRecorder?.isOpen ?? false, height: inputBarHeight) {
+                inputBar
+            }
         }
         .overlayPreferenceValue(BubbleAnchorKey.self) { anchors in
             reactionPickerOverlay(anchors: anchors)
@@ -1136,8 +1140,8 @@ struct ConversationView: View {
             // coming back re-establishes it from the same geometry, without
             // the act of returning reading anything by itself.
             publishPresence()
-            // And it stops a recording, kept as "not sent", and ends an Undo
-            // window by sending — the BACKGROUND only, never the inactive
+            // And it stops a recording, kept as "not sent" — the BACKGROUND
+            // only, never the inactive
             // flicker an alert, Control Centre or a permission prompt causes
             // (#79, S4). A note in review stays in review.
             if phase == .background {
@@ -1701,7 +1705,7 @@ struct ConversationView: View {
         }
         // A call rang, started or was placed — any phase but idle: no
         // recording during a call, so one running stops and is kept, never
-        // sent, and an Undo window ends by sending (#79, S1.7, S4). On the
+        // sent (#79, S1.7, S4). On the
         // bar for the reason above.
         .onChange(of: calls.isIdle) { _, isIdle in
             guard !isIdle else { return }
@@ -1900,11 +1904,7 @@ struct ConversationView: View {
         }
     }
 
-    /// The message field. During an Undo window the Undo row takes its place
-    /// only: the field stays where it is, focused and invisible, hidden from
-    /// VoiceOver, so a keyboard that was up stays up and typing simply
-    /// carries on — and the first character ends the window by sending
-    /// (S2.6).
+    /// The message field.
     private var messageField: some View {
         TextField("Message", text: typedDraft, axis: .vertical)
             .focused($inputFocused)
@@ -1917,9 +1917,6 @@ struct ConversationView: View {
             // ceiling is applied here for those, with the same
             // sentence the paste doors use.
             .onChange(of: model.draft) { _, draft in
-                // A character typed during the Undo window is "any other
-                // action": the released note goes now (S2.6).
-                if voice.inUndoWindow { voice.otherAction() }
                 guard let clamped = ComposerText.clamping(draft) else { return }
                 model.draft = clamped
                 composerNotice = String(
@@ -1931,8 +1928,6 @@ struct ConversationView: View {
             // never runs under it (S1.4).
             .padding(.trailing, videoDoor == .hidden ? 0 : 28)
             .padding(.vertical, 7)
-            .opacity(voice.inUndoWindow ? 0 : 1)
-            .accessibilityHidden(voice.inUndoWindow)
             .composerFieldBackground()
             .overlay(alignment: .topTrailing) {
                 if videoDoor != .hidden {
@@ -1942,18 +1937,6 @@ struct ConversationView: View {
             .onChange(of: videoDoor == .hidden, initial: true) { _, hidden in
                 if !hidden { videoDoorShownAtMS = VoiceComposer.uptimeMS() }
             }
-            .overlay {
-                if let undo = voice.state.undo {
-                    VoiceUndoRow(
-                        recordedMS: undo.recordedMS,
-                        untilMS: undo.untilMS,
-                        windowMS: voice.constants.undoWindowMS,
-                        clock: voice.clock,
-                        onUndo: { voice.undo() })
-                        .transition(.opacity)
-                }
-            }
-            .animation(voiceRowAnimation, value: voice.state.undo != nil)
     }
 
     /// The draft as the FIELD writes it: every character typed, deleted,
@@ -2222,27 +2205,19 @@ struct ConversationView: View {
     /// microphone and no Record Voice Message (S1.3 row 6, S1.5).
     private var offersVoiceMessages: Bool { !isAssistantChat }
 
-    /// The hold row and the recording row cover the controls and the field.
+    /// The recording row covers the controls and the field.
     private var voiceRowCoversControls: Bool { voice.isRecording }
 
     /// The row that takes the controls' place while a voice message records.
     @ViewBuilder
     private var voiceRow: some View {
-        if voice.isHolding {
-            VoiceHoldRow(
-                elapsed: voice.recorder.elapsed,
-                armed: voice.isArmed,
-                warning: voice.showsThirtySecondsLeft,
-                height: composerControl)
-                .transition(.opacity)
-        } else if voice.isHandsFree {
+        if voice.isHandsFree {
             VoiceRecordingRow(
                 elapsed: voice.recorder.elapsed,
                 litBars: AudioRecorder.litBars(peak: voice.recorder.peakLevel),
                 peaks: voice.recorder.peaks,
                 besideDraft: voice.isBesideDraft,
                 warning: voice.showsThirtySecondsLeft,
-                stillRecording: voice.showsStillRecording,
                 control: composerControl,
                 onDelete: { voice.delete() },
                 onStop: { voice.stop() },
@@ -2254,7 +2229,7 @@ struct ConversationView: View {
     /// Which row the input row shows — what its 150 ms cross-fade follows
     /// (S1.1 "Motion"; none under Reduce Motion).
     private var voiceRowKey: Int {
-        voice.isHolding ? 1 : voice.isHandsFree ? 2 : voice.state.undo != nil ? 3 : 0
+        voice.isHandsFree ? 1 : 0
     }
 
     /// The composer's cross-fade between the field and the voice rows.
@@ -2262,59 +2237,41 @@ struct ConversationView: View {
         reduceMotion ? nil : .easeInOut(duration: Double(RecordRules.slotCrossfadeMS) / 1000)
     }
 
-    /// The slot itself (S1.3, S8.1), with the lock floating above it while
-    /// a finger holds it, and the one coach mark (S7.2).
+    /// The slot itself (S1.3, S8.1).
     private var recordSendSlot: some View {
         RecordSendSlot(
             slot: slot,
-            isPressed: voice.isPressed,
             focusRequest: voice.slotFocusRequest,
             side: composerControl,
             glyph: sendGlyph,
             events: slotEvents,
             offersVideo: roundAvailable)
-            .overlay(alignment: .top) {
-                if voice.isHolding, !voice.isArmed {
-                    VoiceLockCue()
-                        .offset(y: -(VoiceLockCue.height + 8))
-                }
-            }
-            .popoverTip(HoldToTalkTip(), arrowEdge: .bottom)
     }
 
     /// What the slot reports, as reducer events.
     private var slotEvents: RecordSendEvents {
         RecordSendEvents(
-            pressDown: { x, y, canHold in
-                voice.pressDown(x: x, y: y, canHold: canHold, rtl: layoutDirection == .rightToLeft)
-            },
-            pressMoved: { x, y in voice.pressMoved(x: x, y: y) },
-            pressLifted: { x, y, inside, byTouch in
-                voice.pressLifted(x: x, y: y, inside: inside, byTouch: byTouch)
-            },
-            pressCancelled: { voice.pressCancelled(background: scenePhase == .background) },
-            holdReached: { voice.holdReached() },
             activated: { activateSlot() },
             recordFromMenu: { recordVoiceMessage() },
             recordVideo: { openVideoRecorder() },
             stopAndListen: { voice.stop() },
             deleteRecording: { voice.delete() },
             magicTap: { voice.magicTap() },
-            escape: { voice.escape() })
+            escape: { voice.escape() },
+            // S1.1: a press that goes down inside the guard is ignored whole.
+            // Typing since lifts the guard (VoiceComposer.otherAction), so a
+            // Send of new words is never held back.
+            pressIgnored: { voice.sendIsGuarded })
     }
 
-    /// The slot activated by anything but a press on the microphone: a tap
-    /// on Send, Save, the Send arrow or the Stop square; VoiceOver, Switch
-    /// Control or Full Keyboard Access on any state; ⌘↩ on rows 2 to 5.
+    /// The slot activated: a tap (however long it was held) on any state;
+    /// VoiceOver, Switch Control or Full Keyboard Access; ⌘↩ on rows 2 to 5.
     private func activateSlot() {
         switch slot {
         case .send:
             // A double tap on the Stop square must not send what it staged
             // (S1.1) — the one guard a text Send asks.
             guard !voice.sendIsGuarded else { return }
-            // A released note still in its Undo window goes first, so it
-            // lands in the chat before the words that followed it.
-            voice.otherAction()
             send()
             voice.emptied()
         case .save(enabled: true):
@@ -2322,7 +2279,7 @@ struct ConversationView: View {
             voice.emptied()
         case .sendVoice, .stopRecording, .microphone, .dimmed:
             voice.activate()
-        case .save(enabled: false), .sendDisabled, .heldMicrophone, .recorder:
+        case .save(enabled: false), .sendDisabled, .recorder:
             break
         }
     }
@@ -2340,7 +2297,6 @@ struct ConversationView: View {
         VideoDoor.Inputs(
             slot: slotInputs,
             familyOrDirectChat: !isAssistantChat,
-            undoWindow: voice.inUndoWindow,
             serverOffersRound: AppSettings.offersRoundVideo,
             hasCamera: VideoMessageRecorder.hasCamera,
             encoderProbePasses: true)
@@ -2387,8 +2343,6 @@ struct ConversationView: View {
             return
         }
         guard editTarget == nil, !mediaState.blocksComposer else { return }
-        // A released note still in its Undo window goes first (S2.6).
-        voice.otherAction()
         // The keyboard is dismissed (S3.3).
         inputFocused = false
         let reply = replyDraft
@@ -2400,7 +2354,7 @@ struct ConversationView: View {
             replyText: reply.map { quoteWord($0) },
             maxRoundVideoMS: AppSettings.roundVideoMaxMS ?? RecordRules.defaultMaxRoundVideoMS,
             maxRoundVideoBytes: AppSettings.roundVideoMaxBytes,
-            notSent: { !ParkedRecordings.shared.waiting(for: chatID).isEmpty },
+            notSent: { !ParkedRecordings.shared.entries(for: chatID).isEmpty },
             send: { prepared, quote, round in sendVideoMessage(prepared, replyTo: quote, round: round) },
             dropReply: {
                 withAnimation(.spring(duration: 0.25)) { replyDraft = nil }
@@ -2548,17 +2502,10 @@ struct ConversationView: View {
     private func wireVoice() {
         var hooks = VoiceComposer.Hooks()
         hooks.blocked = { slotBlocked }
-        hooks.chatID = { chatID }
         hooks.takeReply = { takeReplyForVoice() }
-        hooks.restoreReply = { reply in
-            guard replyDraft == nil, let reply else { return }
-            withAnimation(.spring(duration: 0.25)) { replyDraft = reply }
-        }
         hooks.send = { recording, reply in sendVoiceNote(recording, replyTo: reply) }
         hooks.review = { recording in stageRecording(recording) }
         hooks.park = { recording in keepParked(recording, replyTo: replyDraft, caption: nil) }
-        hooks.sendParked = { entry in sendUndoNote(entry) }
-        hooks.reviewParked = { entry, notice in reviewUndoNote(entry, notice: notice) }
         hooks.explain = { reason in
             composerNotice = reason.notice
             noticeOpensSettings = false
@@ -2577,7 +2524,6 @@ struct ConversationView: View {
             composerNotice = String(localized: "The recording stopped unexpectedly.")
             noticeOpensSettings = false
         }
-        hooks.locked = { inputFocused = false }
         hooks.startedHandsFree = { inputFocused = false }
         hooks.returnFocus = {
             // Keyboard focus back to the field, so a second Return cannot
@@ -2585,11 +2531,10 @@ struct ConversationView: View {
             // touch screen it would raise the on-screen one for nothing.
             if GCKeyboard.coalesced != nil { inputFocused = true }
         }
-        hooks.sentHandsFreeByTouch = { HoldToTalkTip.handsFreeSent() }
         voice.hooks = hooks
     }
 
-    /// The reply goes with a voice message that leaves (S2.5, S2.6).
+    /// The reply goes with a voice message that leaves (S2.5).
     private func takeReplyForVoice() -> ReplyToDTO? {
         let reply = replyDraft
         if reply != nil {
@@ -2618,48 +2563,6 @@ struct ConversationView: View {
         if replyDraft == nil, let replyTo { replyDraft = replyTo }
         stageRecording(recording, notice: String(localized: "Couldn't send that — try again."))
         return false
-    }
-
-    /// The Undo window ran out (or was ended): its "sending" entry to the
-    /// outbox, with the reply it was released under. The outbox copies the
-    /// file, so the entry is whole until the hand-off is certain.
-    private func sendUndoNote(_ entry: ParkedRecordings.Entry) -> Bool {
-        guard let prepared = ParkedRecordings.shared.prepared(for: entry) else { return false }
-        return coordinator.sendMedia(
-            [prepared], caption: "", replyTo: entry.replyTo, mentions: nil, in: chatID) != nil
-    }
-
-    /// Undo: the note goes to review, its reply back to the composer, and
-    /// nothing is sent (S2.6) — and so does a window's hand-off that failed,
-    /// with `notice` (S2.5's "lands in review with the error"). The entry
-    /// leaves the store only once its copy is staged; anything else makes it
-    /// an ordinary "not sent" row.
-    private func reviewUndoNote(_ entry: ParkedRecordings.Entry, notice: String? = nil) {
-        if replyDraft == nil, let reply = entry.replyTo {
-            withAnimation(.spring(duration: 0.25)) { replyDraft = reply }
-        }
-        guard let url = ParkedRecordings.shared.fileURL(for: entry) else {
-            ParkedRecordings.shared.remove(entry)
-            return
-        }
-        prepare {
-            do {
-                var prepared = try await MediaPrep.prepareAudio(
-                    from: url, limit: MediaPrep.sizeLimit, isVoiceNote: true)
-                prepared.waveform = entry.waveform
-                guard !Task.isCancelled, StagedAttachment.canAdd(to: staged.count) else {
-                    MediaPrep.discard(prepared)
-                    ParkedRecordings.shared.settle(entry)
-                    return
-                }
-                ParkedRecordings.shared.remove(entry)
-                stageIfWanted(prepared, voiceNote: true)
-                if let notice { composerNotice = notice }
-            } catch {
-                ParkedRecordings.shared.settle(entry)
-                preparationFailed(String(localized: "Couldn't prepare that item."))
-            }
-        }
     }
 
     /// "Family needs permission to use your microphone. Turn it on in
@@ -2714,15 +2617,13 @@ struct ConversationView: View {
 
     // MARK: - Voice messages nobody finished deciding about (#79, Phase 0)
 
-    /// This chat's voice messages that were not sent — not the one a
-    /// release holds through its Undo window, which has its own row (S2.6).
+    /// This chat's voice messages that were not sent.
     private var notSentHere: [ParkedRecordings.Entry] {
-        ParkedRecordings.shared.waiting(for: chatID)
+        ParkedRecordings.shared.entries(for: chatID)
     }
 
-    /// The chat is being left: a running recording becomes "not sent", a
-    /// released note still in its Undo window is sent now (S2.6, S4), and
-    /// every voice note still in review becomes "not sent" too (S2.8). The
+    /// The chat is being left: a running recording becomes "not sent" (S4),
+    /// and every voice note still in review becomes "not sent" too (S2.8). The
     /// first note in review takes the words in the field along as its
     /// caption and leaves the field empty; each carries the reply the
     /// composer was primed with.
@@ -3830,7 +3731,7 @@ struct ConversationView: View {
     /// would refuse it with `assistant_consent_required` regardless; asking
     /// here is what keeps the sticker in hand.
     private func sendSticker(_ item: PackItemSnapshot) {
-        // A sticker ends an Undo window by sending the note first (S2.6).
+        // A sticker is the person's own action: it lifts the slot's guard (S1.1).
         voice.otherAction()
         switch stickerDoor {
         case .absent:
@@ -4453,8 +4354,7 @@ private struct AttachmentSurfaces: ViewModifier {
 
 /// The voice flow's surfaces, as one modifier for the type checker's sake:
 /// the haptics (S2.9), "Delete this recording?" for a recording of ten
-/// seconds or more (S2.5), and the coach mark's two rules — gone once the
-/// microphone has been held, and never while VoiceOver runs (S7.2).
+/// seconds or more (S2.5).
 private struct VoiceSurfaces: ViewModifier {
     let voice: VoiceComposer
 
@@ -4473,15 +4373,6 @@ private struct VoiceSurfaces: ViewModifier {
             ) {
                 Button("Delete", role: .destructive) { voice.answerDelete(true) }
                 Button("Keep", role: .cancel) { voice.answerDelete(false) }
-            }
-            .onChange(of: voice.isHolding) { _, holding in
-                if holding { HoldToTalkTip().invalidate(reason: .actionPerformed) }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIAccessibility.voiceOverStatusDidChangeNotification)) { _ in
-                HoldToTalkTip.screenReaderRuns = UIAccessibility.isVoiceOverRunning
-            }
-            .onAppear {
-                HoldToTalkTip.screenReaderRuns = UIAccessibility.isVoiceOverRunning
             }
     }
 }

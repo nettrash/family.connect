@@ -3,7 +3,8 @@
 //  FamilyConnectTests
 //
 //  AN ORACLE, NOT FOUR READINGS — #79's shared rules (the Send slot, the
-//  video button, the round helpers and the hold) are written once, in
+//  video button, the round helpers and the voice recording's reducer) are
+//  written once, in
 //  `web/text/src/record.rs`, and printed by `win/tools/board-oracle`
 //  (`cargo run -- record`) into Fixtures/record-vectors.json: the same bytes
 //  Android and Windows check, and CI compares the three copies. Every case
@@ -107,7 +108,6 @@ struct RecordVectorTests {
     static func recording(_ value: Any?) throws -> ComposerSlot.Recording {
         switch try string(value) {
         case "none": return .none
-        case "held": return .held
         case "hands_free": return .handsFree
         case "hands_free_beside_draft": return .handsFreeBesideDraft
         case let other: throw VectorError.unknown("recording \(other)")
@@ -134,7 +134,6 @@ struct RecordVectorTests {
         return VideoDoor.Inputs(
             slot: try slotInputs(raw["slot"]),
             familyOrDirectChat: try bool(raw["family_or_direct_chat"]),
-            undoWindow: try bool(raw["undo_window"]),
             serverOffersRound: try bool(raw["server_offers_round"]),
             hasCamera: try bool(raw["has_camera"]),
             encoderProbePasses: try bool(raw["encoder_probe_passes"]),
@@ -143,14 +142,10 @@ struct RecordVectorTests {
 
     static func constants(_ value: Any?) throws -> RecordGesture.HoldConstants {
         let raw = try dictionary(value)
+        #expect(Set(raw.keys) == ["shortest_recording_ms", "activation_guard_ms", "delete_asks_from_ms"],
+                "the constants carry a key this port does not read: \(raw.keys.sorted())")
         return RecordGesture.HoldConstants(
-            holdThresholdMS: try u64(raw["hold_threshold_ms"]),
-            tapSlop: try double(raw["tap_slop"]),
-            lockDistance: try double(raw["lock_distance"]),
-            cancelArmDistance: try double(raw["cancel_arm_distance"]),
-            cancelDisarmDistance: try double(raw["cancel_disarm_distance"]),
             shortestRecordingMS: try u64(raw["shortest_recording_ms"]),
-            undoWindowMS: try u64(raw["undo_window_ms"]),
             activationGuardMS: try u64(raw["activation_guard_ms"]),
             deleteAsksFromMS: try u64(raw["delete_asks_from_ms"]))
     }
@@ -164,18 +159,14 @@ struct RecordVectorTests {
         case "denied": permission = .denied
         case let other: throw VectorError.unknown("permission \(other)")
         }
-        return RecordGesture.Situation(
-            permission: permission,
-            blocked: try dimmed(raw["blocked"]),
-            assistive: try bool(raw["assistive"]),
-            firstRelease: try bool(raw["first_release"]),
-            reviewBeforeSending: try bool(raw["review_before_sending"]))
+        #expect(Set(raw.keys) == ["permission", "blocked"],
+                "the situation carries a key this port does not read: \(raw.keys.sorted())")
+        return RecordGesture.Situation(permission: permission, blocked: try dimmed(raw["blocked"]))
     }
 
     static func source(_ value: Any?) throws -> RecordGesture.Source {
         switch try string(value) {
         case "tap": return .tap
-        case "hold": return .hold
         case "menu": return .menu
         case let other: throw VectorError.unknown("source \(other)")
         }
@@ -187,19 +178,6 @@ struct RecordVectorTests {
         switch try string(raw["phase"]) {
         case "idle":
             phase = .idle
-        case "pressed":
-            phase = .pressed(
-                downAtMS: try u64(raw["down_at_ms"]),
-                downX: try double(raw["down_x"]),
-                downY: try double(raw["down_y"]),
-                rtl: try bool(raw["rtl"]),
-                mayHold: try bool(raw["may_hold"]))
-        case "holding":
-            phase = .holding(
-                downX: try double(raw["down_x"]),
-                downY: try double(raw["down_y"]),
-                rtl: try bool(raw["rtl"]),
-                armed: try bool(raw["armed"]))
         case "hands_free":
             phase = .handsFree(besideDraft: try bool(raw["beside_draft"]))
         case "asking_delete":
@@ -210,34 +188,13 @@ struct RecordVectorTests {
         case let other:
             throw VectorError.unknown("phase \(other)")
         }
-        var undo: RecordGesture.UndoNote?
-        if let note = raw["undo"] as? [String: Any] {
-            undo = RecordGesture.UndoNote(
-                untilMS: try u64(note["until_ms"]), recordedMS: try u64(note["recorded_ms"]))
-        }
-        return RecordGesture.HoldState(phase: phase, guardUntilMS: try u64(raw["guard_until_ms"]), undo: undo)
+        return RecordGesture.HoldState(phase: phase, guardUntilMS: try u64(raw["guard_until_ms"]))
     }
 
     static func event(_ value: Any?) throws -> RecordGesture.HoldEvent {
         let raw = try dictionary(value)
         let at = try u64(raw["at_ms"])
         switch try string(raw["event"]) {
-        case "down":
-            return .down(
-                atMS: at, x: try double(raw["x"]), y: try double(raw["y"]),
-                canHold: try bool(raw["can_hold"]), rtl: try bool(raw["rtl"]))
-        case "move":
-            return .move(atMS: at, x: try double(raw["x"]), y: try double(raw["y"]))
-        case "up":
-            return .up(
-                atMS: at, x: try double(raw["x"]), y: try double(raw["y"]),
-                inside: try bool(raw["inside"]), situation: try situation(raw["situation"]),
-                recordedMS: try u64(raw["recorded_ms"]), heard: try bool(raw["heard"]))
-        case "system_cancel":
-            return .systemCancel(
-                atMS: at, background: try bool(raw["background"]), recordedMS: try u64(raw["recorded_ms"]))
-        case "tick":
-            return .tick(atMS: at, situation: try situation(raw["situation"]))
         case "cap":
             return .cap(atMS: at)
         case "interruption":
@@ -257,8 +214,6 @@ struct RecordVectorTests {
             return .answer(atMS: at, delete: try bool(raw["delete"]))
         case "permission_answer":
             return .permissionAnswer(atMS: at, granted: try bool(raw["granted"]))
-        case "undo":
-            return .undo(atMS: at)
         case "other_action":
             return .otherAction(atMS: at)
         case "emptied":
@@ -290,7 +245,6 @@ struct RecordVectorTests {
     static func name(_ recording: ComposerSlot.Recording) -> String {
         switch recording {
         case .none: "none"
-        case .held: "held"
         case .handsFree: "hands_free"
         case .handsFreeBesideDraft: "hands_free_beside_draft"
         }
@@ -302,7 +256,6 @@ struct RecordVectorTests {
         var reason: Any = NSNull()
         switch slot {
         case .recorder: name = "recorder"
-        case .heldMicrophone: name = "held_microphone"
         case .sendVoice: name = "send_voice"
         case .stopRecording: name = "stop_recording"
         case .save(let on): name = "save"; enabled = on
@@ -333,13 +286,6 @@ struct RecordVectorTests {
         switch state.phase {
         case .idle:
             value = ["phase": "idle"]
-        case let .pressed(downAtMS, downX, downY, rtl, mayHold):
-            value = [
-                "phase": "pressed", "down_at_ms": downAtMS, "down_x": downX, "down_y": downY,
-                "rtl": rtl, "may_hold": mayHold,
-            ]
-        case let .holding(downX, downY, rtl, armed):
-            value = ["phase": "holding", "down_x": downX, "down_y": downY, "rtl": rtl, "armed": armed]
         case let .handsFree(besideDraft):
             value = ["phase": "hands_free", "beside_draft": besideDraft]
         case let .askingDelete(recordedMS):
@@ -348,55 +294,37 @@ struct RecordVectorTests {
             let name: String
             switch source {
             case .tap: name = "tap"
-            case .hold: name = "hold"
             case .menu: name = "menu"
             }
             value = ["phase": "awaiting_permission", "source": name, "beside_draft": besideDraft]
         }
         value["guard_until_ms"] = state.guardUntilMS
-        if let note = state.undo {
-            value["undo"] = ["until_ms": note.untilMS, "recorded_ms": note.recordedMS]
-        } else {
-            value["undo"] = NSNull()
-        }
         return value
     }
 
     static func encode(_ effect: RecordGesture.HoldEffect) -> [String: Any] {
         switch effect {
-        case .start(let held): return ["effect": "start", "held": held]
-        case .lock: return ["effect": "lock"]
-        case .arm: return ["effect": "arm"]
-        case .disarm: return ["effect": "disarm"]
+        case .start: return ["effect": "start"]
         case .delete: return ["effect": "delete"]
         case .send: return ["effect": "send"]
         case .review: return ["effect": "review"]
         case .park: return ["effect": "park"]
-        case .undoWindow: return ["effect": "undo_window"]
-        case .undoSend: return ["effect": "undo_send"]
-        case .undoReview: return ["effect": "undo_review"]
         case .askDelete: return ["effect": "ask_delete"]
         case .askPermission: return ["effect": "ask_permission"]
         case .denied: return ["effect": "denied"]
-        case .firstReleaseDone: return ["effect": "first_release_done"]
         case .explain(let reason):
             return ["effect": "explain", "reason": name(reason), "text": reason.noticeKey]
         case .hint(let hint):
             let name: String
             switch hint {
-            case .stillRecording: name = "still_recording"
-            case .nextTimeSends: name = "next_time_sends"
-            case .nothingHeard: name = "nothing_heard"
             case .stoppedAtFiveMinutes: name = "stopped_at_five_minutes"
             case .tooShort: name = "too_short"
-            case .canRecordNow: name = "can_record_now"
             }
             return ["effect": "hint", "hint": name, "text": hint.key]
         case .announce(let announcement):
             let name: String
             switch announcement {
             case .recording: name = "recording"
-            case .recordingLocked: name = "recording_locked"
             case .recordingDeleted: name = "recording_deleted"
             case .voiceMessageSent: name = "voice_message_sent"
             case .readyToReview: name = "ready_to_review"
@@ -412,8 +340,6 @@ struct RecordVectorTests {
             let name: String
             switch haptic {
             case .light: name = "light"
-            case .medium: name = "medium"
-            case .selection: name = "selection"
             case .success: name = "success"
             case .warning: name = "warning"
             }
@@ -441,10 +367,10 @@ struct RecordVectorTests {
     func everyFunctionIsCovered() throws {
         let all = try Self.load()
         let known: Set<String> = [
-            "constants", "hold_threshold_ms", "composer_slot", "video_door", "round_cap_ms",
+            "constants", "composer_slot", "video_door", "round_cap_ms",
             "round_warning_ms", "round_diameter", "is_round", "hold_step",
         ]
-        #expect(all.count >= 383, "the reference printed 383 cases; \(all.count) were read")
+        #expect(all.count >= 218, "the reference printed 218 cases; \(all.count) were read")
         for vector in all {
             #expect(known.contains(vector.function), "\(vector.name): unknown function \(vector.function)")
         }
@@ -458,13 +384,7 @@ struct RecordVectorTests {
         let vector = try #require(try Self.cases(for: "constants").first)
         let e = vector.expected
         #expect(RecordRules.activationGuardMS == (try Self.u64(e["activation_guard_ms"])))
-        #expect(RecordRules.minHoldThresholdMS == (try Self.u64(e["min_hold_threshold_ms"])))
-        #expect(RecordRules.tapSlop == (try Self.double(e["tap_slop"])))
-        #expect(RecordRules.lockDistance == (try Self.double(e["lock_distance"])))
-        #expect(RecordRules.cancelArmDistance == (try Self.double(e["cancel_arm_distance"])))
-        #expect(RecordRules.cancelDisarmDistance == (try Self.double(e["cancel_disarm_distance"])))
         #expect(RecordRules.shortestRecordingMS == (try Self.u64(e["shortest_recording_ms"])))
-        #expect(RecordRules.undoWindowMS == (try Self.u64(e["undo_window_ms"])))
         #expect(RecordRules.voiceCapMS == (try Self.u64(e["voice_cap_ms"])))
         #expect(RecordRules.voiceWarningMS == (try Self.u64(e["voice_warning_ms"])))
         #expect(RecordRules.defaultMaxRoundVideoMS == (try Self.u64(e["default_max_round_video_ms"])))
@@ -475,7 +395,6 @@ struct RecordVectorTests {
         #expect(RecordRules.silenceSampleMagnitude == (try Self.double(e["silence_sample_magnitude"])))
         #expect(RecordRules.silenceWarningAfterMS == (try Self.u64(e["silence_warning_after_ms"])))
         #expect(RecordRules.deleteAsksFromMS == (try Self.u64(e["delete_asks_from_ms"])))
-        #expect(RecordRules.stillRecordingHintMS == (try Self.u64(e["still_recording_hint_ms"])))
         #expect(RecordRules.previewIdleCloseMS == (try Self.u64(e["preview_idle_close_ms"])))
         #expect(RecordRules.slotCrossfadeMS == (try Self.u64(e["slot_crossfade_ms"])))
         #expect(RecordRules.recorderFadeMS == (try Self.u64(e["recorder_fade_ms"])))
@@ -497,16 +416,6 @@ struct RecordVectorTests {
         #expect(Double(AudioRecorder.silenceLine) == RecordRules.silencePeakDBFS)
         #expect(UInt64(ParkedRecordings.deleteAsksFromMS) == RecordRules.deleteAsksFromMS)
         #expect(AudioRecorder.maxDuration * 1000 == Double(RecordRules.voiceCapMS))
-    }
-
-    @Test("H is the system's long press, never under 500 ms")
-    func holdThreshold() throws {
-        for vector in try Self.cases(for: "hold_threshold_ms") {
-            let system = try Self.u64(vector.input["system_long_press_ms"])
-            let expected = try Self.u64(vector.expected["hold_threshold_ms"])
-            #expect(RecordGesture.holdThresholdMS(systemLongPressMS: system) == expected, "\(vector.name)")
-            #expect(RecordGesture.HoldConstants.forSystem(longPressMS: system).holdThresholdMS == expected, "\(vector.name)")
-        }
     }
 
     // MARK: - The slot and the door
@@ -580,9 +489,9 @@ struct RecordVectorTests {
         }
     }
 
-    // MARK: - The hold
+    // MARK: - The voice recording's reducer
 
-    @Test("every step of the hold is the reference's: state, effects and what the slot is told")
+    @Test("every step of the voice recording is the reference's: state, effects and what the slot is told")
     func holdStep() throws {
         for vector in try Self.cases(for: "hold_step") {
             let state = try Self.state(vector.input["state"])

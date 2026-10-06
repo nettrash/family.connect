@@ -10,7 +10,8 @@ namespace FamilyConnect.App.Logic.Tests;
 /// (docs/audio-video-messages-2026-10-04.md, S1.3, S1.4, S5; issue #79). Every case in <c>Fixtures/record-vectors.json</c>
 /// was printed by the Rust the web client runs (<c>win/tools/board-oracle</c>, <c>cargo run -- record</c>); the same bytes
 /// are held by the Apple and Android ports and CI compares all three copies with a fresh print. The Windows port reads every
-/// function in it but the hold's (S8.6: every input clicks here) — and a function added to the original and not read here
+/// function in it but the voice recording's reducer, <c>hold_step</c>, which kept its name when the hold was withdrawn
+/// on 2026-10-06 (S8.6: every input clicks here, and the window drives its own recording) — and a function added to the original and not read here
 /// fails <see cref="TheFileIsTheOneTheOriginalPrinted"/>, so it cannot be skipped in silence.
 /// </summary>
 /// <remarks>
@@ -39,7 +40,6 @@ public sealed class ComposerButtonTests
     private static Recording RecordingOf(string? spelled) => spelled switch
     {
         "none" => Recording.None,
-        "held" => Recording.Held,
         "hands_free" => Recording.HandsFree,
         "hands_free_beside_draft" => Recording.HandsFreeBesideDraft,
         _ => throw new InvalidDataException($"a recording spelled {spelled}"),
@@ -60,7 +60,6 @@ public sealed class ComposerButtonTests
     private static DoorInputs DoorOf(JsonElement input) => new(
         SlotOf(input.GetProperty("slot")),
         FamilyOrDirectChat: input.GetProperty("family_or_direct_chat").GetBoolean(),
-        UndoWindow: input.GetProperty("undo_window").GetBoolean(),
         ServerOffersRound: input.GetProperty("server_offers_round").GetBoolean(),
         HasCamera: input.GetProperty("has_camera").GetBoolean(),
         EncoderProbePasses: input.GetProperty("encoder_probe_passes").GetBoolean(),
@@ -70,7 +69,6 @@ public sealed class ComposerButtonTests
     private static string Spelled(SlotKind kind) => kind switch
     {
         SlotKind.Recorder => "recorder",
-        SlotKind.HeldMicrophone => "held_microphone",
         SlotKind.SendVoice => "send_voice",
         SlotKind.StopRecording => "stop_recording",
         SlotKind.Save => "save",
@@ -98,11 +96,12 @@ public sealed class ComposerButtonTests
     [Fact]
     public void TheFileIsTheOneTheOriginalPrinted()
     {
-        // 383 when this was written; fewer would be a truncated copy.
-        Assert.True(Cases.Length >= 383, $"only {Cases.Length} cases");
+        // 218 when the hold was withdrawn (2026-10-06); fewer would be a truncated copy.
+        Assert.True(Cases.Length >= 218, $"only {Cases.Length} cases");
         string[] read = ["constants", "composer_slot", "video_door", "round_cap_ms", "round_warning_ms", "round_diameter", "is_round"];
-        // The hold's reducer and its threshold are the phones' and tablets' — Windows has no hold (S8.6) — and nothing else is left out.
-        string[] notWindows = ["hold_step", "hold_threshold_ms"];
+        // The voice recording's reducer (which keeps its first name) is driven by the window itself on Windows (S8.6), and
+        // nothing else is left out. The hold threshold went with the hold (2026-10-06): a file that still names it is stale.
+        string[] notWindows = ["hold_step"];
         var named = Cases.Select(row => row.GetProperty("function").GetString()!).ToHashSet();
         Assert.Equal(read.Concat(notWindows).Order(), named.Order());
         Assert.All(read, function => Assert.NotEmpty(Of(function)));
@@ -161,7 +160,8 @@ public sealed class ComposerButtonTests
             Assert.True(slot.IsMicrophone == slot.Row is >= 7 and <= 10, $"{name}: microphone");
             checkedCases++;
         }
-        Assert.Equal(58, checkedCases);
+        // 58 until 2026-10-06, when the two held-microphone cases went with the hold and one hands-free case took their place.
+        Assert.Equal(57, checkedCases);
     }
 
     [Fact]
@@ -179,7 +179,8 @@ public sealed class ComposerButtonTests
             Assert.True(OptionalString(expected, "notice") == ComposerButton.Notice(door.Reason, Say), $"{name}: notice");
             checkedCases++;
         }
-        Assert.Equal(35, checkedCases);
+        // 35 until 2026-10-06, when the two Undo-window cases went with the hold.
+        Assert.Equal(33, checkedCases);
     }
 
     /// <summary>
@@ -192,7 +193,7 @@ public sealed class ComposerButtonTests
         foreach (var row in Of("composer_slot"))
         {
             var door = ComposerButton.VideoDoor(new DoorInputs(
-                SlotOf(row.GetProperty("input")), FamilyOrDirectChat: true, UndoWindow: false,
+                SlotOf(row.GetProperty("input")), FamilyOrDirectChat: true,
                 ServerOffersRound: true, HasCamera: true, EncoderProbePasses: true, RecordsRoundVideo: false));
             Assert.Equal(Door.Hidden, door);
         }
@@ -270,8 +271,6 @@ public sealed class ComposerButtonTests
         Assert.Equal(new SlotFace(0xE724, "Send", "Send", "", true, false), FaceOf(new(SlotKind.Send)));
         Assert.Equal(new SlotFace(0xE724, "Send", "Send", "", false, false), FaceOf(new(SlotKind.SendDisabled)));
         Assert.Equal(new SlotFace(0xE720, "Record voice message", Record, "", true, false), FaceOf(new(SlotKind.Microphone)));
-        // The phones' held microphone is the Send arrow's row too; Windows never draws it, and would draw it the same.
-        Assert.Equal(FaceOf(new(SlotKind.SendVoice)), FaceOf(new(SlotKind.HeldMicrophone)));
         // The recorder (Phase 3d) draws its own controls: until then the slot behind it is a Send that does nothing.
         Assert.False(FaceOf(new(SlotKind.Recorder)).Enabled);
     }
@@ -362,6 +361,33 @@ public sealed class ComposerButtonTests
         {
             Assert.Equal(SlotResponse.Ignore, ComposerButton.Respond(SlotPress.ContextAtPointer, device, true, microphone: true));
         }
+    }
+
+    /// <summary>
+    /// A LONG PRESS ON THE MICROPHONE IS NOT A GESTURE (2026-10-06, every platform): while a finger or a pen without its barrel
+    /// button is down, nothing records and nothing opens — the press-and-hold's RightTapped, if Windows raises one, opens no
+    /// menu, and the window sends nothing on the press going down — and when it lifts inside the button it is the button's
+    /// ordinary click, however long it was held, so a slow press is never a dead button (fc_text::record's rule).
+    /// </summary>
+    [Fact]
+    public void ALongPressOnTheMicrophoneStartsNothingUntilItLiftsAndOpensNoMenu()
+    {
+        foreach (var device in new[] { SlotDevice.Touch, SlotDevice.Pen })
+        {
+            var guard = new SlotGuard();
+            var press = guard.PointerDown(1_000, device, barrel: false);
+            // Held for five seconds: the press-and-hold's RightTapped opens nothing.
+            Assert.Equal(SlotResponse.Ignore, guard.RightTapped(device, microphone: true));
+            Assert.Equal(SlotResponse.Ignore, ComposerButton.Respond(SlotPress.ContextAtPointer, device, barrelAtPress: false, microphone: true));
+            // And no callout while it is down: the slot's tooltip, which Windows opens on a press-and-hold, is taken away.
+            Assert.False(ComposerButton.TooltipDuring(device));
+            // Lifted inside: the click — a hands-free recording, exactly as a quick tap.
+            Assert.Equal(SlotResponse.Activate, guard.Click(6_000, Microphone, ""));
+            guard.PressEnded(press);
+        }
+        // A mouse's tooltip is a hover's, and a key or a screen reader has no press to hold: theirs stay.
+        Assert.True(ComposerButton.TooltipDuring(SlotDevice.Mouse));
+        Assert.True(ComposerButton.TooltipDuring(SlotDevice.None));
     }
 
     /// <summary>The menu is the MICROPHONE's (S1.6): on Send, Save or a running recording a right-click does nothing — and a barrel tap never sends.</summary>

@@ -53,6 +53,7 @@ win/
                                 button's rule, the round video's arithmetic, and which press opens the slot's menu
                 RoundVideoRules, RoundRecorder — recording a video message: the switch, the square, the camera and its
                                 mode, the encodes, what is sent, and the recorder's three states as a machine
+                RecorderFrames — where the recorder's status, circle, banner, bar and controls stand, never overlapping
   src/FamilyConnect.App/               the WinUI 3 window: structure + code-behind, no decisions
                 Services/ Connection (one server, wired), LockerTokenStore (the credential
                           locker), AppServices, AppFolders, the settings files, Toasts and
@@ -402,10 +403,11 @@ microphone is pulled out.
 trailing control is one fixed 40-epx accent disc in a 44-epx target — Send, Save, the microphone, or while something records
 the Send arrow (or Stop, when the recording began beside words or staged items) — so the row never jumps, and which it is,
 how it is named and what a press does are `ComposerButton`'s, held case for case to `fc_text::record` by
-`record-vectors.json` (the slot, the video button and the round helpers; Windows has no hold). **Every input clicks**: a
+`record-vectors.json` (the slot, the video button and the round helpers). Since 2026-10-06 no client has a hold — the
+owner withdrew the phones' hold-to-talk after testing it — so the rule Windows always had is now everyone's. **Every input clicks**: a
 press of any length with a mouse, a finger or a pen records hands-free, the same place sends it, and holding is off; a mouse
 right-click, a pen tap with the barrel button down, Shift+F10 or the Menu key open the microphone's menu ("Record Voice
-Message"), and a touch or pen hold never does. **Ctrl+Shift+R** — the app's first keyboard accelerator — records, beside
+Message"), and a touch or pen hold never does — nor its tooltip, which is taken away while a finger or a pen is down. **Ctrl+Shift+R** — the app's first keyboard accelerator — records, beside
 the draft when there is one, and pressed again stops into review: a shortcut never sends. Recording takes the field's place
 in the input row (Delete, the clock, Stop; "30 seconds left" from 4:30), Esc is Stop and never Delete, and Enter in an empty
 field still does nothing. A dimmed microphone — a call, an attachment on its way, a voice message not sent — stays a
@@ -452,8 +454,8 @@ chips and that pending bubble are `NamedGroup`s, whose automation peer is a Grou
 and its white dot on a dark capsule at the bottom and a 48 play disc; in the viewer exactly one accent ring runs OUTSIDE
 the edge as it plays, its play disc fades out, and both go back to the poster's look when it ends (`RoundLook.ViewerRing`). A voice or video message's
 menu is the reactions, Reply, Show text, Playback speed (voice), Save…, Open Full Screen (video) and Safety — never Copy or
-Edit (`MessageMenu`); every other message's menu is unchanged. Windows has no hold, so neither the hold row nor the Undo
-row exists here. **None of it has run on Windows**: the WAV decode, the second reader of the microphone beside a
+Edit (`MessageMenu`); every other message's menu is unchanged. No client has a hold, a hold row or an Undo window any
+more (withdrawn 2026-10-06; Windows never had them). **None of it has run on Windows**: the WAV decode, the second reader of the microphone beside a
 `LowLagMediaRecording`, the shadow, the invisible slider's hit area, the playback rate and what Narrator reads.
 
 **Recording a video message is built and switched off** (docs/audio-video-messages-2026-10-04.md, Phase 3d; Blocked 1,
@@ -462,8 +464,13 @@ the empty field, no "Record Video Message" in the paperclip's menu or the microp
 message." hint for Narrator — and nothing enumerates or opens a camera. A build that can only RECEIVE circles shows no way
 of recording one (Decision 40). Behind the switch is the whole recorder: the video button (Segoe E714 inside the empty
 field, its own 600 ms guard), the two menu items, and `RoundRecorderLayer` over the rail and the page (under the call card)
-— the circle, its status line, the reply it carries and a control row on the composer's own row with the slot on the Send
-button; PREVIEW (mirrored, "Not recording", Record dimmed until the first frame, "Choose camera" — the cameras by name — with more than one,
+— the window darkened and blurred behind it (in-app acrylic; opaque with transparency effects off), the composer made
+transparent and unhittable while it is up, the circle with its status in a capsule above it, the reply it carries, and the
+controls on their own solid bar along the conversation's bottom with the slot under Send (a column bar at the trailing edge
+in a pane shorter than 480, the reply banner at its top where it fits and under the circle where it does not, so the slot
+never leaves the pane); the composer's Ctrl+Shift+R starts nothing behind it; every part is measured and placed by `RecorderFrames.Frame`, which shrinks the circle — and
+at worst cuts the status — rather than let anything overlap, proved by `RecorderFrameTests` at 320–1000 epx and 100–225 %
+text (decision 41, 2026-10-06); PREVIEW (mirrored, "Not recording", Record dimmed until the first frame, "Choose camera" — the cameras by name — with more than one,
 "Record a voice message instead", a minute untouched turns it off), RECORDING (the ring filling red, "10 seconds left" at
 50 s, stopped at 59.5 s into REVIEW, Delete asking from ten seconds) and REVIEW (the clip as it will be sent, Space plays
 and pauses wherever focus is, Delete, Retake, Send); `RoundRecorder` decides every step and is tested on any OS.
@@ -706,9 +713,10 @@ cp win/tests/FamilyConnect.Core.Tests/Fixtures/media-plan-vectors.json android/a
 
 A fourth, `record-vectors.json`, is `fc_text::record` — voice and video messages from the Send
 button (issue #79): which control the composer's trailing slot is, when the video button shows,
-the hold's reducer and the round video's arithmetic. It travels like the media-plan file, three
+the voice recording's reducer (`hold_step`, which kept its name when the hold was withdrawn on
+2026-10-06) and the round video's arithmetic. It travels like the media-plan file, three
 copies CI compares with a fresh print; the Windows port reads every function in it but
-`hold_step` and `hold_threshold_ms` (it has no hold), and `App.Logic.Tests` links the Core copy
+`hold_step` (the window drives its own recording), and `App.Logic.Tests` links the Core copy
 rather than keeping a fourth:
 
 ```bash

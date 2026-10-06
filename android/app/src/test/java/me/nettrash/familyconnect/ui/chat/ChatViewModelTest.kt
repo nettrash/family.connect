@@ -2937,59 +2937,34 @@ class ChatViewModelTest {
     // docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9: the shared
     // reducer (RecordGesture, held to the reference's vectors elsewhere) as
     // this ViewModel feeds it and carries it out — a tap records hands-free
-    // and the same slot sends; a hold is a walkie-talkie whose release opens
-    // a five-second Undo window, written to the parked store marked "sending"
-    // first; the first release on a device, Review Before Sending, TalkBack
-    // and silence all go to review; the 600 ms guard; the one-second floor.
+    // and the same slot sends; Stop reviews; an interruption parks and never
+    // sends; the 600 ms guard; the one-second floor. (Revised 2026-10-06:
+    // there is no hold — no press reaches this ViewModel at all, only the
+    // slot's completed activation — and with it went the Undo window, its
+    // "sending" entry, the first-release lesson, the coach mark and Review
+    // Before Sending.)
     // Every timer runs on the test scheduler's clock (runCurrent, never
     // advanceUntilIdle, while something records).
 
-    /** Where the microphone is, in window coordinates. */
-    private val micX = 340.0
-    private val micY = 780.0
+    /** A granted microphone, no screen reader. */
+    private val finger = ChatViewModel.VoiceEnvironment()
 
-    /** A finger, a granted microphone, no screen reader, Android's default 400 ms long press. */
-    private val finger = ChatViewModel.VoiceEnvironment(systemLongPressMs = 400)
-
-    /** H for [finger]: max(500, 400). */
-    private val hMs = ComposerSlot.holdThresholdMs(400)
-
-    /** A finger taps the microphone: down, and up inside before H. */
-    private fun TestScope.tap(
-        viewModel: ChatViewModel,
-        env: ChatViewModel.VoiceEnvironment = finger,
-        canHold: Boolean = true,
-    ) {
-        viewModel.micDown(micX, micY, canHold, rtl = false, env = env)
-        advanceTimeBy(120)
+    /**
+     * The microphone tapped — however the button completed it: a finger's
+     * lift inside, a click, Enter, TalkBack. RecordSendButton says nothing
+     * to the ViewModel before that (RecordSendButtonTest).
+     */
+    private fun TestScope.tap(viewModel: ChatViewModel, env: ChatViewModel.VoiceEnvironment = finger) {
+        // What is due first — a collector the test just launched — as a real
+        // tap's own time between touch-down and lift lets it.
         runCurrent()
-        viewModel.micUp(micX, micY, inside = true)
-        runCurrent()
-    }
-
-    /** A finger held on the microphone until H: recording starts there. */
-    private fun TestScope.hold(viewModel: ChatViewModel, env: ChatViewModel.VoiceEnvironment = finger) {
-        viewModel.micDown(micX, micY, canHold = true, rtl = false, env = env)
-        advanceTimeBy(hMs)
-        runCurrent()
-    }
-
-    /** The held finger lets go after [recordedMs] of recording, where it is. */
-    private fun TestScope.letGo(viewModel: ChatViewModel, recordedMs: Long, x: Double = micX, y: Double = micY) {
-        recorder.elapsed = recordedMs
-        viewModel.micUp(x, y, inside = true)
+        viewModel.activateSlot(env)
         runCurrent()
     }
 
     /** Past the slot's 600 ms activation guard. */
     private fun TestScope.pastTheGuard() {
         advanceTimeBy(ComposerSlot.ACTIVATION_GUARD_MS)
-        runCurrent()
-    }
-
-    /** This device has had its first held release taught: the next one may open the Undo window. */
-    private fun TestScope.taught() {
-        launch { settings.setHeldReleaseTaught() }
         runCurrent()
     }
 
@@ -3009,8 +2984,8 @@ class ChatViewModelTest {
     /**
      * The store's entries once [count] have landed — waited for on the wall
      * clock, WITHOUT suspending: runTest moves virtual time to the next timer
-     * whenever the test body suspends on real I/O, and a pending Undo window
-     * would then run out under the very assertion that it has not.
+     * whenever the test body suspends on real I/O, and a pending timer would
+     * then run out under the very assertion that it has not.
      */
     private fun TestScope.parkedWithoutTime(count: Int): List<ParkedRecording> {
         runCurrent()
@@ -3070,8 +3045,7 @@ class ChatViewModelTest {
         recorder.elapsed = 1_500
 
         viewModel.activateSlot(finger)
-        viewModel.micDown(micX, micY, canHold = true, rtl = false, env = finger)
-        viewModel.micUp(micX, micY, inside = true)
+        viewModel.activateSlot(finger)
         runCurrent()
 
         assertThat(recorder.isRecording).isTrue()
@@ -3301,175 +3275,6 @@ class ChatViewModelTest {
         assertThat(viewModel.slotPressIgnored(ComposerSlot.Slot.Send)).isFalse()
     }
 
-    /** Something staged while a released note waits ends the window — by SENDING (S2.6). */
-    @Test
-    fun somethingStagedDuringTheUndoWindowSendsAtOnce() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        hold(viewModel)
-        letGo(viewModel, recordedMs = 2_000)
-        assertThat(viewModel.hold.value.undo).isNotNull()
-
-        viewModel.stagePrepared(tempPrepared(tag = 1))
-        runCurrent()
-        // Ended by the staging itself — not by the five seconds running out.
-        assertThat(viewModel.hold.value.undo).isNull()
-
-        awaitAudioRow()
-    }
-
-    /** Recording never starts on touch-down: at H, and only there (S2.3, Decision 6). */
-    @Test
-    fun holdingRecordsAtTheHoldThresholdAndNotBefore() = recordingTest {
-        val viewModel = newViewModel()
-        runCurrent()
-        val effects = screenEffects(viewModel)
-
-        viewModel.micDown(micX, micY, canHold = true, rtl = false, env = finger)
-        advanceTimeBy(hMs - 1)
-        runCurrent()
-        assertThat(recorder.starts).isEqualTo(0)
-
-        advanceTimeBy(1)
-        runCurrent()
-        assertThat(recorder.starts).isEqualTo(1)
-        assertThat(viewModel.hold.value.recording).isEqualTo(ComposerSlot.Recording.HELD)
-        assertThat(haptics(effects)).containsExactly(RecordGesture.Haptic.MEDIUM)
-        // The keyboard, if it was up, stays up under the hold row (S2.3).
-        assertThat(effects).doesNotContain(ChatViewModel.VoiceEffect.FocusSlot)
-    }
-
-    /** H follows the person's "Touch & hold delay" — never shorter than theirs (S1.1). */
-    @Test
-    fun aLongerTouchAndHoldDelayIsALongerHold() = recordingTest {
-        val viewModel = newViewModel()
-        runCurrent()
-        val slow = finger.copy(systemLongPressMs = 1_000)
-
-        viewModel.micDown(micX, micY, canHold = true, rtl = false, env = slow)
-        advanceTimeBy(999)
-        runCurrent()
-        assertThat(recorder.starts).isEqualTo(0)
-        advanceTimeBy(1)
-        runCurrent()
-        assertThat(recorder.starts).isEqualTo(1)
-    }
-
-    /** A mouse clicks on release, whatever the length — never a hold (S8.4). */
-    @Test
-    fun aMousePressOfAnyLengthIsAClick() = recordingTest {
-        val viewModel = newViewModel()
-        runCurrent()
-
-        viewModel.micDown(micX, micY, canHold = false, rtl = false, env = finger)
-        advanceTimeBy(3_000)
-        runCurrent()
-        assertThat(recorder.starts).isEqualTo(0)
-
-        viewModel.micUp(micX, micY, inside = true)
-        runCurrent()
-        assertThat(viewModel.hold.value.recording).isEqualTo(ComposerSlot.Recording.HANDS_FREE)
-    }
-
-    /**
-     * The first held release on a device goes to review, with the one line
-     * that says what letting go does — and remembers it was taught (S2.3, S7.3).
-     */
-    @Test
-    fun theFirstHeldReleaseOnTheDeviceGoesToReviewAndTeaches() = recordingTest {
-        val viewModel = newViewModel()
-        runCurrent()
-        hold(viewModel)
-
-        letGo(viewModel, recordedMs = 2_400)
-
-        val note = viewModel.awaitStaged { it.voiceNote }
-        assertThat(note.durationMs).isEqualTo(2_400)
-        assertThat(viewModel.awaitNotice().text).isEqualTo(app.getString(R.string.s_next_time_letting_go_sends))
-        assertThat(settings.current.heldReleaseTaught).isTrue()
-        assertThat(rows()).isEmpty()
-        assertThat(viewModel.announcement.value?.text)
-            .isEqualTo(app.getString(R.string.s_announce_ready_to_review, "0:02"))
-    }
-
-    /**
-     * Every other release waits five seconds with an Undo before anything is
-     * uploaded (S2.6): written to the parked store marked "sending" at the
-     * release — not a not-sent row — and handed to the outbox when the
-     * window runs out, the entry going with the hand-off.
-     */
-    @Test
-    fun aHeldReleaseWaitsFiveSecondsThenSends() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        viewModel.beginReply(aQuote)
-        hold(viewModel)
-
-        letGo(viewModel, recordedMs = 3_000)
-
-        val waiting = parkedWithoutTime(1).single()
-        assertThat(waiting.sending).isTrue()
-        assertThat(waiting.replyTo).isEqualTo(aQuote)
-        assertThat(viewModel.notSent.value).isEmpty()
-        assertThat(viewModel.hold.value.undo?.recordedMs).isEqualTo(3_000)
-        assertThat(viewModel.replyDraft.value).isNull()
-
-        advanceTimeBy(ComposerSlot.UNDO_WINDOW_MS - 1)
-        runCurrent()
-        assertThat(rows()).isEmpty()
-
-        advanceTimeBy(1)
-        runCurrent()
-        // The window's own timer ended it at five seconds — asked before
-        // anything suspends, since a suspended test body lets virtual time
-        // run on to whatever timer comes next.
-        assertThat(viewModel.hold.value.undo).isNull()
-        val row = awaitAudioRow()
-        // Said once the outbox has it — never while the hand-off could still fail.
-        realTimeUntil { viewModel.announcement.value?.text == app.getString(R.string.s_announce_voice_message_sent) }
-        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.s_announce_voice_message_sent))
-        assertThat(row.replyToMessageId).isEqualTo(aQuote.messageId)
-        settings.state.first { it.parkedRecordings.isEmpty() }
-        assertThat(viewModel.hold.value.undo).isNull()
-    }
-
-    /**
-     * A note whose window ran out but which cannot be prepared is never
-     * lost and never left hidden as "sending": it becomes "not sent" (S2.5,
-     * S2.6), and nothing is sent.
-     */
-    @Test
-    fun aReleasedNoteThatCannotBePreparedBecomesNotSent() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        hold(viewModel)
-        letGo(viewModel, recordedMs = 3_000)
-        val waiting = parkedWithoutTime(1).single()
-        assertThat(waiting.sending).isTrue()
-        // Its bytes become unreadable before the window runs out.
-        parked.file(waiting).delete()
-
-        advanceTimeBy(ComposerSlot.UNDO_WINDOW_MS)
-        runCurrent()
-        val deadline = System.currentTimeMillis() + 5_000
-        // The preparation runs on Dispatchers.IO and comes back to the test's
-        // dispatcher, so each pass also runs what is due — without moving
-        // virtual time.
-        while (settings.current.parkedRecordings.any { it.sending } && System.currentTimeMillis() < deadline) {
-            Thread.sleep(5)
-            runCurrent()
-        }
-        runCurrent()
-
-        assertThat(settings.current.parkedRecordings.single().sending).isFalse()
-        assertThat(viewModel.mediaState.value)
-            .isEqualTo(ChatViewModel.MediaSendState.Failed(app.getString(R.string.e_prepare_failed)))
-        assertThat(rows()).isEmpty()
-    }
-
     /**
      * [dir] made unusable for [body] — a plain file where the directory goes,
      * so nothing can be written under it — and given back after.
@@ -3578,68 +3383,7 @@ class ChatViewModelTest {
 
         assertThat(viewModel.staged.value).isEmpty()
         val waiting = settings.current.parkedRecordings.single()
-        assertThat(waiting.sending).isFalse()
         assertThat(waiting.replyTo).isEqualTo(aQuote)
-    }
-
-    /** The Undo window's send is Send's (S2.6): one it cannot prepare lands in review. */
-    @Test
-    fun aReleasedNoteThatCannotBePreparedLandsInReview() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        viewModel.beginReply(aQuote)
-        hold(viewModel)
-        letGo(viewModel, recordedMs = 3_000)
-        assertThat(parkedWithoutTime(1).single().sending).isTrue()
-
-        blocking(uploadsDir) {
-            advanceTimeBy(ComposerSlot.UNDO_WINDOW_MS)
-            runCurrent()
-            realTimeUntil {
-                viewModel.staged.value.any { it.voiceNote } && settings.current.parkedRecordings.isEmpty()
-            }
-        }
-
-        val note = viewModel.staged.value.single()
-        assertThat(note.voiceNote).isTrue()
-        assertThat(note.durationMs).isEqualTo(3_000)
-        assertThat(note.file.exists()).isTrue()
-        assertThat(viewModel.mediaState.value)
-            .isEqualTo(ChatViewModel.MediaSendState.Failed(app.getString(R.string.e_prepare_failed)))
-        assertThat(viewModel.replyDraft.value).isEqualTo(aQuote)
-        assertThat(settings.current.parkedRecordings).isEmpty()
-        assertThat(rows()).isEmpty()
-    }
-
-    /** ... and one the outbox will not take. */
-    @Test
-    fun aReleasedNoteTheOutboxRefusesLandsInReview() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        val effects = screenEffects(viewModel)
-        hold(viewModel)
-        letGo(viewModel, recordedMs = 3_000)
-        assertThat(parkedWithoutTime(1).single().sending).isTrue()
-
-        blocking(outboxDir) {
-            advanceTimeBy(ComposerSlot.UNDO_WINDOW_MS)
-            runCurrent()
-            realTimeUntil {
-                viewModel.staged.value.any { it.voiceNote } && settings.current.parkedRecordings.isEmpty()
-            }
-        }
-
-        assertThat(viewModel.staged.value.single().voiceNote).isTrue()
-        assertThat(viewModel.mediaState.value)
-            .isEqualTo(ChatViewModel.MediaSendState.Failed(app.getString(R.string.e_send_failed)))
-        assertThat(settings.current.parkedRecordings).isEmpty()
-        assertThat(rows()).isEmpty()
-        // The window's send is Send's (S2.6): what failed is said, never "sent".
-        realTimeUntil { viewModel.announcement.value?.text == app.getString(R.string.e_send_failed) }
-        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.e_send_failed))
-        assertThat(haptics(effects)).doesNotContain(RecordGesture.Haptic.SUCCESS)
     }
 
     /**
@@ -3677,166 +3421,12 @@ class ChatViewModelTest {
     }
 
     /**
-     * Leaving the chat sends a note in its Undo window (S2.6); if the outbox
-     * will not take it, it is "not sent" — never staged into the composer
-     * just left.
+     * Under TalkBack the microphone opens only once "Recording" has been
+     * spoken — a fixed second on Android — so the app's own voice stays out
+     * of the note (S6); and its Send arrow sends, as anyone's.
      */
     @Test
-    fun aReleasedNoteLeavingSendsThatTheOutboxRefusesIsNotSent() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        hold(viewModel)
-        letGo(viewModel, recordedMs = 3_000)
-        assertThat(parkedWithoutTime(1).single().sending).isTrue()
-
-        blocking(outboxDir) {
-            viewModel.screenDetached(changingConfigurations = false)
-            runCurrent()
-            realTimeUntil { settings.current.parkedRecordings.none { it.sending } }
-        }
-
-        assertThat(viewModel.staged.value).isEmpty()
-        assertThat(settings.current.parkedRecordings.single().sending).isFalse()
-        assertThat(rows()).isEmpty()
-    }
-
-    /** Undo: the note goes to review, its reply back in the composer, and nothing is sent (S2.6). */
-    @Test
-    fun undoTakesTheNoteToReviewAndSendsNothing() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        viewModel.beginReply(aQuote)
-        hold(viewModel)
-        letGo(viewModel, recordedMs = 3_000)
-
-        viewModel.undoVoiceMessage()
-        assertThat(viewModel.hold.value.undo).isNull()
-        val note = viewModel.awaitStaged { it.voiceNote }
-
-        assertThat(note.durationMs).isEqualTo(3_000)
-        settings.state.first { it.parkedRecordings.isEmpty() }
-        assertThat(viewModel.replyDraft.value).isEqualTo(aQuote)
-        advanceTimeBy(ComposerSlot.UNDO_WINDOW_MS * 2)
-        runCurrent()
-        assertThat(rows()).isEmpty()
-        assertThat(viewModel.announcement.value?.text)
-            .isEqualTo(app.getString(R.string.s_announce_ready_to_review, "0:03"))
-    }
-
-    /** A character typed ends the window early — by SENDING: letting go had decided (S2.6). */
-    @Test
-    fun typingDuringTheUndoWindowSendsAtOnce() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        hold(viewModel)
-        letGo(viewModel, recordedMs = 2_000)
-
-        type(viewModel, "w")
-        // Ended by the action itself — not by the five seconds running out.
-        assertThat(viewModel.hold.value.undo).isNull()
-
-        awaitAudioRow()
-        assertThat(viewModel.hold.value.undo).isNull()
-        assertThat(viewModel.inputState.text.toString()).isEqualTo("w")
-    }
-
-    /** The paperclip, a sticker, `@ai` — any other action sends the waiting note now (S2.6). */
-    @Test
-    fun anotherActionDuringTheUndoWindowSendsAtOnce() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        hold(viewModel)
-        letGo(viewModel, recordedMs = 2_000)
-
-        viewModel.otherAction()
-        // Ended by the action itself — not by the five seconds running out.
-        assertThat(viewModel.hold.value.undo).isNull()
-
-        awaitAudioRow()
-    }
-
-    /** An interruption during the window — a call, leaving the chat — sends it now (S4). */
-    @Test
-    fun aCallDuringTheUndoWindowSendsIt() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        hold(viewModel)
-        letGo(viewModel, recordedMs = 2_000)
-
-        callState.value = CallState.Incoming(callId = "c1", chatId = CHAT, peerUserId = PEER)
-        runCurrent()
-        assertThat(viewModel.hold.value.undo).isNull()
-
-        awaitAudioRow()
-        settings.state.first { it.parkedRecordings.isEmpty() }
-    }
-
-    @Test
-    fun leavingTheChatDuringTheUndoWindowSendsIt() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        viewModel.screenAttached()
-        hold(viewModel)
-        letGo(viewModel, recordedMs = 2_000)
-
-        viewModel.screenDetached(changingConfigurations = false)
-        runCurrent()
-        assertThat(viewModel.hold.value.undo).isNull()
-
-        awaitAudioRow()
-    }
-
-    /** The microphone itself during the window sends the waiting note, then records (S2.6). */
-    @Test
-    fun theMicrophoneDuringTheUndoWindowSendsTheWaitingNoteFirst() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        hold(viewModel)
-        letGo(viewModel, recordedMs = 2_000)
-        pastTheGuard()
-
-        tap(viewModel)
-        assertThat(viewModel.hold.value.undo).isNull()
-
-        awaitAudioRow()
-        assertThat(recorder.starts).isEqualTo(2)
-        assertThat(viewModel.hold.value.recording).isEqualTo(ComposerSlot.Recording.HANDS_FREE)
-    }
-
-    /** Review Before Sending (S9) is the Undo window's "turn off": a held release reviews, untaught. */
-    @Test
-    fun reviewBeforeSendingKeepsAHeldReleaseForReview() = recordingTest {
-        taught()
-        launch { settings.setReviewBeforeSending(true) }
-        runCurrent()
-        val viewModel = newViewModel()
-        runCurrent()
-        hold(viewModel)
-
-        letGo(viewModel, recordedMs = 2_000)
-
-        viewModel.awaitStaged { it.voiceNote }
-        assertThat(viewModel.hold.value.undo).isNull()
-        assertThat(settledParks()).isEmpty()
-        // "Next time, letting go will send it" would not be true here.
-        assertThat(notice(viewModel)).isNull()
-    }
-
-    /**
-     * Under TalkBack a held release always goes to review, and the
-     * microphone opens only once "Recording" has been spoken — a fixed
-     * second on Android — so the app's own voice stays out of the note (S6).
-     */
-    @Test
-    fun underTalkBackTheMicrophoneWaitsForItsOwnWordAndReleasesReview() = recordingTest {
-        taught()
+    fun underTalkBackTheMicrophoneWaitsForItsOwnWord() = recordingTest {
         val viewModel = newViewModel()
         runCurrent()
         val talkBack = finger.copy(assistive = true)
@@ -3847,137 +3437,12 @@ class ChatViewModelTest {
         advanceTimeBy(ChatViewModel.SPEECH_LEAD_MS)
         runCurrent()
         assertThat(recorder.starts).isEqualTo(1)
-        viewModel.cancelRecording()
 
         pastTheGuard()
-        hold(viewModel, env = talkBack)
-        advanceTimeBy(ChatViewModel.SPEECH_LEAD_MS)
-        runCurrent()
-        letGo(viewModel, recordedMs = 2_000)
-        viewModel.awaitStaged { it.voiceNote }
-        assertThat(viewModel.hold.value.undo).isNull()
-    }
-
-    /** A held recording that never rose above silence is never sent: review, and the line (S2.3). */
-    @Test
-    fun aSilentHeldReleaseIsNeverSent() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        recorder.amplitude = 0
-        hold(viewModel)
-
-        letGo(viewModel, recordedMs = 2_000)
-
-        viewModel.awaitStaged { it.voiceNote }
-        assertThat(viewModel.awaitNotice().text).isEqualTo(app.getString(R.string.s_we_didnt_hear_anything))
-        assertThat(viewModel.hold.value.undo).isNull()
-        assertThat(rows()).isEmpty()
-    }
-
-    /** A hold let go under a second keeps recording, hands-free, and says so for three seconds (S2.3). */
-    @Test
-    fun aHoldReleasedUnderASecondKeepsRecording() = recordingTest {
-        val viewModel = newViewModel()
-        runCurrent()
-        hold(viewModel)
-
-        letGo(viewModel, recordedMs = 500)
-
-        assertThat(recorder.isRecording).isTrue()
-        assertThat(viewModel.hold.value.recording).isEqualTo(ComposerSlot.Recording.HANDS_FREE)
-        assertThat(viewModel.voiceLine.value).isEqualTo(ChatViewModel.VoiceLine.STILL_RECORDING)
-
-        advanceTimeBy(ComposerSlot.STILL_RECORDING_HINT_MS + ChatViewModel.VOICE_TICK_MS)
-        runCurrent()
-        assertThat(viewModel.voiceLine.value).isNull()
-        assertThat(recorder.isRecording).isTrue()
-    }
-
-    /** Sliding 100 toward the field arms cancel; letting go then deletes (S2.3). */
-    @Test
-    fun slidingTowardTheFieldArmsCancelAndLettingGoDeletes() = recordingTest {
-        taught()
-        val viewModel = newViewModel()
-        runCurrent()
-        val effects = screenEffects(viewModel)
-        hold(viewModel)
-
-        viewModel.micMove(micX - 100, micY)
-        runCurrent()
-        assertThat((viewModel.hold.value.phase as RecordGesture.Phase.Holding).armed).isTrue()
-
-        letGo(viewModel, recordedMs = 4_000, x = micX - 100)
-
-        assertThat(recorder.isRecording).isFalse()
-        assertThat(recorder.files.none { it.exists() }).isTrue()
-        assertThat(viewModel.staged.value).isEmpty()
-        assertThat(settledParks()).isEmpty()
-        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.s_announce_recording_deleted))
-        assertThat(haptics(effects)).containsExactly(
-            RecordGesture.Haptic.MEDIUM, RecordGesture.Haptic.SELECTION, RecordGesture.Haptic.WARNING,
-        ).inOrder()
-    }
-
-    /** In a right-to-left layout the leading edge is on the right (S1.1). */
-    @Test
-    fun inRightToLeftCancelIsTowardTheRight() = recordingTest {
-        val viewModel = newViewModel()
-        runCurrent()
-        viewModel.micDown(micX, micY, canHold = true, rtl = true, env = finger)
-        advanceTimeBy(hMs)
-        runCurrent()
-
-        viewModel.micMove(micX - 100, micY)
-        runCurrent()
-        assertThat((viewModel.hold.value.phase as RecordGesture.Phase.Holding).armed).isFalse()
-        viewModel.micMove(micX + 100, micY)
-        runCurrent()
-        assertThat((viewModel.hold.value.phase as RecordGesture.Phase.Holding).armed).isTrue()
-    }
-
-    /** Sliding 60 up locks: hands-free, the keyboard goes down, and the lift does nothing (S2.3). */
-    @Test
-    fun slidingUpLocksAndTheLiftDoesNothing() = recordingTest {
-        val viewModel = newViewModel()
-        runCurrent()
-        val effects = screenEffects(viewModel)
-        hold(viewModel)
-
-        viewModel.micMove(micX, micY - 60)
-        runCurrent()
-        assertThat(viewModel.hold.value.recording).isEqualTo(ComposerSlot.Recording.HANDS_FREE)
-        assertThat(effects).contains(ChatViewModel.VoiceEffect.FocusSlot)
-        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.s_announce_recording_locked))
-
-        letGo(viewModel, recordedMs = 5_000, y = micY - 60)
-        assertThat(recorder.isRecording).isTrue()
-    }
-
-    /**
-     * The system cancelling the touch LOCKS a hold rather than losing it —
-     * and, when the app has gone to the background, stops and keeps it (S2.3).
-     */
-    @Test
-    fun aSystemCancelLocksAHoldOrParksItInTheBackground() = recordingTest {
-        val viewModel = newViewModel()
-        runCurrent()
-        hold(viewModel)
         recorder.elapsed = 2_000
-
-        viewModel.micCancel(background = false)
+        viewModel.activateSlot(talkBack)
         runCurrent()
-        assertThat(viewModel.hold.value.recording).isEqualTo(ComposerSlot.Recording.HANDS_FREE)
-        assertThat(recorder.isRecording).isTrue()
-        viewModel.cancelRecording()
-
-        pastTheGuard()
-        hold(viewModel)
-        recorder.elapsed = 2_500
-        viewModel.micCancel(background = true)
-        runCurrent()
-        assertThat(recorder.isRecording).isFalse()
-        assertThat(viewModel.awaitNotSent().single().durationMs).isEqualTo(2_500)
+        awaitAudioRow()
     }
 
     /** Ctrl+Shift+R records, and pressed during one STOPS it into review — never sends (S1.6). */
@@ -4115,23 +3580,6 @@ class ChatViewModelTest {
         assertThat(recorder.starts).isEqualTo(1)
     }
 
-    /** A prompt a hold raised never records, whatever the answer; Allow says "You can record now." (S2.3). */
-    @Test
-    fun aHoldWithoutPermissionAsksAndNeverRecords() = recordingTest {
-        val viewModel = newViewModel()
-        runCurrent()
-        val effects = screenEffects(viewModel)
-
-        hold(viewModel, env = finger.copy(permission = RecordGesture.Permission.NOT_ASKED))
-        assertThat(effects).contains(ChatViewModel.VoiceEffect.AskPermission)
-        viewModel.permissionAnswered(granted = true, permanent = false)
-        viewModel.micUp(micX, micY, inside = true)
-        runCurrent()
-
-        assertThat(recorder.starts).isEqualTo(0)
-        assertThat(notice(viewModel)).isEqualTo(app.getString(R.string.s_you_can_record_now))
-    }
-
     /** Refused: the denial sentence — with Open Settings once the refusal is for good (S2.2). */
     @Test
     fun aRefusalSaysSoAndForGoodOffersOpenSettings() = recordingTest {
@@ -4218,60 +3666,6 @@ class ChatViewModelTest {
         runCurrent()
         assertThat(viewModel.voiceLine.value).isEqualTo(ChatViewModel.VoiceLine.THIRTY_SECONDS_LEFT)
         assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.s_thirty_seconds_left))
-    }
-
-    /**
-     * The coach mark, once per device, after the first hands-free voice
-     * message SENT from a touch screen — never after a mouse's (S7.2).
-     */
-    @Test
-    fun theCoachMarkComesOnceAfterTheFirstHandsFreeMessageSentByTouch() = recordingTest {
-        val viewModel = newViewModel()
-        runCurrent()
-
-        tap(viewModel, canHold = false)
-        pastTheGuard()
-        recorder.elapsed = 2_000
-        viewModel.activateSlot(finger)
-        runCurrent()
-        assertThat(viewModel.coachMark.value).isFalse()
-
-        pastTheGuard()
-        tap(viewModel)
-        pastTheGuard()
-        recorder.elapsed = 2_000
-        viewModel.activateSlot(finger)
-        runCurrent()
-        assertThat(viewModel.coachMark.value).isTrue()
-        assertThat(settings.current.voiceCoachMarkShown).isTrue()
-
-        viewModel.dismissCoachMark()
-        pastTheGuard()
-        tap(viewModel)
-        pastTheGuard()
-        recorder.elapsed = 2_000
-        viewModel.activateSlot(finger)
-        runCurrent()
-        assertThat(viewModel.coachMark.value).isFalse()
-    }
-
-    /** Never shown while a screen reader runs (S7.2). */
-    @Test
-    fun theCoachMarkIsNeverShownUnderTalkBack() = recordingTest {
-        val viewModel = newViewModel()
-        runCurrent()
-        val talkBack = finger.copy(assistive = true)
-
-        tap(viewModel, env = talkBack)
-        advanceTimeBy(ChatViewModel.SPEECH_LEAD_MS)
-        runCurrent()
-        pastTheGuard()
-        recorder.elapsed = 2_000
-        viewModel.activateSlot(talkBack)
-        runCurrent()
-
-        assertThat(viewModel.coachMark.value).isFalse()
-        assertThat(settings.current.voiceCoachMarkShown).isFalse()
     }
 
     /** Stop keeps it for review — "Ready to review, 0:42" — and a playing note says why it waits (S2.5, S1.7). */

@@ -20,13 +20,11 @@ class VoiceHapticsTest {
 
     @Test
     fun eachMomentPlaysThePlansFeedbackType() {
-        // recording starts from a tap → ToggleOn; at H → LongPress; lock and
-        // cancel armed → GestureThresholdActivate; sent → Confirm; too short
-        // and deleted → Reject.
+        // recording starts → ToggleOn; sent → Confirm; too short and deleted
+        // → Reject. (The hold's LongPress and GestureThresholdActivate went
+        // with it on 2026-10-06.)
+        assertThat(RecordGesture.Haptic.entries).hasSize(3)
         assertThat(RecordGesture.Haptic.LIGHT.feedback()).isEqualTo(HapticFeedbackType.ToggleOn)
-        assertThat(RecordGesture.Haptic.MEDIUM.feedback()).isEqualTo(HapticFeedbackType.LongPress)
-        assertThat(RecordGesture.Haptic.SELECTION.feedback())
-            .isEqualTo(HapticFeedbackType.GestureThresholdActivate)
         assertThat(RecordGesture.Haptic.SUCCESS.feedback()).isEqualTo(HapticFeedbackType.Confirm)
         assertThat(RecordGesture.Haptic.WARNING.feedback()).isEqualTo(HapticFeedbackType.Reject)
     }

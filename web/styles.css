@@ -1065,6 +1065,10 @@ button.pack-cell:disabled { cursor: default; }
 .typing { flex: none; margin: 0 16px; color: var(--muted); font-size: 13px; }
 
 .composer-wrap { flex: none; border-top: 1px solid var(--line); background: var(--panel); position: relative; }
+/* Under the video recorder (#79, decision 41): not drawn at all — hidden,
+ * not dimmed — and inert, so nothing of it shows through or takes a tap;
+ * it keeps its place, which the recorder measures its row by. */
+.composer-wrap.is-covered { visibility: hidden; }
 
 .composer {
     flex: none;
@@ -2119,11 +2123,14 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
     }
 }
 
-/* THE RECORDER (S3.3): the whole window, taking all input. Black at 70 %
- * over everything but the conversation, 30 % over it — so the message being
- * answered stays readable — and 70 % everywhere on a narrow window; opaque
- * where transparency is reduced. The pane is where the conversation is, the
- * control row exactly where the composer's row is. */
+/* THE RECORDER (S3.3): the whole window, taking all input. Revised
+ * 2026-10-06 (decision 41): on a phone the chat competed with the camera
+ * circle and the composer showed through the controls. Now the
+ * conversation is blurred under black at 60 % — 85 % on a narrow window —
+ * and everything else is black at 80 %; opaque where transparency is
+ * reduced. The reply being answered is quoted in the recorder's own banner.
+ * The pane is where the conversation is; the controls stand on their own
+ * solid bar where the composer's row is, and the composer is not drawn. */
 .recorder {
     position: fixed;
     inset: 0;
@@ -2143,23 +2150,29 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
     width: var(--pane-width, 100%);
     height: var(--pane-height, 100%);
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr) auto;
-    background: rgb(0 0 0 / 30%);
-    box-shadow: 0 0 0 100vmax rgb(0 0 0 / 70%);
+    background: rgb(0 0 0 / 60%);
+    box-shadow: 0 0 0 100vmax rgb(0 0 0 / 80%);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
 }
 @media (max-width: 719.98px) {
-    .recorder-pane { background: rgb(0 0 0 / 70%); }
+    .recorder-pane { background: rgb(0 0 0 / 85%); }
 }
 @media (prefers-reduced-transparency: reduce) {
     .recorder-pane { background: #000; box-shadow: 0 0 0 100vmax #000; }
 }
+/* The status — "Not recording", the red dot and the clock, "Video message ·
+ * 0:23" — in its own capsule above the circle, never over the chat. */
 .recorder-status {
     justify-self: center;
     max-width: calc(100% - 32px);
     margin-top: max(16px, env(safe-area-inset-top));
+    margin-bottom: 8px;
     padding: 6px 14px;
     border-radius: 14px;
-    background: rgb(0 0 0 / 60%);
+    background: rgb(28 28 31 / 96%);
     text-align: center;
     font-size: 14px;
 }
@@ -2180,11 +2193,17 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
     animation: recording-pulse 1.2s ease-in-out infinite;
 }
 .recorder-left { color: #f5a524; }
-.recorder-stage { display: grid; place-items: center; min-height: 0; min-width: 0; }
+/* The circle is S3.3's diameter, and never larger than the room it has
+ * between the status and the controls, less 8 on each side for the ring:
+ * whatever the window, the text size or the reply banner, it overlaps
+ * neither (decision 41). */
+.recorder-stage { display: grid; place-items: center; min-height: 0; min-width: 0; container-type: size; }
 .recorder-circle {
     position: relative;
     width: var(--circle, 320px);
     height: var(--circle, 320px);
+    width: min(var(--circle, 320px), 100cqw - 16px, 100cqh - 16px);
+    height: min(var(--circle, 320px), 100cqw - 16px, 100cqh - 16px);
     border-radius: 50%;
     background: #1c1c1f;
     display: grid;
@@ -2213,11 +2232,14 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
 }
 .recorder-play:focus-visible { outline: 2px solid #fff; outline-offset: 8px; }
 .recorder-glyph svg { width: 56px; height: 56px; opacity: .7; display: block; }
-/* The ring: 4 wide, just OUTSIDE the circle, never over a face. */
+/* The ring: 4 wide, just OUTSIDE the circle, never over a face — drawn for
+ * S3.3's diameter and scaled with the circle where the room is less. */
 .recorder-ring {
     position: absolute;
     left: -6px;
     top: -6px;
+    width: calc(100% + 12px);
+    height: calc(100% + 12px);
     pointer-events: none;
     overflow: visible;
 }
@@ -2230,9 +2252,14 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
 .recorder-ring.is-warning .recorder-arc { stroke: #f5a524; }
 .recorder-ring.is-progress .recorder-arc { stroke: var(--tint); }
 .recorder-ring .recorder-arc { transition: stroke-dasharray .1s linear; }
+/* The controls' own bar: solid, so nothing under it shows, reaching the
+ * pane's bottom edge and the home indicator's safe area. */
 .recorder-dock {
     min-width: 0;
+    padding-top: 6px;
     padding-bottom: max(var(--row-bottom, 0px), env(safe-area-inset-bottom));
+    background: #121214;
+    border-top: 1px solid rgb(255 255 255 / 10%);
 }
 .recorder-banner {
     display: flex;
@@ -2260,8 +2287,16 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
 .recorder-leading, .recorder-middle { display: flex; gap: 12px; align-items: flex-end; min-width: 0; }
 .recorder-middle { flex: 1; justify-content: center; }
 .recorder-item { display: grid; justify-items: center; gap: 4px; position: relative; }
-/* Its line height is the font's (14 at 11), so larger text grows the line. */
-.recorder-caption { font-size: 11px; line-height: 1.273; color: #c9cbd6; text-align: center; white-space: nowrap; }
+/* Its line height is the font's (14 at 11), so larger text grows the line —
+ * and a caption too wide for its button wraps rather than run into the next. */
+.recorder-caption {
+    max-width: 88px;
+    font-size: 11px;
+    line-height: 1.273;
+    color: #c9cbd6;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
 .recorder-control {
     position: relative;
     width: 44px;
@@ -2304,13 +2339,16 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
 .recorder-slot.is-send { background: var(--tint); }
 .recorder-slot:focus-visible, .recorder-control:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 
-/* A pane shorter than 480 — a phone on its side: the controls stand in a
- * column at the trailing edge, the banner above them (S3.3). */
+/* A pane shorter than 480 — a phone on its side: the controls stand on a
+ * solid bar at the trailing edge, the full height, the banner above them
+ * (S3.3); the status and the circle share what is left of the width. The
+ * slot is at the trailing edge, the smaller buttons in a column beside it,
+ * so that all of them fit a phone's 320 (decision 41). */
 .recorder.is-column .recorder-pane {
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-rows: auto minmax(0, 1fr);
 }
-.recorder.is-column .recorder-status { grid-column: 1 / -1; }
+.recorder.is-column .recorder-status { grid-column: 1; grid-row: 1; }
 .recorder.is-column .recorder-stage { grid-column: 1; grid-row: 2; }
 .recorder.is-column .recorder-dock {
     grid-column: 2;
@@ -2318,22 +2356,32 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
     display: flex;
     flex-direction: column;
     justify-content: flex-end;
-    width: 184px;
-    padding: 16px max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) 0;
+    min-width: 184px;
+    padding: 12px max(16px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) 12px;
+    border-top: 0;
+    border-left: 1px solid rgb(255 255 255 / 10%);
 }
-.recorder.is-column .recorder-banner { margin: 0 0 8px; }
+.recorder.is-column .recorder-banner { margin: 0 0 6px; max-width: 220px; }
 .recorder.is-column .recorder-row {
     min-height: 0;
-    flex-direction: column;
-    align-items: flex-end;
+    display: grid;
+    grid-template-columns: auto auto;
+    grid-template-areas: "lead slot" "mid slot";
+    justify-content: end;
+    justify-items: center;
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 8px;
     padding: 0;
-    gap: 12px;
 }
-.recorder.is-column .recorder-leading, .recorder.is-column .recorder-middle {
+.recorder.is-column .recorder-leading { grid-area: lead; }
+.recorder.is-column .recorder-middle {
+    grid-area: mid;
     flex-direction: column;
-    align-items: flex-end;
+    align-items: center;
+    gap: 8px;
 }
-.recorder.is-column .recorder-slot-item { margin-inline-start: 0; margin-top: auto; }
+.recorder.is-column .recorder-slot-item { grid-area: slot; margin: 0; }
 @media (prefers-reduced-motion: reduce) {
     .recorder { animation: none; }
     .recorder-dot { animation: none; }

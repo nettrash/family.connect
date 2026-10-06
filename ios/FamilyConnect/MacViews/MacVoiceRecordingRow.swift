@@ -17,8 +17,7 @@
 //  slot. Its Stop is an ordinary button; Esc is the composer's.
 //
 //  The dot, the timer and the meter are the phone's own (VoiceComposerRows):
-//  one look for "recording" on both platforms. No hold row, no lock, no
-//  "Still recording" line and no Undo row: a Mac has no hold to make them.
+//  one look for "recording" on both platforms.
 //
 
 #if os(macOS)

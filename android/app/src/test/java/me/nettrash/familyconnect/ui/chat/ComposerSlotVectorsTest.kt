@@ -4,11 +4,13 @@
  *
  * ComposerSlot against the shared rules' own vectors (#79,
  * docs/audio-video-messages-2026-10-04.md, "Shared rules"): every
- * `constants`, `hold_threshold_ms`, `composer_slot`, `video_door`,
+ * `constants`, `composer_slot`, `video_door`,
  * `round_cap_ms`, `round_warning_ms`, `round_diameter` and `is_round` case in
  * record-vectors.json, which `win/tools/board-oracle` prints from the
  * reference (`fc_text::record`) and CI keeps identical across the ports. The
- * hold reducer's cases are RecordGestureVectorsTest's.
+ * recording reducer's cases are RecordGestureVectorsTest's. (Printed again
+ * 2026-10-06 without the hold: `hold_threshold_ms` and the hold's constants
+ * are gone from the file.)
  *
  * Strict both ways: a field this port does not know, or a function the file
  * gained, fails here — so the reference cannot move on without the port
@@ -62,13 +64,13 @@ class ComposerSlotVectorsTest {
     @Test
     fun everyFunctionInTheFileIsOneAPortReads() {
         val known = setOf(
-            "constants", "hold_threshold_ms", "composer_slot", "video_door", "round_cap_ms",
+            "constants", "composer_slot", "video_door", "round_cap_ms",
             "round_warning_ms", "round_diameter", "is_round", "hold_step",
         )
         val functions = cases.map { it.str("function") }.toSet()
         assertThat(functions).isEqualTo(known)
         // The printed file's own size, so a truncated copy cannot pass quietly.
-        assertThat(cases).hasSize(398)
+        assertThat(cases).hasSize(218)
     }
 
     @Test
@@ -76,9 +78,7 @@ class ComposerSlotVectorsTest {
         val expected = casesOf("constants").single().obj("expected")
         val longs = mapOf(
             "activation_guard_ms" to ComposerSlot.ACTIVATION_GUARD_MS,
-            "min_hold_threshold_ms" to ComposerSlot.MIN_HOLD_THRESHOLD_MS,
             "shortest_recording_ms" to ComposerSlot.SHORTEST_RECORDING_MS,
-            "undo_window_ms" to ComposerSlot.UNDO_WINDOW_MS,
             "voice_cap_ms" to ComposerSlot.VOICE_CAP_MS,
             "voice_warning_ms" to ComposerSlot.VOICE_WARNING_MS,
             "default_max_round_video_ms" to ComposerSlot.DEFAULT_MAX_ROUND_VIDEO_MS,
@@ -87,7 +87,6 @@ class ComposerSlotVectorsTest {
             "silence_max_amplitude" to ComposerSlot.SILENCE_MAX_AMPLITUDE.toLong(),
             "silence_warning_after_ms" to ComposerSlot.SILENCE_WARNING_AFTER_MS,
             "delete_asks_from_ms" to ComposerSlot.DELETE_ASKS_FROM_MS,
-            "still_recording_hint_ms" to ComposerSlot.STILL_RECORDING_HINT_MS,
             "preview_idle_close_ms" to ComposerSlot.PREVIEW_IDLE_CLOSE_MS,
             "slot_crossfade_ms" to ComposerSlot.SLOT_CROSSFADE_MS,
             "recorder_fade_ms" to ComposerSlot.RECORDER_FADE_MS,
@@ -99,10 +98,6 @@ class ComposerSlotVectorsTest {
             "round_diameter_regular" to ComposerSlot.ROUND_DIAMETER_REGULAR.toLong(),
         )
         val doubles = mapOf(
-            "tap_slop" to ComposerSlot.TAP_SLOP,
-            "lock_distance" to ComposerSlot.LOCK_DISTANCE,
-            "cancel_arm_distance" to ComposerSlot.CANCEL_ARM_DISTANCE,
-            "cancel_disarm_distance" to ComposerSlot.CANCEL_DISARM_DISTANCE,
             "silence_peak_dbfs" to ComposerSlot.SILENCE_PEAK_DBFS,
             "silence_sample_magnitude" to ComposerSlot.SILENCE_SAMPLE_MAGNITUDE,
         )
@@ -122,19 +117,6 @@ class ComposerSlotVectorsTest {
             .isEqualTo(RecordGesture.HoldConstants())
     }
 
-    @Test
-    fun hTheHoldThresholdNeverFallsBelowTheFloor() {
-        for (case in casesOf("hold_threshold_ms")) {
-            val system = case.obj("input").long("system_long_press_ms")
-            assertWithMessage(case.str("name"))
-                .that(ComposerSlot.holdThresholdMs(system))
-                .isEqualTo(case.obj("expected").long("hold_threshold_ms"))
-            assertWithMessage(case.str("name"))
-                .that(RecordGesture.HoldConstants.forSystem(system).holdThresholdMs)
-                .isEqualTo(case.obj("expected").long("hold_threshold_ms"))
-        }
-    }
-
     private fun slotInputs(input: JsonObject): ComposerSlot.SlotInputs {
         assertThat(input.keys).isEqualTo(
             setOf(
@@ -146,7 +128,6 @@ class ComposerSlotVectorsTest {
             recorderOpen = input.bool("recorder_open"),
             recording = when (val name = input.str("recording")) {
                 "none" -> Recording.NONE
-                "held" -> Recording.HELD
                 "hands_free" -> Recording.HANDS_FREE
                 "hands_free_beside_draft" -> Recording.HANDS_FREE_BESIDE_DRAFT
                 else -> error("recording $name")
@@ -177,7 +158,6 @@ class ComposerSlotVectorsTest {
             assertThat(expected.keys).isEqualTo(setOf("row", "slot", "enabled", "reason", "label", "notice"))
             val wireName = when (slot) {
                 Slot.Recorder -> "recorder"
-                Slot.HeldMicrophone -> "held_microphone"
                 Slot.SendVoice -> "send_voice"
                 Slot.StopRecording -> "stop_recording"
                 is Slot.Save -> "save"
@@ -209,7 +189,7 @@ class ComposerSlotVectorsTest {
             val input = case.obj("input")
             assertThat(input.keys).isEqualTo(
                 setOf(
-                    "slot", "family_or_direct_chat", "undo_window", "server_offers_round",
+                    "slot", "family_or_direct_chat", "server_offers_round",
                     "has_camera", "encoder_probe_passes", "records_round_video",
                 ),
             )
@@ -217,7 +197,6 @@ class ComposerSlotVectorsTest {
                 ComposerSlot.DoorInputs(
                     slot = slotInputs(input.obj("slot")),
                     familyOrDirectChat = input.bool("family_or_direct_chat"),
-                    undoWindow = input.bool("undo_window"),
                     serverOffersRound = input.bool("server_offers_round"),
                     hasCamera = input.bool("has_camera"),
                     encoderProbePasses = input.bool("encoder_probe_passes"),
@@ -255,7 +234,7 @@ class ComposerSlotVectorsTest {
         )
         fun door(records: Boolean) = ComposerSlot.videoDoor(
             ComposerSlot.DoorInputs(
-                slot = microphone, familyOrDirectChat = true, undoWindow = false,
+                slot = microphone, familyOrDirectChat = true,
                 serverOffersRound = true, hasCamera = true, encoderProbePasses = true,
                 recordsRoundVideo = records,
             ),
@@ -357,22 +336,11 @@ internal object RecordVectors {
 
     fun constants(o: JsonObject): RecordGesture.HoldConstants {
         check(
-            o.keys == setOf(
-                "hold_threshold_ms", "tap_slop", "lock_distance", "cancel_arm_distance",
-                "cancel_disarm_distance", "shortest_recording_ms", "undo_window_ms",
-                "activation_guard_ms", "delete_asks_from_ms",
-            ),
+            o.keys == setOf("shortest_recording_ms", "activation_guard_ms", "delete_asks_from_ms"),
         ) { "constants keys ${o.keys}" }
         fun l(key: String) = o.getValue(key).jsonPrimitive.long
-        fun d(key: String) = o.getValue(key).jsonPrimitive.double
         return RecordGesture.HoldConstants(
-            holdThresholdMs = l("hold_threshold_ms"),
-            tapSlop = d("tap_slop"),
-            lockDistance = d("lock_distance"),
-            cancelArmDistance = d("cancel_arm_distance"),
-            cancelDisarmDistance = d("cancel_disarm_distance"),
             shortestRecordingMs = l("shortest_recording_ms"),
-            undoWindowMs = l("undo_window_ms"),
             activationGuardMs = l("activation_guard_ms"),
             deleteAsksFromMs = l("delete_asks_from_ms"),
         )

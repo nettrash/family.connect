@@ -3,17 +3,19 @@
  * Family Connect (Android)
  *
  * The voice messages' per-DEVICE choices (#79, docs/audio-video-messages-
- * 2026-10-04.md): "Review before sending" (S9) — "off by default, per
- * device, never on the wire" — whether this device's first held release has
- * been taught (S2.3, S7.3), and whether the coach mark has been shown (S7.2,
- * "once per device"). Against the REAL DataStore: they survive the app
- * being closed and, being about the device rather than the account, a
- * sign-out too.
+ * 2026-10-04.md), against the REAL DataStore. Until 2026-10-06 there were
+ * three — "Review before sending" (S9), the first held release's lesson and
+ * the coach mark — and all three went with the hold. What a test build
+ * stored under their keys is never read, and the next sign-out clears it;
+ * the one per-device line left, the recorder's first-time "Only you can see
+ * this", still survives the app being closed and a sign-out.
  */
 
 package me.nettrash.familyconnect.data.settings
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
 import com.google.common.truth.Truth.assertThat
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -31,64 +33,53 @@ class VoiceSettingsPersistenceTest {
     @get:Rule
     val folder = TemporaryFolder()
 
+    private val holdKeys = listOf("review_before_sending", "held_release_taught", "voice_coach_mark_shown")
+        .map(::booleanPreferencesKey)
+
     /** One "process": a repository over [file], shut down completely afterwards. */
-    private fun <T> launch(file: File, block: suspend (SettingsRepository) -> T): T = runBlocking {
+    private fun <T> launch(
+        file: File,
+        block: suspend (SettingsRepository, androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>) -> T,
+    ): T = runBlocking {
         val job = Job()
         val store = PreferenceDataStoreFactory.create(scope = CoroutineScope(Dispatchers.IO + job)) { file }
         try {
-            block(DataStoreSettingsRepository(store))
+            block(DataStoreSettingsRepository(store), store)
         } finally {
             job.cancelAndJoin()
         }
     }
 
+    /** A test build's values under the hold's keys: read by nothing, and gone at the next sign-out. */
     @Test
-    fun `all three are off until set, and survive the app being closed`() {
+    fun `the holds keys are never read and a sign-out clears them`() {
         val file = File(folder.root, "settings.preferences_pb")
-        launch(file) { settings ->
-            val fresh = settings.state.first()
-            assertThat(fresh.reviewBeforeSending).isFalse()
-            assertThat(fresh.heldReleaseTaught).isFalse()
-            assertThat(fresh.voiceCoachMarkShown).isFalse()
-            settings.setReviewBeforeSending(true)
-            settings.setHeldReleaseTaught()
-            settings.setVoiceCoachMarkShown()
-        }
-        launch(file) { settings ->
-            val later = settings.state.first()
-            assertThat(later.reviewBeforeSending).isTrue()
-            assertThat(later.heldReleaseTaught).isTrue()
-            assertThat(later.voiceCoachMarkShown).isTrue()
-        }
-    }
-
-    /** They are the device's: a sign-out keeps them, as it keeps the preview switches. */
-    @Test
-    fun `a sign-out keeps them`() {
-        val file = File(folder.root, "settings.preferences_pb")
-        launch(file) { settings ->
+        launch(file) { settings, store ->
+            store.edit { prefs -> holdKeys.forEach { prefs[it] = true } }
             settings.setServerUrl("https://chat.example.com")
-            settings.setReviewBeforeSending(true)
-            settings.setHeldReleaseTaught()
-            settings.setVoiceCoachMarkShown()
+            // Nothing in the state carries them any more; reading it is fine.
+            assertThat(settings.state.first().serverUrl).isEqualTo("https://chat.example.com")
 
             settings.resetKeepingServerUrl()
 
-            val after = settings.state.first()
-            assertThat(after.reviewBeforeSending).isTrue()
-            assertThat(after.heldReleaseTaught).isTrue()
-            assertThat(after.voiceCoachMarkShown).isTrue()
+            val prefs = store.data.first()
+            for (key in holdKeys) assertThat(prefs.contains(key)).isFalse()
+            assertThat(settings.state.first().serverUrl).isEqualTo("https://chat.example.com")
         }
     }
 
-    /** And switching Review Before Sending off is remembered too. */
+    /** The recorder's first-time line is still the device's: it survives closing and a sign-out. */
     @Test
-    fun `review before sending switches back off`() {
+    fun `the recorders first-time line survives closing and a sign-out`() {
         val file = File(folder.root, "settings.preferences_pb")
-        launch(file) { settings ->
-            settings.setReviewBeforeSending(true)
-            settings.setReviewBeforeSending(false)
-            assertThat(settings.state.first().reviewBeforeSending).isFalse()
+        launch(file) { settings, _ ->
+            assertThat(settings.state.first().roundPreviewTaught).isFalse()
+            settings.setRoundPreviewTaught()
+        }
+        launch(file) { settings, _ ->
+            assertThat(settings.state.first().roundPreviewTaught).isTrue()
+            settings.resetKeepingServerUrl()
+            assertThat(settings.state.first().roundPreviewTaught).isTrue()
         }
     }
 }

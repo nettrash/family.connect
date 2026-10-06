@@ -2,8 +2,10 @@
  * RecordGestureVectorsTest.kt
  * Family Connect (Android)
  *
- * The hold reducer against every `hold_step` case the reference printed (#79,
- * docs/audio-video-messages-2026-10-04.md, S2.1, S2.3, S2.5, S2.6): each case
+ * The recording's reducer against every `hold_step` case the reference
+ * printed (#79, docs/audio-video-messages-2026-10-04.md, S2.1, S2.2, S2.5 —
+ * revised 2026-10-06: there is no hold, and the vectors were printed again
+ * without it): each case
  * is ONE step — a state, an event and the constants in; the next state, the
  * effects in order and what the slot is told out — taken from a named
  * scenario run through `fc_text::record::hold_step`, so this port meets every
@@ -23,7 +25,6 @@ import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
-import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -38,7 +39,6 @@ import me.nettrash.familyconnect.ui.chat.RecordGesture.Permission
 import me.nettrash.familyconnect.ui.chat.RecordGesture.Phase
 import me.nettrash.familyconnect.ui.chat.RecordGesture.Situation
 import me.nettrash.familyconnect.ui.chat.RecordGesture.Source
-import me.nettrash.familyconnect.ui.chat.RecordGesture.UndoNote
 import org.junit.Test
 
 class RecordGestureVectorsTest {
@@ -50,7 +50,6 @@ class RecordGestureVectorsTest {
     private fun JsonObject.str(key: String): String = getValue(key).jsonPrimitive.content
     private fun JsonObject.bool(key: String): Boolean = getValue(key).jsonPrimitive.boolean
     private fun JsonObject.long(key: String): Long = getValue(key).jsonPrimitive.long
-    private fun JsonObject.double(key: String): Double = getValue(key).jsonPrimitive.double
     private fun JsonObject.obj(key: String): JsonObject = getValue(key).jsonObject
 
     private fun JsonObject.expectKeys(vararg keys: String) {
@@ -67,30 +66,21 @@ class RecordGestureVectorsTest {
     private fun state(o: JsonObject): HoldState {
         val phase = when (val name = o.str("phase")) {
             "idle" -> {
-                o.expectKeys("phase", "guard_until_ms", "undo")
+                o.expectKeys("phase", "guard_until_ms")
                 Phase.Idle
             }
-            "pressed" -> {
-                o.expectKeys("phase", "guard_until_ms", "undo", "down_at_ms", "down_x", "down_y", "rtl", "may_hold")
-                Phase.Pressed(o.long("down_at_ms"), o.double("down_x"), o.double("down_y"), o.bool("rtl"), o.bool("may_hold"))
-            }
-            "holding" -> {
-                o.expectKeys("phase", "guard_until_ms", "undo", "down_x", "down_y", "rtl", "armed")
-                Phase.Holding(o.double("down_x"), o.double("down_y"), o.bool("rtl"), o.bool("armed"))
-            }
             "hands_free" -> {
-                o.expectKeys("phase", "guard_until_ms", "undo", "beside_draft")
+                o.expectKeys("phase", "guard_until_ms", "beside_draft")
                 Phase.HandsFree(o.bool("beside_draft"))
             }
             "asking_delete" -> {
-                o.expectKeys("phase", "guard_until_ms", "undo", "recorded_ms")
+                o.expectKeys("phase", "guard_until_ms", "recorded_ms")
                 Phase.AskingDelete(o.long("recorded_ms"))
             }
             "awaiting_permission" -> {
-                o.expectKeys("phase", "guard_until_ms", "undo", "source", "beside_draft")
+                o.expectKeys("phase", "guard_until_ms", "source", "beside_draft")
                 val source = when (val s = o.str("source")) {
                     "tap" -> Source.TAP
-                    "hold" -> Source.HOLD
                     "menu" -> Source.MENU
                     else -> error("source $s")
                 }
@@ -98,15 +88,11 @@ class RecordGestureVectorsTest {
             }
             else -> error("phase $name")
         }
-        val undo = o["undo"].takeUnless(RecordVectors::isNull)?.jsonObject?.let { note ->
-            note.expectKeys("until_ms", "recorded_ms")
-            UndoNote(untilMs = note.long("until_ms"), recordedMs = note.long("recorded_ms"))
-        }
-        return HoldState(phase = phase, guardUntilMs = o.long("guard_until_ms"), undo = undo)
+        return HoldState(phase = phase, guardUntilMs = o.long("guard_until_ms"))
     }
 
     private fun situation(o: JsonObject): Situation {
-        o.expectKeys("permission", "blocked", "assistive", "first_release", "review_before_sending")
+        o.expectKeys("permission", "blocked")
         return Situation(
             permission = when (val p = o.str("permission")) {
                 "granted" -> Permission.GRANTED
@@ -115,38 +101,12 @@ class RecordGestureVectorsTest {
                 else -> error("permission $p")
             },
             blocked = o["blocked"].takeUnless(RecordVectors::isNull)?.jsonPrimitive?.content?.let(::dimmed),
-            assistive = o.bool("assistive"),
-            firstRelease = o.bool("first_release"),
-            reviewBeforeSending = o.bool("review_before_sending"),
         )
     }
 
     private fun event(o: JsonObject): HoldEvent {
         val at = o.long("at_ms")
         return when (val name = o.str("event")) {
-            "down" -> {
-                o.expectKeys("event", "at_ms", "x", "y", "can_hold", "rtl")
-                HoldEvent.Down(at, o.double("x"), o.double("y"), o.bool("can_hold"), o.bool("rtl"))
-            }
-            "move" -> {
-                o.expectKeys("event", "at_ms", "x", "y")
-                HoldEvent.Move(at, o.double("x"), o.double("y"))
-            }
-            "up" -> {
-                o.expectKeys("event", "at_ms", "x", "y", "inside", "situation", "recorded_ms", "heard")
-                HoldEvent.Up(
-                    at, o.double("x"), o.double("y"), o.bool("inside"), situation(o.obj("situation")),
-                    o.long("recorded_ms"), o.bool("heard"),
-                )
-            }
-            "system_cancel" -> {
-                o.expectKeys("event", "at_ms", "background", "recorded_ms")
-                HoldEvent.SystemCancel(at, o.bool("background"), o.long("recorded_ms"))
-            }
-            "tick" -> {
-                o.expectKeys("event", "at_ms", "situation")
-                HoldEvent.Tick(at, situation(o.obj("situation")))
-            }
             "cap" -> {
                 o.expectKeys("event", "at_ms")
                 HoldEvent.Cap(at)
@@ -179,10 +139,6 @@ class RecordGestureVectorsTest {
                 o.expectKeys("event", "at_ms", "granted")
                 HoldEvent.PermissionAnswer(at, o.bool("granted"))
             }
-            "undo" -> {
-                o.expectKeys("event", "at_ms")
-                HoldEvent.Undo(at)
-            }
             "other_action" -> {
                 o.expectKeys("event", "at_ms")
                 HoldEvent.OtherAction(at)
@@ -197,10 +153,6 @@ class RecordGestureVectorsTest {
 
     /** One effect as the reference printed it — and the words it carries checked against this port's. */
     private fun effect(o: JsonObject, name: String): HoldEffect = when (val kind = o.str("effect")) {
-        "start" -> {
-            o.expectKeys("effect", "held")
-            HoldEffect.Start(o.bool("held"))
-        }
         "explain" -> {
             o.expectKeys("effect", "reason", "text")
             val reason = dimmed(o.str("reason"))
@@ -210,12 +162,8 @@ class RecordGestureVectorsTest {
         "hint" -> {
             o.expectKeys("effect", "hint", "text")
             val hint = when (val h = o.str("hint")) {
-                "still_recording" -> Hint.STILL_RECORDING
-                "next_time_sends" -> Hint.NEXT_TIME_SENDS
-                "nothing_heard" -> Hint.NOTHING_HEARD
                 "stopped_at_five_minutes" -> Hint.STOPPED_AT_FIVE_MINUTES
                 "too_short" -> Hint.TOO_SHORT
-                "can_record_now" -> Hint.CAN_RECORD_NOW
                 else -> error("hint $h")
             }
             assertWithMessage("$name: hint text").that(hint.text).isEqualTo(o.str("text"))
@@ -224,7 +172,6 @@ class RecordGestureVectorsTest {
         "announce" -> {
             val announcement = when (val a = o.str("announcement")) {
                 "recording" -> Announcement.Recording
-                "recording_locked" -> Announcement.RecordingLocked
                 "recording_deleted" -> Announcement.RecordingDeleted
                 "voice_message_sent" -> Announcement.VoiceMessageSent
                 "ready_to_review" -> Announcement.ReadyToReview(o.long("recorded_ms"))
@@ -245,8 +192,6 @@ class RecordGestureVectorsTest {
             HoldEffect.Haptic(
                 when (val h = o.str("haptic")) {
                     "light" -> Haptic.LIGHT
-                    "medium" -> Haptic.MEDIUM
-                    "selection" -> Haptic.SELECTION
                     "success" -> Haptic.SUCCESS
                     "warning" -> Haptic.WARNING
                     else -> error("haptic $h")
@@ -256,20 +201,14 @@ class RecordGestureVectorsTest {
         else -> {
             o.expectKeys("effect")
             when (kind) {
-                "lock" -> HoldEffect.Lock
-                "arm" -> HoldEffect.Arm
-                "disarm" -> HoldEffect.Disarm
+                "start" -> HoldEffect.Start
                 "delete" -> HoldEffect.Delete
                 "send" -> HoldEffect.Send
                 "review" -> HoldEffect.Review
                 "park" -> HoldEffect.Park
-                "undo_window" -> HoldEffect.UndoWindow
-                "undo_send" -> HoldEffect.UndoSend
-                "undo_review" -> HoldEffect.UndoReview
                 "ask_delete" -> HoldEffect.AskDelete
                 "ask_permission" -> HoldEffect.AskPermission
                 "denied" -> HoldEffect.Denied
-                "first_release_done" -> HoldEffect.FirstReleaseDone
                 else -> error("effect $kind")
             }
         }
@@ -277,15 +216,14 @@ class RecordGestureVectorsTest {
 
     private fun ComposerSlot.Recording.wire(): String = when (this) {
         ComposerSlot.Recording.NONE -> "none"
-        ComposerSlot.Recording.HELD -> "held"
         ComposerSlot.Recording.HANDS_FREE -> "hands_free"
         ComposerSlot.Recording.HANDS_FREE_BESIDE_DRAFT -> "hands_free_beside_draft"
     }
 
     @Test
     fun everyHoldStepCaseIsThisPortsStepToo() {
-        // The reference's own count: 71 scenarios' steps and 24 out-of-place events.
-        assertThat(cases).hasSize(262)
+        // The reference's own count, printed again 2026-10-06 without the hold.
+        assertThat(cases).hasSize(91)
         for (case in cases) {
             val name = case.str("name")
             val input = case.obj("input")
@@ -311,16 +249,32 @@ class RecordGestureVectorsTest {
     fun theVectorsReachEveryEventAndEveryEffect() {
         val events = cases.map { it.obj("input").obj("event").str("event") }.toSet()
         assertThat(events).containsExactly(
-            "down", "move", "up", "system_cancel", "tick", "cap", "interruption", "activate",
-            "record", "stop", "delete", "answer", "permission_answer", "undo", "other_action", "emptied",
+            "cap", "interruption", "activate", "record", "stop", "delete", "answer",
+            "permission_answer", "other_action", "emptied",
         )
         val effects = cases.flatMap { case ->
             case.obj("expected").getValue("effects").jsonArray.map { it.jsonObject.str("effect") }
         }.toSet()
         assertThat(effects).containsExactly(
-            "start", "lock", "arm", "disarm", "delete", "send", "review", "park", "undo_window",
-            "undo_send", "undo_review", "ask_delete", "ask_permission", "denied", "explain", "hint",
-            "announce", "haptic", "first_release_done",
+            "start", "delete", "send", "review", "park", "ask_delete", "ask_permission", "denied",
+            "explain", "hint", "announce", "haptic",
         )
+    }
+
+    /**
+     * Nothing the hold had is left in what the reference printed: no press,
+     * move, lift, tick or Undo event, no lock, arm, Undo window or lesson, no
+     * `undo` in a state — the port and the vectors are the same revision.
+     */
+    @Test
+    fun theVectorsCarryNothingOfTheHold() {
+        val text = cases.joinToString("\n") { it.toString() }
+        for (gone in listOf(
+            "\"down\"", "\"up\"", "\"move\"", "\"tick\"", "\"system_cancel\"", "\"undo\"",
+            "\"lock\"", "\"arm\"", "\"undo_window\"", "\"first_release_done\"", "\"held\"",
+            "\"holding\"", "\"pressed\"", "first_release", "review_before_sending", "assistive",
+        )) {
+            assertWithMessage("vectors still say $gone").that(text).doesNotContain(gone)
+        }
     }
 }

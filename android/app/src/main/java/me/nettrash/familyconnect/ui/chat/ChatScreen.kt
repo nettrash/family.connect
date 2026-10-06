@@ -290,13 +290,9 @@ import me.nettrash.familyconnect.ui.stickers.StickerPanelSheet
 import me.nettrash.familyconnect.ui.stickers.StickerPreviewDialog
 import me.nettrash.familyconnect.ui.stickers.StickerViewModel
 import android.view.accessibility.AccessibilityManager
-import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.core.app.ActivityCompat
 import androidx.compose.ui.platform.LocalFocusManager
 import android.content.res.Configuration
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.semantics.stateDescription
@@ -304,7 +300,6 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.focus.focusProperties
-import android.os.SystemClock
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
@@ -485,7 +480,6 @@ fun ChatScreen(
     val voiceLevels by viewModel.voiceLevels.collectAsStateWithLifecycle()
     val voiceLine by viewModel.voiceLine.collectAsStateWithLifecycle()
     val announcement by viewModel.announcement.collectAsStateWithLifecycle()
-    val coachMark by viewModel.coachMark.collectAsStateWithLifecycle()
     val stagedDeleteAsk by viewModel.stagedDeleteAsk.collectAsStateWithLifecycle()
 
     var failedActionTarget by remember { mutableStateOf<String?>(null) }
@@ -701,15 +695,14 @@ fun ChatScreen(
 
     // Recording a voice message (#79). RECORD_AUDIO really is required, and
     // it is asked when the SHARED reducer says so (RecordGesture): a tap's or
-    // a menu's prompt records on Allow — the tap meant "record" — while a
-    // prompt a hold raised never records (S2.2, S2.3). The screen only says
+    // a menu's prompt records on Allow — the tap meant "record" (S2.2). The
+    // screen only says
     // what the permission is: granted, askable, or refused for good — which
     // Android tells apart only after asking (shouldShowRequestPermission-
     // Rationale is false both before the first ask and after the last), so
     // "for good" is learnt from an answer and kept here.
     var micRefusedForGood by rememberSaveable { mutableStateOf(false) }
     val accessibility = remember(context) { context.getSystemService(AccessibilityManager::class.java) }
-    val viewConfiguration = LocalViewConfiguration.current
     val voiceEnvironment: () -> ChatViewModel.VoiceEnvironment = {
         val granted = ContextCompat.checkSelfPermission(
             context,
@@ -724,8 +717,6 @@ fun ChatScreen(
             },
             // S6: Android's word for "a screen reader runs" is touch exploration.
             assistive = accessibility?.isTouchExplorationEnabled == true,
-            // H follows the person's "Touch & hold delay" (S1.1).
-            systemLongPressMs = viewConfiguration.longPressTimeoutMillis,
         )
     }
     val micPermission = rememberLauncherForActivityResult(
@@ -762,6 +753,9 @@ fun ChatScreen(
     // and its TalkBack action (S3.1) — and does what only it can for it.
     val videoRecorder = LocalVideoMessageRecorder.current
     val roundVideoOffered by viewModel.roundVideoOffered.collectAsStateWithLifecycle()
+    // The recorder is open over this chat: its composer row is not drawn
+    // (ComposerUnderRecorder), and the slot is S1.3's row 1.
+    val recorderOpen = videoRecorder?.let { it.state.collectAsStateWithLifecycle().value.isOpen } == true
     // Hidden on a device without a camera (S1.2, S1.4).
     val hasCamera = remember(context) {
         context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
@@ -797,7 +791,6 @@ fun ChatScreen(
                             },
                             assistive = appContext.getSystemService(AccessibilityManager::class.java)
                                 ?.isTouchExplorationEnabled == true,
-                            systemLongPressMs = android.view.ViewConfiguration.getLongPressTimeout().toLong(),
                         ),
                     )
                 }
@@ -1305,16 +1298,7 @@ fun ChatScreen(
         LocalRecordingGate provides recordingGate,
     ) {
     Scaffold(
-        // The coach mark goes with any tap anywhere (S7.2). Watched in the
-        // Initial pass and never consumed, so the tap still does what it does.
         modifier = Modifier
-            .pointerInput(coachMark) {
-                if (!coachMark) return@pointerInput
-                awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                    viewModel.dismissCoachMark()
-                }
-            }
             // The conversation pane, for the video recorder: its circle and
             // controls stand over it, and its scrim is lighter here (#79, S3.3).
             .onGloballyPositioned { coordinates -> videoRecorder?.paneBounds = coordinates.boundsInRoot() },
@@ -1701,6 +1685,10 @@ fun ChatScreen(
                     onDismiss = { viewingAlbum = null },
                 )
             }
+            // While the video recorder is open the composer row is not drawn
+            // and takes no hits: the recorder's own bar is where it was
+            // (#79, decision 41).
+            ComposerUnderRecorder(recorderOpen = recorderOpen) {
             InputBar(
                 state = viewModel.inputState,
                 onSend = viewModel::send,
@@ -1763,7 +1751,6 @@ fun ChatScreen(
                         notSent = notSent.isNotEmpty(),
                     ),
                     familyOrDirectChat = chat?.kind == "family" || chat?.kind == "direct",
-                    undoWindow = hold.undo != null,
                     serverOffersRound = roundVideoOffered,
                     hasCamera = hasCamera,
                     encoderProbePasses = true,
@@ -1784,7 +1771,7 @@ fun ChatScreen(
                 // reading the draft up here would recompose the whole screen
                 // on every keystroke.
                 slotInputs = ComposerSlot.SlotInputs(
-                    recorderOpen = false,
+                    recorderOpen = recorderOpen,
                     recording = hold.recording,
                     editing = editTarget != null,
                     draftBlank = true,
@@ -1800,32 +1787,11 @@ fun ChatScreen(
                 voiceLevels = voiceLevels,
                 voiceLine = voiceLine,
                 announcement = announcement,
-                coachMark = coachMark && accessibility?.isTouchExplorationEnabled != true,
-                onDismissCoachMark = viewModel::dismissCoachMark,
                 slotFocus = slotFocus,
-                onMicDown = { x, y, canHold, rtl ->
-                    viewModel.dismissCoachMark()
-                    viewModel.micDown(x, y, canHold, rtl, voiceEnvironment())
-                },
-                onMicMove = viewModel::micMove,
-                onMicUp = viewModel::micUp,
-                onMicCancel = {
-                    // Gone to the background: the reducer parks a hold instead
-                    // of locking it (S2.3). A configuration change tears the
-                    // gesture down from an activity already past STARTED, and
-                    // is NOT the background: the hold locks (S4).
-                    viewModel.micCancel(
-                        background = touchCancelIsBackground(
-                            changingConfigurations = hostActivity?.isChangingConfigurations == true,
-                            started = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
-                        ),
-                    )
-                },
                 onActivateSlot = { viewModel.activateSlot(voiceEnvironment()) },
                 onSendFromSlot = viewModel::sendFromSlot,
                 onSlotPressIgnored = viewModel::slotPressIgnored,
                 onDeleteRecording = viewModel::deleteRecording,
-                onUndoVoiceMessage = viewModel::undoVoiceMessage,
                 onOtherAction = viewModel::otherAction,
                 notSentFile = viewModel::notSentFile,
                 onOpenSettings = openAppSettings,
@@ -1864,6 +1830,7 @@ fun ChatScreen(
                 assistantIsUnnamed = assistantIsUnnamed,
                 onReviewAssistantConsent = viewModel::send,
             )
+            }
         }
     }
     }
@@ -5593,7 +5560,7 @@ internal fun MediaStrip(
  * warning colour, ▶, the note's own waveform, its length, Send and ✕, on a
  * chip whose edge is tinted with the warning — a recording something other
  * than the person stopped (a call, the app leaving the screen, leaving the
- * chat, the recorder failing, a crash in its Undo window). It quotes the
+ * chat, the recorder failing). It quotes the
  * reply it was recorded under and shows its caption, and its Send sends it
  * with those and nothing else. Its ▶ plays the waiting file. To TalkBack the
  * chip says what it is in full: "Voice message not sent · 0:42".
@@ -6143,30 +6110,23 @@ internal fun InputBar(
     voiceLine: ChatViewModel.VoiceLine? = null,
     /** What the composer's polite live region says next (S6). */
     announcement: ChatViewModel.VoiceAnnouncement? = null,
-    /** "You can also hold the microphone while you talk." (S7.2). */
-    coachMark: Boolean = false,
-    onDismissCoachMark: () -> Unit = {},
-    /** Where focus goes when a recording turns hands-free (S2.4). */
+    /** Where focus goes when a recording starts (S2.4). */
     slotFocus: FocusRequester = remember { FocusRequester() },
-    /** The microphone's touch, in window coordinates and dp (RecordSendButton). */
-    onMicDown: (Double, Double, Boolean, Boolean) -> Unit = { _, _, _, _ -> },
-    onMicMove: (Double, Double) -> Unit = { _, _ -> },
-    onMicUp: (Double, Double, Boolean) -> Unit = { _, _, _ -> },
-    onMicCancel: () -> Unit = {},
-    /** The slot activated other than by the microphone's touch. */
+    /**
+     * The slot activated — the microphone, the Send arrow or the Stop square —
+     * by a completed tap however long it was held, a click, Enter or TalkBack.
+     */
     onActivateSlot: () -> Unit = {},
     /** The slot's row-4 Save or row-5 Send, behind the activation guard. */
     onSendFromSlot: () -> Unit = onSend,
     /**
-     * Asked as any other press goes DOWN on the slot: whether it goes down
-     * inside the activation guard, and is then ignored whole (S1.1).
+     * Asked as any press goes DOWN on the slot: whether it goes down inside
+     * the activation guard, and is then ignored whole (S1.1).
      */
     onSlotPressIgnored: (ComposerSlot.Slot) -> Boolean = { false },
     /** The recording row's Delete, and TalkBack's "Delete recording". */
     onDeleteRecording: () -> Unit = {},
-    /** The Undo row's Undo (S2.6). */
-    onUndoVoiceMessage: () -> Unit = {},
-    /** Any other composer action, which ends an Undo window by sending it (S2.6). */
+    /** Any other composer action, which lifts the slot's activation guard (S1.1). */
     onOtherAction: () -> Unit = {},
     /** Where a not-sent message's bytes are, for its ▶ (S2.8). */
     notSentFile: (ParkedRecording) -> File? = { null },
@@ -6382,18 +6342,15 @@ internal fun InputBar(
                 // too narrow for two buttons beside the field.
                 //
                 // While a voice message is recorded, its row takes the field's
-                // place AND the buttons' (S2.3, S2.4); the Undo row takes the
-                // field's alone, the buttons staying usable beside it (S2.6).
-                val holding = hold.phase as? RecordGesture.Phase.Holding
+                // place AND the buttons' (S2.4).
                 val handsFree = hold.phase as? RecordGesture.Phase.HandsFree
-                val undoNote = hold.undo
-                val recordingRow = holding != null || handsFree != null
+                val recordingRow = handsFree != null
                 if (!recordingRow) {
                     var attachMenuOpen by remember { mutableStateOf(false) }
                     Box {
                         IconButton(
                             onClick = {
-                                // The paperclip ends an Undo window by sending (S2.6).
+                                // The person's own action: it lifts the guard (S1.1).
                                 onOtherAction()
                                 attachMenuOpen = true
                             },
@@ -6670,12 +6627,11 @@ internal fun InputBar(
                 // stops in silence. See BodyLengthLimit.
                 val truncated by rememberUpdatedState(onPasteTruncated)
                 val bodyLimit = remember { BodyLengthLimit { truncated() } }
-                // The rows a voice message takes the field's place with (S2.3,
-                // S2.4, S2.6). The field stays composed UNDER them — invisible,
-                // hidden from TalkBack — so a keyboard that was up stays up under
-                // the hold row and the Undo row, typing simply carries on, and
-                // words typed before a recording beside them are kept.
-                val covered = recordingRow || undoNote != null
+                // The row a voice recording takes the field's place with
+                // (S2.4). The field stays composed UNDER it — invisible,
+                // hidden from TalkBack — so words typed before a recording
+                // beside them are kept.
+                val covered = recordingRow
                 // The rows cross-fade in and out over the field in 150 ms (the
                 // approved design); without animations they simply are there.
                 val fadeSteady = animationsRemoved()
@@ -6747,16 +6703,7 @@ internal fun InputBar(
                             unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                         ),
                     )
-                    val rowKind = when {
-                        holding != null -> VoiceRowKind.HOLD
-                        handsFree != null -> VoiceRowKind.HANDS_FREE
-                        undoNote != null -> VoiceRowKind.UNDO
-                        else -> VoiceRowKind.NONE
-                    }
-                    // Kept from the row being shown, so the one fading out still
-                    // draws what it last said rather than nothing.
-                    val lastUndo = remember { mutableStateOf<RecordGesture.UndoNote?>(null) }
-                    if (undoNote != null) lastUndo.value = undoNote
+                    val rowKind = if (handsFree != null) VoiceRowKind.HANDS_FREE else VoiceRowKind.NONE
                     Crossfade(
                         targetState = rowKind,
                         animationSpec = if (fadeSteady) snap() else tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt()),
@@ -6764,13 +6711,6 @@ internal fun InputBar(
                         label = "voiceRow",
                     ) { kind ->
                         when (kind) {
-                            VoiceRowKind.HOLD -> HoldRow(
-                                recordedMs = recordingMs ?: 0L,
-                                level = voiceLevel,
-                                line = voiceLine,
-                                armed = holding?.armed == true,
-                                modifier = Modifier.fillMaxSize().keepsTouchesFromTheField(),
-                            )
                             VoiceRowKind.HANDS_FREE -> RecordingRow(
                                 recordedMs = recordingMs ?: 0L,
                                 level = voiceLevel,
@@ -6781,17 +6721,6 @@ internal fun InputBar(
                                 levels = voiceLevels,
                                 modifier = Modifier.fillMaxSize().keepsTouchesFromTheField(),
                             )
-                            VoiceRowKind.UNDO -> lastUndo.value?.let { shown ->
-                                UndoRow(
-                                    recordedMs = shown.recordedMs,
-                                    windowMs = remember(shown) {
-                                        (shown.untilMs - SystemClock.uptimeMillis())
-                                            .coerceIn(0L, ComposerSlot.UNDO_WINDOW_MS)
-                                    },
-                                    onUndo = onUndoVoiceMessage,
-                                    modifier = Modifier.fillMaxSize().keepsTouchesFromTheField(),
-                                )
-                            }
                             VoiceRowKind.NONE -> Unit
                         }
                     }
@@ -6813,10 +6742,6 @@ internal fun InputBar(
                 }
                 RecordSendButton(
                     slot = slot,
-                    onMicDown = onMicDown,
-                    onMicMove = onMicMove,
-                    onMicUp = onMicUp,
-                    onMicCancel = onMicCancel,
                     onActivate = onActivateSlot,
                     onSend = onSendFromSlot,
                     onStopAndListen = onStopRecording,
@@ -6825,8 +6750,6 @@ internal fun InputBar(
                     onRecordVideo = if (videoRoundAvailable) onRecordVideo else null,
                     focusRequester = slotFocus,
                     pressIgnored = onSlotPressIgnored,
-                    coachMark = coachMark,
-                    onDismissCoachMark = onDismissCoachMark,
                 )
             }
         }
@@ -6889,16 +6812,16 @@ internal fun shareWithSystem(
     }.getOrDefault(false)
 }
 
-/** Which row takes the field's place while a voice message is recorded or waits (S2.3, S2.4, S2.6). */
-private enum class VoiceRowKind { NONE, HOLD, HANDS_FREE, UNDO }
+/** Which row takes the field's place while a voice message is recorded (S2.4). */
+private enum class VoiceRowKind { NONE, HANDS_FREE }
 
 /**
  * The composer's panel: what `Surface(tonalElevation = 3.dp)` draws — the
  * tonal colour, content colour, elevation for what is inside, a traversal
- * group, and touches stopped from falling through — WITHOUT its clip. A
- * Material 3 Surface clips its content to its bounds, and the held
- * microphone's 1.35× swell and red halo (#79, the approved design) reach
- * past the bar's top edge, so the Surface cut the top of the ring off flat.
+ * group, and touches stopped from falling through — WITHOUT its clip. (It
+ * was made for the held microphone's swell, which reached past the bar's
+ * top edge; the hold is gone — #79, revised 2026-10-06 — and the panel
+ * stays as it is drawn.)
  */
 @Composable
 private fun ComposerSurface(content: @Composable () -> Unit) {

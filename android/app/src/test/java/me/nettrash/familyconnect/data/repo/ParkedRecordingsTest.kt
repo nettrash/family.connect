@@ -163,61 +163,28 @@ class ParkedRecordingsTest {
         assertThat(store.forChat(42).first()).isEmpty()
     }
 
-    // -- Phase 1: the Undo window's "sending" mark (S2.6) ------------------
-
-    /** A note in its Undo window is on its way — not a not-sent row, and it does not block recording. */
-    @Test
-    fun `a note marked sending is not a not-sent row`(): Unit = runBlocking {
-        val store = store()
-        val sending = store.park(42, recording(), 3_000, quote, "", epoch.current(), sending = true)!!
-
-        assertThat(sending.sending).isTrue()
-        assertThat(store.forChat(42).first()).isEmpty()
-        assertThat(settings.current.parkedRecordings).containsExactly(sending)
-        assertThat(store.file(sending).exists()).isTrue()
-    }
+    // -- The Undo window's "sending" mark, gone with the hold (2026-10-06) --
 
     /**
-     * A crash cannot lose it: at launch, an entry still marked "sending"
-     * becomes a not-sent row — never an orphan the sweep takes while its
-     * sender believes it went (S2.6).
+     * A build that had the Undo window marked a note waiting in it
+     * `"sending": true`, and a crash could leave one so. There is no window
+     * now and no mark: such an entry reads as what a launch used to make of
+     * it — a not-sent row, its file and its reply kept — never an orphan.
      */
     @Test
-    fun `a launch turns a note a crash left sending into a not-sent row`(): Unit = runBlocking {
-        val sending = store().park(42, recording(), 3_000, quote, "", epoch.current(), sending = true)!!
-
-        // The next process: a new store, whose launch sweep runs first.
-        val next = store()
-        next.launchSweep.join()
-
-        val row = next.forChat(42).first().single()
-        assertThat(row.id).isEqualTo(sending.id)
-        assertThat(row.sending).isFalse()
-        assertThat(row.replyTo).isEqualTo(quote)
-        assertThat(next.file(row).exists()).isTrue()
-    }
-
-    /** A note whose hand-off could not be queued becomes what any interrupted recording is. */
-    @Test
-    fun `markNotSent turns a sending note into a not-sent row`(): Unit = runBlocking {
+    fun `an entry a test build left marked sending is a not-sent row`(): Unit = runBlocking {
         val store = store()
-        val sending = store.park(42, recording(), 3_000, null, "", epoch.current(), sending = true)!!
-        val plain = store.park(42, recording(), 2_000, null, "", epoch.current())!!
+        val parked = store.park(42, recording(), 3_000, quote, "", epoch.current())!!
+        val raw = ParkedRecording.encode(listOf(parked)).replace("\"id\":", "\"sending\":true,\"id\":")
+        assertThat(raw).contains("\"sending\":true")
+        settings.updateParkedRecordings { ParkedRecording.decode(raw) }
 
-        store.markNotSent(sending.id)
-
-        assertThat(store.forChat(42).first().map { it.id }).containsExactly(sending.id, plain.id).inOrder()
-    }
-
-    /** An index Phase 0 wrote — no "sending" key at all — still reads, as not sending. */
-    @Test
-    fun `an entry written before the sending mark reads as not sending`() {
-        val decoded = ParkedRecording.decode(
-            """[{"id":"a","chat_id":42,"file":"a.m4a","duration_ms":1000}]""",
-        ).single()
-        assertThat(decoded.sending).isFalse()
-        // And a not-sending entry writes no key for it.
-        assertThat(ParkedRecording.encode(listOf(decoded))).doesNotContain("sending")
+        val row = store.forChat(42).first().single()
+        assertThat(row.id).isEqualTo(parked.id)
+        assertThat(row.replyTo).isEqualTo(quote)
+        assertThat(store.file(row).exists()).isTrue()
+        // And it is written back without the mark.
+        assertThat(ParkedRecording.encode(listOf(row))).doesNotContain("sending")
     }
 
     /**

@@ -188,7 +188,7 @@ impl Glyph {
 fn slot_word(slot: Slot) -> &'static str {
     match slot {
         Slot::Recorder => "",
-        Slot::HeldMicrophone | Slot::SendVoice => t("Send voice message"),
+        Slot::SendVoice => t("Send voice message"),
         Slot::StopRecording => t("Stop recording"),
         Slot::Save { .. } => t("Save"),
         Slot::Send | Slot::SendDisabled => t("Send"),
@@ -817,10 +817,7 @@ pub fn composer(props: &ComposerProps) -> Html {
         })
     });
     // A recording runs: the row takes the field's place (S2.4).
-    let recording_now = matches!(
-        slot,
-        Some(Slot::SendVoice | Slot::StopRecording | Slot::HeldMicrophone)
-    );
+    let recording_now = matches!(slot, Some(Slot::SendVoice | Slot::StopRecording));
     let is_microphone = slot.is_some_and(Slot::is_microphone);
     // THE VIDEO BUTTON (S1.4), inside the field while it is empty: the
     // shared rule decides whether it is drawn, dimmed or shown.
@@ -840,7 +837,6 @@ pub fn composer(props: &ComposerProps) -> Html {
                 not_sent: records.not_sent,
             },
             family_or_direct_chat: !props.is_ai_chat,
-            undo_window: false,
             server_offers_round: true,
             has_camera: true,
             encoder_probe_passes: video.records,
@@ -1166,9 +1162,7 @@ pub fn composer(props: &ComposerProps) -> Html {
             let starting = records.as_ref().is_some_and(|records| records.starting);
             let (glyph, title, disabled) = match slot {
                 Slot::Recorder => (Glyph::Microphone, None, true),
-                Slot::HeldMicrophone | Slot::SendVoice => {
-                    (Glyph::Send, Some(t("Send voice message")), false)
-                }
+                Slot::SendVoice => (Glyph::Send, Some(t("Send voice message")), false),
                 Slot::StopRecording => (Glyph::Stop, Some(t("Stop recording")), false),
                 Slot::Save { enabled } => (Glyph::Save, None, !enabled || props.busy),
                 Slot::Send => (Glyph::Send, None, props.busy || starting),
@@ -1280,8 +1274,19 @@ pub fn composer(props: &ComposerProps) -> Html {
         })
     };
 
+    // UNDER THE VIDEO RECORDER (decision 41): the recorder owns the row, and
+    // the composer is not drawn at all and takes nothing — hidden, not
+    // dimmed, so that nothing of it shows through the recorder's controls
+    // (on the owner's iPhone, Close lay over the paperclip and Record over
+    // Send). It keeps its place, which the recorder measures its row by.
+    // During a call the recorder steps aside (S4), and it is the composer.
+    let covered = records
+        .as_ref()
+        .is_some_and(|records| records.recorder_open && !records.call);
+
     html! {
-        <div class="composer-wrap" ref={wrap_ref}>
+        <div class={classes!("composer-wrap", covered.then_some("is-covered"))}
+             ref={wrap_ref} inert={covered.then_some("")}>
             if let Some(reply) = props.replying.clone() {
                 <div class="composer-banner">
                     <span class="banner-text">
@@ -2382,7 +2387,6 @@ mod tests {
     fn the_slots_words_are_the_shared_rules() {
         use record::Dimmed;
         for slot in [
-            Slot::HeldMicrophone,
             Slot::SendVoice,
             Slot::StopRecording,
             Slot::Save { enabled: true },
@@ -2681,6 +2685,112 @@ mod tests {
         assert!(!right.default_prevented());
         assert!(mounted.menu().is_none());
         mounted.gone();
+    }
+
+    /// A LONG PRESS IS NOT A GESTURE (revised 2026-10-06 — the hold is gone
+    /// on every platform): a finger held on the microphone for a second and
+    /// a half records nothing and opens nothing while it is down — the
+    /// browser's long-press `contextmenu` is prevented, so no menu of ours,
+    /// no callout and no menu of the browser's — and when it lifts inside
+    /// it is an ordinary tap, however long it was held: one activation, a
+    /// hands-free recording, never a dead button. The stylesheet keeps the
+    /// rest of a phone's long press off it too: no text selection, no
+    /// double-tap zoom.
+    #[wasm_bindgen_test]
+    async fn a_long_press_on_the_microphone_starts_nothing_and_opens_nothing() {
+        crate::layout_tests::install_stylesheet();
+        let heard = Rc::new(Heard::default());
+        let mounted = Mounted::with(slot_props(&heard, Some(heard_records(&heard)))).await;
+        let slot = mounted.slot();
+        assert_eq!(
+            slot.get_attribute("aria-label").as_deref(),
+            Some("Record voice message")
+        );
+        let style = web_sys::window()
+            .unwrap()
+            .get_computed_style(&slot)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            style.get_property_value("touch-action").unwrap(),
+            "manipulation"
+        );
+        let selects = style.get_property_value("user-select").unwrap();
+        let webkit = style.get_property_value("-webkit-user-select").unwrap();
+        assert!(
+            selects == "none" || webkit == "none",
+            "nothing to select under a held finger: {selects:?} {webkit:?}"
+        );
+
+        pointer("touch", "pointerdown", &slot, true);
+        let mut held = crate::recorder::testing::ClockAhead::by(700.0);
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        // The browser's long press, as a phone's browser sends it.
+        let long_press = context_menu(&slot);
+        held.more(800.0);
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert!(long_press.default_prevented(), "no browser menu or callout");
+        assert!(mounted.menu().is_none(), "no menu of ours");
+        assert_eq!(heard.activated.get(), 0, "nothing records while it is held");
+        assert_eq!(heard.recorded.get(), 0);
+
+        pointer("touch", "pointerup", &slot, true);
+        assert_eq!(heard.activated.get(), 1, "lifted inside: a tap");
+        slot.click();
+        assert_eq!(heard.activated.get(), 1, "once");
+        assert!(mounted.menu().is_none());
+        drop(held);
+        mounted.gone();
+    }
+
+    /// THE COMPOSER IS NOT DRAWN UNDER THE VIDEO RECORDER (decision 41): on
+    /// the owner's iPhone the composer showed through the recorder's control
+    /// row. While the recorder owns the row the composer is hidden — not
+    /// dimmed — and inert, and comes back when it closes; during a call,
+    /// when the recorder steps aside, it is the composer again.
+    #[wasm_bindgen_test]
+    async fn the_composer_is_hidden_and_inert_while_the_recorder_is_open() {
+        crate::layout_tests::install_stylesheet();
+        let visibility = |element: &web_sys::Element| {
+            web_sys::window()
+                .unwrap()
+                .get_computed_style(element)
+                .unwrap()
+                .unwrap()
+                .get_property_value("visibility")
+                .unwrap()
+        };
+        for (open, call, covered) in [
+            (true, false, true),
+            (false, false, false),
+            (true, true, false),
+        ] {
+            let heard = Rc::new(Heard::default());
+            let mounted = Mounted::with(slot_props(
+                &heard,
+                Some(Records {
+                    recorder_open: open,
+                    call,
+                    ..heard_records(&heard)
+                }),
+            ))
+            .await;
+            let wrap = mounted
+                .root
+                .query_selector(".composer-wrap")
+                .unwrap()
+                .unwrap();
+            let area = mounted.root.query_selector("textarea").unwrap().unwrap();
+            let case = format!("open {open}, call {call}");
+            assert_eq!(wrap.has_attribute("inert"), covered, "{case}");
+            assert_eq!(
+                visibility(&area) == "hidden",
+                covered,
+                "{case}: {}",
+                visibility(&area)
+            );
+            mounted.gone();
+        }
     }
 
     /// THE ACTIVATION GUARD (S1.1): a Send pressed while the slot's own

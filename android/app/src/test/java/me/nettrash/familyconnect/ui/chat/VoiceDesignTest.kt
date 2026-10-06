@@ -5,12 +5,10 @@
  * The rest of the approved design for voice and video messages (#79), on
  * Robolectric — the pieces that are not a bubble:
  *
- *  - the hold row's "‹ Slide to cancel" shimmers, and is still words when
- *    animations are removed; the Undo row's line drains, and is "Sending in 5"
- *    without animations;
  *  - the hands-free row's LIVE waveform, in pixels: the newest peak at the
  *    trailing edge, older ones running back from it, mirrored right to left;
- *  - the lock pill floating above the held microphone, 36 wide;
+ *  - (the hold row, the Undo row and the lock pill went with the hold on
+ *    2026-10-06);
  *  - the long-press menu on a recording: Show text, Playback speed with its
  *    value (which steps without closing the menu), Save — and no Copy or
  *    Edit where there is no text; an ordinary message's menu as it was;
@@ -73,36 +71,6 @@ class VoiceDesignTest {
 
     // -- The rows --------------------------------------------------------------------
 
-    @Test
-    fun slideToCancelShimmersAndIsStillWordsWithoutAnimations() {
-        var steady by mutableStateOf(false)
-        compose.setContent { SlideToCancel(steady = steady) }
-        compose.onNodeWithTag("voice-slide-shimmer", useUnmergedTree = true).assertExists()
-        compose.onNodeWithText("Slide to cancel").assertExists()
-
-        steady = true
-        compose.onNodeWithTag("voice-slide-shimmer", useUnmergedTree = true).assertDoesNotExist()
-        compose.onNodeWithTag("voice-slide-steady", useUnmergedTree = true).assertExists()
-        compose.onNodeWithText("Slide to cancel").assertExists()
-    }
-
-    @Test
-    fun theUndoRowDrainsOrCountsDown() {
-        var steady by mutableStateOf(false)
-        compose.setContent {
-            UndoRow(
-                recordedMs = 12_000, windowMs = 5_000, onUndo = {}, steady = steady,
-                modifier = Modifier.width(360.dp).height(44.dp),
-            )
-        }
-        compose.onNodeWithTag("voice-undo-drain", useUnmergedTree = true).assertExists()
-        compose.onNodeWithText("Sending in", substring = true).assertDoesNotExist()
-
-        steady = true
-        compose.onNodeWithTag("voice-undo-drain", useUnmergedTree = true).assertDoesNotExist()
-        compose.onNodeWithText("Sending in 5").assertExists()
-    }
-
     private val red = Color(0xFFD01010)
 
     private fun liveWave(levels: List<Int>, rtl: Boolean = false) {
@@ -145,31 +113,6 @@ class VoiceDesignTest {
         val density = compose.density.density
         assertThat(inked((1.5f * density).toInt())).isGreaterThan(0)
         assertThat(inked(width - (1.5f * density).toInt())).isEqualTo(0)
-    }
-
-    @Test
-    fun theLockPillFloatsAboveTheHeldMicrophone() {
-        compose.setContent {
-            RecordSendButton(
-                slot = ComposerSlot.Slot.HeldMicrophone,
-                onMicDown = { _, _, _, _ -> },
-                onMicMove = { _, _ -> },
-                onMicUp = { _, _, _ -> },
-                onMicCancel = {},
-                onActivate = {},
-                onSend = {},
-                onStopAndListen = {},
-                onDeleteRecording = {},
-                onRecordFromMenu = {},
-                focusRequester = remember { FocusRequester() },
-            )
-        }
-        compose.onNodeWithTag("voice-lock-pill", useUnmergedTree = true)
-            .assertExists()
-            .assertWidthIsEqualTo(36.dp)
-            .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.HideFromAccessibility))
-        // Visibly larger under the finger (the design's 1.35).
-        assertThat(HELD_SCALE).isEqualTo(1.35f)
     }
 
     // -- The menu --------------------------------------------------------------------

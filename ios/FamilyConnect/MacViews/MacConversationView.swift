@@ -489,7 +489,11 @@ struct MacConversationView: View {
         VStack(spacing: 0) {
             thread
             Divider()
+            // Not drawn and not hittable while the window's video recorder
+            // is open (decision 41) — the phone's composer showed through
+            // its recorder, and the Mac's must not be able to.
             composer
+                .hiddenWhileRecorderOpen(recorderOpen)
         }
         // Narrower than this and a balloon has nowhere to go; the split
         // view honours it too, so the sidebar cannot squeeze the thread.
@@ -2813,16 +2817,13 @@ struct MacConversationView: View {
 
     /// The slot activated: a click on Send, Save, the microphone, the Send
     /// arrow or the Stop square; VO-Space; Full Keyboard Access's Space; or
-    /// Return on rows 2 to 5 (`returnPressed`). A click records hands-free —
-    /// a Mac has no hold (S8.3).
+    /// Return on rows 2 to 5 (`returnPressed`). A click records hands-free
+    /// (S8.3).
     private func activateSlot() {
         // A double click on the Stop square must not send what it staged
         // (S1.1) — the one guard a text Send asks (MacRecordSlot.activation).
         switch MacRecordSlot.activation(of: slot, sendGuarded: voice.sendIsGuarded) {
         case .send:
-            // A released note's Undo window cannot exist on a Mac (no hold
-            // releases one); kept for the reducer's sake all the same.
-            voice.otherAction()
             send()
             voice.emptied()
         case .save:
@@ -2862,7 +2863,6 @@ struct MacConversationView: View {
         VideoDoor.Inputs(
             slot: slotInputs,
             familyOrDirectChat: !isAssistantChat,
-            undoWindow: voice.inUndoWindow,
             serverOffersRound: AppSettings.offersRoundVideo,
             hasCamera: VideoMessageRecorder.hasCamera,
             encoderProbePasses: true)
@@ -2913,7 +2913,7 @@ struct MacConversationView: View {
             replyText: reply.map { quoteWord($0) },
             maxRoundVideoMS: AppSettings.roundVideoMaxMS ?? RecordRules.defaultMaxRoundVideoMS,
             maxRoundVideoBytes: AppSettings.roundVideoMaxBytes,
-            notSent: { !ParkedRecordings.shared.waiting(for: chatID).isEmpty },
+            notSent: { !ParkedRecordings.shared.entries(for: chatID).isEmpty },
             send: { prepared, quote, round in sendVideoMessage(prepared, replyTo: quote, round: round) },
             dropReply: { replyDraft = nil },
             startVoice: { voice.record(besideDraft: !slotInputs.isEmpty) },
@@ -3033,25 +3033,13 @@ struct MacConversationView: View {
     /// The voice flow's half of the composer: what only this view knows and
     /// can do. Closures over `@State` and the environment only — never the
     /// chat's query, which a closure kept past an update may read stale.
-    ///
-    /// What the phone wires and the Mac does not: the hold's lock (there is
-    /// no hold), the coach mark, and the Undo window's two hand-offs — only a
-    /// released hold opens that window, so they cannot be reached; were one
-    /// ever to be, the default sends nothing and the note settles into a
-    /// "not sent" row (VoiceComposer.sendUndoNote), and Undo does the same.
     private func wireVoice() {
         var hooks = VoiceComposer.Hooks()
         hooks.blocked = { slotBlocked }
-        hooks.chatID = { chatID }
         hooks.takeReply = { takeReplyForVoice() }
-        hooks.restoreReply = { reply in
-            guard replyDraft == nil, let reply else { return }
-            replyDraft = reply
-        }
         hooks.send = { recording, reply in sendVoiceNote(recording, replyTo: reply) }
         hooks.review = { recording in stageRecording(recording) }
         hooks.park = { recording in keepParked(recording, replyTo: replyDraft, caption: nil) }
-        hooks.reviewParked = { entry, _ in ParkedRecordings.shared.settle(entry) }
         hooks.explain = { reason in
             mediaNotice = .failed(reason.notice)
             announce(reason.notice)
@@ -3168,12 +3156,9 @@ struct MacConversationView: View {
 
     // MARK: - Voice messages nobody finished deciding about (#79, Phase 0)
 
-    /// This chat's voice messages that were not sent — the phone's list,
-    /// which leaves out a note a released hold is carrying through its Undo
-    /// window. A Mac never opens one (it has no hold); asked the same way so
-    /// the two cannot drift.
+    /// This chat's voice messages that were not sent.
     private var notSentHere: [ParkedRecordings.Entry] {
-        ParkedRecordings.shared.waiting(for: chatID)
+        ParkedRecordings.shared.entries(for: chatID)
     }
 
     /// The chat is being left, or the app is quitting: a running recording

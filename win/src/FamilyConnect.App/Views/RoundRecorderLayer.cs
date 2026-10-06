@@ -27,10 +27,12 @@ using Windows.UI.ViewManagement;
 namespace FamilyConnect.App.Views;
 
 /// <summary>
-/// The video-message recorder on Windows (docs/audio-video-messages-2026-10-04.md, S3.3, S3.4, S8.6): a layer over the whole
-/// window below the title bar — the rail, the list and the conversation — with the circle, its status line, the reply it will
-/// carry and a control row exactly where the composer's row is, the slot on the Send button. It draws what
-/// <see cref="RoundRecorder"/> says and runs what it asks for; the camera is <see cref="VideoMessageRecorder"/>'s.
+/// The video-message recorder on Windows (docs/audio-video-messages-2026-10-04.md, S3.3, S3.4, S8.6, decision 41): a layer
+/// over the whole window below the title bar — the rail, the list and the conversation — darkened and blurred behind, with
+/// the circle, its status capsule above it, the reply it will carry, and the controls on their own solid bar along the
+/// conversation's bottom, the slot under the Send button. Where each part stands is <see cref="RecorderFrames"/>'s, so
+/// nothing overlaps at any size. It draws what <see cref="RoundRecorder"/> says and runs what it asks for; the camera is
+/// <see cref="VideoMessageRecorder"/>'s.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -41,6 +43,12 @@ namespace FamilyConnect.App.Views;
 /// <b>IT TAKES ALL INPUT UNDER IT</b>: the scrim is hit-tested, the window beneath is disabled while it is up (so neither a
 /// pointer nor Tab reaches the conversation), Tab cycles inside it, and closing gives focus back to what opened it. The call
 /// card stays above it — a call arriving is an interruption it hears (S4).
+/// </para>
+/// <para>
+/// <b>THE COMPOSER IS NOT DRAWN WHILE IT IS UP</b> (decision 41, 2026-10-06): on the owner's iPhone the composer row showed
+/// through the recorder, its buttons under the recorder's own. Here the composer is made fully transparent and takes no
+/// hits for as long as the layer is open — kept in the layout, so the conversation does not reflow under the scrim and Send's
+/// place, which the slot stands under, is still known — and given back exactly as it was when the layer closes.
 /// </para>
 /// <para>
 /// <b>EFFECTS RUN ONE AFTER ANOTHER</b>, in the order the machine gave them, so the camera is never opened and closed at the
@@ -91,6 +99,10 @@ internal sealed class RoundRecorderLayer
     private bool spokeRecording;
     private RecorderFit fit = new(RoundVideoRules.LargestCircle, RecorderLayout.Row);
     private RecorderFit? fitAtRecord;
+    private object? laidOutFor;
+    private bool composerHidden;
+    private double composerOpacity = 1;
+    private bool composerHits = true;
     private TaskCompletionSource<bool>? closeAnswer;
 
     // The clip: its generation (a clip thrown away makes a later landing land nowhere), the files, what is sent, its player.
@@ -105,15 +117,14 @@ internal sealed class RoundRecorderLayer
 
     // ---- what is drawn ----
     private readonly Grid root = new();
-    private readonly Microsoft.UI.Xaml.Shapes.Path scrimAround = new();
-    private readonly Rectangle scrimPane = new() { HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+    private readonly Border scrim = new();
     private readonly Grid content = new();
-    private readonly StackPanel stack = new() { Spacing = 12, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom };
-    private readonly Border statusBacking = new() { CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 6, 12, 6), HorizontalAlignment = HorizontalAlignment.Center };
-    private readonly TextBlock statusLine = new() { Foreground = new SolidColorBrush(Colors.White), TextAlignment = TextAlignment.Center };
+    private readonly Border bar = new() { HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+    private readonly Border statusBacking = new() { CornerRadius = new CornerRadius(16), Padding = new Thickness(RecorderFrames.StatusPaddingX, 6, RecorderFrames.StatusPaddingX, 6), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top };
+    private readonly TextBlock statusLine = new() { Foreground = new SolidColorBrush(Colors.White), TextAlignment = TextAlignment.Center, TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock statusBelow = new() { TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, MaxWidth = 320 };
     private readonly Ellipse redDot = new() { Width = 8, Height = 8, VerticalAlignment = VerticalAlignment.Center };
-    private readonly Button circleButton = new() { Padding = new Thickness(0), BorderThickness = new Thickness(0), Background = new SolidColorBrush(Colors.Transparent), HorizontalAlignment = HorizontalAlignment.Center };
+    private readonly Button circleButton = new() { Padding = new Thickness(0), BorderThickness = new Thickness(0), Background = new SolidColorBrush(Colors.Transparent), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top };
     private readonly Grid circle = new();
     private readonly MediaPlayerElement previewElement = new() { AreTransportControlsEnabled = false, Stretch = Stretch.UniformToFill, IsTabStop = false };
     private readonly MediaPlayerElement reviewElement = new() { AreTransportControlsEnabled = false, Stretch = Stretch.UniformToFill, IsTabStop = false };
@@ -129,7 +140,7 @@ internal sealed class RoundRecorderLayer
     private readonly Ellipse ringThin = new() { StrokeThickness = RecorderLook.Track, Stroke = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)) };
     private readonly Microsoft.UI.Xaml.Shapes.Path ringArc = new() { StrokeThickness = RoundVideoRules.RingWidth, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round };
     private readonly Ellipse ringFull = new() { StrokeThickness = RoundVideoRules.RingWidth };
-    private readonly Grid banner = new() { ColumnSpacing = 8, Padding = new Thickness(12, 6, 6, 6), CornerRadius = new CornerRadius(8), MaxWidth = 420 };
+    private readonly Grid banner = new() { ColumnSpacing = 8, Padding = new Thickness(12, 6, 6, 6), CornerRadius = new CornerRadius(8), MaxWidth = BannerWidest };
     private readonly TextBlock bannerText = new() { VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly Button bannerDrop = new() { Background = new SolidColorBrush(Colors.Transparent), BorderThickness = new Thickness(0), Padding = new Thickness(10) };
     private readonly Grid controls = new() { ColumnSpacing = 8, RowSpacing = 8, Padding = new Thickness(6, 0, 0, 0) };
@@ -150,6 +161,9 @@ internal sealed class RoundRecorderLayer
 
     /// <summary>The slot's target: the 64 disc and the faint halo round it (the approved design).</summary>
     private const double SlotTarget = RecorderLook.SlotTarget;
+
+    /// <summary>The reply banner at its widest, under the circle in a row.</summary>
+    private const double BannerWidest = 420;
     private readonly TextBlock liveLine = new() { Opacity = 0, IsHitTestVisible = false, Width = 1, Height = 1 };
     private string? settingsPage;
 
@@ -200,6 +214,7 @@ internal sealed class RoundRecorderLayer
             host.Children.Add(root);
         }
         hooks.Cover(true);
+        HideComposer(true);
         firstTime = !RoundVideoSetting.PreviewSeen;
         var cameraAccess = VideoMessageRecorder.CameraAccess();
         var microphoneAccess = VoiceRecorder.MicrophoneAccess();
@@ -754,6 +769,7 @@ internal sealed class RoundRecorderLayer
         }
         keepAwake.Release();
         host.Children.Remove(root);
+        HideComposer(false);
         hooks.Cover(false);
         closeAnswer?.TrySetResult(true);
         closeAnswer = null;
@@ -765,6 +781,31 @@ internal sealed class RoundRecorderLayer
         if (voiceAfterClose)
         {
             hooks.StartVoice();
+        }
+    }
+
+    /// <summary>
+    /// The composer not drawn and taking no hits while the layer is up (decision 41) — transparent rather than collapsed, so
+    /// the conversation keeps its layout under the scrim — and given back exactly as it was.
+    /// </summary>
+    private void HideComposer(bool hide)
+    {
+        if (hide == composerHidden)
+        {
+            return;
+        }
+        composerHidden = hide;
+        if (hide)
+        {
+            composerOpacity = composer.Opacity;
+            composerHits = composer.IsHitTestVisible;
+            composer.Opacity = 0;
+            composer.IsHitTestVisible = false;
+        }
+        else
+        {
+            composer.Opacity = composerOpacity;
+            composer.IsHitTestVisible = composerHits;
         }
     }
 
@@ -802,12 +843,18 @@ internal sealed class RoundRecorderLayer
         {
             Diagnostics.Write($"asking about transparency effects: {e.GetType().Name}");
         }
-        // The whole window darkened, the conversation as much as the rest (the approved design): what is recorded is the
-        // circle, and nothing behind it should compete with it.
-        scrimAround.Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(transparent ? (byte)0xD9 : (byte)0xFF, 0x0B, 0x0C, 0x10));
-        scrimPane.Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(transparent ? (byte)0xD9 : (byte)0xFF, 0x0B, 0x0C, 0x10));
-        root.Children.Add(scrimAround);
-        root.Children.Add(scrimPane);
+        // The whole window darkened, the conversation as much as the rest (the approved design, decision 41): what is recorded
+        // is the circle, and nothing behind it should compete with it — in-app acrylic, which blurs what lies under it in this
+        // window, tinted near-black; opaque where Windows' transparency effects are off, and acrylic's own fallback is opaque
+        // too (battery saver, a remote session).
+        var night = Windows.UI.Color.FromArgb(0xFF, 0x0B, 0x0C, 0x10);
+        scrim.Background = transparent
+            ? new AcrylicBrush { TintColor = night, TintOpacity = 0.9, TintLuminosityOpacity = 0.9, FallbackColor = night }
+            : new SolidColorBrush(night);
+        // The controls' own bar: solid, a step lighter than the scrim so it reads as a surface, never see-through.
+        bar.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x17, 0x18, 0x1D));
+        bar.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF));
+        root.Children.Add(scrim);
         root.Children.Add(content);
         root.Children.Add(liveLine);
         root.TabFocusNavigation = KeyboardNavigationMode.Cycle;
@@ -818,9 +865,11 @@ internal sealed class RoundRecorderLayer
         root.KeyDown += OnKey;
         root.SizeChanged += (_, _) => Layout();
 
-        // The status line, on its own backing.
-        statusBacking.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0xB3, 0, 0, 0));
+        // The status line, in its own capsule above the circle.
+        statusBacking.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0xE6, 0x24, 0x25, 0x2B));
         redDot.Fill = (Brush)resources["SystemFillColorCriticalBrush"];
+        // The clock's digits keep one width, so its ticks never need the recorder laid out again (LineThatLaysOut).
+        Microsoft.UI.Xaml.Documents.Typography.SetNumeralAlignment(statusLine, FontNumeralAlignment.Tabular);
         var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Center };
         line.Children.Add(redDot);
         line.Children.Add(statusLine);
@@ -882,14 +931,15 @@ internal sealed class RoundRecorderLayer
             Draw();
         };
 
-        stack.Children.Add(statusBacking);
-        stack.Children.Add(circleButton);
-        stack.Children.Add(banner);
-        content.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        content.Children.Add(stack);
+        // Each part placed where RecorderFrames says (Layout): the bar first, under the controls standing on it.
+        banner.VerticalAlignment = VerticalAlignment.Top;
+        banner.HorizontalAlignment = HorizontalAlignment.Center;
+        controls.HorizontalAlignment = HorizontalAlignment.Left;
+        controls.VerticalAlignment = VerticalAlignment.Top;
+        content.Children.Add(bar);
+        content.Children.Add(statusBacking);
+        content.Children.Add(circleButton);
+        content.Children.Add(banner);
         content.Children.Add(controls);
 
         // The control row: the leading control, the middle ones, and the slot where Send is — round buttons with captions under
@@ -932,6 +982,7 @@ internal sealed class RoundRecorderLayer
         face.Children.Add(slotSquare);
         face.Children.Add(slotGlyph);
         slot.Content = face;
+        slot.HorizontalAlignment = HorizontalAlignment.Center;
         slot.Click += (_, _) => Run(flow.Slot(Now));
         AutomationProperties.SetAccessibilityView(slotCaption, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
         slotColumn.Children.Add(slot);
@@ -1037,9 +1088,12 @@ internal sealed class RoundRecorderLayer
     }
 
     /// <summary>
-    /// The scrim — 70 % over the rail and the list, 30 % over the conversation, still taking every click — and the circle
-    /// and controls over the conversation pane: the control row on the composer's row, the slot on the Send button (S3.3).
-    /// A pane shorter than 480 stands the controls in a column at the trailing edge. Kept as chosen at Record until Stop.
+    /// The scrim over the whole window, still taking every click, and the recorder over the conversation pane (S3.3,
+    /// decision 41): the controls on their own solid bar along the bottom, the slot under Send, with the circle, the status
+    /// capsule above it and the reply banner below it standing over the bar — or, in a pane shorter than 480, the bar at the
+    /// trailing edge with the banner in it. Every part is measured at the reader's text size and placed where
+    /// <see cref="RecorderFrames.Frame"/> says, which shrinks the circle (and at worst cuts the status) rather than let
+    /// anything overlap. The layout and the circle's largest size are kept as chosen at Record until Stop.
     /// </summary>
     private void Layout()
     {
@@ -1050,95 +1104,171 @@ internal sealed class RoundRecorderLayer
             return;
         }
         var conversation = Bounds(pane) ?? new Rect(0, 0, width, height);
-        var around = new GeometryGroup { FillRule = FillRule.EvenOdd };
-        around.Children.Add(new RectangleGeometry { Rect = new Rect(0, 0, width, height) });
-        around.Children.Add(new RectangleGeometry { Rect = conversation });
-        scrimAround.Data = around;
-        var inset = new Thickness(conversation.X, conversation.Y, Math.Max(0, width - conversation.Right), Math.Max(0, height - conversation.Bottom));
-        scrimPane.Margin = inset;
-        scrimPane.Width = conversation.Width;
-        scrimPane.Height = conversation.Height;
-        content.Margin = inset;
+        content.Margin = new Thickness(conversation.X, conversation.Y,
+            Math.Max(0, width - conversation.Right), Math.Max(0, height - conversation.Bottom));
+        var paneWidth = conversation.Width;
+        var paneHeight = conversation.Height;
+        var send = Bounds(sendButton);
+        var sendCentre = send is { } at && at.Width > 0 ? at.X + at.Width / 2 - conversation.X : double.NaN;
 
         var replying = hooks.ReplyText() is not null;
-        banner.Measure(new Size(420, double.PositiveInfinity));
+        banner.MaxWidth = BannerWidest;
+        banner.Measure(new Size(Math.Min(BannerWidest, Math.Max(0, paneWidth - 2 * RecorderFrames.Gutter)), double.PositiveInfinity));
         var bannerHeight = replying ? Math.Max(40, banner.DesiredSize.Height) : 0;
-        fit = fitAtRecord ?? RoundVideoRules.Fit(conversation.Width, conversation.Height, bannerHeight);
-        SizeCircle(fit.Diameter);
+        fit = fitAtRecord ?? RoundVideoRules.Fit(paneWidth, paneHeight, bannerHeight);
 
-        var send = Bounds(sendButton);
-        var row = Bounds(composer);
+        // The controls arranged for the layout, then measured as arranged.
+        Size measured;
         if (fit.Layout == RecorderLayout.Row)
         {
-            Grid.SetRowSpan(stack, 1);
-            Grid.SetColumnSpan(stack, 2);
-            Grid.SetRow(controls, 1);
-            Grid.SetColumn(controls, 0);
-            Grid.SetColumnSpan(controls, 2);
-            controls.RowDefinitions.Clear();
-            controls.ColumnDefinitions.Clear();
-            controls.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            controls.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            controls.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            Place(leading, 0, 0);
-            Place(middle, 0, 1);
-            Place(slotColumn, 0, 2);
-            controls.VerticalAlignment = VerticalAlignment.Bottom;
-            controls.HorizontalAlignment = HorizontalAlignment.Stretch;
-            // On the composer's row, the big slot CENTRED where Send is, so the pointer never moves (S3.3), and its caption
-            // under it.
-            var left = row is { } card ? card.X + 6 - conversation.X : 16;
-            var right = send is { } at ? conversation.Right - (at.X + at.Width / 2) - SlotTarget / 2 : 22;
-            // The slot's caption as tall as it is at the reader's text size, MEASURED, so the slot itself is centred on Send.
-            slotCaption.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            var caption = slotCaption.DesiredSize.Height;
-            var bottom = send is { } there ? RecorderLook.SlotColumnBottom(conversation.Bottom - (there.Y + there.Height / 2), caption) : 4;
-            controls.Margin = new Thickness(Math.Max(0, left), 0, Math.Max(0, right), Math.Max(0, bottom));
-            controls.Height = double.NaN;
+            ArrangeRow(wrapped: false);
             controls.Width = double.NaN;
-            stack.Margin = new Thickness(24, 12, 24, Math.Max(0, bottom) + SlotTarget + RecorderLook.CaptionGap + caption + 16);
-            stack.VerticalAlignment = VerticalAlignment.Bottom;
-            leading.Orientation = Orientation.Horizontal;
-            middle.Orientation = Orientation.Horizontal;
-            if (banner.Parent != stack)
+            controls.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            measured = controls.DesiredSize;
+            if (RecorderFrames.RowWraps(paneWidth, measured.Width, sendCentre))
             {
-                (banner.Parent as Panel)?.Children.Remove(banner);
-                stack.Children.Add(banner);
+                ArrangeRow(wrapped: true);
+                controls.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                measured = controls.DesiredSize;
             }
         }
         else
         {
-            Grid.SetRowSpan(stack, 2);
-            Grid.SetColumnSpan(stack, 1);
-            Grid.SetRow(controls, 0);
-            Grid.SetColumn(controls, 1);
-            Grid.SetColumnSpan(controls, 1);
-            Grid.SetRowSpan(controls, 2);
-            controls.ColumnDefinitions.Clear();
-            controls.RowDefinitions.Clear();
-            for (var at = 0; at < 4; at++)
-            {
-                controls.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            }
-            controls.VerticalAlignment = VerticalAlignment.Center;
-            controls.HorizontalAlignment = HorizontalAlignment.Right;
-            controls.Margin = new Thickness(0, 0, 16, 0);
-            controls.Height = double.NaN;
-            controls.Width = 184;
-            stack.Margin = new Thickness(16, 8, 16, 8);
-            stack.VerticalAlignment = VerticalAlignment.Center;
-            leading.Orientation = Orientation.Vertical;
-            middle.Orientation = Orientation.Vertical;
+            // Measured without the reply banner: the frame decides whether it rides at the column's top or under the circle.
+            ArrangeColumn(withBanner: false);
+            controls.Width = double.NaN;
+            controls.Measure(new Size(RecorderFrames.ColumnControlsWidth, double.PositiveInfinity));
+            measured = controls.DesiredSize;
+        }
+        // The status measured at the width it is drawn at — the room beside the bar in a column — its line wrapping inside the
+        // capsule rather than running out of it, so its height is the height the frame makes room for.
+        var span = RecorderFrames.StatusSpan(fit.Layout, paneWidth, measured.Width);
+        statusLine.MaxWidth = RecorderFrames.StatusLineWidth(span, redDot.Visibility == Visibility.Visible);
+        statusBacking.MaxWidth = double.PositiveInfinity;
+        statusBacking.MaxHeight = double.PositiveInfinity;
+        statusBacking.Measure(new Size(Math.Max(0, span - 2 * RecorderFrames.Gutter), double.PositiveInfinity));
+        var frame = RecorderFrames.Frame(fit, new RecorderMeasures(
+            paneWidth, paneHeight,
+            statusBacking.DesiredSize.Width, statusBacking.DesiredSize.Height,
+            replying ? banner.DesiredSize.Width : 0, bannerHeight,
+            measured.Width, measured.Height,
+            sendCentre));
+        SizeCircle(frame.Diameter);
+        if (frame.Layout == RecorderLayout.Column && replying && frame.Banner is null)
+        {
+            ArrangeColumn(withBanner: true);
+        }
+
+        bar.Margin = new Thickness(frame.Bar.X, frame.Bar.Y, 0, 0);
+        bar.Width = frame.Bar.Width;
+        bar.Height = frame.Bar.Height;
+        bar.BorderThickness = frame.Layout == RecorderLayout.Row ? new Thickness(0, 1, 0, 0) : new Thickness(1, 0, 0, 0);
+        controls.Margin = new Thickness(frame.Controls.X, frame.Controls.Y, 0, 0);
+        controls.Width = frame.Controls.Width;
+
+        // The status, the circle and the banner centred across the room they stand in — the pane in a row, the part of it
+        // beside the bar in a column — so a status whose width changes with every tick of the clock stays centred.
+        var trailing = frame.Layout == RecorderLayout.Row ? 0 : paneWidth - frame.Bar.X;
+        statusBacking.Margin = new Thickness(RecorderFrames.Gutter, frame.Status.Y, trailing + RecorderFrames.Gutter, 0);
+        statusBacking.MaxWidth = Math.Max(0, frame.Status.Width);
+        // Where the room ran out the capsule keeps its first lines; the circle keeps its size.
+        statusBacking.MaxHeight = frame.Status.Height;
+        statusBacking.Visibility = frame.Status.Height > 0 ? Visibility.Visible : Visibility.Collapsed;
+        circleButton.Margin = new Thickness(RecorderFrames.Gutter, frame.Circle.Y, trailing + RecorderFrames.Gutter, 0);
+        if (frame.Banner is { } under)
+        {
+            banner.Margin = new Thickness(RecorderFrames.Gutter, under.Y, trailing + RecorderFrames.Gutter, 0);
+            banner.MaxWidth = under.Width;
+        }
+    }
+
+    /// <summary>
+    /// The controls along the bar: the leading control, the middle ones and the slot in one row — or, where that row would
+    /// not fit (<see cref="RecorderFrames.RowWraps"/>), the slot on a line of its own under the others, still under Send.
+    /// </summary>
+    private void ArrangeRow(bool wrapped)
+    {
+        controls.RowDefinitions.Clear();
+        controls.ColumnDefinitions.Clear();
+        controls.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        controls.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        controls.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        controls.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        if (wrapped)
+        {
+            controls.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        }
+        BannerOverTheBar();
+        Place(leading, 0, 0);
+        Place(middle, 0, 1);
+        leading.HorizontalAlignment = HorizontalAlignment.Left;
+        Place(slotColumn, wrapped ? 1 : 0, wrapped ? 0 : 2);
+        Grid.SetColumnSpan(slotColumn, wrapped ? 3 : 1);
+        slotColumn.HorizontalAlignment = wrapped ? HorizontalAlignment.Right : HorizontalAlignment.Stretch;
+        leading.Orientation = Orientation.Horizontal;
+        middle.Orientation = Orientation.Horizontal;
+        middle.HorizontalAlignment = HorizontalAlignment.Center;
+        leading.VerticalAlignment = wrapped ? VerticalAlignment.Bottom : VerticalAlignment.Center;
+        middle.VerticalAlignment = wrapped ? VerticalAlignment.Bottom : VerticalAlignment.Center;
+        controls.Padding = new Thickness(6, 0, 0, 0);
+    }
+
+    /// <summary>
+    /// The controls in a column on the trailing bar: the reply banner where it rides there (<see cref="RecorderFrames.BannerRidesInColumn"/>),
+    /// the leading control, the middle ones, then the slot — each line a row of its own, centred. Without the banner it stands
+    /// under the circle instead, where the frame put it.
+    /// </summary>
+    private void ArrangeColumn(bool withBanner)
+    {
+        controls.ColumnDefinitions.Clear();
+        controls.RowDefinitions.Clear();
+        // One row per line actually drawn: the grid puts its RowSpacing between rows whether or not they hold anything.
+        var first = withBanner ? 1 : 0;
+        for (var at = 0; at < first + 3; at++)
+        {
+            controls.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        }
+        if (withBanner)
+        {
             if (banner.Parent != controls)
             {
                 (banner.Parent as Panel)?.Children.Remove(banner);
                 controls.Children.Insert(0, banner);
             }
+            banner.Margin = new Thickness(0);
+            banner.MaxWidth = RecorderFrames.ColumnControlsWidth;
             Place(banner, 0, 0);
-            Place(leading, 1, 0);
-            Place(middle, 2, 0);
-            Place(slotColumn, 3, 0);
         }
+        else
+        {
+            BannerOverTheBar();
+        }
+        Grid.SetColumnSpan(slotColumn, 1);
+        Place(leading, first, 0);
+        Place(middle, first + 1, 0);
+        Place(slotColumn, first + 2, 0);
+        slotColumn.HorizontalAlignment = HorizontalAlignment.Center;
+        leading.Orientation = Orientation.Horizontal;
+        middle.Orientation = Orientation.Horizontal;
+        leading.HorizontalAlignment = HorizontalAlignment.Center;
+        middle.HorizontalAlignment = HorizontalAlignment.Center;
+        leading.VerticalAlignment = VerticalAlignment.Center;
+        middle.VerticalAlignment = VerticalAlignment.Center;
+        controls.Padding = new Thickness(0);
+    }
+
+    /// <summary>The reply banner as a part of its own over the bar — under the circle — rather than in the controls.</summary>
+    private void BannerOverTheBar()
+    {
+        if (banner.Parent != content)
+        {
+            (banner.Parent as Panel)?.Children.Remove(banner);
+            content.Children.Insert(content.Children.IndexOf(controls), banner);
+        }
+        Grid.SetRow(banner, 0);
+        Grid.SetColumn(banner, 0);
+        Grid.SetRowSpan(banner, 1);
+        Grid.SetColumnSpan(banner, 1);
     }
 
     private static void Place(FrameworkElement element, int row, int column)
@@ -1278,6 +1408,15 @@ internal sealed class RoundRecorderLayer
         AutomationProperties.SetHelpText(voiceButton, notSent ? say.Get("Send or delete the voice message that wasn't sent first.") : string.Empty);
         Show(settingsButton, stage == RecorderStage.Refused && settingsPage is not null);
         DrawSlot(stage);
+        // What changes the parts' sizes — the stage's controls, a notice under the status, the reply — lays them out again;
+        // the clock's ticks alone do not.
+        var shape = (stage, RecorderFrames.LineThatLaysOut(stage, status.Line), status.Below, reply is null, cameraButton.Visibility, voice,
+            settingsButton.Visibility, slotCaption.Text);
+        if (!Equals(shape, laidOutFor))
+        {
+            laidOutFor = shape;
+            Layout();
+        }
         KeepFocus();
     }
 

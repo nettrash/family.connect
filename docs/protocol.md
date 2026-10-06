@@ -110,13 +110,15 @@ The consequences worth stating rather than discovering:
   never WebM.** WebM is what most browsers' recorders produce by default, `kind=audio` does not
   accept it, and a family's phones could not play it if it did. WAV is large, and it plays
   everywhere. Everything else about a voice note is the apps' rule: five minutes at most, sent
-  from the recorder, or staged when the member stops it to listen or add words — never sent by an
-  interruption, except that an interruption during the five-second Undo window after a release
-  ends the window early and sends it. (*Amended 2026-10-05, #79:* it read "staged so a caption can
-  be added" while stopping was the only way a recording ended. A release is letting go of a held
-  microphone, and the Undo window is the grace before such a release sends; a note sent from the
-  recorder is a media send like any other — see "Sending on an unreliable network". Nothing on the
-  wire changes.) A browser's location comes from its own geolocation, under the same freshness bar
+  from the recorder by its Send, or staged when the member stops it to listen or add words — never
+  sent by an interruption, by the length limit or by a shortcut. (*Amended 2026-10-05, #79:* it
+  read "staged so a caption can be added" while stopping was the only way a recording ended; a note
+  sent from the recorder is a media send like any other — see "Sending on an unreliable network".
+  *Amended 2026-10-06, #79:* the 2026-10-05 text also let a released hold of the microphone send
+  after a five-second Undo window, and let an interruption inside that window end it early and
+  send. The hold and its window were removed after device testing: the recorder's Send is the only
+  thing that sends a voice note, and an interruption never does — it keeps the recording as not
+  sent. Nothing on the wire changes.) A browser's location comes from its own geolocation, under the same freshness bar
   the apps apply (see "Locations"): never a fix older than two minutes.
 - **A browser notifies ITSELF, and names who rather than what.** It registers no device and takes
   no push, so what it has instead is the tab it is already in: the number of unread messages in the
@@ -6155,10 +6157,10 @@ client keeps trying.
   no attachments is a text message, and for a photo with a caption the server would accept it
   happily, leaving a delivered bubble with the pictures gone. Ids that DID land are kept and reused
   within the grace, so a retry pushes only the remainder. A voice note sent straight from the
-  recorder — by its Send, or when the five-second Undo window after a release runs out — is such a
-  send like any other (*added 2026-10-05, #79*): its row is written before its first byte and its
-  bytes are kept until the ack, and during the window, which is the device's grace before anything
-  leaves, it is not in the outbox at all.
+  recorder by its Send is such a send like any other (*added 2026-10-05, #79*): its row is written
+  before its first byte and its bytes are kept until the ack. (*Amended 2026-10-06, #79:* it also
+  named the end of a five-second Undo window after a released hold, during which the note was not
+  yet in the outbox; the hold and the window were removed, so there is no such wait.)
 - **Keep the source bytes until the message is acked.** An attachment id is only valid while the
   server still holds the upload it names — unclaimed uploads are swept after
   `limits.attachment_grace_hours` — so a client that has thrown its copy away has no way to

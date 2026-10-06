@@ -2,25 +2,18 @@
  * SettingsVoiceMessagesTest.kt
  * Family Connect (Android)
  *
- * S9 (#79, docs/audio-video-messages-2026-10-04.md): a "Voice messages"
- * section with one switch, "Review before sending" — off by default, the
- * device's — and the sentence that says what it does. Rendered for real
- * over the settings screen's own ViewModel and fakes: the switch reads the
- * store and writes it.
+ * S9 (#79, docs/audio-video-messages-2026-10-04.md) was a "Voice messages"
+ * section with one switch, "Review before sending" — the hold's Undo
+ * window's "turn off". The hold went on 2026-10-06 and the section with it.
+ * Rendered for real over the settings screen's own ViewModel and fakes.
  */
 
 package me.nettrash.familyconnect.ui.settings
 
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertIsOff
-import androidx.compose.ui.test.assertIsOn
-import androidx.compose.ui.test.hasText
-import androidx.compose.ui.test.isToggleable
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
-import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -99,8 +92,13 @@ class SettingsVoiceMessagesTest {
         )
     }
 
+    /**
+     * S9 is gone (#79, revised 2026-10-06): with the hold removed nothing a
+     * release could send is left, so "Review before sending" has nothing to
+     * turn off — the "Voice messages" section and its switch are not drawn.
+     */
     @Test
-    fun theVoiceMessagesSectionSwitchesReviewBeforeSending() {
+    fun thereIsNoVoiceMessagesSectionAndNoReviewBeforeSending() {
         val viewModel = viewModel()
         compose.setContent {
             SettingsScreen(
@@ -111,35 +109,10 @@ class SettingsVoiceMessagesTest {
                 viewModel = viewModel,
             )
         }
-
-        compose.onNodeWithText("Voice messages").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText(
-            "When you hold the microphone to talk, letting go keeps the message for you to check instead of sending it.",
-        ).performScrollTo().assertIsDisplayed()
-        // The row is one TalkBack stop, the switch merged into it; the switch
-        // itself is read in the unmerged tree.
-        val row = compose.onNodeWithText("Review before sending").performScrollTo()
-        val toggle = compose.onNode(isToggleable() and hasAnySiblingText("Review before sending"), useUnmergedTree = true)
-        toggle.assertIsOff()
-
-        row.performClick()
-        compose.waitForIdle()
-        assertThat(settings.current.reviewBeforeSending).isTrue()
-        toggle.assertIsOn()
-
-        row.performClick()
-        compose.waitForIdle()
-        assertThat(settings.current.reviewBeforeSending).isFalse()
-
-        // A finger on the switch itself flips it too — the switch takes that
-        // tap, not the row.
-        toggle.performClick()
-        compose.waitForIdle()
-        assertThat(settings.current.reviewBeforeSending).isTrue()
-        toggle.assertIsOn()
+        // The screen is up: its neighbours in the list are there.
+        compose.onNodeWithText("Change password").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Voice messages").assertDoesNotExist()
+        compose.onNodeWithText("Review before sending").assertDoesNotExist()
+        compose.onNodeWithText("When you hold the microphone", substring = true).assertDoesNotExist()
     }
-
-    private fun hasAnySiblingText(text: String) =
-        androidx.compose.ui.test.hasAnySibling(hasText(text)) or
-            androidx.compose.ui.test.hasParent(androidx.compose.ui.test.hasAnyDescendant(hasText(text)))
 }

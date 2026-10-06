@@ -25,9 +25,6 @@
 import SwiftData
 import SwiftUI
 import os
-#if os(iOS)
-import TipKit
-#endif
 
 @main
 struct FamilyConnectApp: App {
@@ -91,16 +88,6 @@ struct FamilyConnectApp: App {
             AppSettings.wipe(keepServerURL: false)
             try? KeychainStore.delete(account: KeychainStore.tokenAccount)
         }
-        #endif
-
-        // The one coach mark #79 allows (VoiceTips): TipKit keeps its count
-        // on the device. Never over a UI test's composer, whose anchors a
-        // popover could cover.
-        #if os(iOS)
-        #if DEBUG
-        if uiTestReset { Tips.hideAllTipsForTesting() }
-        #endif
-        try? Tips.configure()
         #endif
 
         let schema = Schema([

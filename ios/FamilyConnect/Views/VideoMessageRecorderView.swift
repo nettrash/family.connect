@@ -16,6 +16,19 @@
 //  It draws `VideoMessageSession` and does nothing of its own: every control
 //  is one call on the session, which asks `VideoRecorderMachine`.
 //
+//  THE LAYOUT (decision 41, 2026-10-06). On the owner's iPhone the composer
+//  row showed through the recorder — Close over the paperclip, the composer's
+//  Send over Record — and a thin scrim let the chat compete with the camera.
+//  So: the composer is not drawn while a recorder is open — taken out of the
+//  hierarchy on iPhone and iPad (`ComposerUnlessRecording`), hidden and made
+//  untouchable on the Mac (`hiddenWhileRecorderOpen`); the backdrop is
+//  near-black over a blur; the status sits in its own capsule at the top; the
+//  controls sit on their own SOLID bar at the bottom, which runs on under the
+//  home indicator; and the circle is sized from the space LEFT between the
+//  two — measured, never guessed — so it cannot overlap either, nor any
+//  caption, at any width, on its side, or at the largest text.
+//  `RecorderLayoutProbe` lets a test read where each part landed.
+//
 
 import AVFoundation
 import SwiftUI
@@ -200,9 +213,6 @@ struct VideoMessageRecorderView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
-    #if os(iOS)
-    @Environment(\.horizontalSizeClass) private var sizeClass
-    #endif
     @Environment(\.openURL) private var openURL
     @AccessibilityFocusState private var slotReadFocus: Bool
     @FocusState private var slotKeyFocus: Bool
@@ -216,12 +226,21 @@ struct VideoMessageRecorderView: View {
     var body: some View {
         GeometryReader { outer in
             let pane = localPane(in: outer)
+            // What the pane leaves of the window below and beside it, safe
+            // areas included — the control bar's fill runs on under the home
+            // indicator (and past the trailing edge on its side); the
+            // controls do not.
+            let bleed = EdgeInsets(
+                top: 0, leading: 0,
+                bottom: max(0, outer.size.height - pane.maxY) + outer.safeAreaInsets.bottom,
+                trailing: max(0, outer.size.width - pane.maxX) + outer.safeAreaInsets.trailing)
             ZStack(alignment: .topLeading) {
-                scrim(size: outer.size, pane: pane)
-                recorder(in: pane)
+                scrim(size: outer.size)
+                recorder(in: pane, bleed: bleed)
                     .frame(width: pane.width, height: pane.height)
                     .offset(x: pane.minX, y: pane.minY)
             }
+            .coordinateSpace(name: RecorderLayoutProbe.space)
         }
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(.isModal)
@@ -264,46 +283,31 @@ struct VideoMessageRecorderView: View {
         return local.isNull || local.width < 200 || local.height < 200 ? bounds : local
     }
 
-    private var isCompactWidth: Bool {
-        #if os(iOS)
-        sizeClass == .compact
-        #else
-        false
-        #endif
-    }
+    /// The window goes almost black behind the recorder, over a blur — so
+    /// the circle is the one bright thing on screen and no message competes
+    /// with it (decision 41) — and opaque under Reduce Transparency. It takes
+    /// all input (S3.3).
+    static let scrimOpacity: Double = 0.88
 
-    /// Black at 70 % — over the conversation only 30 % on a regular width,
-    /// so the message being answered stays readable — and opaque under Reduce
-    /// Transparency. It takes all input (S3.3).
-    /// The window darkens almost to black behind the recorder (the approved
-    /// design), so the circle is the one bright thing on screen.
-    static let scrimOpacity: Double = 0.86
+    /// The control bar's fill: solid, a shade off the backdrop so the bar
+    /// reads as its own place.
+    static let barFill = Color(white: 0.07)
 
-    private func scrim(size: CGSize, pane: CGRect) -> some View {
-        let whole = CGRect(origin: .zero, size: size)
-        let dimPane = !isCompactWidth && pane != whole && !reduceTransparency
-        return ZStack(alignment: .topLeading) {
-            if dimPane {
-                Path { path in
-                    path.addRect(whole)
-                    path.addRect(pane)
-                }
-                .fill(Color.black.opacity(0.7), style: FillStyle(eoFill: true))
-                Color.black.opacity(0.3)
-                    .frame(width: pane.width, height: pane.height)
-                    .offset(x: pane.minX, y: pane.minY)
-            } else {
-                Color.black.opacity(reduceTransparency ? 1 : Self.scrimOpacity)
+    private func scrim(size: CGSize) -> some View {
+        ZStack {
+            if !reduceTransparency {
+                Rectangle().fill(.ultraThinMaterial)
             }
+            Color.black.opacity(reduceTransparency ? 1 : Self.scrimOpacity)
         }
-        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .frame(width: size.width, height: size.height)
         .ignoresSafeArea()
         .contentShape(Rectangle())
         .onTapGesture {}
         .accessibilityHidden(true)
     }
 
-    // MARK: Layout (S3.3)
+    // MARK: Layout (S3.3, decision 41)
 
     @State private var paneSize: CGSize = .zero
 
@@ -311,51 +315,92 @@ struct VideoMessageRecorderView: View {
     /// in a column at the trailing edge.
     private var sideways: Bool { paneSize.height < 480 && paneSize.height > 0 }
 
-    private var bannerHeight: CGFloat { session.reply == nil ? 0 : 52 }
+    /// The largest circle, and the room kept round it (its ring and halo).
+    static let maxDiameter: CGFloat = 320
+    static var circleChrome: CGFloat { 2 * ringOutset + 4 }
+    /// The width of the controls' column on its side.
+    static let sidewaysBarWidth: CGFloat = 200
 
-    private func diameter(for size: CGSize, sideways: Bool) -> CGFloat {
-        let raw = sideways
-            ? min(320, size.height - 96, size.width - 200)
-            : min(320, size.width - 48, size.height - 240 - bannerHeight)
-        return max(160, raw)
+    /// The circle's diameter in the room left for it: as large as fits,
+    /// never more than 320, and never larger than the room — so it cannot
+    /// reach the status above it or the controls below it.
+    static func diameter(fitting room: CGSize) -> CGFloat {
+        let side = min(room.width, room.height) - circleChrome
+        return max(0, min(maxDiameter, side))
     }
 
     @ViewBuilder
-    private func recorder(in pane: CGRect) -> some View {
+    private func recorder(in pane: CGRect, bleed: EdgeInsets) -> some View {
         let size = pane.size
         let isSideways = lockedSideways ?? (size.height < 480)
-        let d = diameter(for: size, sideways: isSideways)
         Group {
             if isSideways {
-                HStack(spacing: 16) {
+                HStack(spacing: 0) {
                     VStack(spacing: 12) {
                         statusLine
-                        circle(d)
+                            .padding(.top, 8)
+                        circleRoom
                     }
+                    .padding(.horizontal, 12)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     VStack(spacing: 12) {
                         replyBanner
+                        Spacer(minLength: 0)
                         controls(vertical: true)
+                        Spacer(minLength: 0)
                     }
-                    .frame(width: 200)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 8)
+                    .frame(width: Self.sidewaysBarWidth)
+                    .frame(maxHeight: .infinity)
+                    .background {
+                        Self.barFill
+                            .padding(.bottom, -bleed.bottom)
+                            .padding(.trailing, -bleed.trailing)
+                            .probe(.bar)
+                    }
                 }
-                .padding(.horizontal, 16)
             } else {
-                VStack(spacing: 12) {
+                VStack(spacing: 0) {
                     statusLine
                         .padding(.top, 12)
-                    Spacer(minLength: 0)
-                    circle(d)
-                    Spacer(minLength: 0)
+                        .padding(.horizontal, 16)
+                    circleRoom
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 16)
                     replyBanner
-                    controls(vertical: false)
+                        .padding(.horizontal, 16)
                         .padding(.bottom, 8)
+                    controls(vertical: false)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                        .padding(.bottom, 8)
+                        .frame(maxWidth: .infinity)
+                        .background {
+                            Self.barFill
+                                .overlay(alignment: .top) {
+                                    Rectangle().fill(Color.white.opacity(0.08)).frame(height: 0.5)
+                                }
+                                .padding(.bottom, -bleed.bottom)
+                                .probe(.bar)
+                        }
                 }
-                .padding(.horizontal, 16)
             }
         }
         .onAppear { paneSize = size }
         .onChange(of: size) { _, new in paneSize = new }
+    }
+
+    /// Whatever the status and the controls leave, with the circle centred
+    /// in it at the size that fits.
+    private var circleRoom: some View {
+        GeometryReader { room in
+            let d = Self.diameter(fitting: room.size)
+            circle(d)
+                .probe(.circle)
+                .position(x: room.size.width / 2, y: room.size.height / 2)
+        }
+        .frame(minHeight: 0)
     }
 
     // MARK: The status line (S3.4)
@@ -370,9 +415,15 @@ struct VideoMessageRecorderView: View {
             }
         }
         .foregroundStyle(.white)
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
+        // Its own capsule above the circle, solid enough that nothing behind
+        // it is read with it; a rounded box once it carries more lines.
+        .background(
+            Color(white: 0.16),
+            in: RoundedRectangle(cornerRadius: statusExtras.isEmpty ? 100 : 18, style: .continuous))
+        .fixedSize(horizontal: false, vertical: true)
+        .probe(.status)
         .accessibilityElement(children: .combine)
     }
 
@@ -634,17 +685,27 @@ struct VideoMessageRecorderView: View {
 
     @ViewBuilder
     private func controls(vertical: Bool) -> some View {
-        let layout = vertical
-            ? AnyLayout(VStackLayout(spacing: 14))
-            : AnyLayout(HStackLayout(spacing: 14))
-        layout {
-            leadingControls
-            if !vertical { Spacer(minLength: 0) }
-            middleControls
-            if !vertical { Spacer(minLength: 0) }
-            slot
+        Group {
+            if vertical {
+                // On its side: Close or Delete, the middle pair side by side,
+                // then the big button — short enough for a phone's height.
+                VStack(spacing: 12) {
+                    leadingControls
+                    HStack(alignment: .top, spacing: 8) { middleControls }
+                    slot
+                }
+            } else {
+                HStack(alignment: .top, spacing: 8) {
+                    leadingControls
+                    Spacer(minLength: 0)
+                    middleControls
+                    Spacer(minLength: 0)
+                    slot
+                }
+                .frame(maxWidth: 560)
+            }
         }
-        .frame(maxWidth: vertical ? nil : 560)
+        .probe(.controls)
     }
 
     /// Close in the preview, Delete once something is recorded — the
@@ -1104,5 +1165,114 @@ struct RecorderCaption: View {
             .minimumScaleFactor(0.7)
             .accessibilityHidden(true)
             .dynamicTypeSize(...Self.largestType)
+            .probe(.caption)
+    }
+}
+
+// MARK: - Where each part landed (decision 41)
+
+/// The recorder's parts, as a test reads them: each reports its frame in the
+/// recorder's own space through the environment's `recorderLayoutProbe`, nil
+/// in the app — so the overlap rules are checked on the real layout, not on a
+/// copy of its arithmetic.
+nonisolated enum RecorderPart: String, Hashable, Sendable {
+    case status, circle, controls, bar, caption
+}
+
+@MainActor
+final class RecorderLayoutProbe {
+    nonisolated static let space = "videoRecorder"
+    /// The latest frame of every part on screen, one per view.
+    private var frames: [RecorderPart: [UUID: CGRect]] = [:]
+
+    func record(_ part: RecorderPart, _ id: UUID, _ frame: CGRect) {
+        frames[part, default: [:]][id] = frame
+    }
+
+    func remove(_ part: RecorderPart, _ id: UUID) {
+        frames[part]?[id] = nil
+    }
+
+    /// Where every view of `part` on screen is now.
+    func rects(_ part: RecorderPart) -> [CGRect] {
+        Array((frames[part] ?? [:]).values)
+    }
+}
+
+private struct RecorderLayoutProbeKey: EnvironmentKey {
+    static let defaultValue: RecorderLayoutProbe? = nil
+}
+
+extension EnvironmentValues {
+    var recorderLayoutProbe: RecorderLayoutProbe? {
+        get { self[RecorderLayoutProbeKey.self] }
+        set { self[RecorderLayoutProbeKey.self] = newValue }
+    }
+}
+
+private struct RecorderProbeModifier: ViewModifier {
+    let part: RecorderPart
+    @Environment(\.recorderLayoutProbe) private var probe
+    @State private var id = UUID()
+
+    func body(content: Content) -> some View {
+        if let probe {
+            content
+                .onGeometryChange(for: CGRect.self) { proxy in
+                    proxy.frame(in: .named(RecorderLayoutProbe.space))
+                } action: { frame in
+                    probe.record(part, id, frame)
+                }
+                .onDisappear { probe.remove(part, id) }
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func probe(_ part: RecorderPart) -> some View {
+        modifier(RecorderProbeModifier(part: part))
+    }
+}
+
+// MARK: - The composer while a recorder is open (decision 41)
+
+/// The iPhone and iPad composer — or, while the window's video recorder is
+/// open, nothing but its height. On the owner's iPhone the composer, in the
+/// thread's bottom `safeAreaInset`, was drawn OVER the root's recorder layer,
+/// undimmed, the composer's Send on top of Record; whatever lifts that inset
+/// above an overlay, a composer that is not in the hierarchy cannot be drawn
+/// or touched. The height stays, so the thread above does not move when the
+/// recorder opens or closes (ConversationView's header: the bar's height is
+/// what the thread pins against).
+struct ComposerUnlessRecording<Composer: View>: View {
+    let open: Bool
+    /// The composer's last measured height.
+    let height: CGFloat
+    @ViewBuilder let composer: () -> Composer
+
+    var body: some View {
+        if open {
+            Color.clear
+                .frame(height: height)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        } else {
+            composer()
+        }
+    }
+}
+
+extension View {
+    /// Not drawn, not hittable and not read while the window's video
+    /// recorder is open — the Mac's composer, a plain sibling of the thread
+    /// whose many key and focus modifiers stay attached. Opacity rather than
+    /// removal, so the composer keeps its height and the thread above it
+    /// does not move when the recorder closes.
+    func hiddenWhileRecorderOpen(_ open: Bool) -> some View {
+        opacity(open ? 0 : 1)
+            .allowsHitTesting(!open)
+            .accessibilityHidden(open)
     }
 }

@@ -2,34 +2,40 @@
  * RecordGesture.kt
  * Family Connect (Android)
  *
- * What a press, a hold, a slide, a release, a timer, the length limit or an
- * interruption does to a voice recording in the Send slot (#79,
- * docs/audio-video-messages-2026-10-04.md, S2.1, S2.3, S2.5, S2.6) — as a
+ * What an activation of the slot, the menu or the shortcut, Stop, Delete, the
+ * length limit or an interruption does to a voice recording in the Send slot
+ * (#79, docs/audio-video-messages-2026-10-04.md, S2.1, S2.2, S2.5) — as a
  * reducer: a state and an event go in, the next state and what to do come
  * out.
  *
  * A PORT of `fc_text::record::hold_step` (web/text/src/record.rs), branch for
  * branch and under the same names, held to the reference by
  * RecordGestureVectorsTest over every `hold_step` case in
- * record-vectors.json — so a finger on this phone does what a finger on the
- * iPhone does. Do not "improve" a branch here: change the reference, print
- * the vectors again, and port the change.
+ * record-vectors.json — so a tap on this phone does what a tap on the iPhone
+ * does. Do not "improve" a branch here: change the reference, print the
+ * vectors again, and port the change.
  *
- * It is only the DECISION. ChatViewModel feeds it — the microphone's touch
- * from RecordSendButton, the timers, the recorder's own endings, the
- * interruptions — and carries out what comes back: opening the microphone,
- * staging, parking, sending, the haptics, the words shown and spoken.
+ * REVISED 2026-10-06: THERE IS NO HOLD. The first draft made the microphone a
+ * walkie-talkie on touch (hold to talk, slide to cancel or to lock, let go to
+ * send after a five-second Undo window); the owner removed it after testing
+ * it. The microphone does ONE thing: its activation starts a hands-free
+ * recording, which the slot's Send arrow sends, Stop keeps for review and
+ * Delete deletes. A long press is not a gesture: nothing records and nothing
+ * opens while a finger is down, and the press is an ordinary tap when it
+ * lifts inside, however long it was held. The names (`holdStep`, HoldState,
+ * HoldEvent, HoldEffect, HoldConstants) are the reference's, kept.
+ *
+ * It is only the DECISION. ChatViewModel feeds it — the slot's activation
+ * from RecordSendButton, the recorder's own endings, the interruptions — and
+ * carries out what comes back: opening the microphone, staging, parking,
+ * sending, the haptics, the words shown and spoken.
  *
  * The contract the port keeps (the reference's module notes):
- *  - TWO CLOCKS. `atMs` is one monotonic clock for the press, the guard and
- *    the Undo window. `recordedMs` is the recorder's own clock — the one the
- *    person sees, which with a screen reader starts once "Recording" has
- *    been spoken.
- *  - Down, Move, Up and SystemCancel are the MICROPHONE's touch and matter
- *    only from Idle. Every other activation of the slot is Activate. The
- *    lift of a press that went down on the microphone is always Up.
- *  - The hold begins only on a Tick at H, which the port sends from its own
- *    long-press timer.
+ *  - TWO CLOCKS. `atMs` is one monotonic clock for the guard. `recordedMs` is
+ *    the recorder's own clock — the one the person sees, which with a screen
+ *    reader starts once "Recording" has been spoken.
+ *  - Every activation of the slot — a tap, a click, Enter, TalkBack's — is
+ *    Activate. Nothing is sent for a press going down or being held.
  *  - After the slot's own Send or Save empties the composer the port sends
  *    Emptied, and it asks [HoldState.guarded] before acting on a row-5 Send.
  *  - The 4:30 warning, the 3-second silence warning and the level meter are
@@ -43,28 +49,15 @@
 package me.nettrash.familyconnect.ui.chat
 
 import me.nettrash.familyconnect.ui.chat.ComposerSlot.saturatingAdd
-import me.nettrash.familyconnect.ui.chat.ComposerSlot.saturatingSub
 
 object RecordGesture {
 
-    /** The numbers [holdStep] decides by: S1.1's, with H for this system. */
+    /** The numbers [holdStep] decides by: S1.1's. */
     data class HoldConstants(
-        val holdThresholdMs: Long = ComposerSlot.MIN_HOLD_THRESHOLD_MS,
-        val tapSlop: Double = ComposerSlot.TAP_SLOP,
-        val lockDistance: Double = ComposerSlot.LOCK_DISTANCE,
-        val cancelArmDistance: Double = ComposerSlot.CANCEL_ARM_DISTANCE,
-        val cancelDisarmDistance: Double = ComposerSlot.CANCEL_DISARM_DISTANCE,
         val shortestRecordingMs: Long = ComposerSlot.SHORTEST_RECORDING_MS,
-        val undoWindowMs: Long = ComposerSlot.UNDO_WINDOW_MS,
         val activationGuardMs: Long = ComposerSlot.ACTIVATION_GUARD_MS,
         val deleteAsksFromMs: Long = ComposerSlot.DELETE_ASKS_FROM_MS,
-    ) {
-        companion object {
-            /** S1.1's numbers, with H for a system whose long press takes [systemLongPressMs]. */
-            fun forSystem(systemLongPressMs: Long): HoldConstants =
-                HoldConstants(holdThresholdMs = ComposerSlot.holdThresholdMs(systemLongPressMs))
-        }
-    }
+    )
 
     /** The microphone permission, as the platform reads it. */
     enum class Permission {
@@ -79,58 +72,27 @@ object RecordGesture {
 
     /**
      * The facts a decision reads at the moment it is made. The defaults are a
-     * granted microphone, nothing in the way, no screen reader, a device that
-     * has released before, and Review Before Sending off.
+     * granted microphone and nothing in the way.
      */
     data class Situation(
         val permission: Permission = Permission.GRANTED,
         /** The dimmed row the microphone is in (rows 7–9), if any. */
         val blocked: ComposerSlot.Dimmed? = null,
-        /** A screen reader or Switch Control runs: a held release goes to review. */
-        val assistive: Boolean = false,
-        /** This device has not yet had its first held release taught. */
-        val firstRelease: Boolean = false,
-        /** The per-device setting (S9): a held release goes to review. */
-        val reviewBeforeSending: Boolean = false,
     )
 
-    /** Where a recording that waits on the permission prompt came from. */
+    /** Where a recording that waits on the permission prompt came from; either way Allow records. */
     enum class Source {
-        /** A completed tap, a click, Enter or Space, a screen reader's activation. */
+        /** The slot's microphone: a tap, a click, Enter, TalkBack's activation. Its start is guarded. */
         TAP,
 
-        /** The hold threshold: a prompt raised by a hold never records. */
-        HOLD,
-
-        /** "Record voice message" from the paperclip or the menu, or the shortcut. */
+        /** "Record voice message" from the paperclip or the menu, or the shortcut. Never guarded. */
         MENU,
     }
 
     /** Where the slot's voice recording is. */
     sealed interface Phase {
-        /** Nothing pressed, nothing recording. A released note may still be in its Undo window. */
+        /** Nothing recording. */
         data object Idle : Phase
-
-        /** A finger or pen is down on the microphone, before H; nothing records. */
-        data class Pressed(
-            val downAtMs: Long,
-            /** Where it went down, in window coordinates. */
-            val downX: Double,
-            val downY: Double,
-            /** The layout is right-to-left: the leading edge is on the right. */
-            val rtl: Boolean,
-            /** It can still become a hold. */
-            val mayHold: Boolean,
-        ) : Phase
-
-        /** Recording, the finger still down: the hold row. */
-        data class Holding(
-            val downX: Double,
-            val downY: Double,
-            val rtl: Boolean,
-            /** Slide-to-cancel is armed: "Release to cancel". */
-            val armed: Boolean,
-        ) : Phase
 
         /** Recording, hands-free: the recording row. */
         data class HandsFree(
@@ -145,24 +107,15 @@ object RecordGesture {
         data class AwaitingPermission(val source: Source, val besideDraft: Boolean) : Phase
     }
 
-    /** A released note waiting out its Undo window: nothing has left the device. */
-    data class UndoNote(
-        /** When the window runs out and the note goes to the outbox. */
-        val untilMs: Long,
-        val recordedMs: Long,
-    )
-
-    /** The reducer's whole state: the phase, the activation guard, a note in its Undo window. */
+    /** The reducer's whole state: the phase and the activation guard. */
     data class HoldState(
         val phase: Phase = Phase.Idle,
         /** Activation of the slot before this moment is ignored whole. 0: none. */
         val guardUntilMs: Long = 0,
-        val undo: UndoNote? = null,
     ) {
         /** What [ComposerSlot.composerSlot] is told about this recording. */
         val recording: ComposerSlot.Recording
             get() = when (val phase = phase) {
-                is Phase.Holding -> ComposerSlot.Recording.HELD
                 is Phase.HandsFree ->
                     if (phase.besideDraft) {
                         ComposerSlot.Recording.HANDS_FREE_BESIDE_DRAFT
@@ -180,47 +133,17 @@ object RecordGesture {
     sealed interface HoldEvent {
         val atMs: Long
 
-        /** A press went down on the microphone; [canHold] for a finger or pen. */
-        data class Down(
-            override val atMs: Long,
-            val x: Double,
-            val y: Double,
-            val canHold: Boolean,
-            val rtl: Boolean,
-        ) : HoldEvent
-
-        /** It moved, in window coordinates. */
-        data class Move(override val atMs: Long, val x: Double, val y: Double) : HoldEvent
-
-        /** It lifted; [inside] is the button's own hit test. Its position counts as a last move. */
-        data class Up(
-            override val atMs: Long,
-            val x: Double,
-            val y: Double,
-            val inside: Boolean,
-            val situation: Situation,
-            val recordedMs: Long,
-            /** Some peak since the recording started rose above the silence level. */
-            val heard: Boolean,
-        ) : HoldEvent
-
-        /** The system cancelled the touch; [background]: the app has gone there. */
-        data class SystemCancel(
-            override val atMs: Long,
-            val background: Boolean,
-            val recordedMs: Long,
-        ) : HoldEvent
-
-        /** Time passed: at H, and whenever the port likes. */
-        data class Tick(override val atMs: Long, val situation: Situation) : HoldEvent
-
         /** The recorder stopped itself at the five-minute limit. */
         data class Cap(override val atMs: Long) : HoldEvent
 
         /** Anything but the person stopped it (S4). */
         data class Interruption(override val atMs: Long, val recordedMs: Long) : HoldEvent
 
-        /** The slot was activated (not the microphone's own touch). */
+        /**
+         * The slot was activated — the microphone, the Send arrow, the Stop
+         * square — by a completed tap (however long it was held), a click,
+         * Enter, or TalkBack.
+         */
         data class Activate(
             override val atMs: Long,
             val situation: Situation,
@@ -247,13 +170,10 @@ object RecordGesture {
         /** The system's microphone prompt answered. */
         data class PermissionAnswer(override val atMs: Long, val granted: Boolean) : HoldEvent
 
-        /** The Undo row's Undo. */
-        data class Undo(override val atMs: Long) : HoldEvent
-
         /**
          * The person changed the composer — typed, deleted, pasted, staged or
-         * took something off — or took any other action: it ends the Undo
-         * window early, and outside a recording lifts the activation guard.
+         * took something off — or took any other action: outside a recording
+         * it lifts the activation guard.
          */
         data class OtherAction(override val atMs: Long) : HoldEvent
 
@@ -263,14 +183,8 @@ object RecordGesture {
 
     /** S2.9's haptics, phones only. */
     enum class Haptic {
-        /** Recording starts from a tap: `ToggleOn`. */
+        /** Recording starts: `ToggleOn`. */
         LIGHT,
-
-        /** Recording starts at H: `LongPress`. */
-        MEDIUM,
-
-        /** Lock; cancel armed: `GestureThresholdActivate`. */
-        SELECTION,
 
         /** Sent: `Confirm`. */
         SUCCESS,
@@ -281,12 +195,8 @@ object RecordGesture {
 
     /** A line the composer SHOWS — in the row or its notice line. */
     enum class Hint(val text: String) {
-        STILL_RECORDING("Still recording. Tap Send when you're done."),
-        NEXT_TIME_SENDS("Next time, letting go will send it."),
-        NOTHING_HEARD("We didn't hear anything."),
         STOPPED_AT_FIVE_MINUTES("Recording stopped at five minutes."),
         TOO_SHORT("That recording was too short."),
-        CAN_RECORD_NOW("You can record now."),
     }
 
     /** What is SPOKEN, politely, to a screen reader — state changes only. */
@@ -296,10 +206,6 @@ object RecordGesture {
 
         data object Recording : Announcement {
             override val text = "Recording"
-        }
-
-        data object RecordingLocked : Announcement {
-            override val text = "Recording locked"
         }
 
         data object RecordingDeleted : Announcement {
@@ -326,17 +232,8 @@ object RecordGesture {
 
     /** What a port does, in the order given: the thing, then what is shown, said and felt. */
     sealed interface HoldEffect {
-        /** Open the microphone: the hold row when [held], otherwise the recording row. */
-        data class Start(val held: Boolean) : HoldEffect
-
-        /** Hands-free from here; the finger's later lift does nothing. */
-        data object Lock : HoldEffect
-
-        /** Cancel armed: "Release to cancel". */
-        data object Arm : HoldEffect
-
-        /** "‹ Slide to cancel" again. */
-        data object Disarm : HoldEffect
+        /** Open the microphone and record: the recording row. */
+        data object Start : HoldEffect
 
         /** Stop the recording if it runs, and delete it. */
         data object Delete : HoldEffect
@@ -349,15 +246,6 @@ object RecordGesture {
 
         /** Stop it, and keep it as the chat's "Voice message not sent" row (S2.8). */
         data object Park : HoldEffect
-
-        /** Stop it, write it to the parked store marked "sending", show the Undo row. */
-        data object UndoWindow : HoldEffect
-
-        /** The note in its Undo window goes to the outbox now. */
-        data object UndoSend : HoldEffect
-
-        /** The note in its Undo window goes to review instead; nothing is sent. */
-        data object UndoReview : HoldEffect
 
         /** Stop it, and ask "Delete this recording?" [Delete] [Keep]. */
         data object AskDelete : HoldEffect
@@ -376,9 +264,6 @@ object RecordGesture {
         data class Announce(val announcement: Announcement) : HoldEffect
 
         data class Haptic(val haptic: RecordGesture.Haptic) : HoldEffect
-
-        /** Remember, on this device, that its first held release has been taught. */
-        data object FirstReleaseDone : HoldEffect
     }
 
     /** One step: the state and an event in, the next state and what to do out. */
@@ -398,111 +283,7 @@ object RecordGesture {
 
         fun run(event: HoldEvent) {
             val at = event.atMs
-
-            // The Undo window runs out on its own clock: a late timer must
-            // not keep a note waiting, nor let a late Undo take it back.
-            val note = state.undo
-            if (note != null && at >= note.untilMs) undoSend()
-
             when (event) {
-                is HoldEvent.Down ->
-                    if (state.phase == Phase.Idle && !state.guarded(at)) {
-                        state = state.copy(
-                            phase = Phase.Pressed(
-                                downAtMs = at,
-                                downX = event.x,
-                                downY = event.y,
-                                rtl = event.rtl,
-                                mayHold = event.canHold,
-                            ),
-                        )
-                    }
-
-                is HoldEvent.Move -> when (val phase = state.phase) {
-                    is Phase.Pressed -> if (phase.mayHold) {
-                        val dx = event.x - phase.downX
-                        val dy = event.y - phase.downY
-                        if (dx * dx + dy * dy > c.tapSlop * c.tapSlop) {
-                            state = state.copy(phase = phase.copy(mayHold = false))
-                        }
-                    }
-                    is Phase.Holding -> slide(event.x, event.y)
-                    else -> Unit
-                }
-
-                is HoldEvent.Up -> when (state.phase) {
-                    is Phase.Pressed ->
-                        if (event.inside) {
-                            activateMicrophone(at, event.situation, Source.TAP, besideDraft = false)
-                        } else {
-                            state = state.copy(phase = Phase.Idle)
-                        }
-                    is Phase.Holding -> {
-                        slide(event.x, event.y)
-                        val after = state.phase
-                        if (after is Phase.Holding) {
-                            state = state.copy(guardUntilMs = saturatingAdd(at, c.activationGuardMs))
-                            if (after.armed) {
-                                state = state.copy(phase = Phase.Idle)
-                                deleted()
-                            } else {
-                                release(at, event.situation, event.recordedMs, event.heard)
-                            }
-                        }
-                    }
-                    else -> Unit
-                }
-
-                is HoldEvent.SystemCancel -> when (val phase = state.phase) {
-                    is Phase.Pressed -> state = state.copy(phase = Phase.Idle)
-                    is Phase.Holding -> when {
-                        phase.armed -> {
-                            state = state.copy(phase = Phase.Idle)
-                            deleted()
-                        }
-                        event.background -> {
-                            state = state.copy(phase = Phase.Idle)
-                            interrupted(event.recordedMs)
-                        }
-                        else -> {
-                            state = state.copy(phase = Phase.HandsFree(besideDraft = false))
-                            effects += HoldEffect.Lock
-                            effects += HoldEffect.Announce(Announcement.RecordingLocked)
-                        }
-                    }
-                    else -> Unit
-                }
-
-                is HoldEvent.Tick -> {
-                    val phase = state.phase
-                    if (phase is Phase.Pressed && phase.mayHold &&
-                        saturatingSub(at, phase.downAtMs) >= c.holdThresholdMs
-                    ) {
-                        sendWaiting()
-                        when (val refused = refusal(event.situation)) {
-                            HoldEffect.AskPermission -> {
-                                state = state.copy(
-                                    phase = Phase.AwaitingPermission(Source.HOLD, besideDraft = false),
-                                )
-                                effects += HoldEffect.AskPermission
-                            }
-                            null -> {
-                                state = state.copy(
-                                    phase = Phase.Holding(phase.downX, phase.downY, phase.rtl, armed = false),
-                                    guardUntilMs = saturatingAdd(at, c.activationGuardMs),
-                                )
-                                effects += HoldEffect.Start(held = true)
-                                effects += HoldEffect.Announce(Announcement.Recording)
-                                effects += HoldEffect.Haptic(Haptic.MEDIUM)
-                            }
-                            else -> {
-                                state = state.copy(phase = Phase.Idle)
-                                effects += refused
-                            }
-                        }
-                    }
-                }
-
                 is HoldEvent.Cap ->
                     if (recording()) {
                         state = state.copy(phase = Phase.Idle)
@@ -511,22 +292,19 @@ object RecordGesture {
                         effects += HoldEffect.Announce(Announcement.StoppedAtFiveMinutes)
                     }
 
-                is HoldEvent.Interruption -> {
-                    if (state.undo != null) undoSend()
-                    when (state.phase) {
-                        is Phase.Holding, is Phase.HandsFree -> {
-                            state = state.copy(phase = Phase.Idle)
-                            interrupted(event.recordedMs)
-                        }
-                        // The question's answer never came: kept, never lost
-                        // and never sent, and the question goes with it.
-                        is Phase.AskingDelete -> {
-                            state = state.copy(phase = Phase.Idle)
-                            effects += HoldEffect.Park
-                        }
-                        is Phase.Pressed, is Phase.AwaitingPermission -> state = state.copy(phase = Phase.Idle)
-                        Phase.Idle -> Unit
+                is HoldEvent.Interruption -> when (state.phase) {
+                    is Phase.HandsFree -> {
+                        state = state.copy(phase = Phase.Idle)
+                        interrupted(event.recordedMs)
                     }
+                    // The question's answer never came: kept, never lost and
+                    // never sent, and the question goes with it.
+                    is Phase.AskingDelete -> {
+                        state = state.copy(phase = Phase.Idle)
+                        effects += HoldEffect.Park
+                    }
+                    is Phase.AwaitingPermission -> state = state.copy(phase = Phase.Idle)
+                    Phase.Idle -> Unit
                 }
 
                 is HoldEvent.Activate ->
@@ -544,17 +322,17 @@ object RecordGesture {
                                     sendNow(event.recordedMs)
                                 }
                             }
-                            else -> Unit
+                            is Phase.AskingDelete, is Phase.AwaitingPermission -> Unit
                         }
                     }
 
                 is HoldEvent.Record -> when (state.phase) {
                     Phase.Idle -> activateMicrophone(at, event.situation, Source.MENU, event.besideDraft)
-                    is Phase.Holding, is Phase.HandsFree -> {
+                    is Phase.HandsFree -> {
                         state = state.copy(phase = Phase.Idle)
                         stopIntoReview(event.recordedMs)
                     }
-                    else -> Unit
+                    is Phase.AskingDelete, is Phase.AwaitingPermission -> Unit
                 }
 
                 is HoldEvent.Stop ->
@@ -591,45 +369,30 @@ object RecordGesture {
                     val phase = state.phase
                     if (phase is Phase.AwaitingPermission) {
                         state = state.copy(phase = Phase.Idle)
-                        when {
-                            !event.granted -> effects += HoldEffect.Denied
-                            phase.source == Source.HOLD -> effects += HoldEffect.Hint(Hint.CAN_RECORD_NOW)
-                            else -> startHandsFree(at, phase.source, phase.besideDraft)
+                        if (event.granted) {
+                            startHandsFree(at, phase.source, phase.besideDraft)
+                        } else {
+                            effects += HoldEffect.Denied
                         }
                     }
                 }
 
-                is HoldEvent.Undo -> {
-                    val waiting = state.undo
-                    if (waiting != null) {
-                        state = state.copy(undo = null)
-                        effects += HoldEffect.UndoReview
-                        effects += HoldEffect.Announce(Announcement.ReadyToReview(waiting.recordedMs))
-                    }
-                }
-
-                is HoldEvent.OtherAction -> {
-                    if (state.undo != null) undoSend()
-                    // The person changed the composer: the next press is a
-                    // decision of its own, not the second half of a double
+                is HoldEvent.OtherAction ->
+                    // The person changed the composer: the next activation is
+                    // a decision of its own, not the second half of a double
                     // tap. While a recording runs the box is behind the row
                     // and nothing in it is the person's to change, so the
                     // guard that keeps a double tap on the microphone from
                     // sending stays.
                     if (state.phase == Phase.Idle) state = state.copy(guardUntilMs = 0)
-                }
 
-                is HoldEvent.Emptied -> {
-                    // A text Send is an action like any other: a released note
-                    // still waiting goes first.
-                    if (state.undo != null) undoSend()
+                is HoldEvent.Emptied ->
                     state = state.copy(guardUntilMs = saturatingAdd(at, c.activationGuardMs))
-                }
             }
         }
 
         /** A voice recording runs. */
-        private fun recording(): Boolean = state.phase is Phase.Holding || state.phase is Phase.HandsFree
+        private fun recording(): Boolean = state.phase is Phase.HandsFree
 
         /** What stands between the microphone's activation and a recording, in this order. */
         private fun refusal(situation: Situation): HoldEffect? {
@@ -641,9 +404,8 @@ object RecordGesture {
             }
         }
 
-        /** The microphone's completed activation from a tap or a menu (H has its own path). */
+        /** The microphone's completed activation, from the slot or a menu. */
         private fun activateMicrophone(at: Long, situation: Situation, source: Source, besideDraft: Boolean) {
-            sendWaiting()
             when (val refused = refusal(situation)) {
                 HoldEffect.AskPermission -> {
                     state = state.copy(phase = Phase.AwaitingPermission(source, besideDraft))
@@ -663,61 +425,9 @@ object RecordGesture {
             if (source == Source.TAP) {
                 state = state.copy(guardUntilMs = saturatingAdd(at, c.activationGuardMs))
             }
-            effects += HoldEffect.Start(held = false)
+            effects += HoldEffect.Start
             effects += HoldEffect.Announce(Announcement.Recording)
             effects += HoldEffect.Haptic(Haptic.LIGHT)
-        }
-
-        /** A held finger moved (or lifted): arm or disarm cancel, then lock — never while armed. */
-        private fun slide(x: Double, y: Double) {
-            val phase = state.phase as? Phase.Holding ?: return
-            val towardLeading = if (phase.rtl) x - phase.downX else phase.downX - x
-            val up = phase.downY - y
-            var nowArmed = phase.armed
-            if (!phase.armed && towardLeading >= c.cancelArmDistance) {
-                nowArmed = true
-                effects += HoldEffect.Arm
-                effects += HoldEffect.Haptic(Haptic.SELECTION)
-            } else if (phase.armed && towardLeading < c.cancelDisarmDistance) {
-                nowArmed = false
-                effects += HoldEffect.Disarm
-            }
-            if (!nowArmed && up >= c.lockDistance) {
-                state = state.copy(phase = Phase.HandsFree(besideDraft = false))
-                effects += HoldEffect.Lock
-                effects += HoldEffect.Announce(Announcement.RecordingLocked)
-                effects += HoldEffect.Haptic(Haptic.SELECTION)
-            } else {
-                state = state.copy(phase = phase.copy(armed = nowArmed))
-            }
-        }
-
-        /** A hold let go with cancel not armed (S2.3), in the plan's order. */
-        private fun release(at: Long, situation: Situation, recordedMs: Long, heard: Boolean) {
-            if (recordedMs < c.shortestRecordingMs) {
-                state = state.copy(phase = Phase.HandsFree(besideDraft = false))
-                effects += HoldEffect.Lock
-                effects += HoldEffect.Hint(Hint.STILL_RECORDING)
-                return
-            }
-            state = state.copy(phase = Phase.Idle)
-            if (!heard) {
-                effects += HoldEffect.Review
-                effects += HoldEffect.Hint(Hint.NOTHING_HEARD)
-                effects += HoldEffect.Announce(Announcement.ReadyToReview(recordedMs))
-                return
-            }
-            if (situation.firstRelease || situation.reviewBeforeSending || situation.assistive) {
-                // "Next time, letting go will send it" only when it is true.
-                val teach = situation.firstRelease && !situation.reviewBeforeSending && !situation.assistive
-                effects += HoldEffect.Review
-                if (teach) effects += HoldEffect.Hint(Hint.NEXT_TIME_SENDS)
-                effects += HoldEffect.Announce(Announcement.ReadyToReview(recordedMs))
-                if (teach) effects += HoldEffect.FirstReleaseDone
-                return
-            }
-            state = state.copy(undo = UndoNote(untilMs = saturatingAdd(at, c.undoWindowMs), recordedMs = recordedMs))
-            effects += HoldEffect.UndoWindow
         }
 
         /** The person deleted it: said and felt. */
@@ -759,18 +469,6 @@ object RecordGesture {
         /** Stopped by something other than the person: not sent, or deleted without a word. */
         private fun interrupted(recordedMs: Long) {
             effects += if (recordedMs < c.shortestRecordingMs) HoldEffect.Delete else HoldEffect.Park
-        }
-
-        /** The microphone's activation ends the Undo window by sending. */
-        private fun sendWaiting() {
-            if (state.undo != null) undoSend()
-        }
-
-        private fun undoSend() {
-            state = state.copy(undo = null)
-            effects += HoldEffect.UndoSend
-            effects += HoldEffect.Announce(Announcement.VoiceMessageSent)
-            effects += HoldEffect.Haptic(Haptic.SUCCESS)
         }
     }
 }

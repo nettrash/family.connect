@@ -6,9 +6,8 @@
  * S10) ships in every language this app ships. Phase 0: the "Voice message
  * not sent" row and its two buttons, the question before a long recording is
  * deleted, and the sentences for a call, a waiting recording, the cap and a
- * failed recorder. Phase 1: the slot's labels and actions, the hold, recording
- * and Undo rows, the teaching lines, the warnings, the announcements, the
- * setting, and the paperclip's two renames. Phase 2: a received video
+ * failed recorder. Phase 1: the slot's labels and actions, the recording
+ * row, the warnings, the announcements, and the paperclip's two renames. Phase 2: a received video
  * message — its chat-list words, its TalkBack label and state, "Open full
  * screen", and the failed line. Phase 3: recording one — the entries, the
  * recorder's controls, status lines, notices and announcements. Lint's MissingTranslation is a
@@ -49,28 +48,14 @@ class VoiceMessageStringsTest {
         // Phase 1: voice in the Send slot (S1-S2, S6, S7, S9).
         "s_record_voice_message" to emptyList(),
         "s_take_video" to emptyList(),
-        "s_undo" to emptyList(),
         "s_open_settings" to emptyList(),
         "s_stop_recording" to emptyList(),
         "s_stop_and_listen_first" to emptyList(),
         "s_start_recording_action" to emptyList(),
-        "s_sending_voice_message" to listOf("%1\$s"),
-        "s_sending_in" to listOf("%1\$d"),
-        "s_slide_to_cancel" to emptyList(),
-        "s_release_to_cancel" to emptyList(),
-        "s_still_recording_tap_send" to emptyList(),
-        "s_next_time_letting_go_sends" to emptyList(),
-        "s_hold_the_microphone_coach" to emptyList(),
         "s_play_after_recording" to emptyList(),
         "s_thirty_seconds_left" to emptyList(),
-        "s_voice_messages" to emptyList(),
-        "s_review_before_sending" to emptyList(),
-        "s_review_before_sending_explanation" to emptyList(),
-        "s_you_can_record_now" to emptyList(),
-        "s_we_didnt_hear_anything" to emptyList(),
         "s_cant_hear_microphone_muted" to emptyList(),
         "s_announce_recording" to emptyList(),
-        "s_announce_recording_locked" to emptyList(),
         "s_announce_recording_deleted" to emptyList(),
         "s_announce_voice_message_sent" to emptyList(),
         "s_announce_ready_to_review" to listOf("%1\$s"),
@@ -167,13 +152,31 @@ class VoiceMessageStringsTest {
         }
     }
 
+    /**
+     * The hold's words went with it on 2026-10-06 — the hold row, the Undo
+     * row, the lesson, the coach mark and Review Before Sending — and none
+     * may linger, unused, in any language.
+     */
+    @Test
+    fun `the holds words are gone everywhere`() {
+        val gone = listOf(
+            "s_still_recording_tap_send", "s_next_time_letting_go_sends", "s_we_didnt_hear_anything",
+            "s_you_can_record_now", "s_announce_recording_locked", "s_slide_to_cancel",
+            "s_release_to_cancel", "s_undo", "s_sending_voice_message", "s_sending_in",
+            "s_hold_the_microphone_coach", "s_review_before_sending",
+            "s_review_before_sending_explanation", "s_voice_messages",
+        )
+        for (locale in locales) {
+            val table = strings(locale)
+            for (key in gone) assertWithMessage("$locale/$key").that(table).doesNotContainKey(key)
+        }
+    }
+
     /** Android's sentence case where S10 names one (S10: "Android uses sentence case for menu items and buttons"). */
     @Test
     fun `the Android spellings are sentence case`() {
         val english = strings("values")
         assertWithMessage("menu item").that(english["s_record_voice_message"]).isEqualTo("Record voice message")
-        assertWithMessage("settings section").that(english["s_voice_messages"]).isEqualTo("Voice messages")
-        assertWithMessage("settings switch").that(english["s_review_before_sending"]).isEqualTo("Review before sending")
         assertWithMessage("system camera").that(english["s_take_video"]).isEqualTo("Take video")
         assertWithMessage("message menu").that(english["s_open_full_screen"]).isEqualTo("Open full screen")
         assertWithMessage("video menu item").that(english["s_record_video_message"]).isEqualTo("Record video message")
