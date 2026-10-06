@@ -623,6 +623,22 @@ or open `FamilyConnect.slnx` in Visual Studio. The bare `bin\…\FamilyConnect.e
 start on its own: a packaged app's Deployment Manager needs its identity and fails before `Main`
 (build with `-p:WindowsPackageType=None` for a real unpackaged binary).
 
+**Starting from an empty cache takes more than the manifest's name.** The WinApp tooling behind
+`dotnet run` (0.3.1) registers the package as **`nttrsh.FamilyConnect.debug`** — it appends `.debug`
+unless told `--keep-identity` — and keeps its application data across re-deploys; Visual Studio and an
+installed MSIX use `nttrsh.FamilyConnect`. So `Get-AppxPackage nttrsh.FamilyConnect | Remove-AppxPackage`
+leaves the `dotnet run` package and its `cache.db` exactly where they were. Remove every one:
+
+```powershell
+Get-AppxPackage *FamilyConnect* | Remove-AppxPackage
+# and, if an unpackaged build ever ran here, the real folder a packaged run falls back to reading:
+Remove-Item -Recurse "$env:LOCALAPPDATA\FamilyConnect" -ErrorAction SilentlyContinue
+```
+
+A cache an older build wrote is repaired, not trusted: schema step 8 marks every held set as not
+knowing the sticker and video-message flags, and each resync reads the possible stickers and circles
+once more (`Resync.RepairFlagsAsync`).
+
 **What running it on Windows taught, and where it is kept:**
 
 - **A crash in the window is usually native and silent.** WinUI turns a failure inside its own
