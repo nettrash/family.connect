@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices.WindowsRuntime;
 using FamilyConnect.App.Logic;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media;
@@ -14,8 +15,8 @@ namespace FamilyConnect.App.Services;
 /// <summary>
 /// One video message playing IN PLACE (docs/audio-video-messages-2026-10-04.md, S5.3): a <see cref="MediaPlayer"/> in
 /// FRAME-SERVER mode — it renders nowhere by itself and plays its sound as any player does — whose frames are copied into a
-/// <see cref="SoftwareBitmapSource"/> that the circle's own <c>Ellipse</c> fills with, the same ellipse and the same brush
-/// that draw the poster. The picture is round because the shape is, never because a control was trusted to clip a video:
+/// <see cref="WriteableBitmap"/> that the circle's own <c>Ellipse</c> fills with, the same ellipse and the same brush that
+/// draw the poster. The picture is round because the shape is, never because a control was trusted to clip a video:
 /// <c>MediaPlayerElement</c>'s <c>CornerRadius</c> does not clip its video (microsoft-ui-xaml #8264).
 /// </summary>
 /// <remarks>
@@ -26,9 +27,19 @@ namespace FamilyConnect.App.Services;
 /// surface the size of the circle on this screen (<see cref="VideoFrame.CreateAsDirect3D11SurfaceBacked(DirectXPixelFormat, int, int)"/>,
 /// so no Win2D <c>CanvasDevice</c> is needed; the player scales into it), read back with
 /// <see cref="SoftwareBitmap.CreateCopyFromSurfaceAsync(Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface, BitmapAlphaMode)"/>
-/// as premultiplied BGRA — the one format a <see cref="SoftwareBitmapSource"/> takes — and handed to the source, after which
-/// the bitmap is disposed (the Windows samples' CameraFrames <c>FrameRenderer</c> does exactly that, frame after frame, into
-/// one source). Everything but the throttle runs on the UI thread, as the documented sample does.
+/// as premultiplied BGRA, made opaque (<see cref="RoundFrames.Opaque"/>) and written SYNCHRONOUSLY into the bitmap's pixels,
+/// then <see cref="WriteableBitmap.Invalidate"/>. Everything but the throttle runs on the UI thread, as the documented sample
+/// does.
+/// </para>
+/// <para>
+/// <b>NOT A SoftwareBitmapSource</b> (2026-10-06): the first build fed one with <c>SetBitmapAsync</c>, frame after frame, under
+/// the ellipse's brush, and on the owner's ARM64 machine a click on a circle ended the app inside Microsoft.UI.Xaml.dll
+/// (0xc000027b) with no managed exception at all. A WriteableBitmap is the long-proven <c>ImageBrush</c> source and is
+/// written with no asynchronous hand-off, and nothing of it is closed under the brush.
+/// </para>
+/// <para>
+/// <b>THE FIRST FRAME IS LOGGED STEP BY STEP</b> ("round:" lines in diagnostics.log), so a native failure that no handler sees
+/// still leaves the step it died in.
 /// </para>
 /// <para>
 /// <b>THROTTLED</b> (<see cref="RoundFrames"/>): at the clip's own rate and never over 30, and never a second copy while one
@@ -47,7 +58,8 @@ internal sealed class RoundFramePlayer : IDisposable
     private readonly DispatcherQueue ui;
     private readonly MediaPlayer player;
     private readonly int side;
-    private readonly SoftwareBitmapSource picture = new();
+    private readonly WriteableBitmap picture;
+    private byte[]? pixels;
     private IRandomAccessStream? stream;
     private MediaSource? source;
     private VideoFrame? surface;
@@ -68,6 +80,8 @@ internal sealed class RoundFramePlayer : IDisposable
     {
         this.ui = ui;
         this.side = side;
+        // Made here, on the UI thread, the size of the frame surface — so a frame's pixels always fill it exactly.
+        picture = new WriteableBitmap(side, side);
         player = new MediaPlayer
         {
             AutoPlay = false,
@@ -113,6 +127,7 @@ internal sealed class RoundFramePlayer : IDisposable
     /// <summary>Open the clip — the whole MP4, fetched through the attachment cache with the session's header (S5.3).</summary>
     public void Open(byte[] bytes, string mime)
     {
+        Diagnostics.Write($"round: opening {bytes.Length / 1024} KB, {side} px frames");
         var memory = new InMemoryRandomAccessStream();
         stream = memory;
         _ = FillAsync(memory, bytes, mime);
@@ -136,6 +151,7 @@ internal sealed class RoundFramePlayer : IDisposable
             }
             source = MediaSource.CreateFromStream(memory, mime);
             player.Source = new MediaPlaybackItem(source);
+            Diagnostics.Write("round: handed to the player");
         }
         catch (Exception e)
         {
@@ -169,6 +185,7 @@ internal sealed class RoundFramePlayer : IDisposable
         }
         Interlocked.Exchange(ref intervalTicks, BitConverter.DoubleToInt64Bits(RoundFrames.IntervalMs(rate)));
         var total = Duration;
+        Diagnostics.Write($"round: opened, {total:0.0} s at {rate?.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) ?? "an unsaid"} fps");
         Raise(() => Opened?.Invoke(total));
     }
 
@@ -224,25 +241,30 @@ internal sealed class RoundFramePlayer : IDisposable
             {
                 return;
             }
+            Step("making the frame surface");
             surface ??= VideoFrame.CreateAsDirect3D11SurfaceBacked(DirectXPixelFormat.B8G8R8A8UIntNormalized, side, side);
+            Step("copying a frame into it");
             player.CopyFrameToVideoSurface(surface.Direct3DSurface);
-            var bitmap = await SoftwareBitmap.CreateCopyFromSurfaceAsync(surface.Direct3DSurface, BitmapAlphaMode.Premultiplied);
+            Step("reading it back");
+            var copied = await SoftwareBitmap.CreateCopyFromSurfaceAsync(surface.Direct3DSurface, BitmapAlphaMode.Premultiplied);
             try
             {
                 if (closed)
                 {
                     return;
                 }
-                await picture.SetBitmapAsync(bitmap);
+                Step($"a {copied.PixelWidth}×{copied.PixelHeight} {copied.BitmapPixelFormat} {copied.BitmapAlphaMode} frame");
+                Draw(copied);
             }
             finally
             {
-                bitmap.Dispose();
+                copied.Dispose();
             }
             failures = 0;
             if (!framed && !closed)
             {
                 framed = true;
+                Diagnostics.Write("round: first frame drawn");
                 FirstFrame?.Invoke();
             }
         }
@@ -261,6 +283,55 @@ internal sealed class RoundFramePlayer : IDisposable
             {
                 LetGoOfSurface();
             }
+        }
+    }
+
+    /// <summary>
+    /// One frame into the bitmap: converted to premultiplied BGRA if the read-back came as anything else, checked against the
+    /// bitmap's size (the surface was made that size), made opaque, written, and the bitmap told to redraw.
+    /// </summary>
+    private void Draw(SoftwareBitmap copied)
+    {
+        SoftwareBitmap frame = copied;
+        if (copied.BitmapPixelFormat != BitmapPixelFormat.Bgra8 || copied.BitmapAlphaMode != BitmapAlphaMode.Premultiplied)
+        {
+            frame = SoftwareBitmap.Convert(copied, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+        }
+        try
+        {
+            if (frame.PixelWidth != picture.PixelWidth || frame.PixelHeight != picture.PixelHeight)
+            {
+                throw new InvalidOperationException("the frame is not the bitmap's size");
+            }
+            var length = picture.PixelWidth * picture.PixelHeight * 4;
+            if (pixels is null || pixels.Length != length)
+            {
+                pixels = new byte[length];
+            }
+            frame.CopyToBuffer(pixels.AsBuffer());
+            RoundFrames.Opaque(pixels);
+            Step("writing it into the circle");
+            using (var target = picture.PixelBuffer.AsStream())
+            {
+                target.Write(pixels, 0, pixels.Length);
+            }
+            picture.Invalidate();
+        }
+        finally
+        {
+            if (!ReferenceEquals(frame, copied))
+            {
+                frame.Dispose();
+            }
+        }
+    }
+
+    /// <summary>A breadcrumb for the FIRST frame only — the steps a native failure could end the app in.</summary>
+    private void Step(string what)
+    {
+        if (!framed)
+        {
+            Diagnostics.Write($"round: {what}");
         }
     }
 
@@ -315,8 +386,8 @@ internal sealed class RoundFramePlayer : IDisposable
     }
 
     /// <summary>
-    /// Let it all go — the player, its clip, the frame surface and the frames. Called on the UI thread, AFTER every circle has
-    /// been given its poster back: <see cref="Picture"/> is closed here.
+    /// Let it all go — the player, its clip and the frame surface. Called on the UI thread, AFTER every circle has been given its
+    /// poster back; <see cref="Picture"/> is left to the collector, never closed under a brush.
     /// </summary>
     public void Dispose()
     {
@@ -344,7 +415,6 @@ internal sealed class RoundFramePlayer : IDisposable
             source?.Dispose();
             stream?.Dispose();
             player.Dispose();
-            (picture as IDisposable)?.Dispose();
         }
         catch (Exception e)
         {

@@ -360,6 +360,12 @@ public sealed partial class ChatsView : UserControl
         this.services = services;
         this.connection = connection;
         InitializeComponent();
+        if (RoundCrashMark.DiedLastTime())
+        {
+            // This very build ended the app playing a circle in place: its circles open the viewer (RoundCrashGuard).
+            roundFallback = true;
+            Diagnostics.Write("round: this build ended the app playing a circle in place last time; circles open the viewer");
+        }
         faces = new AvatarFaces(connection);
         pack = connection.Stickers;
         stickers = new StickerAnimator(DispatcherQueue);
@@ -7779,7 +7785,7 @@ public sealed partial class ChatsView : UserControl
 
     /// <summary>One circle as drawn, so the circle that plays in place can keep every copy of itself up to date.</summary>
     private sealed class RoundCopy(
-        AttachmentDto video, bool mine, Button circle, ImageBrush brush, Grid disc, ProgressRing spinner,
+        AttachmentDto video, bool mine, Button circle, ImageBrush brush, Grid disc, Microsoft.UI.Xaml.Shapes.Path spinner,
         Microsoft.UI.Xaml.Shapes.Path ring, Button expand, TextBlock? length, Ellipse? dot, TextBlock failure)
     {
         public AttachmentDto Video { get; } = video;
@@ -7793,7 +7799,10 @@ public sealed partial class ChatsView : UserControl
 
         public Grid Disc { get; } = disc;
 
-        public ProgressRing Spinner { get; } = spinner;
+        /// <summary>The loading ring: a three-quarter arc, turned while it shows (and standing still with animations off).</summary>
+        public Microsoft.UI.Xaml.Shapes.Path Spinner { get; } = spinner;
+
+        public Animation.Storyboard? SpinnerTurn { get; set; }
 
         public Microsoft.UI.Xaml.Shapes.Path Ring { get; } = ring;
 
@@ -7864,14 +7873,21 @@ public sealed partial class ChatsView : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         });
         face.Children.Add(disc);
-        // While it loads — from the tap until it plays, and in a stall — a loading ring over the poster (S5.3).
-        var spinner = new ProgressRing
+        // While it loads — from the tap until it plays, and in a stall — a loading ring over the poster (S5.3). Drawn here, a
+        // turning arc, and not a ProgressRing: that is a Lottie player started and stopped in code, one more native piece in
+        // the path a circle's click took when the app ended inside XAML (2026-10-06).
+        var spinner = new Microsoft.UI.Xaml.Shapes.Path
         {
             Width = RoundLook.PlayDisc,
             Height = RoundLook.PlayDisc,
-            IsActive = false,
+            Data = RingArc(0.75, RoundLook.PlayDisc / 2, RoundLook.PlayDisc / 2 - 2),
+            Stroke = white,
+            StrokeThickness = 3,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+            RenderTransform = new RotateTransform(),
             Visibility = Visibility.Collapsed,
-            Foreground = white,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             IsHitTestVisible = false,
@@ -8013,11 +8029,14 @@ public sealed partial class ChatsView : UserControl
             if (!gone)
             {
                 roundCopies.Add(video.Id, copy);
+                DrawRoundCopy(copy);
             }
         };
         standing.Unloaded += (_, _) =>
         {
             roundCopies.Remove(video.Id, copy);
+            // A turning ring off the screen turns for nobody; the next Loaded draws it again.
+            TurnRoundSpinner(copy, loading: false);
             if (roundPlayback.Id == video.Id && roundCopies.Of(video.Id).Count == 0)
             {
                 // Its last copy is gone — the message went, the thread panel closed. A redraw puts a new copy up first, so
@@ -8112,6 +8131,7 @@ public sealed partial class ChatsView : UserControl
             return;
         }
         var step = roundPlayback.Tap(video.Id, recordingStart.Quiet(recorder is not null));
+        Diagnostics.Write($"round: tap, {step.Tap} → {step.Act}");
         if (step.Tap == RoundTap.Refused)
         {
             // No app sound while something records (S1.7).
@@ -8133,6 +8153,8 @@ public sealed partial class ChatsView : UserControl
         {
             case RoundAct.Load when video is not null:
                 LetGoOfRoundEngine();
+                // Cleared when the player is let go; still there at the next launch, it says this build died playing in place.
+                RoundCrashMark.Arm();
                 // One thing plays at a time: a voice note — and the viewer's video — stop for the circle (S5.3).
                 QuietBesidesRound();
                 _ = LoadRoundAsync(video, roundPlayback.Load);
@@ -8182,6 +8204,7 @@ public sealed partial class ChatsView : UserControl
             FailRound(load);
             return;
         }
+        Diagnostics.Write("round: video fetched");
         RoundFramePlayer engine;
         try
         {
@@ -8203,6 +8226,7 @@ public sealed partial class ChatsView : UserControl
             }
             if (roundPlayback.Opened(load, total))
             {
+                Diagnostics.Write("round: playing");
                 if (recordingStart.Quiet(recorder is not null))
                 {
                     // A recording began while it loaded: it does not start under it (S1.7).
@@ -8362,6 +8386,7 @@ public sealed partial class ChatsView : UserControl
     {
         if (roundEngine is not { } engine)
         {
+            RoundCrashMark.Disarm();
             return;
         }
         roundEngine = null;
@@ -8374,6 +8399,7 @@ public sealed partial class ChatsView : UserControl
         }
         roundShowing.Clear();
         engine.Dispose();
+        RoundCrashMark.Disarm();
     }
 
     /// <summary>The circle's clock: the ring and the time move while it plays, and stand still otherwise.</summary>
@@ -8449,6 +8475,10 @@ public sealed partial class ChatsView : UserControl
             var picture = frames ?? copy.Poster;
             if (!ReferenceEquals(copy.Brush.ImageSource, picture))
             {
+                if (frames is not null)
+                {
+                    Diagnostics.Write("round: the circle shows its frames");
+                }
                 copy.Brush.ImageSource = picture;
             }
             if (frames is not null && !roundShowing.Contains(copy))
@@ -8457,9 +8487,7 @@ public sealed partial class ChatsView : UserControl
             }
 
             FadeRoundDisc(copy, RoundInline.ShowsDisc(phase));
-            var loading = RoundInline.ShowsSpinner(phase);
-            copy.Spinner.IsActive = loading;
-            copy.Spinner.Visibility = loading ? Visibility.Visible : Visibility.Collapsed;
+            TurnRoundSpinner(copy, RoundInline.ShowsSpinner(phase));
 
             var fraction = RoundInline.Ring(phase, seen, position, total, roundReducedMotion);
             if (fraction <= 0)
@@ -8495,6 +8523,35 @@ public sealed partial class ChatsView : UserControl
         {
             Diagnostics.Write($"drawing a video message as it plays: {e.GetType().Name}");
         }
+    }
+
+    /// <summary>A copy's loading ring, shown and turning once a second — or shown standing still with Windows' animations off.</summary>
+    private static void TurnRoundSpinner(RoundCopy copy, bool loading)
+    {
+        var shown = copy.Spinner.Visibility == Visibility.Visible;
+        if (loading == shown)
+        {
+            return;
+        }
+        copy.SpinnerTurn?.Stop();
+        copy.SpinnerTurn = null;
+        copy.Spinner.Visibility = loading ? Visibility.Visible : Visibility.Collapsed;
+        if (!loading || !StickerImaging.AnimationsWanted() || copy.Spinner.RenderTransform is not RotateTransform turn)
+        {
+            return;
+        }
+        var spin = new Animation.DoubleAnimation
+        {
+            From = 0,
+            To = 360,
+            Duration = new Duration(TimeSpan.FromSeconds(1)),
+            RepeatBehavior = Animation.RepeatBehavior.Forever,
+        };
+        Animation.Storyboard.SetTarget(spin, turn);
+        Animation.Storyboard.SetTargetProperty(spin, "Angle");
+        copy.SpinnerTurn = new Animation.Storyboard();
+        copy.SpinnerTurn.Children.Add(spin);
+        copy.SpinnerTurn.Begin();
     }
 
     /// <summary>A copy's play disc, faded in or out over 150 ms — or simply there or not with Windows' animations off.</summary>

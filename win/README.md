@@ -65,7 +65,8 @@ win/
                           screen on while recording), SessionWatch (lock, screen saver, sleep),
                           ScreenReader (whether one runs, so the microphone waits for it),
                           VideoMessageRecorder + RoundVideoSetting (a video message's camera, switched off),
-                          RoundFramePlayer (a received circle's frame-server player)
+                          RoundFramePlayer (a received circle's frame-server player) + RoundCrashMark
+                          (a build that died playing one in place opens the viewer)
                 Views/    ServerView, SignInView, DoorView, PendingView, OfflineView, ChatsView,
                           BoardView + NoteSheet, FamilyView, SettingsView, CallCardView, and the
                           sheets and cards they open (polls, emoji, dialogs, RoundRecorderLayer)
@@ -481,9 +482,14 @@ news of a load given up changes nothing) and `RoundInline`, tested on any OS. **
 `RoundFramePlayer` runs a `MediaPlayer` with `IsVideoFrameServerEnabled` — it draws nowhere and plays its sound as usual —
 and on `VideoFrameAvailable` (throttled to the clip's own rate, at most 30, never two copies at once: `RoundFrames`) copies
 the frame with `CopyFrameToVideoSurface` into a Direct3D surface of the circle's pixel size
-(`VideoFrame.CreateAsDirect3D11SurfaceBacked`, so no Win2D), reads it back with `SoftwareBitmap.CreateCopyFromSurfaceAsync`
-and hands it to a `SoftwareBitmapSource` — the image source of the SAME `ImageBrush` that fills the poster's `Ellipse`. The
-circle is that ellipse. Narrator meets "Video message, 0:23", its status Played or Not played, and its help text says what a
+(`VideoFrame.CreateAsDirect3D11SurfaceBacked`, so no Win2D), reads it back with `SoftwareBitmap.CreateCopyFromSurfaceAsync`,
+makes it opaque and writes it into a `WriteableBitmap` — the image source of the SAME `ImageBrush` that fills the poster's
+`Ellipse`. The circle is that ellipse. (The first build used a `SoftwareBitmapSource` fed by `SetBitmapAsync` and a code-made
+`ProgressRing`, and a click on a circle ended the app inside Microsoft.UI.Xaml.dll, 0xc000027b, with no managed exception;
+both are gone. Every step of a play and of its first frame writes a "round:" line to `diagnostics.log` — the last one before a
+crash names the step — and `round-inline.mark` beside it, written before a circle plays in place and removed when its player
+goes, makes a build that died mid-play open the viewer on every later launch; a new build tries in place again. To retry the
+same build, delete the mark.) Narrator meets "Video message, 0:23", its status Played or Not played, and its help text says what a
 press does next (Play or Pause); Enter or Space presses it. `RoundInline.PlaysInPlace = false` puts back the viewer on a
 click; a machine whose frames cannot be had — three failed copies in a row, or two seconds of sound with no frame
 (`RoundFrames.Starved`) — does the same on its own for the rest of the session, opening that circle in the viewer at once,

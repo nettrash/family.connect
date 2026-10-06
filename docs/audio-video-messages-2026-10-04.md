@@ -1223,6 +1223,13 @@ photo, a body (which the server refuses anyway) — is drawn as the ordinary mes
   the rules in `App.Logic/RoundPlayback.cs`, tested). `RoundInline.PlaysInPlace` puts the viewer back on a tap,
   and a machine whose frames cannot be copied falls back to the viewer by itself. It has not run on Windows
   yet; `win/README.md` lists what to check.)*
+  *(2026-10-06, later: its first run on the owner's ARM64 machine ended the app on a click — a WinUI fail-fast
+  (0xc000027b in Microsoft.UI.Xaml.dll) with no managed exception and nothing in the log. The frames now go
+  into a `WriteableBitmap`, written synchronously and made opaque, not a `SoftwareBitmapSource` fed by
+  `SetBitmapAsync`; the loading ring is a drawn, turning arc, not a `ProgressRing`; every step of a play and of
+  its first frame writes a "round:" line to `diagnostics.log`; and a mark written before a circle plays in place
+  and cleared when its player goes (`RoundCrashGuard`) means a build that died mid-play opens the viewer on its
+  next launch instead of dying again — a new build tries in place again.)*
 
 #### S5.4 Menus, full screen, editing
 
