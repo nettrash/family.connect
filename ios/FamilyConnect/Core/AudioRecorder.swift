@@ -98,6 +98,11 @@ final class AudioRecorder {
     nonisolated struct Recording: Equatable, Sendable {
         let url: URL
         let duration: TimeInterval
+        /// Its shape, 48 lowercase hex digits from every peak the meter read
+        /// (`Waveform.fromPeaks`) — sent with the upload so every reader
+        /// draws it before downloading a byte (#79, docs/protocol.md, "A
+        /// voice note's waveform"). nil only where nothing metered it.
+        var waveform: String? = nil
     }
 
     /// A recording that stopped without the person asking it to.
@@ -132,6 +137,10 @@ final class AudioRecorder {
     /// line. A recording that never did is digital silence: a muted
     /// microphone, not a quiet room (S1.1, "Silence").
     private(set) var heardSound = false
+    /// Every peak the ticker read since the recording started, in dBFS and
+    /// in time order: the input of the waveform the note is sent with, and
+    /// what the recording row's live waveform scrolls (#79).
+    private(set) var peaks: [Float] = []
 
     /// Why a recording did not start.
     ///
@@ -305,6 +314,7 @@ final class AudioRecorder {
         elapsed = 0
         peakLevel = Self.quietest
         heardSound = false
+        peaks = []
 
         guard !callIsActive() else {
             failure = .callInProgress
@@ -425,6 +435,7 @@ final class AudioRecorder {
         elapsed = engine.currentTime
         let peak = engine.peakPower()
         peakLevel = peak
+        peaks.append(peak)
         if Self.isAudible(peak: peak) { heardSound = true }
         onTick?()
     }
@@ -463,7 +474,9 @@ final class AudioRecorder {
             return nil
         }
         recordedURL = url
-        return Recording(url: url, duration: duration)
+        return Recording(
+            url: url, duration: duration,
+            waveform: Waveform.fromPeaks(peaks.map(Double.init)))
     }
 
     private func tearDown() {

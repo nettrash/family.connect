@@ -289,11 +289,13 @@ extension StagedAttachment {
     }
 }
 
-/// "[▶] Voice message · 0:42 [✕]"; while it plays, "[❚❚] 0:12 / 0:42". ▶
-/// plays the LOCAL file through `.playback` and pauses anything else playing
-/// (LocalVoicePlayer); while a recording runs it is dimmed and says "You can
-/// play this after recording." (S1.7). ✕ is "Delete recording", and asks
-/// from ten seconds.
+/// The approved design's review chip: "[▶] ▂▅▇▅▃▂ 0:42 [✕]" — a round
+/// play button in the tint, the note's own waveform (the recorder's, sent
+/// with it) filling in the tint as it plays, its length, and ✕. While it
+/// plays the length reads "0:12 / 0:42". ▶ plays the LOCAL file through
+/// `.playback` and pauses anything else playing (LocalVoicePlayer); while a
+/// recording runs it is dimmed and says "You can play this after
+/// recording." (S1.7). ✕ is "Delete recording", and asks from ten seconds.
 struct StagedVoiceNoteChip: View {
     let item: StagedAttachment
     let onRemove: () -> Void
@@ -305,32 +307,40 @@ struct StagedVoiceNoteChip: View {
     var body: some View {
         HStack(spacing: 10) {
             VoiceNotePlayButton(
-                player: player, file: { item.prepared.fileURL }, side: 44,
+                player: player, file: { item.prepared.fileURL }, side: 30,
                 saysAfterRecording: $saysAfterRecording)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Group {
-                    if player.isPlaying {
-                        Text(verbatim: "\(AudioRecorder.timeLabel(player.elapsed)) / \(AudioRecorder.timeLabel(item.duration))")
-                    } else {
-                        Text("Voice message · \(AudioRecorder.timeLabel(item.duration))")
-                    }
-                }
-                .font(.caption.weight(.medium).monospacedDigit())
-                .lineLimit(1)
+            Group {
                 if saysAfterRecording {
                     Text("You can play this after recording.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    Text("Add a message, or send it on its own.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    VoiceNoteMiniWaveform(
+                        waveform: item.prepared.waveform, player: player, duration: item.duration)
                 }
             }
+            .accessibilityHidden(true)
+
             Spacer(minLength: 0)
+
+            Group {
+                if player.isPlaying {
+                    Text(verbatim: "\(AudioRecorder.timeLabel(player.elapsed)) / \(AudioRecorder.timeLabel(item.duration))")
+                } else {
+                    Text(verbatim: AudioRecorder.timeLabel(item.duration))
+                }
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize()
+            // What the bars say, in words.
+            .accessibilityLabel(Text("Voice message · \(AudioRecorder.timeLabel(item.duration))"))
+
             Button {
                 if item.deleteAsks {
                     asksDelete = true
@@ -339,17 +349,25 @@ struct StagedVoiceNoteChip: View {
                     onRemove()
                 }
             } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title3)
+                Image(systemName: "xmark")
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
                     // Tap slack without a layout change, as the file chip's.
-                    .contentShape(Rectangle().inset(by: -12))
+                    .contentShape(Rectangle().inset(by: -8))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Delete recording")
             // A pointer's tooltip, on the Mac and under an iPad's pointer.
             .help("Delete recording")
         }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: 360, alignment: .leading)
+        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 1))
         .confirmationDialog("Delete this recording?", isPresented: $asksDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
                 player.stop()
@@ -358,6 +376,33 @@ struct StagedVoiceNoteChip: View {
             Button("Keep", role: .cancel) {}
         }
         .onDisappear { player.stop() }
+    }
+}
+
+/// A local voice note's waveform, filling in the tint as `player` plays it:
+/// the review chip's and the "not sent" row's.
+struct VoiceNoteMiniWaveform: View {
+    let waveform: String?
+    let player: LocalVoicePlayer
+    let duration: TimeInterval
+    var height: CGFloat = 22
+
+    /// 48 bars of 3 with gaps of 2.
+    static let widest: CGFloat = CGFloat(Waveform.levelCount) * 5 - 2
+
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        VoiceWaveformBars(
+            levels: Waveform.levelsOrPlaceholder(waveform),
+            playedFraction: player.isPlaying || player.elapsed > 0
+                ? (UInt64(max(0, player.elapsed) * 1000), UInt64(max(0, duration) * 1000)) : nil,
+            played: contrast == .increased ? .primary : .accentColor,
+            unplayed: Color.secondary.opacity(contrast == .increased ? 0.7 : 0.45))
+            .frame(height: height)
+            // The 48 bars' own width at most, so a wide row does not leave
+            // its length and buttons stranded far from the bars.
+            .frame(minWidth: 0, maxWidth: Self.widest)
     }
 }
 
@@ -373,9 +418,16 @@ struct StagedVoiceNoteTile: View {
     var body: some View {
         ZStack {
             Color.appSecondaryFill
+            VoiceNoteMiniWaveform(
+                waveform: item.prepared.waveform, player: player, duration: item.duration, height: 14)
+                .padding(.horizontal, 6)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .padding(.bottom, 5)
+                .accessibilityHidden(true)
             VoiceNotePlayButton(
-                player: player, file: { item.prepared.fileURL }, side: 56,
+                player: player, file: { item.prepared.fileURL }, side: 30,
                 saysAfterRecording: $saysAfterRecording)
+                .padding(.bottom, 12)
         }
         .frame(width: 56, height: 56)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -410,9 +462,10 @@ struct StagedVoiceNoteTile: View {
     }
 }
 
-/// ▶ / ❚❚ over a local voice note — dimmed while a recording runs anywhere
-/// in the app, saying why instead of playing (S1.7). Shared by the review
-/// chip, its tile and the "not sent" row.
+/// ▶ / ❚❚ over a local voice note: a disc in the tint, `side` across, its
+/// target grown toward 44 without growing the row — dimmed while a recording
+/// runs anywhere in the app, saying why instead of playing (S1.7). Shared by
+/// the review chip, its tile and the "not sent" row.
 struct VoiceNotePlayButton: View {
     let player: LocalVoicePlayer
     /// Where the file is — asked at the tap, never per redraw: the composer
@@ -434,12 +487,16 @@ struct VoiceNotePlayButton: View {
             guard let url = player.url ?? file() else { return }
             player.toggle(url)
         } label: {
-            Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                .font(.system(size: side >= 44 ? 30 : 26))
-                .foregroundStyle(.tint)
-                .opacity(recording ? 0.35 : 1)
-                .frame(width: side, height: side)
-                .contentShape(Rectangle())
+            ZStack {
+                Circle().fill(Color.accentColor)
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: side * 0.4, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .offset(x: player.isPlaying ? 0 : side * 0.04)
+            }
+            .frame(width: side, height: side)
+            .opacity(recording ? 0.35 : 1)
+            .contentShape(Circle().inset(by: -max(0, (44 - side) / 2)))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(player.isPlaying ? "Pause" : "Play")

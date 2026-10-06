@@ -112,7 +112,7 @@ fn finish(recording: Recording) -> Finishing {
     async move {
         let recorded = recording.stop().await?;
         let duration_ms = recorded.duration_ms;
-        let note = prep::recording(recorded.blob, recorded.mime, duration_ms)
+        let note = prep::recording(recorded.blob, recorded.mime, duration_ms, recorded.waveform)
             .await
             .map_err(|error| error.message().to_string());
         Some(Finished { note, duration_ms })

@@ -97,11 +97,20 @@ interface VoiceRecorder {
      * the level meter and the silence check share (#79, S2.9: the meter's
      * bars at −50…−10 dBFS, silence at 32 or less). 0 while idle, and on the
      * first call after a start.
+     *
+     * Every read is also one of the recording's PEAKS: what the composer's
+     * 200 ms tick reads is what the note's waveform is made of, so the bars
+     * the reader sees are the meter the sender watched.
      */
     fun maxAmplitude(): Int
 
-    /** What a recording left: the file, and how long it ran by the recorder's own clock. */
-    data class Recording(val file: File, val durationMs: Long)
+    /**
+     * What a recording left: the file, how long it ran by the recorder's own
+     * clock, and its WAVEFORM — the peaks the meter read while it ran, as the
+     * wire's 48 hex digits (docs/protocol.md, "A voice note's waveform"), or
+     * null when the meter was never read.
+     */
+    data class Recording(val file: File, val durationMs: Long, val waveform: String? = null)
 
     /** The ways a recording ends without its owner asking. */
     enum class Ending {
@@ -157,6 +166,7 @@ class AndroidVoiceRecorder internal constructor(
     private var startedAtMs: Long = 0
     private var owner: VoiceRecorder.Listener? = null
     private var focus: AudioFocusRequest? = null
+    private val peaks = PeakLog()
 
     private val audio: AudioManager? get() = context.getSystemService(AudioManager::class.java)
 
@@ -230,6 +240,7 @@ class AndroidVoiceRecorder internal constructor(
             recorder = created
             outputFile = file
             startedAtMs = clock()
+            peaks.clear()
             this.owner = owner
             takeFocus()
             true
@@ -243,8 +254,12 @@ class AndroidVoiceRecorder internal constructor(
 
     override fun stop(): VoiceRecorder.Recording? = finish()
 
-    override fun maxAmplitude(): Int =
-        recorder?.let { active -> runCatching { active.maxAmplitude }.getOrDefault(0) } ?: 0
+    override fun maxAmplitude(): Int {
+        val active = recorder ?: return 0
+        val peak = runCatching { active.maxAmplitude }.getOrDefault(0)
+        peaks.record(peak)
+        return peak
+    }
 
     override fun cancel() {
         val active = recorder ?: return
@@ -274,6 +289,8 @@ class AndroidVoiceRecorder internal constructor(
         val file = outputFile
         // Read before the state is cleared: the counter stops here.
         val duration = elapsedMs
+        val waveform = peaks.waveform()
+        peaks.clear()
         clear()
         // stop() throws when it is called before any frames were written —
         // a tap that started and ended in the same instant, or a recorder
@@ -289,7 +306,7 @@ class AndroidVoiceRecorder internal constructor(
             file?.delete()
             return null
         }
-        return VoiceRecorder.Recording(file, duration)
+        return VoiceRecorder.Recording(file, duration, waveform)
     }
 
     private fun clear() {

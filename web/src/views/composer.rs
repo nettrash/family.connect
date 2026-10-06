@@ -110,9 +110,10 @@ pub struct Records {
     pub refocus: u32,
     /// The video recorder is open, and owns the row (S1.3 row 1).
     pub recorder_open: bool,
-    /// Video messages — where this server has them and this device has a
-    /// camera, in a family or a direct chat (S1.2, S1.4–S1.6). None: no
-    /// video entry at all.
+    /// Video messages — where this server has them, in a family or a direct
+    /// chat, on a page that can capture, in a browser that cannot record one
+    /// (to explain) or on a device with a camera (S1.2, S1.4–S1.6,
+    /// `round_video::offers_video_entry`). None: no video entry at all.
     pub video: Option<VideoEntry>,
 }
 

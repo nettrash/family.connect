@@ -71,3 +71,41 @@ public sealed class PlayedRoundStoreTests : IDisposable
         Assert.Equal(0, store.Count);
     }
 }
+
+/// <summary>
+/// The voice messages this device has played — the dot beside an unplayed voice bubble — kept apart from the circles, so a
+/// play of one is never a play of the other and neither kind's 5 000 pushes the other's out.
+/// </summary>
+public sealed class PlayedVoiceStoreTests : IDisposable
+{
+    private readonly Database cache = Database.OpenInMemory();
+
+    public void Dispose() => cache.Dispose();
+
+    [Fact]
+    public void AVoiceNoteIsRememberedApartFromTheCircles()
+    {
+        var voice = new PlayedVoiceStore(cache);
+        var rounds = new PlayedRoundStore(cache);
+        Assert.False(voice.Played(91));
+        Assert.True(voice.MarkPlayed(91));
+        Assert.False(voice.MarkPlayed(91));
+        Assert.True(voice.Played(91));
+        Assert.False(rounds.Played(91));
+        for (long id = 1; id <= PlayedStore.Kept; id++)
+        {
+            rounds.MarkPlayed(id + 1000);
+        }
+        Assert.True(voice.Played(91));
+        Assert.Equal(1, voice.Count);
+    }
+
+    [Fact]
+    public void ASignOutForgetsTheVoiceNotesToo()
+    {
+        var voice = new PlayedVoiceStore(cache);
+        voice.MarkPlayed(91);
+        cache.WipeAll();
+        Assert.False(voice.Played(91));
+    }
+}

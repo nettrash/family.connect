@@ -63,6 +63,10 @@ open class PlaybackCoordinator(
     private val interruptions: AudioInterruptions = AudioInterruptions.NONE,
     /** What THIS DEVICE has played (S5.2's dot) — in memory unless the app hands in its store. */
     val played: PlayedRoundVideos = PlayedRoundVideos.InMemory(),
+    /** Which VOICE messages this device has played (#79): their own dot, the circles' pattern. */
+    val playedVoice: PlayedRoundVideos = PlayedRoundVideos.InMemory(),
+    /** How fast voice messages play on this device (#79). */
+    val voiceSpeed: VoiceSpeed = VoiceSpeed.InMemory(),
 ) {
 
     private var current: (() -> Unit)? = null

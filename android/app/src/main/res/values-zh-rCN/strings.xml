@@ -705,4 +705,15 @@
     <string name="s_announce_video_message_sent">视频消息已发送</string>
     <string name="s_announce_camera_turned_off">相机已关闭</string>
     <string name="s_record_voice_message_instead">改为录制语音消息</string>
+    <!-- Voice and video message polish (#79): the approved design, long-press menu, speed chip, accessibility -->
+    <string name="s_voice_message_a11y">语音消息，%1$s</string>
+    <string name="s_played">已播放</string>
+    <string name="s_playback_speed">播放速度</string>
+    <string name="s_playback_speed_a11y">播放速度，%1$s</string>
+    <string name="s_speed_1x">1×</string>
+    <string name="s_speed_1_5x">1.5×</string>
+    <string name="s_speed_2x">2×</string>
+    <string name="s_not_sent">未发送</string>
+    <string name="s_switch">切换</string>
+    <string name="s_stop">停止</string>
 </resources>

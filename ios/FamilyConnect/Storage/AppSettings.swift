@@ -123,6 +123,10 @@ nonisolated enum AppSettings {
         /// time, letting go will send it.", S2.3, S7). Per device, kept
         /// across sign-outs: it is about the hands, not the account.
         static let voiceFirstReleaseTaught = "v1.voice.firstReleaseTaught"
+        /// The speed voice messages play at — 1×, 1.5× or 2× — as the
+        /// bubble's speed chip last left it (#79). A DEVICE preference: kept
+        /// across sign-outs, never on the wire.
+        static let voicePlaybackRate = "v1.voice.playbackRate"
         /// Video messages (#79, Phase 3): the two limits `GET /families/mine`
         /// last reported. A MISSING `max_round_video_ms` is the answer "this
         /// server predates video messages" — no video entry at all.
@@ -229,6 +233,16 @@ nonisolated enum AppSettings {
     static var voiceReviewBeforeSending: Bool {
         get { defaults.bool(forKey: Key.voiceReviewBeforeSending) }
         set { defaults.set(newValue, forKey: Key.voiceReviewBeforeSending) }
+    }
+
+    /// The voice-message playback speed this device remembers: one of
+    /// `VoicePlaybackSpeed.rates`, 1 when unset or unknown.
+    static var voicePlaybackRate: Double {
+        get {
+            let stored = defaults.double(forKey: Key.voicePlaybackRate)
+            return VoicePlaybackSpeed.rates.contains(stored) ? stored : 1
+        }
+        set { defaults.set(newValue, forKey: Key.voicePlaybackRate) }
     }
 
     /// Whether this device's first held release has been taught. A missing

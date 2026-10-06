@@ -190,7 +190,7 @@ class VoiceRowsTest {
         voiceNote = true,
     )
 
-    /** Review (S2.7): "[▶] Voice message · 0:42 [✕]", and "[❚❚] 0:12 / 0:42" while it plays. */
+    /** Review (S2.7, the approved design): "[▶] ▁▃▅ 0:42 [✕]", and "[❚❚] 0:12 / 0:42" while it plays. */
     @Test
     fun aStagedVoiceNotePlaysAndSaysWhereItIs() {
         var toggles = 0
@@ -205,7 +205,8 @@ class VoiceRowsTest {
                 onTogglePlay = { toggles++ },
             )
         }
-        compose.onNodeWithText("Voice message · 0:42").assertIsDisplayed()
+        compose.onNodeWithText("0:42").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Voice message, 0:42").assertIsDisplayed()
         compose.onNodeWithContentDescription("Play").performClick()
         compose.onNodeWithContentDescription("Delete recording").performClick()
         assertThat(toggles).isEqualTo(1)
@@ -214,7 +215,7 @@ class VoiceRowsTest {
         playing = true
         compose.onNodeWithText("0:12 / 0:42").assertIsDisplayed()
         compose.onNodeWithContentDescription("Pause").assertIsDisplayed()
-        compose.onNodeWithText("Voice message · 0:42").assertDoesNotExist()
+        compose.onNodeWithText("0:42").assertDoesNotExist()
     }
 
     /** While recording, ▶ is dimmed — not disabled: it says why (S1.7, S6). */

@@ -826,6 +826,14 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
     /// `isRound`, with the coding key `round`, so nothing here shadows
     /// Swift's own `round(_:)`.
     let isRound: Bool
+    /// A voice note's shape (docs/protocol.md, "A voice note's waveform",
+    /// #79): exactly 48 lowercase hex digits, levels 0–15 in time order,
+    /// computed by the sender from its meter. Audio only, and only when the
+    /// sender sent one — absent on a picked sound file, an old message and
+    /// anything an old server stored. Drawn through `Waveform.
+    /// levelsOrPlaceholder`, so a value a reader cannot parse is a flat row,
+    /// never an error. Absent on the wire when nil, and written back so.
+    let waveform: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -842,6 +850,7 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         case accuracyM = "accuracy_m"
         case sticker
         case isRound = "round"
+        case waveform
     }
 
     init(
@@ -858,7 +867,8 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         longitude: Double?,
         accuracyM: Int?,
         sticker: Bool = false,
-        isRound: Bool = false
+        isRound: Bool = false,
+        waveform: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -874,6 +884,7 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         self.accuracyM = accuracyM
         self.sticker = sticker
         self.isRound = isRound
+        self.waveform = waveform
     }
 
     /// Hand-written for the reason `UserDTO`'s is: a property default is
@@ -897,6 +908,10 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         accuracyM = try container.decodeIfPresent(Int.self, forKey: .accuracyM)
         sticker = try container.decodeIfPresent(Bool.self, forKey: .sticker) ?? false
         isRound = try container.decodeIfPresent(Bool.self, forKey: .isRound) ?? false
+        // `try?`: a malformed value (a number, an object) must not cost the
+        // whole message — it draws as the placeholder, like an unparseable
+        // string does.
+        waveform = (try? container.decodeIfPresent(String.self, forKey: .waveform)) ?? nil
     }
 
     /// And the writing half, because MessageEntity stores the set in the
@@ -918,6 +933,7 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         try container.encodeIfPresent(accuracyM, forKey: .accuracyM)
         if sticker { try container.encode(true, forKey: .sticker) }
         if isRound { try container.encode(true, forKey: .isRound) }
+        try container.encodeIfPresent(waveform, forKey: .waveform)
     }
 
     var isVideo: Bool { kind == Kind.video }
@@ -959,7 +975,8 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
             longitude: longitude,
             accuracyM: accuracyM,
             sticker: sticker,
-            isRound: isRound)
+            isRound: isRound,
+            waveform: waveform)
     }
 
     /// The types a sticker may be (docs/protocol.md, "What a sticker is

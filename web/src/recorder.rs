@@ -172,18 +172,41 @@ impl std::fmt::Debug for Meter {
     }
 }
 
-/// How many of the meter's five bars a peak lights: one at each of −50,
-/// −40, −30, −20 and −10 dBFS it reaches — the PEAK level, the measure the
-/// silence check reads, so the bars light alike on every client (S2.9).
-pub fn lit_bars(peak: f32) -> usize {
-    if peak.is_nan() || peak <= 0.0 {
-        return 0;
+/// A peak magnitude (0 to 1) in dBFS — −∞ for silence, NaN for nothing at
+/// all — the measure the live waveform and a note's sent waveform are both
+/// drawn from (fc_text::waveform::level, docs/protocol.md, "A voice note's
+/// waveform").
+pub fn peak_dbfs(peak: f32) -> f64 {
+    if peak.is_nan() {
+        return f64::NAN;
     }
-    let dbfs = 20.0 * f64::from(peak).log10();
-    [-50.0, -40.0, -30.0, -20.0, -10.0]
+    20.0 * f64::from(peak.abs()).log10()
+}
+
+/// One bar of the recording row's live waveform: the level 0–15 a peak
+/// reaches — the sent waveform's own scale, so what scrolled past while
+/// recording is the shape the bubble then draws.
+pub fn live_level(peak: f32) -> u8 {
+    fc_text::waveform::level(peak_dbfs(peak))
+}
+
+/// A voice note's waveform (docs/protocol.md, "A voice note's waveform"):
+/// the PEAK of every block the tap heard — the meter's own measure, the
+/// largest sample magnitude per block — in dBFS, in time order, made into
+/// 48 levels by the shared rule. None for a recording with no blocks.
+fn waveform_of(samples: &js_sys::Array) -> Option<String> {
+    let peaks: Vec<f64> = samples
         .iter()
-        .filter(|&&threshold| dbfs >= threshold)
-        .count()
+        .map(|block| {
+            let block: js_sys::Float32Array = block.unchecked_into();
+            let loudest = block
+                .to_vec()
+                .iter()
+                .fold(0f32, |peak, sample| peak.max(sample.abs()));
+            peak_dbfs(loudest)
+        })
+        .collect();
+    (!peaks.is_empty()).then(|| fc_text::waveform::from_peaks(&peaks, fc_text::waveform::LEVELS))
 }
 
 #[cfg(test)]
@@ -344,6 +367,10 @@ pub struct Recorded {
     /// What the upload declares — `audio/mp4` or `audio/wav`.
     pub mime: &'static str,
     pub duration_ms: i64,
+    /// Its shape — 48 levels from the peaks the tap heard — where the
+    /// samples passed through this page; None for the browser's own
+    /// recorder, which hears nothing it could measure (S2.9).
+    pub waveform: Option<String>,
 }
 
 enum Engine {
@@ -671,6 +698,7 @@ impl Recording {
                     blob,
                     mime: "audio/mp4",
                     duration_ms,
+                    waveform: None,
                 }
             }
             Engine::Pcm {
@@ -685,7 +713,11 @@ impl Recording {
                 // Let go of the microphone BEFORE encoding: its light should
                 // go out when Stop is pressed, not a second later.
                 stop_tracks(&self.stream);
-                finished(&samples, rate, aac).await?
+                let waveform = waveform_of(&samples);
+                Recorded {
+                    waveform,
+                    ..finished(&samples, rate, aac).await?
+                }
             }
         };
         // The microphone goes with `self`, below.
@@ -1143,6 +1175,7 @@ async fn finished(samples: &js_sys::Array, rate: u32, aac: bool) -> Option<Recor
         blob,
         mime: "audio/wav",
         duration_ms: wav::duration_ms(voice.len(), wav::VOICE_RATE),
+        waveform: None,
     })
 }
 
@@ -1165,6 +1198,7 @@ async fn as_m4a(samples: &js_sys::Array, count: u32, rate: u32) -> Option<Record
         blob: encode::m4a(&aac)?,
         mime: "audio/mp4",
         duration_ms: wav::duration_ms(count as usize, rate),
+        waveform: None,
     })
 }
 
@@ -1352,15 +1386,27 @@ mod tests {
         let samples = decoded.get_channel_data(0).unwrap();
         let loudest = samples.iter().fold(0f32, |peak, s| peak.max(s.abs()));
         assert!(loudest > 0.05, "the loudest sample is {loudest}");
-        // And staged as the audio it is.
-        let staged = crate::prep::recording(recorded.blob, recorded.mime, recorded.duration_ms)
-            .await
-            .unwrap();
+        // Its shape, from the peaks the tap heard (docs/protocol.md, "A
+        // voice note's waveform"): 48 levels, and not the silence of a
+        // microphone that sent nothing.
+        let waveform = recorded.waveform.clone().expect("a waveform");
+        let levels = fc_text::waveform::parse(&waveform).expect("in the wire's form");
+        assert!(levels.iter().any(|level| *level > 0), "{waveform}");
+        // And staged as the audio it is, its shape with it.
+        let staged = crate::prep::recording(
+            recorded.blob,
+            recorded.mime,
+            recorded.duration_ms,
+            recorded.waveform,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             (staged.kind.as_str(), staged.mime.as_str()),
             ("audio", "audio/mp4")
         );
         assert_eq!(staged.duration_ms, Some(recorded.duration_ms));
+        assert_eq!(staged.waveform, Some(waveform));
     }
 
     /// A steady tone standing in for a voice, so that a hole in what was
@@ -1657,9 +1703,17 @@ mod tests {
         assert!((1_200..1_700).contains(&recorded.duration_ms));
         let bytes = whole(&recorded.blob).await;
         assert!(media::matches_magic("audio/mp4", &bytes[..12]));
-        let staged = crate::prep::recording(recorded.blob, recorded.mime, recorded.duration_ms)
-            .await
-            .unwrap();
+        // It heard nothing it could measure: no shape, and the bubble draws
+        // the placeholder.
+        assert_eq!(recorded.waveform, None);
+        let staged = crate::prep::recording(
+            recorded.blob,
+            recorded.mime,
+            recorded.duration_ms,
+            recorded.waveform,
+        )
+        .await
+        .unwrap();
         assert_eq!(staged.kind, "audio");
     }
 
@@ -1791,24 +1845,42 @@ mod tests {
         assert!(heard.borrow().is_empty(), "and the loss was news to nobody");
     }
 
-    /// THE METER'S FIVE BARS (the plan for #79, S2.9): one at each of −50,
-    /// −40, −30, −20 and −10 dBFS of the PEAK, the measure the silence check
-    /// reads — so they light alike on every client.
+    /// THE LIVE WAVEFORM'S BARS stand on the sent waveform's own scale: a
+    /// peak in dBFS, 4 dB a level from −60 (docs/protocol.md, "A voice note's
+    /// waveform") — so what scrolls past while recording is the shape the
+    /// bubble draws after.
     #[wasm_bindgen_test]
-    fn the_meter_lights_a_bar_at_every_ten_decibels_from_minus_fifty() {
+    fn a_live_bar_stands_on_the_sent_waveforms_scale() {
         let at = |dbfs: f64| 10f64.powf(dbfs / 20.0) as f32;
-        assert_eq!(lit_bars(0.0), 0);
-        assert_eq!(lit_bars(f32::NAN), 0);
-        assert_eq!(lit_bars(-0.5), 0, "a peak is a magnitude");
-        assert_eq!(lit_bars(at(-60.0)), 0, "digital silence lights nothing");
-        assert_eq!(lit_bars(at(-50.5)), 0);
-        assert_eq!(lit_bars(at(-49.9)), 1);
-        assert_eq!(lit_bars(at(-39.9)), 2);
-        assert_eq!(lit_bars(at(-29.9)), 3);
-        assert_eq!(lit_bars(at(-19.9)), 4);
-        assert_eq!(lit_bars(at(-10.5)), 4);
-        assert_eq!(lit_bars(at(-9.9)), 5);
-        assert_eq!(lit_bars(1.0), 5);
+        assert_eq!(live_level(0.0), 0, "silence");
+        assert_eq!(live_level(f32::NAN), 0);
+        assert_eq!(live_level(at(-70.0)), 0, "under the floor");
+        assert_eq!(live_level(at(-29.0)), 8);
+        assert_eq!(live_level(at(-5.0)), 14);
+        assert_eq!(live_level(1.0), 15, "full scale");
+        assert_eq!(live_level(-0.5), live_level(0.5), "a peak is a magnitude");
+    }
+
+    /// A NOTE'S WAVEFORM is the peak of every block the tap heard, made into
+    /// 48 levels by the shared rule: loud then quiet reads loud then quiet,
+    /// and no blocks at all is no waveform — never a flat line passed off as
+    /// a shape.
+    #[wasm_bindgen_test]
+    fn a_notes_waveform_is_the_peaks_the_tap_heard() {
+        let blocks = js_sys::Array::new();
+        for at in 0..96 {
+            let loud = if at < 48 { 1.0f32 } else { 0.001 };
+            let block: Vec<f32> = (0..128)
+                .map(|sample| if sample == 7 { -loud } else { loud / 4.0 })
+                .collect();
+            blocks.push(&js_sys::Float32Array::from(block.as_slice()));
+        }
+        let waveform = waveform_of(&blocks).expect("a waveform");
+        assert_eq!(waveform.len(), 48);
+        assert_eq!(&waveform[..24], &"f".repeat(24), "full scale first");
+        assert_eq!(&waveform[24..], &"0".repeat(24), "then −60 dBFS");
+        assert!(fc_text::waveform::parse(&waveform).is_some());
+        assert_eq!(waveform_of(&js_sys::Array::new()), None);
     }
 
     /// HEARD is anything above digital silence — a sample magnitude over

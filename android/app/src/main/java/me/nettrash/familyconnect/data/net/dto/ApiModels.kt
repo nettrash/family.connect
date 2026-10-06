@@ -641,12 +641,24 @@ data class AttachmentDto(
      * what the wire said, set by the send and never changed, never beside
      * `sticker`.
      *
-     * Rides INSIDE the attachments JSON a message row already stores, so it
-     * needs no Room migration. A row cached by a build from before the key
-     * was written back without it and draws square until it is read again
-     * (S5.8).
+     * Rides INSIDE the attachments JSON a message row already stores. A row
+     * cached by a build from before the key was written back without it and
+     * would draw square for good; such rows are marked
+     * (`MessageEntity.attachmentsKnowRound`, MIGRATION_30_31) and read again
+     * on resync by `MessageRepository.repairUnknownRoundFlags` (S5.8).
      */
     val round: Boolean? = null,
+    /**
+     * A voice note's WAVEFORM (#79; docs/protocol.md, "A voice note's
+     * waveform"): 48 lowercase hex digits, one level 0–15 per equal slice of
+     * the recording, made by the sender's own meter — so the bubble draws its
+     * shape before anything is downloaded. Audio only; absent (never "" or
+     * null on the wire) when the sender sent none — a picked sound file, an
+     * older client, a server from before waveforms. Never changes after the
+     * upload. Read through [me.nettrash.familyconnect.data.repo.Waveform.levelsOrPlaceholder],
+     * which draws the flat placeholder for anything it cannot parse.
+     */
+    val waveform: String? = null,
 ) {
     val isVideo: Boolean get() = kind == KIND_VIDEO
 
@@ -685,9 +697,26 @@ data class AttachmentDto(
                 "image/webp" -> "webp"
                 "video/mp4" -> "mp4"
                 "video/quicktime" -> "mov"
-                else -> if (isVideo) "mp4" else "jpg"
+                // A voice note saved or shared is a sound file, named as one
+                // (#79) — not "photo-34.jpg" with sound inside.
+                "audio/mp4", "audio/x-m4a", "audio/m4a" -> "m4a"
+                "audio/mpeg" -> "mp3"
+                "audio/ogg" -> "ogg"
+                "audio/aac" -> "aac"
+                "audio/wav", "audio/x-wav" -> "wav"
+                "audio/flac" -> "flac"
+                else -> when {
+                    isVideo -> "mp4"
+                    isAudio -> "m4a"
+                    else -> "jpg"
+                }
             }
-            return "${if (isVideo) "video" else "photo"}-$id.$ext"
+            val stem = when {
+                isVideo -> "video"
+                isAudio -> "voice"
+                else -> "photo"
+            }
+            return "$stem-$id.$ext"
         }
 
     /** What a bubble calls it: the name for a file, a word for the rest. */

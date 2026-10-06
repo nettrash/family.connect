@@ -754,7 +754,7 @@ final class VoiceComposer {
         if let chatID = hooks.chatID(),
            let entry = store.park(
                fileAt: recording.url, duration: recording.duration, chatID: chatID,
-               replyTo: reply, caption: nil, sending: true)
+               replyTo: reply, caption: nil, sending: true, waveform: recording.waveform)
         {
             undoNote = .parked(entry)
         } else {

@@ -47,7 +47,8 @@ public sealed class RoundVideoTests : IDisposable
     {
         Assert.Equal(240, RoundLook.Diameter);
         Assert.True(RoundLook.Diameter > StickerLook.Box);
-        Assert.Equal(44, RoundLook.PlayDisc);
+        // The approved design's 48 play disc (the mockup's .round .pd), as Android draws it.
+        Assert.Equal(48, RoundLook.PlayDisc);
         Assert.Equal(8, RoundLook.Dot);
         Assert.Equal(3, RoundLook.Ring);
     }
@@ -65,12 +66,12 @@ public sealed class RoundVideoTests : IDisposable
         Assert.Equal("Video message", RoundLook.Name(Circle with { DurationMs = null }, Say));
 
         Assert.Equal("Not played", RoundLook.Value(mine: false, played: false, Say));
-        Assert.Null(RoundLook.Value(mine: false, played: true, Say));
+        Assert.Equal("Played", RoundLook.Value(mine: false, played: true, Say));
     }
 
     /// <summary>
     /// THE DOT IS ONLY ON SOMEONE ELSE'S CIRCLE (S5.2, S6) — as on iOS, Android and the web: the reader's own circles never
-    /// carry it, nor Narrator's "Not played", whether or not this device has played them.
+    /// carry it, nor Narrator's "Not played" or "Played", whether or not this device has played them.
     /// </summary>
     [Theory]
     [InlineData(false, false, true)]
@@ -80,7 +81,7 @@ public sealed class RoundVideoTests : IDisposable
     public void TheDotIsOnlyOnSomeoneElsesUnplayedCircle(bool mine, bool played, bool dot)
     {
         Assert.Equal(dot, RoundLook.ShowsDot(mine, played));
-        Assert.Equal(dot ? "Not played" : null, RoundLook.Value(mine, played, Say));
+        Assert.Equal(mine ? null : dot ? "Not played" : "Played", RoundLook.Value(mine, played, Say));
     }
 
     /// <summary>
@@ -99,6 +100,23 @@ public sealed class RoundVideoTests : IDisposable
     [InlineData(true, double.NaN, 23.4, false)]
     public void ItCountsAsPlayedOnlyOncePlayedThrough(bool seenPlaying, double position, double total, bool through) =>
         Assert.Equal(through, RoundLook.PlayedThrough(seenPlaying, position, total));
+
+    /// <summary>
+    /// The viewer's one ring: none before it plays, as far as it has played while it plays or is paused part way — and none
+    /// once it has FINISHED, when the mockup hides it and the circle is back to its poster, never a full ring left round it.
+    /// </summary>
+    [Theory]
+    [InlineData(false, false, 0, 23.4, 0)]
+    [InlineData(false, false, 11.7, 23.4, 0)]
+    [InlineData(true, true, 11.7, 23.4, 0.5)]
+    [InlineData(true, false, 11.7, 23.4, 0.5)]
+    [InlineData(true, true, 23.4, 23.4, 1)]
+    [InlineData(true, false, 23.4, 23.4, 0)]
+    [InlineData(true, false, 23.3, 23.4, 0)]
+    [InlineData(true, true, 5, 0, 0)]
+    [InlineData(true, true, double.NaN, 23.4, 0)]
+    public void TheViewerRingGoesWhenTheClipEnds(bool seenPlaying, bool playing, double position, double total, double ring) =>
+        Assert.Equal(ring, RoundLook.ViewerRing(seenPlaying, playing, position, total), 6);
 
     /// <summary>
     /// The viewer's circle: as large as the room allows, never larger than the recording's 480 pixels and never smaller

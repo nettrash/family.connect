@@ -117,6 +117,12 @@ nonisolated enum MediaPrep {
         let previewJPEG: Data?
         /// Files only: the name the sender picked it by.
         let name: String?
+        /// A voice note recorded here: its waveform, from the recorder's
+        /// meter (`AudioRecorder.Recording.waveform`), sent as `waveform=`
+        /// on the upload (#79). nil for anything picked or captured —
+        /// nobody metered those. A `var`, set after preparing, so the copy
+        /// `prepareAudio` makes keeps what the recording measured.
+        var waveform: String?
 
         init(
             fileURL: URL,

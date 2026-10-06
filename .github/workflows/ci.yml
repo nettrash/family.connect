@@ -117,12 +117,12 @@ jobs:
           # The Windows client's oracles are GENERATED from web/text, so a change there is a
           # change to what the C# port is held to — the fixture in win/ is only right while the
           # Rust it was printed from says the same thing, and no other job would notice.
-          # The media-plan vectors, and the record vectors (issue #79), have a copy beside the iOS
+          # The media-plan vectors, and the record and waveform vectors (issue #79), have a copy beside the iOS
           # and Android tests as well, and the check that every copy still says what the oracle
           # says runs in that same job — so an edit to any of those copies on its own has to run it
           # too, or it is not a check. (The third copy of each lives under win/, which runs the job
           # anyway.)
-          if echo "$files" | grep -q -E '^(web/text/|(ios/FamilyConnectTests/Fixtures|android/app/src/test/resources)/(media-plan|record)-vectors\.json$)'; then
+          if echo "$files" | grep -q -E '^(web/text/|(ios/FamilyConnectTests/Fixtures|android/app/src/test/resources)/(media-plan|record|waveform)-vectors\.json$)'; then
             echo "The shared text crate, or a copy of an oracle fixture, changed -- the Windows job checks them against the oracle."
             echo "win=true" >> "$GITHUB_OUTPUT"
             oracle_changed=true
@@ -773,7 +773,7 @@ jobs:
       # shared crate has moved, the fixture the C# suite is held to has to move with it, and the
       # only way to know is to print it again and look.
       #
-      # The media-plan vectors (issue #74) and the record vectors (issue #79) are the fixtures held
+      # The media-plan vectors (issue #74) and the record and waveform vectors (issue #79) are the fixtures held
       # by three ports, so each lives in three places: beside the C# tests, in the iOS test bundle,
       # and on Android's JVM test classpath. Each copy is compared byte for byte with a fresh print
       # — not `git diff`, which says nothing about a copy that was never committed — and every
@@ -786,11 +786,12 @@ jobs:
           cargo run --quiet -- chat > ../../tests/FamilyConnect.Core.Tests/Fixtures/chat-vectors.json
           cargo run --quiet -- media-plan > "$RUNNER_TEMP/media-plan-vectors.json"
           cargo run --quiet -- record > "$RUNNER_TEMP/record-vectors.json"
+          cargo run --quiet -- waveform > "$RUNNER_TEMP/waveform-vectors.json"
           cd ../../..
           git diff --exit-code -- win/tests/FamilyConnect.Core.Tests/Fixtures \
             || { echo "::error::the oracle fixtures are out of date -- regenerate them (win/README.md)"; exit 1; }
           stale=0
-          for fixture in media-plan record; do
+          for fixture in media-plan record waveform; do
             for copy in "win/tests/FamilyConnect.Core.Tests/Fixtures/$fixture-vectors.json" \
                         "ios/FamilyConnectTests/Fixtures/$fixture-vectors.json" \
                         "android/app/src/test/resources/$fixture-vectors.json"; do

@@ -34,9 +34,18 @@ final class RoundVideoPlays {
     /// Every key this store writes starts with this.
     nonisolated static let keyPrefix = "roundVideoPlays.v1."
 
+    /// The VOICE notes this device has played — the unplayed dot on a
+    /// voice bubble (#79): the same store, the same rules (per account,
+    /// never sent, wiped at sign-out, the newest 5 000), under its own keys.
+    /// A voice note counts as played the moment it starts, where a circle
+    /// waits for its end (S5.3): a voice bubble shows its progress in the
+    /// waveform, so a started note is never mistaken for an unheard one.
+    static let voiceNotes = RoundVideoPlays(keyPrefix: "voiceNotePlays.v1.")
+
     private let defaults: UserDefaults
     private let account: () -> String?
     private let cap: Int
+    private let keyPrefix: String
 
     /// Bumped by every change — what a circle observes to drop its dot.
     private(set) var revision = 0
@@ -47,11 +56,13 @@ final class RoundVideoPlays {
         account: @escaping () -> String? = {
             ParkedRecordings.accountKey(serverURL: AppSettings.serverURL, userID: AppSettings.currentUserID)
         },
-        cap: Int = RoundVideoPlays.cap
+        cap: Int = RoundVideoPlays.cap,
+        keyPrefix: String = RoundVideoPlays.keyPrefix
     ) {
         self.defaults = defaults
         self.account = account
         self.cap = cap
+        self.keyPrefix = keyPrefix
     }
 
     /// Has this device played the video message whose attachment this is?
@@ -72,14 +83,14 @@ final class RoundVideoPlays {
         if ids.count > cap {
             ids = Set(ids.sorted().suffix(cap))
         }
-        defaults.set(ids.sorted(), forKey: Self.keyPrefix + key)
+        defaults.set(ids.sorted(), forKey: keyPrefix + key)
         cache = (key, ids)
         revision += 1
     }
 
     /// Sign-out: every account's record goes (S5.2).
     func removeAll() {
-        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(Self.keyPrefix) {
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(keyPrefix) {
             defaults.removeObject(forKey: key)
         }
         cache = nil
@@ -88,7 +99,7 @@ final class RoundVideoPlays {
 
     private func ids(for key: String) -> Set<Int64> {
         if let cache, cache.account == key { return cache.ids }
-        let stored = (defaults.array(forKey: Self.keyPrefix + key) as? [NSNumber]) ?? []
+        let stored = (defaults.array(forKey: keyPrefix + key) as? [NSNumber]) ?? []
         let ids = Set(stored.map(\.int64Value))
         cache = (key, ids)
         return ids

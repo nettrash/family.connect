@@ -27,6 +27,10 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.semantics.hideFromAccessibility
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.StrokeCap
 import android.Manifest
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -579,7 +583,8 @@ private fun StatusLine(
         ) {
             if (recordingClock != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(8.dp).clip(CircleShape).background(RecordingRed))
+                    // Pulsing, as the composer's; steady without animations (S2.9, S6).
+                    RecordingDot(steady = reducedMotion, size = 8.dp, color = RecordingRed)
                     Spacer(Modifier.width(6.dp))
                     // The ticking clock is never announced (S6).
                     Text(text = recordingClock, style = MaterialTheme.typography.titleSmall)
@@ -673,35 +678,36 @@ private fun RecorderCircle(
         modifier = Modifier.size(diameter.dp + ringGap * 2),
         contentAlignment = Alignment.Center,
     ) {
-        // The ring, 4 units wide, just OUTSIDE the circle, so it never covers a face.
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val stroke = 4.dp.toPx()
-            val radius = diameter.dp.toPx() / 2f + stroke / 2f
+        // The ring just OUTSIDE the circle, so it never covers a face (the
+        // approved design): a thin white track all the way round, and over it
+        // the arc filling clockwise from 12 o'clock — red over the minute while
+        // recording (orange from the warning), the accent while the clip plays.
+        Canvas(modifier = Modifier.fillMaxSize().testTag("round-video-recorder-ring")) {
+            val stroke = 3.dp.toPx()
+            val radius = diameter.dp.toPx() / 2f + 2.dp.toPx() + stroke / 2f
             val topLeft = Offset(center.x - radius, center.y - radius)
             val arcSize = Size(radius * 2, radius * 2)
-            when {
-                phase is VideoMessageRecorder.Phase.Preview -> drawCircle(
-                    color = Color.White.copy(alpha = 0.4f),
-                    radius = diameter.dp.toPx() / 2f + 0.5.dp.toPx(),
-                    style = Stroke(width = 1.dp.toPx()),
-                )
-                phase is VideoMessageRecorder.Phase.Recording -> drawArc(
-                    color = if (warned) VoiceWarningOrange else RecordingRed,
+            val showsTrack = phase is VideoMessageRecorder.Phase.Preview ||
+                phase is VideoMessageRecorder.Phase.Recording ||
+                phase is VideoMessageRecorder.Phase.Finishing ||
+                phase is VideoMessageRecorder.Phase.Review
+            if (showsTrack) {
+                drawCircle(color = Color.White.copy(alpha = 0.25f), radius = radius, style = Stroke(width = 1.dp.toPx()))
+            }
+            val arcColor = when {
+                phase is VideoMessageRecorder.Phase.Recording -> if (warned) VoiceWarningOrange else RecordingRed
+                player != null && (player.playing || progress > 0f) -> accent
+                else -> null
+            }
+            if (arcColor != null && progress > 0f) {
+                drawArc(
+                    color = arcColor,
                     startAngle = -90f,
                     sweepAngle = 360f * progress,
                     useCenter = false,
                     topLeft = topLeft,
                     size = arcSize,
-                    style = Stroke(width = stroke),
-                )
-                player != null && (player.playing || progress > 0f) -> drawArc(
-                    color = accent,
-                    startAngle = -90f,
-                    sweepAngle = 360f * progress,
-                    useCenter = false,
-                    topLeft = topLeft,
-                    size = arcSize,
-                    style = Stroke(width = stroke),
+                    style = Stroke(width = stroke, cap = StrokeCap.Round),
                 )
             }
         }
@@ -787,8 +793,11 @@ private fun ReviewCircle(clip: RoundClip, player: ReviewPlayer) {
 }
 
 /**
- * The control row (or column) where the composer row is (S3.3, S3.4):
- * the leading control, the middle ones, and the slot in Send's place.
+ * The control row (or column) where the composer row is (S3.3, S3.4), as
+ * the approved design draws it: the leading control (Close, or Delete), the
+ * middle ones (Switch camera — and the way to a voice message instead — in
+ * PREVIEW; Retake in REVIEW) as small round buttons with a caption under
+ * each, and the ONE big slot in Send's place: Record → Stop → Send.
  */
 @Composable
 private fun Controls(
@@ -802,54 +811,93 @@ private fun Controls(
     val leading: @Composable () -> Unit = {
         when (phase) {
             is VideoMessageRecorder.Phase.Recording ->
-                RecorderButton(Icons.Outlined.Delete, stringResource(R.string.s_delete_recording), onClick = recorder::delete)
+                RecorderButton(
+                    Icons.Outlined.Delete,
+                    stringResource(R.string.s_delete_recording),
+                    caption = stringResource(R.string.s_delete),
+                    onClick = recorder::delete,
+                )
             is VideoMessageRecorder.Phase.Review, is VideoMessageRecorder.Phase.Finishing -> {
                 val ready = phase is VideoMessageRecorder.Phase.Review
-                RecorderButton(Icons.Outlined.Delete, stringResource(R.string.s_delete), enabled = ready, onClick = recorder::delete)
-                RecorderButton(Icons.Filled.Replay, stringResource(R.string.s_retake), enabled = ready, onClick = recorder::retake)
+                RecorderButton(
+                    Icons.Outlined.Delete,
+                    stringResource(R.string.s_delete),
+                    caption = stringResource(R.string.s_delete),
+                    enabled = ready,
+                    onClick = recorder::delete,
+                )
             }
-            else -> RecorderButton(Icons.Filled.Close, stringResource(R.string.s_close), onClick = recorder::close)
+            else -> RecorderButton(
+                Icons.Filled.Close,
+                stringResource(R.string.s_close),
+                caption = stringResource(R.string.s_close),
+                onClick = recorder::close,
+            )
         }
     }
     val middle: @Composable () -> Unit = {
-        if (phase is VideoMessageRecorder.Phase.Preview) {
-            // "Switch camera" on phones and tablets, in PREVIEW only (S3.5).
-            if (recorder.canSwitchCamera) {
-                RecorderButton(Icons.Filled.Cameraswitch, stringResource(R.string.s_switch_camera), onClick = recorder::switchCamera)
+        when (phase) {
+            is VideoMessageRecorder.Phase.Preview -> {
+                // "Switch camera" on phones and tablets, in PREVIEW only (S3.5).
+                if (recorder.canSwitchCamera) {
+                    RecorderButton(
+                        Icons.Filled.Cameraswitch,
+                        stringResource(R.string.s_switch_camera),
+                        caption = stringResource(R.string.s_switch),
+                        onClick = recorder::switchCamera,
+                    )
+                }
+                val blocked = state.session?.voiceBlocked == true
+                RecorderButton(
+                    icon = Icons.Filled.Mic,
+                    label = stringResource(R.string.s_record_voice_message_instead),
+                    caption = stringResource(R.string.s_record_voice_message),
+                    dimmedReason = if (blocked) stringResource(R.string.e_send_or_delete_the_unsent_first) else null,
+                    onClick = recorder::voiceInstead,
+                )
             }
-            val blocked = state.session?.voiceBlocked == true
-            RecorderButton(
-                icon = Icons.Filled.Mic,
-                label = stringResource(R.string.s_record_voice_message_instead),
-                dimmedReason = if (blocked) stringResource(R.string.e_send_or_delete_the_unsent_first) else null,
-                onClick = recorder::voiceInstead,
-            )
+            is VideoMessageRecorder.Phase.Review, is VideoMessageRecorder.Phase.Finishing ->
+                RecorderButton(
+                    Icons.Filled.Replay,
+                    stringResource(R.string.s_retake),
+                    caption = stringResource(R.string.s_retake),
+                    enabled = phase is VideoMessageRecorder.Phase.Review,
+                    onClick = recorder::retake,
+                )
+            else -> Unit
         }
     }
     val slot: @Composable () -> Unit = { Slot(state = state, recorder = recorder, focus = slotFocus, onRecord = onRecord) }
     if (column) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row { leading() }
-            Row { middle() }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { middle() }
             slot()
         }
     } else {
         Row(
-            modifier = Modifier.fillMaxWidth().height(64.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            // The cap BEFORE fillMaxWidth: after it, fillMaxWidth has already
+            // fixed the minimum at the whole width and the cap does nothing.
+            modifier = Modifier.widthIn(max = 420.dp).fillMaxWidth().padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.Top,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) { leading() }
+            Row(verticalAlignment = Alignment.Top) { leading() }
             Row(
                 modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.Top,
             ) { middle() }
             slot()
         }
     }
 }
 
-/** The slot (S3.4): Record, Stop, Send — in the Send button's place, 48-dp target. */
+/**
+ * The slot (S3.4, the approved design): ONE big button, 64 units, in the
+ * Send button's place — a red disc (Record), a red disc with a white rounded
+ * square (Stop), then an accent disc with the Send arrow (Send) — with its
+ * caption under it.
+ */
 @Composable
 private fun Slot(
     state: VideoMessageRecorder.State,
@@ -866,6 +914,13 @@ private fun Slot(
             else -> R.string.s_record
         },
     )
+    val caption = stringResource(
+        when (phase) {
+            is VideoMessageRecorder.Phase.Recording -> R.string.s_stop
+            is VideoMessageRecorder.Phase.Review, is VideoMessageRecorder.Phase.Finishing -> R.string.s_send
+            else -> R.string.s_record
+        },
+    )
     val action = slotAction(state, recorder, onRecord)
     val live = action != null
 
@@ -878,54 +933,95 @@ private fun Slot(
     // and Esc and Return reach the recorder from the start; a slot moved
     // between the row and the column asks again.
     LaunchedEffect(focus, phase::class) { runCatching { focus.requestFocus() } }
-    val container = when (phase) {
-        is VideoMessageRecorder.Phase.Review, is VideoMessageRecorder.Phase.Finishing -> MaterialTheme.colorScheme.primary
-        else -> RecordingRed
-    }
-    Box(
+    val sends = phase is VideoMessageRecorder.Phase.Review || phase is VideoMessageRecorder.Phase.Finishing
+    val container = if (sends) MaterialTheme.colorScheme.primary else RecordingRed
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+      // The design's halo: a soft white ring, 4 units, just outside the disc.
+      Box(
         modifier = Modifier
-            .size(ComposerSlot.MIN_TARGET_ANDROID_DP.dp)
-            .focusRequester(focus)
-            .testTag("round-video-slot")
-            // Focusable whatever the input mode: the recorder is opened by a
-            // tap, and a clickable's default focusability is the system's
-            // (Focusability.SystemDefined), which on a touch-mode window may
-            // refuse it — the request at open would fail and a hardware
-            // keyboard's Esc and Return would reach nothing. (Robolectric
-            // will not enter touch mode, so no JVM test pins this line.)
-            .focusProperties { canFocus = true }
-            // ALWAYS enabled as a node, so it keeps the focus while dimmed
-            // (S3.4: "Focus starts on the slot"; S1.3: dimmed is not
-            // disabled); a dimmed slot's click does nothing, and its
-            // semantics still say disabled below.
-            .clickable(role = Role.Button, onClickLabel = label) {
-                val now = slotAction(state, recorder, onRecord) ?: return@clickable
-                recorder.used()
-                now()
-            }
-            .semantics {
-                contentDescription = label
-                if (!live) disabled()
+            .size(SLOT_SIZE + SLOT_HALO * 2)
+            .drawBehind {
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.18f),
+                    radius = size.minDimension / 2f - SLOT_HALO.toPx() / 2f,
+                    style = Stroke(width = SLOT_HALO.toPx()),
+                )
             },
         contentAlignment = Alignment.Center,
-    ) {
+      ) {
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .size(SLOT_SIZE)
+                .focusRequester(focus)
+                .testTag("round-video-slot")
+                // Focusable whatever the input mode: the recorder is opened by a
+                // tap, and a clickable's default focusability is the system's
+                // (Focusability.SystemDefined), which on a touch-mode window may
+                // refuse it — the request at open would fail and a hardware
+                // keyboard's Esc and Return would reach nothing. (Robolectric
+                // will not enter touch mode, so no JVM test pins this line.)
+                .focusProperties { canFocus = true }
                 .clip(CircleShape)
+                // ALWAYS enabled as a node, so it keeps the focus while dimmed
+                // (S3.4: "Focus starts on the slot"; S1.3: dimmed is not
+                // disabled); a dimmed slot's click does nothing, and its
+                // semantics still say disabled below.
+                .clickable(role = Role.Button, onClickLabel = label) {
+                    val now = slotAction(state, recorder, onRecord) ?: return@clickable
+                    recorder.used()
+                    now()
+                }
+                .semantics {
+                    contentDescription = label
+                    if (!live) disabled()
+                }
                 .background(container.copy(alpha = if (live) 1f else 0.4f)),
             contentAlignment = Alignment.Center,
         ) {
             when (phase) {
                 is VideoMessageRecorder.Phase.Recording ->
-                    Icon(Icons.Filled.Stop, contentDescription = null, tint = Color.White)
+                    Box(
+                        Modifier
+                            .size(22.dp)
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(Color.White)
+                            .testTag("round-video-slot-stop"),
+                    )
                 is VideoMessageRecorder.Phase.Review, is VideoMessageRecorder.Phase.Finishing ->
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
-                // Record: a red disc with a white ring.
-                else -> Box(Modifier.size(20.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.9f)))
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(26.dp),
+                    )
+                // Record: the red disc itself.
+                else -> Unit
             }
         }
+      }
+        RecorderCaption(caption)
     }
+}
+
+/** The big slot, 64 units across, and its halo (the approved design). */
+private val SLOT_SIZE = 64.dp
+private val SLOT_HALO = 4.dp
+
+/** What a recorder button is called, under it, small and quiet — its label to TalkBack is the button's own. */
+@Composable
+private fun RecorderCaption(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFFC9CBD6),
+        textAlign = TextAlign.Center,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .widthIn(max = 84.dp)
+            .padding(top = 4.dp)
+            .semantics { hideFromAccessibility() },
+    )
 }
 
 /**
@@ -961,33 +1057,51 @@ internal object RecorderKeys {
     }
 }
 
-/** One of the recorder's other controls: a 22-dp glyph in a 48-dp target, white on the scrim. */
+/**
+ * One of the recorder's other controls (the approved design): a 44-unit
+ * round button, white on a faint white disc over the dark window, in a 48-unit
+ * target, with its caption under it.
+ */
 @Composable
 private fun RecorderButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
+    caption: String? = null,
     enabled: Boolean = true,
     /** Dimmed is not disabled: it stays focusable and says why (S1.3). */
     dimmedReason: String? = null,
     onClick: () -> Unit,
 ) {
-    Box(
-        modifier = Modifier
-            .size(ComposerSlot.MIN_TARGET_ANDROID_DP.dp)
-            .clickable(enabled = enabled, role = Role.Button, onClickLabel = label, onClick = onClick)
-            .semantics {
-                contentDescription = label
-                if (dimmedReason != null) stateDescription = dimmedReason
-                if (!enabled) disabled()
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = Color.White.copy(alpha = if (enabled && dimmedReason == null) 1f else 0.45f),
-            modifier = Modifier.size(24.dp),
-        )
+    val bright = enabled && dimmedReason == null
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.widthIn(min = 64.dp)) {
+        Box(
+            modifier = Modifier
+                .size(ComposerSlot.MIN_TARGET_ANDROID_DP.dp)
+                .clip(CircleShape)
+                .clickable(enabled = enabled, role = Role.Button, onClickLabel = label, onClick = onClick)
+                .semantics {
+                    contentDescription = label
+                    if (dimmedReason != null) stateDescription = dimmedReason
+                    if (!enabled) disabled()
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.08f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = Color(0xFFE8E9EF).copy(alpha = if (bright) 1f else 0.45f),
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        }
+        if (caption != null) RecorderCaption(caption)
     }
 }
 

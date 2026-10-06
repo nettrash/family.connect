@@ -45,6 +45,17 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.onClick as onSemanticsClick
+import me.nettrash.familyconnect.ui.components.VoiceBubbleRules
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.automirrored.outlined.Subject
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.graphics.lerp
+import me.nettrash.familyconnect.ui.components.WaveformBars
+import me.nettrash.familyconnect.ui.components.VoicePlayDisc
+import me.nettrash.familyconnect.ui.components.VoiceDrawing
+import me.nettrash.familyconnect.data.repo.Waveform
 import androidx.compose.runtime.CompositionLocalProvider
 import android.content.ClipData
 import android.content.Intent
@@ -58,6 +69,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -226,6 +238,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.boundsInWindow
@@ -245,6 +260,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -312,6 +329,7 @@ import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.LinkPreviewState
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import me.nettrash.familyconnect.data.repo.AssistantFailure
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
@@ -356,7 +374,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
  * onPositioned keeps anchorBounds current while the capsule is open
  * (the focusable popup closes the keyboard, shifting the list).
  */
-private data class ReactionPickerTarget(
+internal data class ReactionPickerTarget(
     val item: ChatListItem.MessageItem,
     val anchorBounds: Rect,
 )
@@ -464,6 +482,7 @@ fun ChatScreen(
     // what the recording rows draw from it.
     val hold by viewModel.hold.collectAsStateWithLifecycle()
     val voiceLevel by viewModel.voiceLevel.collectAsStateWithLifecycle()
+    val voiceLevels by viewModel.voiceLevels.collectAsStateWithLifecycle()
     val voiceLine by viewModel.voiceLine.collectAsStateWithLifecycle()
     val announcement by viewModel.announcement.collectAsStateWithLifecycle()
     val coachMark by viewModel.coachMark.collectAsStateWithLifecycle()
@@ -902,6 +921,14 @@ fun ChatScreen(
             else -> viewModel.reportSaveNeedsPermission()
         }
     }
+    // A voice message's Save is the system's own save screen — Android's "Save
+    // to Files" (#79): the person picks where, and that screen is the answer.
+    val saveVoice = rememberVoiceSave(
+        onChosen = { attachment, destination ->
+            scope.launch { viewModel.saveToDocument(attachment, destination) }
+        },
+        onOrphaned = { destination -> scope.launch { viewModel.discardDocument(destination) } },
+    )
     val saveAttachment: (AttachmentDto) -> Unit = { attachment ->
         if (viewModel.savingNeedsPermission) {
             pendingSave = attachment
@@ -1770,6 +1797,7 @@ fun ChatScreen(
                 ),
                 hold = hold,
                 voiceLevel = voiceLevel,
+                voiceLevels = voiceLevels,
                 voiceLine = voiceLine,
                 announcement = announcement,
                 coachMark = coachMark && accessibility?.isTouchExplorationEnabled != true,
@@ -1900,6 +1928,7 @@ fun ChatScreen(
         // onDismiss / onMore afterwards.
         ReactionPickerPopup(
             target = target,
+            transcripts = viewModel.transcripts,
             myUserId = myUserId,
             onPick = { emoji ->
                 target.item.entity.serverId?.let { applyToggle(it, emoji) }
@@ -1974,7 +2003,11 @@ fun ChatScreen(
             onSave = {
                 val attachment = target.item.entity.attachment
                 pickerTarget = null
-                if (attachment != null) saveAttachment(attachment)
+                when {
+                    attachment == null -> Unit
+                    attachment.isAudio -> saveVoice(attachment)
+                    else -> saveAttachment(attachment)
+                }
             },
             onShare = {
                 val entity = target.item.entity
@@ -2029,6 +2062,7 @@ fun ChatScreen(
             assistantUserId = assistantUserId,
             isAiChat = chat?.kind == "ai",
             onDismiss = { pickerTarget = null },
+            chatKind = chat?.kind,
         )
     }
 
@@ -2155,8 +2189,15 @@ fun ChatScreen(
  * declared exits could never play.
  */
 @Composable
-private fun ReactionPickerPopup(
+internal fun ReactionPickerPopup(
     target: ReactionPickerTarget,
+    /**
+     * The screen's transcripts, for "Show text" on a recording. A parameter,
+     * not [LocalTranscripts]: this popup is composed outside the block that
+     * provides that local, so the local is null here — and a required
+     * parameter makes every caller say which transcripts it means.
+     */
+    transcripts: Transcripts?,
     myUserId: Long?,
     onPick: (String) -> Unit,
     onMore: () -> Unit,
@@ -2180,7 +2221,28 @@ private fun ReactionPickerPopup(
     /** Whether this is the assistant's own chat, where every sender is it. */
     isAiChat: Boolean,
     onDismiss: () -> Unit,
+    /** The chat's kind, for whether "Show text" may be asked here. */
+    chatKind: String? = null,
 ) {
+    // A recording — a voice message or a video message — gets the menu that
+    // fits it (#79, the approved design): Show text, Playback speed (voice),
+    // Save, Open full screen (video); no Copy or Edit where there is no text.
+    val entity = target.item.entity
+    val recordingKind = RecordingMenu.kindOf(entity)
+    val recording = if (recordingKind != null) roundOf(entity) ?: voiceOf(entity) else null
+    val transcriptAction = rememberTranscriptMenuAction(
+        transcripts = transcripts,
+        attachment = recording,
+        chatKind = chatKind,
+        chatId = entity.chatId,
+        messageServerId = entity.serverId,
+        senderId = entity.senderId,
+    )
+    val voiceSpeed = LocalPlaybackCoordinator.current?.voiceSpeed
+    val speed by (voiceSpeed?.speed ?: remember { kotlinx.coroutines.flow.MutableStateFlow(1f) })
+        .collectAsStateWithLifecycle()
+    val speedName = stringResource(VoiceBubbleRules.speedLabel(speed))
+    val voiceSaveLabel = stringResource(R.string.s_save)
     val atWindowOrigin = remember {
         object : PopupPositionProvider {
             override fun calculatePosition(
@@ -2333,6 +2395,7 @@ private fun ReactionPickerPopup(
                     onSave = { exitThen(onSave) },
                     modifier = Modifier.onSizeChanged { menuSize = it },
                     canSave = target.item.entity.attachment?.isFile == false,
+                    canShare = RecordingMenu.offersShare(recordingKind),
                     canReply = target.item.entity.serverId != null,
                     canViewThread = canViewThread,
                     // The reader's own, and never a sticker — the rule is
@@ -2346,7 +2409,7 @@ private fun ReactionPickerPopup(
                     canClosePoll = target.item.poll?.closed == false &&
                         target.item.entity.serverId != null &&
                         target.item.entity.senderId == myUserId,
-                    canCopy = target.item.entity.body.isNotEmpty(),
+                    canCopy = RecordingMenu.offersCopy(target.item.entity),
                     // Somebody else's message, and one the server can name.
                     // Never my own: `cannot_report_self` refuses that, and
                     // blocking yourself is refused too.
@@ -2378,6 +2441,14 @@ private fun ReactionPickerPopup(
                             hasServerId = target.item.entity.serverId != null,
                         ),
                     showSafety = { onSafetyPage = true },
+                    onShowText = transcriptAction?.let { action ->
+                        TranscriptMenuAction(action.label) { exitThen(action.run) }
+                    },
+                    playbackSpeed = speedName.takeIf { RecordingMenu.offersSpeed(recordingKind) && voiceSpeed != null },
+                    onCyclePlaybackSpeed = { voiceSpeed?.step() },
+                    // Any sound — a captioned voice note too — goes to the
+                    // system's save screen, never the gallery (onSave).
+                    saveLabel = if (target.item.entity.attachment?.isAudio == true) voiceSaveLabel else null,
                 )
                 }
             }
@@ -2502,6 +2573,8 @@ internal fun MessageContextMenu(
     canCopy: Boolean = true,
     /** Photos and videos only — what the gallery will take. */
     canSave: Boolean = false,
+    /** Every message but a recording ([RecordingMenu.offersShare]). */
+    canShare: Boolean = true,
     /**
      * Somebody else's message, so it can be reported and its sender
      * blocked. Never true on my own — reporting yourself is refused
@@ -2510,6 +2583,14 @@ internal fun MessageContextMenu(
     canModerate: Boolean = false,
     /** Open the Safety page. */
     showSafety: () -> Unit = {},
+    /** A recording's "Show text" / "Hide text" (#79); null — no row — on anything else, or while it is fetched. */
+    onShowText: TranscriptMenuAction? = null,
+    /** A voice message's "Playback speed" and its value now (#79); null on anything else. */
+    playbackSpeed: String? = null,
+    /** Steps the speed 1× → 1.5× → 2× and leaves the menu open, so the new value is seen. */
+    onCyclePlaybackSpeed: () -> Unit = {},
+    /** What Save is called: "Save to gallery" for a picture, "Save" for a voice message. */
+    saveLabel: String? = null,
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -2533,11 +2614,21 @@ internal fun MessageContextMenu(
                     onClick = onViewThread,
                 )
             }
-            if (onOpenFullScreen != null) {
+            if (onShowText != null) {
                 MessageContextMenuItem(
-                    label = stringResource(R.string.s_open_full_screen),
-                    icon = Icons.Filled.OpenInFull,
-                    onClick = onOpenFullScreen,
+                    label = stringResource(onShowText.label),
+                    icon = Icons.AutoMirrored.Outlined.Subject,
+                    onClick = onShowText.run,
+                )
+            }
+            if (playbackSpeed != null) {
+                val speedA11y = stringResource(R.string.s_playback_speed_a11y, playbackSpeed)
+                MessageContextMenuItem(
+                    label = stringResource(R.string.s_playback_speed),
+                    icon = Icons.Outlined.Speed,
+                    onClick = onCyclePlaybackSpeed,
+                    trailing = playbackSpeed,
+                    a11yLabel = speedA11y,
                 )
             }
             if (canEdit) {
@@ -2565,16 +2656,28 @@ internal fun MessageContextMenu(
                 // Android's chooser cannot do this on its own, unlike
                 // iOS's share sheet — hence a row of its own here.
                 MessageContextMenuItem(
-                    label = stringResource(R.string.s_save_to_gallery),
+                    label = saveLabel ?: stringResource(R.string.s_save_to_gallery),
                     icon = Icons.Outlined.Download,
                     onClick = onSave,
                 )
             }
-            MessageContextMenuItem(
-                label = stringResource(R.string.s_share),
-                icon = Icons.Outlined.Share,
-                onClick = onShare,
-            )
+            // After Save, as iOS, Windows and the web order a video
+            // message's menu; only a video message has it, and a video
+            // message has no Edit, poll or Copy above.
+            if (onOpenFullScreen != null) {
+                MessageContextMenuItem(
+                    label = stringResource(R.string.s_open_full_screen),
+                    icon = Icons.Filled.OpenInFull,
+                    onClick = onOpenFullScreen,
+                )
+            }
+            if (canShare) {
+                MessageContextMenuItem(
+                    label = stringResource(R.string.s_share),
+                    icon = Icons.Outlined.Share,
+                    onClick = onShare,
+                )
+            }
             if (canModerate) {
                 // Report and Block live one level down, under Safety —
                 // matching iOS and macOS. The panel MEASURES itself here
@@ -2662,6 +2765,10 @@ private fun MessageContextMenuItem(
     icon: ImageVector,
     onClick: () -> Unit,
     tint: Color = LocalContentColor.current,
+    /** A value at the trailing edge — the playback speed's "1×". */
+    trailing: String? = null,
+    /** Said instead of the words, where the value needs saying with them. */
+    a11yLabel: String? = null,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -2669,10 +2776,23 @@ private fun MessageContextMenuItem(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
+            .then(if (a11yLabel != null) Modifier.clearAndSetSemantics {
+                contentDescription = a11yLabel
+                role = Role.Button
+                onSemanticsClick { onClick(); true }
+            } else Modifier)
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
-        Text(text = label, style = MaterialTheme.typography.bodyLarge, color = tint)
+        Text(text = label, style = MaterialTheme.typography.bodyLarge, color = tint, modifier = Modifier.weight(1f, fill = false))
+        if (trailing != null) {
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = trailing,
+                style = MaterialTheme.typography.bodyLarge.copy(fontFeatureSettings = "tnum"),
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
     }
 }
 
@@ -4424,6 +4544,8 @@ private fun BubbleContent(
                         videoNumber = videoNumber,
                     )
                 },
+                isMine = isMine,
+                acked = acked,
             )
             if (entity.body.isNotEmpty()) Spacer(Modifier.height(6.dp))
         }
@@ -5467,11 +5589,14 @@ internal fun MediaStrip(
 }
 
 /**
- * "Voice message not sent · 0:42 [▶] [Send] [✕]" — a recording something
- * other than the person stopped (#79, S2.8): a call, the app leaving the
- * screen, leaving the chat, the recorder failing, a crash in its Undo window.
- * It quotes the reply it was recorded under and shows its caption, and its
- * Send sends it with those and nothing else. Its ▶ plays the waiting file.
+ * The not-sent chip (#79, S2.8, the approved design): "Not sent" in the
+ * warning colour, ▶, the note's own waveform, its length, Send and ✕, on a
+ * chip whose edge is tinted with the warning — a recording something other
+ * than the person stopped (a call, the app leaving the screen, leaving the
+ * chat, the recorder failing, a crash in its Undo window). It quotes the
+ * reply it was recorded under and shows its caption, and its Send sends it
+ * with those and nothing else. Its ▶ plays the waiting file. To TalkBack the
+ * chip says what it is in full: "Voice message not sent · 0:42".
  */
 @Composable
 internal fun NotSentVoiceMessageRow(
@@ -5482,6 +5607,8 @@ internal fun NotSentVoiceMessageRow(
     onSend: () -> Unit,
     onDelete: () -> Unit,
     playing: Boolean = false,
+    /** Where the waiting file's ▶ has got to, for the played bars and the clock. */
+    positionMs: Long = 0L,
     /** Null where nothing can play it (no file). */
     onTogglePlay: (() -> Unit)? = null,
     /** A recording runs: ▶ is dimmed and says why (S1.7). */
@@ -5489,51 +5616,64 @@ internal fun NotSentVoiceMessageRow(
     onPlayDimmed: () -> Unit = {},
 ) {
     val sendLabel = stringResource(R.string.s_send_voice_message)
+    val warning = voiceWarning()
+    val whole = stringResource(R.string.s_voice_message_not_sent, formatDuration(entry.durationMs))
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 12.dp, end = 4.dp, top = 6.dp),
+            .padding(start = 12.dp, end = 12.dp, top = 6.dp),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Icon(
-                Icons.Filled.Mic,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.error,
-            )
-            Text(
-                text = stringResource(R.string.s_voice_message_not_sent, formatDuration(entry.durationMs)),
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            if (onTogglePlay != null) {
-                NotePlayButton(
-                    playing = playing,
-                    dimmed = playDimmed,
-                    onToggle = onTogglePlay,
-                    onDimmed = onPlayDimmed,
+        NotSentChipLayout(
+            modifier = Modifier
+                .widthIn(max = 360.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .border(1.dp, lerp(MaterialTheme.colorScheme.outlineVariant, warning, 0.45f), RoundedCornerShape(14.dp))
+                .padding(start = 10.dp, end = 2.dp, top = 2.dp, bottom = 2.dp)
+                .semantics(mergeDescendants = false) { contentDescription = whole }
+                .testTag("voice-not-sent-${entry.id}"),
+            label = {
+                Text(
+                    text = stringResource(R.string.s_not_sent),
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = warning,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.semantics { hideFromAccessibility() },
                 )
-            }
+            },
+            body = {
+                VoiceChipBody(
+                    durationMs = entry.durationMs,
+                    waveform = entry.waveform,
+                    playing = playing,
+                    positionMs = positionMs,
+                    onTogglePlay = onTogglePlay,
+                    playDimmed = playDimmed,
+                    onPlayDimmed = onPlayDimmed,
+                    labelsWaveform = false,
+                )
+            },
+        ) {
             TextButton(
                 onClick = onSend,
                 enabled = enabled && !sending,
+                contentPadding = PaddingValues(horizontal = 8.dp),
                 // The word on the button is "Send"; what it sends is said
                 // to TalkBack in full.
                 modifier = Modifier
                     .heightIn(min = 48.dp)
                     .semantics { contentDescription = sendLabel },
             ) {
-                Text(stringResource(R.string.s_send))
+                Text(stringResource(R.string.s_send), fontWeight = FontWeight.SemiBold, maxLines = 1)
             }
             IconButton(onClick = onDelete, enabled = enabled && !sending) {
                 Icon(
                     Icons.Filled.Close,
                     contentDescription = stringResource(R.string.s_delete_recording),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
                 )
             }
         }
@@ -5545,7 +5685,7 @@ internal fun NotSentVoiceMessageRow(
                 color = MaterialTheme.colorScheme.primary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 32.dp, end = 12.dp),
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 2.dp),
             )
         }
         if (entry.caption.isNotBlank()) {
@@ -5555,9 +5695,156 @@ internal fun NotSentVoiceMessageRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 32.dp, end = 12.dp, bottom = 2.dp),
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 2.dp),
             )
         }
+    }
+}
+
+/**
+ * The not-sent chip's arrangement: "Not sent", the body (▶, waveform,
+ * length) and the actions (Send, ✕) on one line, as the design draws it,
+ * when they fit with at least [NOT_SENT_MIN_WAVE] of waveform; otherwise
+ * "Not sent" moves to a line of its own above; and where even the body and
+ * the actions do not fit side by side — large text on a narrow phone — the
+ * actions go to a line of their own at the end. A plain Row measures the
+ * fixed pieces first and gives the waveform what is left, which on a
+ * 360-unit phone was nothing, with the length cut off.
+ */
+@Composable
+private fun NotSentChipLayout(
+    label: @Composable () -> Unit,
+    body: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    actions: @Composable RowScope.() -> Unit,
+) {
+    Layout(
+        contents = listOf(
+            label,
+            body,
+            { Row(verticalAlignment = Alignment.CenterVertically) { actions() } },
+        ),
+        modifier = modifier,
+    ) { (labelMeasurables, bodyMeasurables, actionMeasurables), constraints ->
+        val labelPart = labelMeasurables.single()
+        val bodyPart = bodyMeasurables.single()
+        val actionPart = actionMeasurables.single()
+        val gap = 6.dp.roundToPx()
+        val labelWidth = labelPart.maxIntrinsicWidth(Constraints.Infinity)
+        val actionsWidth = actionPart.maxIntrinsicWidth(Constraints.Infinity)
+        val bodyNeeds = bodyPart.maxIntrinsicWidth(Constraints.Infinity) + NOT_SENT_MIN_WAVE.roundToPx()
+        val oneLine = labelWidth + gap + bodyNeeds + gap + actionsWidth
+        val width = if (constraints.hasBoundedWidth) constraints.maxWidth else oneLine
+        val loose = Constraints(maxWidth = width)
+        when {
+            oneLine <= width -> {
+                val labelPlaced = labelPart.measure(loose)
+                val actionsPlaced = actionPart.measure(loose)
+                val bodyWidth = (width - labelPlaced.width - actionsPlaced.width - 2 * gap).coerceAtLeast(0)
+                val bodyPlaced = bodyPart.measure(Constraints.fixedWidth(bodyWidth))
+                val height = maxOf(labelPlaced.height, bodyPlaced.height, actionsPlaced.height)
+                    .coerceAtLeast(constraints.minHeight)
+                layout(width, height) {
+                    labelPlaced.placeRelative(0, (height - labelPlaced.height) / 2)
+                    bodyPlaced.placeRelative(labelPlaced.width + gap, (height - bodyPlaced.height) / 2)
+                    actionsPlaced.placeRelative(width - actionsPlaced.width, (height - actionsPlaced.height) / 2)
+                }
+            }
+            bodyNeeds + gap + actionsWidth <= width -> {
+                val labelTop = 4.dp.roundToPx()
+                val labelPlaced = labelPart.measure(loose)
+                val actionsPlaced = actionPart.measure(loose)
+                val bodyWidth = (width - actionsPlaced.width - gap).coerceAtLeast(0)
+                val bodyPlaced = bodyPart.measure(Constraints.fixedWidth(bodyWidth))
+                val rowTop = labelTop + labelPlaced.height
+                val rowHeight = maxOf(bodyPlaced.height, actionsPlaced.height)
+                val height = (rowTop + rowHeight).coerceAtLeast(constraints.minHeight)
+                layout(width, height) {
+                    labelPlaced.placeRelative(0, labelTop)
+                    bodyPlaced.placeRelative(0, rowTop + (rowHeight - bodyPlaced.height) / 2)
+                    actionsPlaced.placeRelative(width - actionsPlaced.width, rowTop + (rowHeight - actionsPlaced.height) / 2)
+                }
+            }
+            else -> {
+                val labelTop = 4.dp.roundToPx()
+                val labelPlaced = labelPart.measure(loose)
+                val bodyPlaced = bodyPart.measure(Constraints.fixedWidth(width))
+                val actionsPlaced = actionPart.measure(loose)
+                val bodyTop = labelTop + labelPlaced.height
+                val actionsTop = bodyTop + bodyPlaced.height
+                val height = (actionsTop + actionsPlaced.height).coerceAtLeast(constraints.minHeight)
+                layout(width, height) {
+                    labelPlaced.placeRelative(0, labelTop)
+                    bodyPlaced.placeRelative(0, bodyTop)
+                    actionsPlaced.placeRelative(width - actionsPlaced.width, actionsTop)
+                }
+            }
+        }
+    }
+}
+
+/** The least waveform the not-sent chip keeps on its line before it rearranges. */
+private val NOT_SENT_MIN_WAVE = 48.dp
+
+/**
+ * The middle of a voice chip — the review chip's and the not-sent chip's
+ * (the approved design): the 30-unit accent ▶, the note's own waveform with
+ * the played bars in the accent, and its length — "0:12 / 0:42" while it
+ * plays (S2.7) — in tabular digits.
+ */
+@Composable
+private fun VoiceChipBody(
+    durationMs: Long,
+    waveform: String?,
+    playing: Boolean,
+    positionMs: Long,
+    onTogglePlay: (() -> Unit)?,
+    playDimmed: Boolean,
+    onPlayDimmed: () -> Unit,
+    modifier: Modifier = Modifier,
+    /**
+     * Whether the waveform says "Voice message, 0:42" to TalkBack. False
+     * where the chip around it already says so in full (the not-sent chip's
+     * "Voice message not sent · 0:42"), so the length is not heard twice.
+     */
+    labelsWaveform: Boolean = true,
+) {
+    val levels = remember(waveform) { Waveform.levelsOrPlaceholder(waveform) }
+    val label = stringResource(R.string.s_voice_message_a11y, formatDuration(durationMs))
+    val reason = stringResource(R.string.s_play_after_recording)
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (onTogglePlay != null) {
+            VoicePlayDisc(
+                playing = playing,
+                onClick = if (playDimmed) onPlayDimmed else onTogglePlay,
+                disc = VoiceDrawing.CHIP_DISC,
+                dimmed = playDimmed,
+                dimmedReason = reason,
+            )
+        }
+        WaveformBars(
+            levels = levels,
+            played = { bars -> if (playing || positionMs > 0L) Waveform.playedBars(positionMs, durationMs, bars) else 0 },
+            active = MaterialTheme.colorScheme.primary,
+            inactive = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.28f),
+            decorative = !labelsWaveform,
+            modifier = Modifier
+                .weight(1f)
+                .height(VoiceDrawing.CHIP_WAVE_HEIGHT)
+                .then(if (labelsWaveform) Modifier.semantics { contentDescription = label } else Modifier)
+                .testTag("voice-chip-wave"),
+        )
+        Text(
+            text = if (playing) "${formatDuration(positionMs)} / ${formatDuration(durationMs)}" else formatDuration(durationMs),
+            style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier.testTag("voice-chip-time"),
+        )
     }
 }
 
@@ -5723,7 +6010,7 @@ internal fun StagedAttachmentChip(
     }
 }
 
-/** The staged chip's voice-note face (S2.7). */
+/** The staged chip's voice-note face (S2.7, the approved design): ▶, its waveform, its length, ✕. */
 @Composable
 private fun StagedVoiceNoteChip(
     staged: MediaPrep.Prepared,
@@ -5736,29 +6023,32 @@ private fun StagedVoiceNoteChip(
 ) {
     val lengthMs = staged.durationMs?.toLong() ?: 0L
     Row(
-        modifier = Modifier.widthIn(max = 240.dp),
+        modifier = Modifier
+            .width(300.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(14.dp))
+            .padding(start = 2.dp, end = 0.dp)
+            .testTag("voice-review-chip"),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        if (onTogglePlay != null) {
-            NotePlayButton(playing = playing, dimmed = playDimmed, onToggle = onTogglePlay, onDimmed = onPlayDimmed)
-        }
-        Text(
-            text = if (playing) {
-                "${formatDuration(positionMs)} / ${formatDuration(lengthMs)}"
-            } else {
-                stringResource(R.string.s_voice_message_with_length, formatDuration(lengthMs))
-            },
-            style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
+        VoiceChipBody(
+            durationMs = lengthMs,
+            waveform = staged.waveform,
+            playing = playing,
+            positionMs = positionMs,
+            onTogglePlay = onTogglePlay,
+            playDimmed = playDimmed,
+            onPlayDimmed = onPlayDimmed,
+            modifier = Modifier.weight(1f),
         )
         IconButton(onClick = onDiscard) {
             Icon(
                 Icons.Filled.Close,
                 contentDescription = stringResource(R.string.s_delete_recording),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
             )
         }
     }
@@ -5848,6 +6138,8 @@ internal fun InputBar(
     hold: RecordGesture.HoldState = RecordGesture.HoldState(),
     /** The level meter's lit bars and the row's line (S2.9). */
     voiceLevel: Int = 0,
+    /** The live waveform's levels, oldest first (#79, the approved design). */
+    voiceLevels: List<Int> = emptyList(),
     voiceLine: ChatViewModel.VoiceLine? = null,
     /** What the composer's polite live region says next (S6). */
     announcement: ChatViewModel.VoiceAnnouncement? = null,
@@ -5984,7 +6276,7 @@ internal fun InputBar(
     // mid-edit and during a call; the others say why.
     val videoRoundAvailable = videoEntries?.let { it.roundAvailable && it.familyOrDirectChat } == true
     val recordVideoEnabled = videoEntries?.slot?.let { !it.busy && !it.editing && !it.call } == true
-    Surface(tonalElevation = 3.dp) {
+    ComposerSurface {
         Column(modifier = Modifier.fillMaxWidth()) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             // The bar spans the window; what is IN it is held to the
@@ -6061,6 +6353,7 @@ internal fun InputBar(
                         onSend = { onSendNotSent(entry.id) },
                         onDelete = { onDeleteNotSent(entry.id) },
                         playing = player?.playing == true,
+                        positionMs = player?.positionMs ?: 0L,
                         onTogglePlay = player?.let { it::toggle },
                         playDimmed = gate.recording,
                         onPlayDimmed = gate.explain,
@@ -6383,6 +6676,14 @@ internal fun InputBar(
                 // the hold row and the Undo row, typing simply carries on, and
                 // words typed before a recording beside them are kept.
                 val covered = recordingRow || undoNote != null
+                // The rows cross-fade in and out over the field in 150 ms (the
+                // approved design); without animations they simply are there.
+                val fadeSteady = animationsRemoved()
+                val fieldAlpha by animateFloatAsState(
+                    targetValue = if (covered) 0f else 1f,
+                    animationSpec = if (fadeSteady) snap() else tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt()),
+                    label = "fieldUnderTheRow",
+                )
                 // The video button inside the empty field (#79, S1.4): decided
                 // per keystroke by the shared rule — gone the moment a
                 // character is typed, dimmed in rows 7 and 8.
@@ -6398,7 +6699,7 @@ internal fun InputBar(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 44.dp)
-                            .alpha(if (covered) 0f else 1f)
+                            .alpha(fieldAlpha)
                             .semantics { if (covered) hideFromAccessibility() }
                             // Hands-free, focus is the slot's: Tab walks Delete,
                             // Stop and the slot, never the hidden field (S2.4).
@@ -6446,32 +6747,53 @@ internal fun InputBar(
                             unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                         ),
                     )
-                    when {
-                        holding != null -> HoldRow(
-                            recordedMs = recordingMs ?: 0L,
-                            level = voiceLevel,
-                            line = voiceLine,
-                            armed = holding.armed,
-                            modifier = Modifier.matchParentSize().keepsTouchesFromTheField(),
-                        )
-                        handsFree != null -> RecordingRow(
-                            recordedMs = recordingMs ?: 0L,
-                            level = voiceLevel,
-                            line = voiceLine,
-                            besideDraft = handsFree.besideDraft,
-                            onDelete = onDeleteRecording,
-                            onStop = onStopRecording,
-                            modifier = Modifier.matchParentSize().keepsTouchesFromTheField(),
-                        )
-                        undoNote != null -> UndoRow(
-                            recordedMs = undoNote.recordedMs,
-                            windowMs = remember(undoNote) {
-                                (undoNote.untilMs - SystemClock.uptimeMillis())
-                                    .coerceIn(0L, ComposerSlot.UNDO_WINDOW_MS)
-                            },
-                            onUndo = onUndoVoiceMessage,
-                            modifier = Modifier.matchParentSize().keepsTouchesFromTheField(),
-                        )
+                    val rowKind = when {
+                        holding != null -> VoiceRowKind.HOLD
+                        handsFree != null -> VoiceRowKind.HANDS_FREE
+                        undoNote != null -> VoiceRowKind.UNDO
+                        else -> VoiceRowKind.NONE
+                    }
+                    // Kept from the row being shown, so the one fading out still
+                    // draws what it last said rather than nothing.
+                    val lastUndo = remember { mutableStateOf<RecordGesture.UndoNote?>(null) }
+                    if (undoNote != null) lastUndo.value = undoNote
+                    Crossfade(
+                        targetState = rowKind,
+                        animationSpec = if (fadeSteady) snap() else tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt()),
+                        modifier = Modifier.matchParentSize(),
+                        label = "voiceRow",
+                    ) { kind ->
+                        when (kind) {
+                            VoiceRowKind.HOLD -> HoldRow(
+                                recordedMs = recordingMs ?: 0L,
+                                level = voiceLevel,
+                                line = voiceLine,
+                                armed = holding?.armed == true,
+                                modifier = Modifier.fillMaxSize().keepsTouchesFromTheField(),
+                            )
+                            VoiceRowKind.HANDS_FREE -> RecordingRow(
+                                recordedMs = recordingMs ?: 0L,
+                                level = voiceLevel,
+                                line = voiceLine,
+                                besideDraft = handsFree?.besideDraft == true,
+                                onDelete = onDeleteRecording,
+                                onStop = onStopRecording,
+                                levels = voiceLevels,
+                                modifier = Modifier.fillMaxSize().keepsTouchesFromTheField(),
+                            )
+                            VoiceRowKind.UNDO -> lastUndo.value?.let { shown ->
+                                UndoRow(
+                                    recordedMs = shown.recordedMs,
+                                    windowMs = remember(shown) {
+                                        (shown.untilMs - SystemClock.uptimeMillis())
+                                            .coerceIn(0L, ComposerSlot.UNDO_WINDOW_MS)
+                                    },
+                                    onUndo = onUndoVoiceMessage,
+                                    modifier = Modifier.fillMaxSize().keepsTouchesFromTheField(),
+                                )
+                            }
+                            VoiceRowKind.NONE -> Unit
+                        }
                     }
                     // The polite live region (S6) — "Recording", "Voice message
                     // sent" — laid over the field, so it costs the bar no height.
@@ -6565,4 +6887,100 @@ internal fun shareWithSystem(
         context.startActivity(Intent.createChooser(send, null))
         true
     }.getOrDefault(false)
+}
+
+/** Which row takes the field's place while a voice message is recorded or waits (S2.3, S2.4, S2.6). */
+private enum class VoiceRowKind { NONE, HOLD, HANDS_FREE, UNDO }
+
+/**
+ * The composer's panel: what `Surface(tonalElevation = 3.dp)` draws — the
+ * tonal colour, content colour, elevation for what is inside, a traversal
+ * group, and touches stopped from falling through — WITHOUT its clip. A
+ * Material 3 Surface clips its content to its bounds, and the held
+ * microphone's 1.35× swell and red halo (#79, the approved design) reach
+ * past the bar's top edge, so the Surface cut the top of the ring off flat.
+ */
+@Composable
+private fun ComposerSurface(content: @Composable () -> Unit) {
+    val elevation = androidx.compose.material3.LocalAbsoluteTonalElevation.current + 3.dp
+    val colors = MaterialTheme.colorScheme
+    val panel = if (androidx.compose.material3.LocalTonalElevationEnabled.current) {
+        colors.surfaceColorAtElevation(elevation)
+    } else {
+        colors.surface
+    }
+    CompositionLocalProvider(
+        LocalContentColor provides colors.onSurface,
+        androidx.compose.material3.LocalAbsoluteTonalElevation provides elevation,
+    ) {
+        Box(
+            modifier = Modifier
+                .background(panel)
+                .semantics(mergeDescendants = false) { isTraversalGroup = true }
+                .pointerInput(Unit) {},
+            propagateMinConstraints = true,
+        ) {
+            content()
+        }
+    }
+}
+
+/**
+ * A voice message's Save through the system's save screen (#79), as one
+ * function to call with the message's recording.
+ *
+ * The recording being saved is kept in SAVED state, not plain `remember`:
+ * MainActivity declares no configChanges, so a rotation or a theme change
+ * while the save screen is up recreates this screen, and a plain `remember`
+ * forgot which recording it was — leaving the document the save screen had
+ * just created as an empty file. [onOrphaned] is handed any document that
+ * arrives with no recording to put in it, so that cannot be left behind
+ * either.
+ */
+@Composable
+internal fun rememberVoiceSave(
+    onChosen: (AttachmentDto, Uri) -> Unit,
+    onOrphaned: (Uri) -> Unit,
+): (AttachmentDto) -> Unit {
+    var pending by rememberSaveable(stateSaver = PendingAttachmentSaver) {
+        mutableStateOf<AttachmentDto?>(null)
+    }
+    val launcher = rememberLauncherForActivityResult(CreateSoundDocument) { destination ->
+        val attachment = pending
+        pending = null
+        when {
+            destination == null -> Unit
+            attachment != null -> onChosen(attachment, destination)
+            else -> onOrphaned(destination)
+        }
+    }
+    return { attachment ->
+        pending = attachment
+        runCatching {
+            launcher.launch(attachment.mime to (attachment.name ?: attachment.fallbackFileName))
+        }.onFailure { pending = null }
+    }
+}
+
+/** One attachment through saved instance state, as the same JSON the database keeps. */
+internal val PendingAttachmentSaver: androidx.compose.runtime.saveable.Saver<AttachmentDto?, String> =
+    androidx.compose.runtime.saveable.Saver(
+        save = { attachment -> attachment?.let { AttachmentsCodec.encode(listOf(it)) } },
+        restore = { raw -> AttachmentsCodec.decode(raw)?.singleOrNull() },
+    )
+
+/**
+ * ACTION_CREATE_DOCUMENT for a sound file of a given type and name — the
+ * stock CreateDocument contract fixes its type when it is made, and a voice
+ * message may be AAC, MP3 or Ogg.
+ */
+private object CreateSoundDocument : androidx.activity.result.contract.ActivityResultContract<Pair<String, String>, Uri?>() {
+    override fun createIntent(context: Context, input: Pair<String, String>): Intent =
+        Intent(Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType(input.first.ifEmpty { "audio/*" })
+            .putExtra(Intent.EXTRA_TITLE, input.second)
+
+    override fun parseResult(resultCode: Int, intent: Intent?): Uri? =
+        intent?.data?.takeIf { resultCode == android.app.Activity.RESULT_OK }
 }

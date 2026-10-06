@@ -783,6 +783,14 @@ pub struct Attachment {
     /// square video tile, which is what the attachment otherwise is.
     #[serde(default, skip_serializing_if = "is_false")]
     pub round: bool,
+    /// A voice note's shape: 48 lowercase hex digits, one level 0–15 per
+    /// slice of the recording, measured by the sender (docs/protocol.md, "A
+    /// voice note's waveform"). Absent where none was sent — a picked sound
+    /// file, an older sender, an older server — and read through
+    /// `fc_text::waveform::levels_or_placeholder`, so a malformed one draws
+    /// the neutral placeholder rather than failing the message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waveform: Option<String>,
 }
 
 fn is_false(flag: &bool) -> bool {
@@ -920,6 +928,21 @@ impl Message {
     pub fn sticker(&self) -> Option<&Attachment> {
         match self.attachments() {
             [only] if only.sticker && only.kind == "photo" => Some(only),
+            _ => None,
+        }
+    }
+
+    /// The voice message this message IS, if it is one: exactly one
+    /// attachment, audio, and nothing else — no words, no poll, no call. Its
+    /// menu offers what a recording has (Show text, Playback speed, Save)
+    /// and nothing a text has: there are no words to copy or edit (the
+    /// approved design for #79).
+    pub fn voice_note(&self) -> Option<&Attachment> {
+        if !self.body.is_empty() || self.poll.is_some() || self.call.is_some() {
+            return None;
+        }
+        match self.attachments() {
+            [only] if only.kind == "audio" => Some(only),
             _ => None,
         }
     }

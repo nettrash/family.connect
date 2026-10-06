@@ -1494,6 +1494,8 @@ class FakeAttachmentApi : AttachmentApi {
     val uploadedMetadata = mutableListOf<Triple<String, Int?, Int?>>()
     /** Every name a file upload carried, in order. */
     val uploadedNames = mutableListOf<String?>()
+    /** Every waveform an upload carried, in order (#79). */
+    val uploadedWaveforms = mutableListOf<String?>()
     val uploadedPreviews = mutableListOf<Pair<Long, Int>>()
 
     override suspend fun upload(
@@ -1504,11 +1506,13 @@ class FakeAttachmentApi : AttachmentApi {
         height: Int?,
         durationMs: Int?,
         name: String?,
+        waveform: String?,
     ): ApiResult<AttachmentResponse> {
         calls += "upload"
         uploadedFiles += file
         uploadedMetadata += Triple(kind, width, height)
         uploadedNames += name
+        uploadedWaveforms += waveform
         return uploadHandler(file, mime, kind)
     }
 
@@ -1742,13 +1746,16 @@ class FakeVoiceRecorder(private val dir: java.io.File) :
     /** A stop that keeps nothing — under the recorder's floor, a recording that never got audio. */
     var keepsNothing = false
 
+    /** The waveform each kept recording carries (#79): what the real recorder makes of the meter's reads. */
+    var waveform: String? = null
+
     override fun stop(): me.nettrash.familyconnect.data.repo.VoiceRecorder.Recording? {
         if (!isRecording) return null
         stops++
         isRecording = false
         owner = null
         if (keepsNothing) return null
-        return me.nettrash.familyconnect.data.repo.VoiceRecorder.Recording(newFile(), elapsed)
+        return me.nettrash.familyconnect.data.repo.VoiceRecorder.Recording(newFile(), elapsed, waveform)
     }
 
     override fun cancel() {

@@ -166,7 +166,8 @@ class RoundVideoBubbleTest {
         circleNode().performSemanticsAction(SemanticsActions.OnClick)
         compose.runOnIdle { factory.events.single().onEnded() }
         compose.onNodeWithTag("round-video-unplayed", useUnmergedTree = true).assertDoesNotExist()
-        circleNode().assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.StateDescription))
+        // ...and says "Played", as the voice bubble and every other client's circle do.
+        circleNode().assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Played"))
     }
 
     @Test

@@ -38,10 +38,10 @@ public class DatabaseTests : IDisposable
     {
         using var database = Database.Open(Path_("fresh.db"));
         Assert.Equal(Database.SchemaVersion, database.UserVersion);
-        Assert.Equal(6, Database.SchemaVersion);
+        Assert.Equal(7, Database.SchemaVersion);
         Assert.Equal(
             ["blocked", "chats", "gone", "members", "messages", "meta", "notes", "outbox",
-             "pack_gone", "pack_items", "pack_recents", "played_rounds", "transcripts"],
+             "pack_gone", "pack_items", "pack_recents", "played_rounds", "played_voice", "transcripts"],
             database.Tables());
     }
 
@@ -234,6 +234,39 @@ public class DatabaseTests : IDisposable
         var played = new PlayedRoundStore(migrated);
         Assert.Equal(0, played.Count);
         Assert.False(played.Played(91));
+    }
+
+    /// <summary>
+    /// Version 6 → 7 adds which voice messages this device has played: nothing held is touched — the circles already
+    /// played stay played — and no voice note is played yet, so every one that arrived before shows its dot.
+    /// </summary>
+    [Fact]
+    public void AVersionSixCacheGainsPlayedVoiceMessagesAndLosesNothing()
+    {
+        var path = Path_("six.db");
+        using (var six = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}"))
+        {
+            six.Open();
+            foreach (var statement in Migrations.All.Take(6).SelectMany(step => step)
+                         .Append("INSERT INTO chats (chat_id, kind, title) VALUES (42, 'family', 'The Smiths')")
+                         .Append("INSERT INTO messages (message_id, chat_id, sender_id, body, created_at, sequenced) VALUES (20, 42, 9, 'hi', 0, 1)")
+                         .Append("INSERT INTO played_rounds (attachment_id) VALUES (91)")
+                         .Append("PRAGMA user_version = 6"))
+            {
+                using var command = six.CreateCommand();
+                command.CommandText = statement;
+                command.ExecuteNonQuery();
+            }
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+        using var migrated = Database.Open(path);
+        Assert.Equal(Database.SchemaVersion, migrated.UserVersion);
+        Assert.Equal("hi", Assert.Single(new ChatStore(migrated).Messages(42)).Body);
+        Assert.True(new PlayedRoundStore(migrated).Played(91));
+        var voice = new PlayedVoiceStore(migrated);
+        Assert.Equal(0, voice.Count);
+        Assert.False(voice.Played(91));
     }
 
     /// <summary>

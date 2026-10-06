@@ -1712,6 +1712,7 @@ struct MacConversationView: View {
                     MacVoiceRecordingRow(
                         elapsed: voice.recorder.elapsed,
                         litBars: AudioRecorder.litBars(peak: voice.recorder.peakLevel),
+                        peaks: voice.recorder.peaks,
                         besideDraft: voice.isBesideDraft,
                         warning: voice.showsThirtySecondsLeft,
                         height: composerControl,
@@ -3092,12 +3093,14 @@ struct MacConversationView: View {
     /// written before the first byte (S2.5). If it cannot be queued it lands
     /// in review with the error, never lost.
     private func sendVoiceNote(_ recording: AudioRecorder.Recording, replyTo: ReplyToDTO?) -> Bool {
-        let prepared = MediaPrep.Prepared(
+        var prepared = MediaPrep.Prepared(
             fileURL: recording.url,
             mime: MediaPrep.audioMIME(for: recording.url),
             kind: AttachmentDTO.Kind.audio,
             durationMS: Int((recording.duration * 1000).rounded()),
             name: nil)
+        // Its shape, from the recorder's meter, goes up with it (#79).
+        prepared.waveform = recording.waveform
         // Declared at the door, like every other send here (`owesSendPin`).
         owesSendPin = true
         if coordinator.sendMedia([prepared], caption: "", replyTo: replyTo, mentions: nil, in: chatID) != nil {
@@ -3136,8 +3139,9 @@ struct MacConversationView: View {
                 // `fc-voice-<UUID>.m4a`. And a voice note: recorded to the
                 // profile already, so the audio rules for picked files do
                 // not apply to it.
-                let prepared = try await MediaPrep.prepareAudio(
+                var prepared = try await MediaPrep.prepareAudio(
                     from: url, limit: MediaPrep.sizeLimit, isVoiceNote: true)
+                prepared.waveform = recording.waveform
                 guard !Task.isCancelled else {
                     // The chat was left while the copy was being made.
                     MediaPrep.discard(prepared)
@@ -3196,7 +3200,8 @@ struct MacConversationView: View {
                 duration: duration,
                 chatID: chatID,
                 replyTo: replyDraft,
-                caption: captionTaken ? nil : caption)
+                caption: captionTaken ? nil : caption,
+                waveform: note.prepared.waveform)
             guard parked != nil else { continue }
             captionTaken = true
             staged.removeAll { $0.id == note.id }
@@ -3213,7 +3218,7 @@ struct MacConversationView: View {
         }
         if ParkedRecordings.shared.park(
             fileAt: recording.url, duration: recording.duration, chatID: chatID,
-            replyTo: replyTo, caption: caption) == nil
+            replyTo: replyTo, caption: caption, waveform: recording.waveform) == nil
         {
             try? FileManager.default.removeItem(at: recording.url)
             mediaNotice = .failed(String(localized: "The recording stopped unexpectedly."))

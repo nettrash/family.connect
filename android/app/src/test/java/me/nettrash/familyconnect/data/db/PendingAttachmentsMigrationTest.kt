@@ -109,6 +109,10 @@ class PendingAttachmentsMigrationTest {
     @Test
     fun theTableMatchesWhatTheEntityDeclares() {
         AppDatabase.MIGRATION_20_21.migrate(db)
+        // And every later step that touches this table, so what is compared
+        // is the table as an upgraded install has it today: v32 added a voice
+        // note's waveform (#79; WaveformMigrationTest).
+        AppDatabase.MIGRATION_31_32.migrate(db)
 
         val fresh = androidx.room.Room.inMemoryDatabaseBuilder(
             RuntimeEnvironment.getApplication(),

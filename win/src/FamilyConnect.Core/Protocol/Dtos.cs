@@ -161,7 +161,13 @@ public sealed record AttachmentDto(
     /// video messages, and every one a 1.2 app sent, reads false here. Never beside <see cref="Sticker"/>, never on
     /// anything but a video; in every other respect it is still <c>kind=video</c>.
     /// </summary>
-    bool Round = false)
+    bool Round = false,
+    /// <summary>
+    /// A voice note's shape (docs/protocol.md, "A voice note's waveform"): 48 lowercase hex digits the SENDER measured,
+    /// absent on a picked sound file, a video, anything else, and everything an older client or server sent. Read
+    /// through <see cref="FamilyConnect.Core.Waveform.LevelsOrPlaceholder"/>, never trusted to be well formed.
+    /// </summary>
+    string? Waveform = null)
 {
     public bool IsPhoto => Kind == "photo";
     public bool IsVideo => Kind == "video";

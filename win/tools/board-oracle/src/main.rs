@@ -11,7 +11,9 @@
 //! is copied to the iOS and Android test resources too, because all three ports implement it.
 //! `record` (issue #79) is the second such exception: the composer's slot, the video button, the
 //! hold and the round video's arithmetic, which the Apple and Android ports implement whole and the
-//! Windows port in part (it has no hold).
+//! Windows port in part (it has no hold). `waveform` (issue #79) is the third: a voice note's 48
+//! levels — computed from metered peaks, parsed off the wire, drawn as bars — which every port
+//! implements whole.
 use fc_text::board as b;
 use fc_text::{calendar, call_record, media, notify};
 
@@ -33,6 +35,11 @@ fn main() {
     }
     if std::env::args().nth(1).as_deref() == Some("record") {
         record_vectors();
+        return;
+    }
+    // `waveform` prints fc_text::waveform — a voice note's shape (issue #79) — copied likewise.
+    if std::env::args().nth(1).as_deref() == Some("waveform") {
+        waveform_vectors();
         return;
     }
     if std::env::args().nth(1).as_deref() == Some("markdown") {
@@ -2843,5 +2850,309 @@ fn record_vectors() {
     }
 
     let lines: Vec<String> = cases.iter().map(|case| serde_json::to_string(case).unwrap()).collect();
+    println!("[\n  {}\n]", lines.join(",\n  "));
+}
+
+// --- waveform: a voice note's shape (fc_text::waveform) ---------------------------------------------
+
+/// A peak as JSON. JSON has no NaN or infinity, so those three are the strings `"NaN"`,
+/// `"Infinity"` and `"-Infinity"` — the spellings Swift's `Double(_:)`, Kotlin's `toDouble()` and
+/// C#'s `double.Parse` (invariant culture) all read back. Everything else is the number, written as
+/// the shortest decimal that round-trips; [`rate`] writes a whole one as an integer.
+fn peak(value: f64) -> serde_json::Value {
+    if value.is_nan() {
+        serde_json::json!("NaN")
+    } else if value == f64::INFINITY {
+        serde_json::json!("Infinity")
+    } else if value == f64::NEG_INFINITY {
+        serde_json::json!("-Infinity")
+    } else {
+        rate(value)
+    }
+}
+
+/// A deterministic "recording" of `n` peaks: an envelope that rises and falls with a ripple,
+/// every value a multiple of 1/8 dB — exact in binary, so the input every port parses is the
+/// input this printed — and some below the floor and above full scale.
+fn synthetic_peaks(n: usize, seed: u64) -> Vec<f64> {
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    (0..n)
+        .map(|i| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let noise = ((state >> 33) % 121) as i64; // 0..=120 eighths: 0..15 dB
+            let envelope = if n <= 1 {
+                0
+            } else {
+                (i as i64 * (n as i64 - 1 - i as i64) * 4 * 8 * 30)
+                    / ((n as i64 - 1) * (n as i64 - 1))
+            };
+            // −70 dB … +5 dB in eighths: below the floor at the ends, above full scale at the peak.
+            let eighths = -560 + 2 * envelope + noise;
+            eighths as f64 / 8.0
+        })
+        .collect()
+}
+
+fn waveform_vectors() {
+    use fc_text::waveform as w;
+    use serde_json::json;
+
+    let mut cases: Vec<serde_json::Value> = Vec::new();
+    let mut case =
+        |name: &str, function: &str, input: serde_json::Value, expected: serde_json::Value| {
+            cases.push(
+                json!({"name": name, "function": function, "input": input, "expected": expected}),
+            );
+        };
+
+    case(
+        "the constants and the placeholder",
+        "constants",
+        json!({}),
+        json!({
+            "levels": w::LEVELS,
+            "max_level": w::MAX_LEVEL,
+            "floor_dbfs": rate(w::FLOOR_DBFS),
+            "db_per_level": rate(w::DB_PER_LEVEL),
+            "placeholder_level": w::PLACEHOLDER_LEVEL,
+            "placeholder": w::encode(&w::PLACEHOLDER),
+        }),
+    );
+
+    // --- level: one peak ------------------------------------------------------------------------
+    let below = |value: f64| f64::from_bits(value.to_bits() + 1); // one ulp further from zero
+    let above = |value: f64| f64::from_bits(value.to_bits() - 1); // one ulp nearer zero
+    let mut peaks: Vec<(String, f64)> = vec![
+        ("NaN is silence".into(), f64::NAN),
+        ("+infinity is full scale".into(), f64::INFINITY),
+        ("-infinity is silence".into(), f64::NEG_INFINITY),
+        ("-160, a meter's floor".into(), -160.0),
+        ("-120".into(), -120.0),
+        ("-60.5, below the floor".into(), -60.5),
+        ("above full scale: +3.5".into(), 3.5),
+        ("+120".into(), 120.0),
+        ("0".into(), 0.0),
+        ("one ulp below -58, the first tie".into(), below(-58.0)),
+        ("one ulp above -58".into(), above(-58.0)),
+        ("2^-16 below -58".into(), -58.0 - 1.0 / 65_536.0),
+        (
+            "one ulp below -2: the addition rounds it onto the tie".into(),
+            below(-2.0),
+        ),
+        ("2^-16 below -2".into(), -2.0 - 1.0 / 65_536.0),
+        ("one ulp above -60".into(), above(-60.0)),
+        ("one ulp below 0".into(), below(0.0)),
+        (
+            "one ulp above -0 (the least positive)".into(),
+            f64::from_bits(1),
+        ),
+        ("-12.3, not exact in binary".into(), -12.3),
+        ("-33.333333333333336".into(), -33.333333333333336),
+        (
+            "-45.1, a Float meter widened (f32 -> f64)".into(),
+            f64::from(-45.1_f32),
+        ),
+    ];
+    for k in 0..=15 {
+        let centre = -60.0 + 4.0 * f64::from(k);
+        peaks.push((format!("level {k}'s centre"), centre));
+        peaks.push((
+            format!("level {k}'s centre - 2 (a tie, rounds up)"),
+            centre - 2.0,
+        ));
+        peaks.push((format!("level {k}'s centre + 1.875"), centre + 1.875));
+        peaks.push((format!("level {k}'s centre - 1.875"), centre - 1.875));
+    }
+    for eighths in (-500..=16).step_by(3) {
+        let value = f64::from(eighths) / 8.0;
+        peaks.push((format!("{value} dBFS"), value));
+    }
+    for (name, value) in &peaks {
+        case(
+            &format!("level: {name}"),
+            "level",
+            json!({"dbfs": peak(*value)}),
+            json!({"level": w::level(*value)}),
+        );
+    }
+
+    // --- from_peaks: a recording's peaks to the wire ---------------------------------------------
+    let mut recordings: Vec<(String, Vec<f64>, usize)> = vec![
+        ("no peaks at all: silence".into(), vec![], 48),
+        ("one peak covers every slice".into(), vec![-30.0], 48),
+        ("two peaks, half each".into(), vec![-60.0, 0.0], 48),
+        (
+            "three peaks, a third each".into(),
+            vec![-60.0, -30.0, 0.0],
+            48,
+        ),
+        (
+            "NaN and infinities among peaks".into(),
+            vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -20.0],
+            48,
+        ),
+        (
+            "every peak a tie".into(),
+            (0..48).map(|i| -58.0 + 4.0 * f64::from(i % 15)).collect(),
+            48,
+        ),
+        (
+            "a slice takes its loudest".into(),
+            {
+                let mut v = vec![-60.0; 96];
+                v[1] = 0.0;
+                v[94] = -30.0;
+                v
+            },
+            48,
+        ),
+        ("count 0 is empty".into(), vec![-30.0, -20.0], 0),
+        (
+            "count 1 is the loudest".into(),
+            vec![-50.0, -10.0, -40.0],
+            1,
+        ),
+        ("a live meter's 22 bars".into(), synthetic_peaks(300, 7), 22),
+    ];
+    for n in [
+        5usize, 47, 48, 49, 95, 96, 97, 100, 143, 144, 145, 480, 1_000, 3_001,
+    ] {
+        recordings.push((
+            format!("{n} synthetic peaks"),
+            synthetic_peaks(n, n as u64),
+            48,
+        ));
+    }
+    for (name, samples, count) in &recordings {
+        case(
+            &format!("from_peaks: {name}"),
+            "from_peaks",
+            json!({"samples_dbfs": samples.iter().map(|value| peak(*value)).collect::<Vec<_>>(), "levels": count}),
+            json!({"waveform": w::from_peaks(samples, *count)}),
+        );
+    }
+
+    // --- parse and the placeholder ---------------------------------------------------------------
+    let wire = "0123456789abcdef0123456789abcdef0123456789abcdef";
+    let parses: Vec<(&str, Option<String>)> = vec![
+        ("every digit", Some(wire.to_string())),
+        ("all zeros", Some("0".repeat(48))),
+        ("all f", Some("f".repeat(48))),
+        (
+            "protocol.md's example",
+            Some("0124689abcddeeedcba987654321001245678aabbba98642".to_string()),
+        ),
+        ("the placeholder", Some("4".repeat(48))),
+        ("empty", Some(String::new())),
+        ("47", Some("0".repeat(47))),
+        ("49", Some("0".repeat(49))),
+        ("96", Some("0".repeat(96))),
+        ("uppercase", Some(wire.to_uppercase())),
+        ("one uppercase F", Some(format!("{}F", &wire[..47]))),
+        ("g", Some(format!("{}g", &wire[..47]))),
+        ("a trailing space", Some(format!("{} ", &wire[..47]))),
+        ("a leading space", Some(format!(" {}", &wire[..47]))),
+        ("a newline", Some(format!("{}\n", &wire[..47]))),
+        ("a comma", Some(format!("{},", &wire[..47]))),
+        ("a minus", Some(format!("{}-", &wire[..47]))),
+        ("48 bytes, 47 characters", Some(format!("{}é", &wire[..46]))),
+        ("48 characters, 49 bytes", Some(format!("{}٣", &wire[..47]))),
+        ("a fullwidth digit", Some(format!("{}０", &wire[..45]))),
+        ("absent", None),
+    ];
+    for (name, value) in &parses {
+        if let Some(value) = value {
+            case(
+                &format!("parse: {name}"),
+                "parse",
+                json!({"waveform": value}),
+                json!({"levels": w::parse(value).map(|levels| levels.to_vec())}),
+            );
+        }
+        case(
+            &format!("levels_or_placeholder: {name}"),
+            "levels_or_placeholder",
+            json!({"waveform": value}),
+            json!({"levels": w::levels_or_placeholder(value.as_deref()).to_vec()}),
+        );
+    }
+
+    // --- drawing: bars, heights, the played part -------------------------------------------------
+    let shapes: Vec<(&str, Vec<u8>)> = vec![
+        ("every digit", w::parse(wire).unwrap().to_vec()),
+        (
+            "protocol.md's example",
+            w::parse("0124689abcddeeedcba987654321001245678aabbba98642")
+                .unwrap()
+                .to_vec(),
+        ),
+        ("the placeholder", w::PLACEHOLDER.to_vec()),
+    ];
+    for (name, levels) in &shapes {
+        for count in [
+            0usize, 1, 2, 3, 10, 16, 22, 24, 34, 44, 47, 48, 49, 64, 96, 100,
+        ] {
+            case(
+                &format!("bars: {name} as {count}"),
+                "bars",
+                json!({"levels": levels, "count": count}),
+                json!({"bars": w::bars(levels, count)}),
+            );
+        }
+    }
+    case(
+        "bars: no levels is silence",
+        "bars",
+        json!({"levels": [], "count": 5}),
+        json!({"bars": w::bars(&[], 5)}),
+    );
+    case(
+        "bars: a level above 15 reads as 15",
+        "bars",
+        json!({"levels": [200, 3, 16], "count": 3}),
+        json!({"bars": w::bars(&[200, 3, 16], 3)}),
+    );
+    for level in [0u8, 1, 2, 3, 4, 5, 7, 8, 10, 14, 15, 16, 255] {
+        case(
+            &format!("bar_fraction: {level}"),
+            "bar_fraction",
+            json!({"level": level}),
+            json!({"fraction": rate(w::bar_fraction(level))}),
+        );
+    }
+    let positions: Vec<(u64, u64, usize)> = vec![
+        (0, 14_200, 44),
+        (1, 14_200, 44),
+        (322, 14_200, 44),
+        (323, 14_200, 44),
+        (7_100, 14_200, 44),
+        (14_199, 14_200, 44),
+        (14_200, 14_200, 44),
+        (99_999, 14_200, 44),
+        (5_000, 0, 44),
+        (0, 0, 48),
+        (1_000, 3_000, 0),
+        (2_999, 3_000, 48),
+        (300_000, 300_000, 48),
+        (149_999, 300_000, 48),
+        (u64::MAX / 2, u64::MAX / 2 + 1, 48),
+    ];
+    for (position_ms, duration_ms, bars) in positions {
+        case(
+            &format!("played_bars: {position_ms} of {duration_ms} ms, {bars} bars"),
+            "played_bars",
+            json!({"position_ms": position_ms, "duration_ms": duration_ms, "bars": bars}),
+            json!({"played": w::played_bars(position_ms, duration_ms, bars)}),
+        );
+    }
+
+    let lines: Vec<String> = cases
+        .iter()
+        .map(|case| serde_json::to_string(case).unwrap())
+        .collect();
     println!("[\n  {}\n]", lines.join(",\n  "));
 }

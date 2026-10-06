@@ -87,6 +87,13 @@ enum Stage {
     Refused(Refusal),
     /// Another app has the camera (S3.6).
     Busy,
+    /// There was no camera, or no microphone, to open (S3.6): what video
+    /// messages need is said and the camera slashed — and a voice message
+    /// offered only where the device is known to have a microphone
+    /// (`voice`): the missing device may be the microphone itself.
+    Missing {
+        voice: bool,
+    },
     /// Anything else kept the camera from opening.
     Failed,
     Preview,
@@ -418,6 +425,12 @@ impl Rig {
                     this.update(|view| view.stage = Stage::Refused(refusal))
                 }
                 Err(Closed::Busy) => this.update(|view| view.stage = Stage::Busy),
+                Err(Closed::Missing) => {
+                    let voice = round_video::has_microphone().await;
+                    if this.current(epoch) {
+                        this.update(|view| view.stage = Stage::Missing { voice });
+                    }
+                }
                 Err(Closed::Failed) => this.update(|view| view.stage = Stage::Failed),
             }
         });
@@ -1377,7 +1390,7 @@ pub fn round_recorder(props: &RecorderProps) -> Html {
     let stage = view.stage;
     let refused_camera = matches!(stage, Stage::Refused(Refusal::Camera | Refusal::Both));
     let status: Html = match stage {
-        Stage::Opening | Stage::Asking => {
+        Stage::Opening | Stage::Asking | Stage::Missing { .. } => {
             html! { <span>{ t("Video messages need the camera and the microphone.") }</span> }
         }
         Stage::Refused(refusal) => html! { <span>{ refusal.sentence() }</span> },
@@ -1419,29 +1432,35 @@ pub fn round_recorder(props: &RecorderProps) -> Html {
 
     // --- the ring ----------------------------------------------------------
     let ring = match stage {
-        Stage::Preview => Some(("is-preview", 100.0)),
+        Stage::Preview => Some(("is-preview", None)),
         Stage::Recording { .. } => Some((
             if view.warned {
                 "is-warning"
             } else {
                 "is-recording"
             },
-            crate::views::round_tile::ring_progress(
-                view.elapsed_ms / 1000.0,
-                limits.cap_ms() as f64 / 1000.0,
-                reduced,
-            ) * 100.0,
+            Some(
+                crate::views::round_tile::ring_progress(
+                    view.elapsed_ms / 1000.0,
+                    limits.cap_ms() as f64 / 1000.0,
+                    reduced,
+                ) * 100.0,
+            ),
         )),
+        Stage::Finishing => Some(("is-preview", None)),
         Stage::Review if view.playing || view.played > 0.0 => Some((
             "is-progress",
-            crate::views::round_tile::ring_progress(
-                view.played,
-                view.review
-                    .as_ref()
-                    .map_or(0.0, |review| review.duration_ms as f64 / 1000.0),
-                reduced,
-            ) * 100.0,
+            Some(
+                crate::views::round_tile::ring_progress(
+                    view.played,
+                    view.review
+                        .as_ref()
+                        .map_or(0.0, |review| review.duration_ms as f64 / 1000.0),
+                    reduced,
+                ) * 100.0,
+            ),
         )),
+        Stage::Review => Some(("is-review", None)),
         _ => None,
     };
     let ring_size = diameter + 12.0;
@@ -1467,7 +1486,10 @@ pub fn round_recorder(props: &RecorderProps) -> Html {
         .then(|| t(record::Dimmed::NotSent.notice()).to_string());
     let offers_voice = matches!(
         stage,
-        Stage::Preview | Stage::Busy | Stage::Refused(Refusal::Camera)
+        Stage::Preview
+            | Stage::Busy
+            | Stage::Missing { voice: true }
+            | Stage::Refused(Refusal::Camera)
     );
     let several = view.cameras.len() > 1;
     let voice = {
@@ -1643,43 +1665,74 @@ pub fn round_recorder(props: &RecorderProps) -> Html {
         diameter
     );
     let review = view.review.clone();
+    // Every control is a round button with its word under it (the approved
+    // design): the word for the eye, the button's own label for a screen
+    // reader, which hears it once.
+    let captioned = |button: Html, caption: &str| {
+        html! {
+            <div class="recorder-item">
+                { button }
+                <span class="recorder-caption" aria-hidden="true">{ caption.to_string() }</span>
+            </div>
+        }
+    };
     let leading = match stage {
-        Stage::Recording { .. } | Stage::Finishing => html! {
-            <button type="button" class="recorder-control" aria-label={t("Delete recording")}
-                    title={t("Delete recording")} disabled={stage == Stage::Finishing}
-                    onclick={act(Rig::delete_recording)}>
-                { glyph(TRASH) }
-            </button>
-        },
-        Stage::Review => html! {
-            <>
+        Stage::Recording { .. } | Stage::Finishing => captioned(
+            html! {
+                <button type="button" class="recorder-control" aria-label={t("Delete recording")}
+                        title={t("Delete recording")} disabled={stage == Stage::Finishing}
+                        onclick={act(Rig::delete_recording)}>
+                    { glyph(TRASH) }
+                </button>
+            },
+            t("Delete"),
+        ),
+        Stage::Review => captioned(
+            html! {
                 <button type="button" class="recorder-control" aria-label={t("Delete")}
                         title={t("Delete")} onclick={act(Rig::delete_review)}>
                     { glyph(TRASH) }
                 </button>
-                <button type="button" class="recorder-control recorder-retake" onclick={act(Rig::retake)}>
-                    { glyph(RETAKE) }<span>{ t("Retake") }</span>
+            },
+            t("Delete"),
+        ),
+        _ => captioned(
+            html! {
+                <button type="button" class="recorder-control" aria-label={t("Close")}
+                        title={t("Close")} onclick={act(|rig| rig.close(None))}>
+                    { glyph(CLOSE) }
                 </button>
-            </>
-        },
-        _ => html! {
-            <button type="button" class="recorder-control" aria-label={t("Close")}
-                    title={t("Close")} onclick={act(|rig| rig.close(None))}>
-                { glyph(CLOSE) }
-            </button>
-        },
+            },
+            t("Close"),
+        ),
     };
     let voice_id = "recorder-voice-reason";
     let middle = html! {
         <>
+            if stage == Stage::Review {
+                { captioned(
+                    html! {
+                        <button type="button" class="recorder-control recorder-retake" aria-label={t("Retake")}
+                                title={t("Retake")} onclick={act(Rig::retake)}>
+                            { glyph(RETAKE) }
+                        </button>
+                    },
+                    t("Retake"),
+                ) }
+            }
             if stage == Stage::Preview && several {
                 if phone_like() {
-                    <button type="button" class="recorder-control" aria-label={t("Switch camera")}
-                            title={t("Switch camera")} onclick={switch}>
-                        { glyph(SWITCH) }
-                    </button>
+                    { captioned(
+                        html! {
+                            <button type="button" class="recorder-control" aria-label={t("Switch camera")}
+                                    title={t("Switch camera")} onclick={switch}>
+                                { glyph(SWITCH) }
+                            </button>
+                        },
+                        t("Switch"),
+                    ) }
                 } else {
-                    <div class="recorder-choose">
+                    <div class="recorder-item recorder-choose">
                         <button type="button" class="recorder-control" aria-label={t("Choose camera")}
                                 title={t("Choose camera")} aria-haspopup="menu"
                                 aria-expanded={view.choosing.to_string()}
@@ -1693,6 +1746,7 @@ pub fn round_recorder(props: &RecorderProps) -> Html {
                                 }}>
                             { glyph(SWITCH) }
                         </button>
+                        <span class="recorder-caption" aria-hidden="true">{ t("Camera") }</span>
                         if view.choosing {
                             <div class="menu recorder-cameras" role="menu">
                                 { for view.cameras.iter().enumerate().map(|(index, (id, name))| {
@@ -1711,15 +1765,20 @@ pub fn round_recorder(props: &RecorderProps) -> Html {
                 }
             }
             if offers_voice {
-                <button type="button"
-                        class={classes!("recorder-control", "recorder-voice", voice_reason.is_some().then_some("is-dimmed"))}
-                        aria-label={t("Record a voice message instead")}
-                        title={t("Record a voice message instead")}
-                        aria-disabled={voice_reason.is_some().then_some("true")}
-                        aria-describedby={voice_reason.is_some().then_some(voice_id)}
-                        onclick={voice}>
-                    { glyph(MICROPHONE) }
-                </button>
+                { captioned(
+                    html! {
+                        <button type="button"
+                                class={classes!("recorder-control", "recorder-voice", voice_reason.is_some().then_some("is-dimmed"))}
+                                aria-label={t("Record a voice message instead")}
+                                title={t("Record a voice message instead")}
+                                aria-disabled={voice_reason.is_some().then_some("true")}
+                                aria-describedby={voice_reason.is_some().then_some(voice_id)}
+                                onclick={voice}>
+                            { glyph(MICROPHONE) }
+                        </button>
+                    },
+                    t("Voice message"),
+                ) }
                 if let Some(reason) = voice_reason.clone() {
                     <span id={voice_id} hidden=true>{ reason }</span>
                 }
@@ -1733,26 +1792,36 @@ pub fn round_recorder(props: &RecorderProps) -> Html {
         }
         _ => None,
     };
+    // ONE big slot (the approved design): a red disc to Record, a red
+    // rounded square to Stop, the accent arrow to Send.
+    let slot_caption = match stage {
+        Stage::Recording { .. } | Stage::Finishing => t("Stop"),
+        Stage::Review => t("Send"),
+        _ => t("Record"),
+    };
     let slot_html = html! {
-        <button
-            ref={slot.clone()}
-            type="button"
-            class={classes!("recorder-slot", slot_class, slot_dimmed.then_some("is-dimmed"))}
-            aria-label={slot_label}
-            title={slot_label}
-            aria-disabled={slot_dimmed.then_some("true")}
-            aria-describedby={slot_reason.is_some().then_some(slot_reason_id)}
-            onclick={on_slot}
-        >
-            if let Some(path) = slot_path {
-                { glyph(path) }
-            } else {
-                <span class="recorder-slot-mark" aria-hidden="true"></span>
-            }
-            if let Some(reason) = slot_reason {
-                <span id={slot_reason_id} hidden=true>{ reason }</span>
-            }
-        </button>
+        <div class="recorder-item recorder-slot-item">
+            <button
+                ref={slot.clone()}
+                type="button"
+                class={classes!("recorder-slot", slot_class, slot_dimmed.then_some("is-dimmed"))}
+                aria-label={slot_label}
+                title={slot_label}
+                aria-disabled={slot_dimmed.then_some("true")}
+                aria-describedby={slot_reason.is_some().then_some(slot_reason_id)}
+                onclick={on_slot}
+            >
+                if let Some(path) = slot_path {
+                    { glyph(path) }
+                } else {
+                    <span class="recorder-slot-mark" aria-hidden="true"></span>
+                }
+                if let Some(reason) = slot_reason {
+                    <span id={slot_reason_id} hidden=true>{ reason }</span>
+                }
+            </button>
+            <span class="recorder-caption" aria-hidden="true">{ slot_caption }</span>
+        </div>
     };
     let circle = html! {
         <div class={classes!("recorder-circle", (stage == Stage::Review).then_some("is-review"))}>
@@ -1772,17 +1841,26 @@ pub fn round_recorder(props: &RecorderProps) -> Html {
                         <span class="round-play" aria-hidden="true">{ "▶" }</span>
                     }
                 </button>
-            } else if refused_camera || stage == Stage::Busy {
+            } else if refused_camera || matches!(stage, Stage::Busy | Stage::Missing { .. }) {
                 <span class="recorder-glyph" aria-hidden="true">{ glyph(NO_CAMERA) }</span>
             }
+            // A thin track ring OUTSIDE the circle, and on it the arc: red
+            // over the minute while it records, the accent while the clip
+            // plays in review (the approved design).
             if let Some((kind, length)) = ring {
                 <svg class={classes!("recorder-ring", kind)} aria-hidden="true"
                      width={ring_size.to_string()} height={ring_size.to_string()}
                      viewBox={format!("0 0 {ring_size} {ring_size}")}>
-                    <circle cx={(ring_size / 2.0).to_string()} cy={(ring_size / 2.0).to_string()}
-                            r={(diameter / 2.0 + 3.0).to_string()} pathLength="100"
-                            stroke-dasharray={format!("{length:.2} 100")}
-                            transform={format!("rotate(-90 {} {})", ring_size / 2.0, ring_size / 2.0)} />
+                    <circle class="recorder-track"
+                            cx={(ring_size / 2.0).to_string()} cy={(ring_size / 2.0).to_string()}
+                            r={(diameter / 2.0 + 3.0).to_string()} />
+                    if let Some(length) = length {
+                        <circle class="recorder-arc"
+                                cx={(ring_size / 2.0).to_string()} cy={(ring_size / 2.0).to_string()}
+                                r={(diameter / 2.0 + 3.0).to_string()} pathLength="100"
+                                stroke-dasharray={format!("{length:.2} 100")}
+                                transform={format!("rotate(-90 {} {})", ring_size / 2.0, ring_size / 2.0)} />
+                    }
                 </svg>
             }
         </div>

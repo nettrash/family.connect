@@ -66,6 +66,11 @@ final class ParkedRecordings {
         /// sent" row, never an orphan swept away while its sender believes it
         /// went.
         var sending: Bool
+        /// Its waveform, as the recorder measured it — drawn on the row's
+        /// mini waveform and sent with the note (#79). Absent from an index
+        /// written before it existed, which decodes as nil: the row draws
+        /// the placeholder and the note goes without one.
+        var waveform: String? = nil
 
         var duration: TimeInterval { Double(durationMS) / 1000 }
 
@@ -139,12 +144,14 @@ final class ParkedRecordings {
     /// could not be queued, and is removed once it was.
     func prepared(for entry: Entry) -> MediaPrep.Prepared? {
         guard let url = fileURL(for: entry) else { return nil }
-        return MediaPrep.Prepared(
+        var prepared = MediaPrep.Prepared(
             fileURL: url,
             mime: MediaPrep.audioMIME(for: url),
             kind: AttachmentDTO.Kind.audio,
             durationMS: entry.durationMS,
             name: nil)
+        prepared.waveform = entry.waveform
+        return prepared
     }
 
     // MARK: - Writing
@@ -161,7 +168,8 @@ final class ParkedRecordings {
         chatID: Int64,
         replyTo: ReplyToDTO?,
         caption: String?,
-        sending: Bool = false
+        sending: Bool = false,
+        waveform: String? = nil
     ) -> Entry? {
         guard let key = account(), let directory = try? directory(for: key) else { return nil }
         let id = UUID().uuidString.lowercased()
@@ -182,7 +190,8 @@ final class ParkedRecordings {
             replyTo: replyTo,
             caption: words,
             createdAt: now(),
-            sending: sending)
+            sending: sending,
+            waveform: waveform)
         var entries = load(key)
         entries.append(entry)
         guard save(entries, for: key) else {

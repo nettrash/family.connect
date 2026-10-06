@@ -63,6 +63,10 @@ internal sealed class VoiceRecorder : IAsyncDisposable
     private InMemoryRandomAccessStream? stream;
     private readonly Stopwatch clock = new();
 
+    /// <summary>The row's live level, where Windows lets a second reader open the microphone (<see cref="VoiceMeter"/>); null otherwise.</summary>
+    private VoiceMeter? meter;
+    private bool ended;
+
     private VoiceRecorder()
     {
     }
@@ -75,6 +79,35 @@ internal sealed class VoiceRecorder : IAsyncDisposable
 
     /// <summary>How long it has been going, by a monotonic clock.</summary>
     public TimeSpan Elapsed => clock.Elapsed;
+
+    /// <summary>
+    /// The loudest the microphone has been since the last ask, in dBFS, for the row's live waveform — null with no meter, or
+    /// nothing heard since. Drawn and forgotten: the note's own waveform is measured from the recording (<see cref="VoiceShape"/>).
+    /// </summary>
+    public double? TakePeakDbfs() => meter?.TakePeakDbfs();
+
+    /// <summary>The live meter, started once the recording runs — and let go of at once if the recording ended meanwhile.</summary>
+    private async Task StartMeterAsync()
+    {
+        var started = await VoiceMeter.StartAsync();
+        if (started is null)
+        {
+            return;
+        }
+        if (ended)
+        {
+            started.Dispose();
+            return;
+        }
+        meter = started;
+    }
+
+    private void StopMeter()
+    {
+        ended = true;
+        meter?.Dispose();
+        meter = null;
+    }
 
     /// <summary>
     /// What Windows says about this app and the microphone (<c>AppCapability.CheckAccess</c>, S2.2) — asked after a
@@ -163,6 +196,8 @@ internal sealed class VoiceRecorder : IAsyncDisposable
                 recorder.asked = encode;
                 recorder.capture.Failed += recorder.OnCaptureFailed;
                 recorder.capture.RecordLimitationExceeded += recorder.OnLimitReached;
+                // Beside the recording, never before it: a meter Windows will not make is no meter, and the note goes on.
+                _ = recorder.StartMeterAsync();
                 if (encode is not null)
                 {
                     firstTaken = at;
@@ -190,6 +225,7 @@ internal sealed class VoiceRecorder : IAsyncDisposable
     {
         var elapsed = Elapsed;
         clock.Stop();
+        StopMeter();
         try
         {
             if (recording is { } running)
@@ -275,6 +311,7 @@ internal sealed class VoiceRecorder : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         clock.Stop();
+        StopMeter();
         Failed = null;
         if (capture is { } owned)
         {

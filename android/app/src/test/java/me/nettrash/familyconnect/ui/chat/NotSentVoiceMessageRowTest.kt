@@ -61,9 +61,15 @@ class NotSentVoiceMessageRowTest {
             )
         }
 
-        compose.onNodeWithText("Voice message not sent · 0:42").assertIsDisplayed()
+        // The design's chip: "Not sent" and the length on it; TalkBack hears the whole sentence.
+        compose.onNodeWithContentDescription("Voice message not sent · 0:42").assertIsDisplayed()
+        compose.onNodeWithText("Not sent").assertIsDisplayed()
+        compose.onNodeWithText("0:42").assertIsDisplayed()
         compose.onNodeWithText("Replying to Ben: Are you coming?").assertIsDisplayed()
         compose.onNodeWithText("for grandma").assertIsDisplayed()
+        // Its length once: the waveform inside does not say it again.
+        compose.onNodeWithContentDescription("Voice message, 0:42").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Voice message, 0:42", useUnmergedTree = true).assertDoesNotExist()
     }
 
     @Test
@@ -120,7 +126,8 @@ class NotSentVoiceMessageRowTest {
             )
         }
 
-        compose.onNodeWithText("Voice message not sent · 1:01").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Voice message not sent · 1:01").assertIsDisplayed()
+        compose.onNodeWithText("1:01").assertIsDisplayed()
         compose.onNodeWithText("Replying to", substring = true).assertDoesNotExist()
     }
 
@@ -144,7 +151,9 @@ class NotSentVoiceMessageRowTest {
             )
         }
 
-        compose.onNodeWithText("Voice message · 0:42").assertIsDisplayed()
+        // Its length on the chip, and to TalkBack what it is (the design's chip has no title).
+        compose.onNodeWithText("0:42").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Voice message, 0:42").assertIsDisplayed()
         compose.onNodeWithText("Photo").assertDoesNotExist()
     }
 }

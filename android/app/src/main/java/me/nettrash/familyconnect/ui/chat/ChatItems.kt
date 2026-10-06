@@ -523,7 +523,54 @@ fun roundOf(entity: MessageEntity): AttachmentDto? {
  */
 fun canEditMessage(entity: MessageEntity, myUserId: Long?): Boolean {
     if (stickerOf(entity) != null || roundOf(entity) != null) return false
+    // A voice message with no words has no text to edit (#79, the approved
+    // design's menu): Edit would only bolt a caption onto a recording.
+    if (voiceOf(entity) != null && entity.body.isEmpty()) return false
     return entity.serverId != null && entity.senderId == myUserId
+}
+
+/**
+ * The recording of a VOICE MESSAGE — a message whose one attachment is audio
+ * (a voice note, or a sound file sent the same way) — or null (#79).
+ */
+fun voiceOf(entity: MessageEntity): AttachmentDto? = entity.attachmentList.singleOrNull()?.takeIf { it.isAudio }
+
+/**
+ * What the long-press menu offers on a RECORDING — a voice message or a video
+ * message (#79, the approved design): only what does something for it. Its
+ * reactions, Reply, Show text, Playback speed (voice), Save, Open full screen
+ * (video), and Safety's Report — and NO Copy, Edit, Share or text selection,
+ * in the order iOS, Windows and the web draw them. A voice note that carries
+ * words is not a voice message here: it keeps the ordinary menu.
+ * Every other message's menu is as it was.
+ */
+object RecordingMenu {
+    enum class Kind { VOICE, VIDEO }
+
+    /**
+     * A voice message is ONE audio attachment and NO WORDS — the rule iOS,
+     * the Mac, Windows and the web share (`MessagePresentation.isVoiceMessage`,
+     * `MessageMenu.Recording`, `Message::voice_note`). A voice note sent with
+     * a caption is a message with words, and keeps the ordinary menu.
+     */
+    fun kindOf(entity: MessageEntity): Kind? = when {
+        roundOf(entity) != null -> Kind.VIDEO
+        entity.body.isEmpty() && voiceOf(entity) != null -> Kind.VOICE
+        else -> null
+    }
+
+    /** Copy is for words: a recording without any has none. */
+    fun offersCopy(entity: MessageEntity): Boolean = entity.body.isNotEmpty()
+
+    /** Playback speed is the voice message's alone. */
+    fun offersSpeed(kind: Kind?): Boolean = kind == Kind.VOICE
+
+    /**
+     * Share is not on a recording's menu (the approved design, and iOS's): Save
+     * puts the recording itself where the person wants it. Every other
+     * message keeps Share.
+     */
+    fun offersShare(kind: Kind?): Boolean = kind == null
 }
 
 /**

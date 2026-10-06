@@ -62,6 +62,10 @@
 //!   what a press, a hold, a slide and a release do to a voice recording, and
 //!   a round video's length and size — the rules every port is held to by the
 //!   oracle's vectors.
+//! - [`waveform`] — a voice note's waveform (#79): 48 levels the sender
+//!   computes from its metered peaks and uploads as 48 hex digits, how they
+//!   are parsed, the placeholder for audio without one, and how a bubble
+//!   draws them as bars — held to every port by the oracle's vectors.
 
 pub mod account;
 pub mod assistant;
@@ -93,3 +97,4 @@ pub mod transcode;
 pub mod transcript;
 pub mod transcript_sound;
 pub mod wav;
+pub mod waveform;

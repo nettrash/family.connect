@@ -493,6 +493,9 @@ class MessageRepository @Inject constructor(
                 latitude = null,
                 longitude = null,
                 accuracyM = null,
+                // A voice note's shape goes up with its bytes (#79), and survives
+                // a process death with them; audio only.
+                waveform = item.waveform?.takeIf { item.kind == AttachmentDto.KIND_AUDIO },
             )
         }
         if (staged.isEmpty()) return null
@@ -656,6 +659,7 @@ class MessageRepository @Inject constructor(
                 height = item.height,
                 durationMs = item.durationMs,
                 name = item.name,
+                waveform = item.waveform,
             )
         }
         val attachment = (uploaded as? ApiResult.Ok)?.value?.attachment ?: run {
@@ -1886,6 +1890,105 @@ class MessageRepository @Inject constructor(
         }
     }
 
+    /**
+     * Read again, once, the cached messages that may be VIDEO MESSAGES but
+     * were stored by a build that did not know the flag (#79;
+     * docs/audio-video-messages-2026-10-04.md, S5.8).
+     *
+     * A build before #79 wrote a received circle back as a plain video —
+     * its encoder knew no `round` — and the catch-up only ever ADDS, so
+     * after the upgrade that message drew square for good. Every row such
+     * a build wrote is `attachmentsKnowRound = 0` (MIGRATION_30_31); the
+     * ones that could be circles — one video, no body, on the server — are
+     * read through the location repair's `before_id = id + 1, limit = 1`.
+     *
+     * The answer's set is written straight onto the row
+     * ([MessageDao.setAttachment], which marks it known) rather than
+     * through [applyServerMessage]: that path never rewrites a held row's
+     * attachments, and it would also attach a thread-read row to the
+     * contiguous window, which this one copy says nothing about — no
+     * cursor moves here. A message the server no longer has, or a row that
+     * is not a single video after all, is marked known so it is never
+     * asked about again.
+     *
+     * Newest first, at most [REPAIR_BATCH] per resync. One failed read is
+     * about ONE message, and the pass goes on past it — the rules are
+     * iOS's (`ChatSyncCoordinator.roundRepairOutcome`):
+     * - a refusal — 403 (a chat this device still caches but may no longer
+     *   read), 404 (a message the server has lost), 409, any other 4xx —
+     *   or a 2xx whose body will not decode is SETTLED like a message that
+     *   is gone: marked known, never asked again. Asking again would only
+     *   be refused again, and since the pass goes newest first, the same
+     *   unreadable message used to be asked FIRST on every resync and spent
+     *   the batch's place for good;
+     * - a 5xx says nothing yet: the row stays unknown, is asked again next
+     *   resync, and the pass goes on to the others;
+     * - a 401 (the session is gone), a 429 (the server asking us to slow
+     *   down) or a transport failure says nothing about the one message and
+     *   ENDS the pass: every further request would meet the same refusal
+     *   or the same dead network. The rest wait for the next resync. (A
+     *   429 ends the pass on iOS too, as `throttled`.)
+     */
+    suspend fun repairUnknownRoundFlags() {
+        val unknown = messageDao.roundFlagUnknown(REPAIR_BATCH)
+        for (row in unknown) {
+            val serverId = row.serverId
+            if (serverId == null || row.attachmentList.size != 1) {
+                messageDao.markRoundFlagKnown(row.clientMsgId)
+                continue
+            }
+            val page = when (val result = chatApi.messages(row.chatId, beforeId = serverId + 1, limit = 1)) {
+                is ApiResult.Ok -> result.value.messages
+                is ApiResult.NetworkError -> if (result.isUndecodable) {
+                    messageDao.markRoundFlagKnown(row.clientMsgId)
+                    continue
+                } else {
+                    return
+                }
+                is ApiResult.HttpError -> when (result.status) {
+                    HTTP_UNAUTHORIZED, HTTP_TOO_MANY_REQUESTS -> return
+                    in HTTP_CLIENT_ERRORS -> {
+                        messageDao.markRoundFlagKnown(row.clientMsgId)
+                        continue
+                    }
+                    else -> continue
+                }
+            }
+            val dto = page.firstOrNull { it.id == serverId }
+            val set = dto?.resolvedAttachments.orEmpty()
+            if (dto == null || set.isEmpty()) {
+                messageDao.markRoundFlagKnown(row.clientMsgId)
+                continue
+            }
+            val first = set.first()
+            messageDao.setAttachment(
+                row.clientMsgId,
+                first.id,
+                first.kind,
+                first.mime,
+                first.size,
+                first.width,
+                first.height,
+                first.durationMs,
+                first.hasPreview,
+                first.name,
+                first.latitude,
+                first.longitude,
+                first.accuracyM,
+                AttachmentsCodec.encode(set),
+            )
+            // The chat list's line, when this is its newest message: "Video
+            // message" rather than "Video". Guarded on time in SQL, so an
+            // older message never takes the line over.
+            chatDao.updateLastMessage(
+                row.chatId,
+                previewText(dto.body, set, dto.call, previewLabels),
+                row.createdAt,
+                row.senderId,
+            )
+        }
+    }
+
     suspend fun loadOlder(chatId: Long): Boolean {
         val oldest = messageDao.oldestServerId(chatId)
         val result = chatApi.messages(chatId, beforeId = oldest, limit = HISTORY_PAGE)
@@ -2055,8 +2158,17 @@ class MessageRepository @Inject constructor(
 
         private const val TAG = "MessageRepository"
 
-        /** Most broken locations repaired per resync — see the note above. */
+        /** Most broken locations (or unknown video-message flags) repaired per resync — see the notes above. */
         private const val REPAIR_BATCH = 25
+
+        /** A rate limit: ends a repair pass rather than settling the row it was about. */
+        private const val HTTP_TOO_MANY_REQUESTS = 429
+
+        /** A lost session: ends a repair pass — every further read would be refused the same way. */
+        private const val HTTP_UNAUTHORIZED = 401
+
+        /** A refusal of THIS read (the two above aside): the repair settles the row. */
+        private val HTTP_CLIENT_ERRORS = 400..499
 
         /**
          * The ack deadline, and the same number iOS uses. The protocol

@@ -182,3 +182,46 @@ fun TranscriptLine(
         }
     }
 }
+
+/** "Show text" or "Hide text" as a menu item (#79, the long-press menu on a recording). */
+data class TranscriptMenuAction(@param:androidx.annotation.StringRes val label: Int, val run: () -> Unit)
+
+/**
+ * What the long-press menu's transcript item does for [attachment] right now
+ * — the same decision the line under the player makes ([TranscriptLine]):
+ * "Hide text" over text that is showing, "Show text" over text held but
+ * folded away (nothing is sent), "Show text" that ASKS where this member may
+ * (the consent question first, if it is owed) — or null, no item, while it is
+ * being fetched or where nothing can be asked.
+ */
+@Composable
+fun rememberTranscriptMenuAction(
+    /**
+     * The screen's [Transcripts], handed in rather than read from
+     * [LocalTranscripts]: the long-press menu is a Popup composed beside the
+     * chat's Scaffold, outside the block that provides the local, so reading
+     * it there found null and the menu never offered "Show text".
+     */
+    transcripts: Transcripts?,
+    attachment: AttachmentDto?,
+    chatKind: String?,
+    chatId: Long,
+    messageServerId: Long?,
+    senderId: Long,
+): TranscriptMenuAction? {
+    if (transcripts == null) return null
+    if (attachment == null) return null
+    val context by transcripts.context.collectAsStateWithLifecycle()
+    val saved by remember(attachment.id) { transcripts.saved(attachment.id) }
+        .collectAsStateWithLifecycle(initialValue = null)
+    val statuses by transcripts.status.collectAsStateWithLifecycle()
+    return TranscriptRules.menuAction(
+        held = saved?.let { !it.hidden },
+        status = statuses[attachment.id],
+        offered = context.offers(chatKind, messageServerId, senderId, attachment),
+        canAsk = messageServerId != null,
+        reveal = { transcripts.reveal(attachment.id) },
+        hide = { transcripts.hide(attachment.id) },
+        ask = { if (messageServerId != null) transcripts.request(chatId, messageServerId, attachment) },
+    )
+}

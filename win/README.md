@@ -423,6 +423,39 @@ on a button with holding off): that a long touch press clicks rather than openin
 the menu, that Ctrl+Shift+R reaches an accelerator on the composer while the field has focus, the cross-fade and the pulse,
 and what Narrator reads in every state (T5). The video button is wired but not drawn — see the next paragraph.
 
+**Voice and video messages are drawn as the approved design of 2026-10-05** (the "Voice and Video Messages" mockup; issue
+#79). A voice bubble is a round accent play button, the WAVEFORM the sender measured (`AttachmentDto.Waveform`, read
+through `Waveform` — `fc_text::waveform` ported and held to `waveform-vectors.json` by `WaveformOracleTests` — and a
+neutral placeholder where there is none), its played bars lit in the accent as it plays (⌊position · bars / duration⌋), the
+time in tabular digits (where it is while it plays, its length at rest), a speed chip — 1×, 1.5×, 2×, kept on this device
+(`VoiceSpeed`, `VoiceSpeedSetting`) and applied as the player's rate — and a dot until this device has played someone
+else's (`PlayedVoiceStore`, migration 7: the circles' table one over). The waveform IS the seek: a slider lies over the bars
+with its track and thumb drawn in nothing, so a click or a drag seeks, the arrow keys step it and Narrator hears an
+adjustable "Position". In the reader's own balloon nothing is drawn in the accent, which is the balloon. **The sender's
+waveform is measured from the recording itself** (`VoiceShape`): `MediaCapture` exposes no level, so the M4A is decoded to
+16-bit mono PCM by Media Foundation and its peak every tenth of a second goes through `Waveform.FromPeaks`
+(`VoiceWaveform`) — the same bytes give the same 48 digits however often they are measured, so a note sent at once, from
+review and from its not-sent row all carry the same shape (`StagedMedia.Waveform`, kept by `FolderMediaStore`, sent as
+`&waveform=` on audio only). A server from before waveforms ignores the parameter. The recording row's LIVE waveform
+comes from a second, listen-only reader of the microphone (`VoiceMeter`: an `AudioGraph` frame output, read and dropped)
+— best effort, drawn and forgotten, never what the note's own shape comes from, and not drawn with Windows' animations
+off, where the red dot stops pulsing too. The review chip and the not-sent row are chips of their own (▶, the note's mini
+waveform lit as it plays, its length; "Not sent" in the caution colour, Send and ✕), and the row and the field cross-fade
+over 150 ms. The not-sent chip is the mockup's `min(360, 100%)` and FITS its width (`VoiceLook.FitNotSent`): its mini
+waveform is reduced to the bars that fit rather than cut off, and in a longer language or at a large text size "Not sent"
+moves onto a line of its own. Every small control — the speed chip, a chip's ✕ and Send — is a 44 target reaching past
+what is drawn (`VoiceLook.Reach`, S1.1). Every copy drawn of a note (the conversation's and the thread panel's) plays,
+loses its dot and says "Played" together (`DrawnCopies`); a note seeked while idle shows where it was put and Play starts
+there; and a voice note on its way is drawn as the bubble it will be, fainter, with "Sending…" under it. The bubble, the
+chips and that pending bubble are `NamedGroup`s, whose automation peer is a Group, so Narrator meets their names — a
+`Border` has none. A circle stands on a soft shadow (cast by a SOLID disc, since the mask takes its alpha) with its length
+and its white dot on a dark capsule at the bottom and a 48 play disc; in the viewer exactly one accent ring runs OUTSIDE
+the edge as it plays, its play disc fades out, and both go back to the poster's look when it ends (`RoundLook.ViewerRing`). A voice or video message's
+menu is the reactions, Reply, Show text, Playback speed (voice), Save…, Open Full Screen (video) and Safety — never Copy or
+Edit (`MessageMenu`); every other message's menu is unchanged. Windows has no hold, so neither the hold row nor the Undo
+row exists here. **None of it has run on Windows**: the WAV decode, the second reader of the microphone beside a
+`LowLagMediaRecording`, the shadow, the invisible slider's hit area, the playback rate and what Narrator reads.
+
 **Recording a video message is built and switched off** (docs/audio-video-messages-2026-10-04.md, Phase 3d; Blocked 1,
 Decision 28). `RoundVideoRules.RecordingEnabled` is `false`, and while it is, no build draws a way in: no video button in
 the empty field, no "Record Video Message" in the paperclip's menu or the microphone's, no "Press Shift+F10 for a video
@@ -430,7 +463,7 @@ message." hint for Narrator — and nothing enumerates or opens a camera. A buil
 of recording one (Decision 40). Behind the switch is the whole recorder: the video button (Segoe E714 inside the empty
 field, its own 600 ms guard), the two menu items, and `RoundRecorderLayer` over the rail and the page (under the call card)
 — the circle, its status line, the reply it carries and a control row on the composer's own row with the slot on the Send
-button; PREVIEW (mirrored, "Not recording", Record dimmed until the first frame, "Choose camera" with more than one,
+button; PREVIEW (mirrored, "Not recording", Record dimmed until the first frame, "Choose camera" — the cameras by name — with more than one,
 "Record a voice message instead", a minute untouched turns it off), RECORDING (the ring filling red, "10 seconds left" at
 50 s, stopped at 59.5 s into REVIEW, Delete asking from ten seconds) and REVIEW (the clip as it will be sent, Space plays
 and pauses wherever focus is, Delete, Retake, Send); `RoundRecorder` decides every step and is tested on any OS.
@@ -685,6 +718,22 @@ cd ../../..
 cp win/tests/FamilyConnect.Core.Tests/Fixtures/record-vectors.json ios/FamilyConnectTests/Fixtures/
 cp win/tests/FamilyConnect.Core.Tests/Fixtures/record-vectors.json android/app/src/test/resources/
 ```
+
+A fifth, `waveform-vectors.json`, is `fc_text::waveform` — a voice note's waveform (issue #79,
+protocol.md "A voice note's waveform"): a metered peak as a level, a recording's peaks as the 48 hex
+digits the upload carries, parsing them back, the placeholder for audio without one, and drawing
+them as bars. Every port implements all of it; it travels like the two above:
+
+```bash
+cd win/tools/board-oracle
+cargo run --quiet -- waveform > ../../tests/FamilyConnect.Core.Tests/Fixtures/waveform-vectors.json
+cd ../../..
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/waveform-vectors.json ios/FamilyConnectTests/Fixtures/
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/waveform-vectors.json android/app/src/test/resources/
+```
+
+JSON has no NaN or infinity, so a peak that is one is written as the string `"NaN"`, `"Infinity"`
+or `"-Infinity"`; every other number is the shortest decimal that round-trips.
 
 Four implementations of one rule need an oracle, not four readings. This repo has been bitten by a
 byte-versus-character split that panicked on Cyrillic, and the portfolio by four ports that agreed

@@ -85,6 +85,27 @@ struct Stub {
     seen: Mutex<Vec<Seen>>,
     /// While set, the text deployment fails.
     chat_fails: Mutex<bool>,
+    /// Requests already answered "overloaded" once — Open-Meteo's free
+    /// API does that in short bursts, and the second ask gets through.
+    overloaded_once: Mutex<std::collections::HashSet<String>>,
+}
+
+impl Stub {
+    /// `503 "The service is overloaded"` the first time `key` is asked,
+    /// `None` (go on and answer) every time after.
+    fn overloaded_first(&self, key: &str) -> Option<Response> {
+        self.overloaded_once
+            .lock()
+            .unwrap()
+            .insert(key.to_string())
+            .then(|| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    axum::Json(json!({"error": true, "reason": "The service is overloaded"})),
+                )
+                    .into_response()
+            })
+    }
 }
 
 impl Stub {
@@ -200,6 +221,11 @@ async fn stub(State(stub): State<Arc<Stub>>, uri: Uri, body: Bytes) -> Response 
             .into_response(),
             // Open-Meteo leaves `results` out when nothing matched.
             "Nowhere" => axum::Json(json!({"generationtime_ms": 0.1})).into_response(),
+            // Overloaded on the first ask, found on the second — and its
+            // forecast is overloaded on the first ask too.
+            "Flakyville" => stub.overloaded_first("geo:Flakyville").unwrap_or_else(|| {
+                axum::Json(place("Flakyville", 12.34, 56.78, "Nowhereland", "UTC")).into_response()
+            }),
             "Slowville" => {
                 tokio::time::sleep(Duration::from_secs(40)).await;
                 axum::Json(place("Slowville", 1.0, 1.0, "Nowhereland", "UTC")).into_response()
@@ -226,6 +252,9 @@ async fn stub(State(stub): State<Arc<Stub>>, uri: Uri, body: Bytes) -> Response 
                 [80, 0],
             ))
             .into_response(),
+            "12.34" => stub.overloaded_first("forecast:12.34").unwrap_or_else(|| {
+                axum::Json(forecast(0, [1, 2], [10.0, 11.0], [3.0, 4.0], [5, 6])).into_response()
+            }),
             _ => (StatusCode::INTERNAL_SERVER_ERROR, "forecast down").into_response(),
         };
     }
@@ -625,7 +654,13 @@ async fn when_every_place_fails_the_greeting_is_the_usual_one() {
     let (owner, chat_id) = greeted_family(&ts, "en").await;
     set_places(&ts, &owner, json!(["Atlantis", "Nowhere"])).await;
     assert_eq!(run(&ts).await, 1);
-    assert_eq!(stub.to("/geo/search").len(), 2, "both were asked");
+    // Both were asked; Atlantis's geocoder answers 500 every time, so it is
+    // asked once more and then given up — three requests, never four.
+    assert_eq!(
+        stub.to("/geo/search").len(),
+        3,
+        "both were asked, Atlantis twice"
+    );
 
     // The same request a family with no places sends.
     let (plain, plain_addr) = spawn_stub().await;
@@ -806,4 +841,55 @@ async fn the_database_refuses_a_fourth_place_or_a_null() {
             "{bad}"
         );
     }
+}
+
+/// Open-Meteo's free API answers `503 "The service is overloaded"` in short
+/// bursts. A fast failure like that is asked once more, 750 ms later, inside
+/// the same 8-second deadline — for the geocoder and for the forecast — so
+/// one unlucky second no longer costs a family a city (protocol.md, amended
+/// 2026-10-06).
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_overloaded_open_meteo_is_asked_once_more_and_the_place_is_kept() {
+    let (stub, addr) = spawn_stub().await;
+    let ts = server(addr, true, |_| {}).await;
+    let (owner, chat_id) = greeted_family(&ts, "en").await;
+    set_places(&ts, &owner, json!(["Flakyville", "Belgrade"])).await;
+
+    assert_eq!(run(&ts).await, 1);
+
+    let flaky_geo = stub
+        .to("/geo/search")
+        .into_iter()
+        .filter(|seen| seen.param("name") == Some("Flakyville"))
+        .count();
+    assert_eq!(
+        flaky_geo, 2,
+        "the overloaded geocoder was asked exactly twice"
+    );
+    let flaky_forecast = stub
+        .to("/forecast")
+        .into_iter()
+        .filter(|seen| seen.param("latitude") == Some("12.34"))
+        .count();
+    assert_eq!(
+        flaky_forecast, 2,
+        "the overloaded forecast was asked exactly twice"
+    );
+
+    let data = forecast_data(&stub.chat()[0]);
+    let names: Vec<&str> = data
+        .iter()
+        .filter_map(|entry| entry["place"]["name"].as_str())
+        .collect();
+    assert_eq!(names.len(), 2, "both places reached the model: {names:?}");
+    assert!(
+        names.contains(&"Flakyville") && names.contains(&"Belgrade"),
+        "{names:?}"
+    );
+    let bodies = bodies_in(&ts, &owner, chat_id).await;
+    assert!(
+        bodies[0].ends_with(&format!("\n\n{CREDIT_EN}")),
+        "{bodies:?}"
+    );
 }

@@ -106,7 +106,8 @@ public sealed class FolderMediaStore(string folder) : IMediaStore
                 preview,
                 Real(root, "latitude"),
                 Real(root, "longitude"),
-                Real(root, "accuracy_m"));
+                Real(root, "accuracy_m"),
+                Text(root, "waveform"));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -175,6 +176,11 @@ public sealed class FolderMediaStore(string folder) : IMediaStore
             if (media.AccuracyM is { } accuracy && double.IsFinite(accuracy))
             {
                 writer.WriteNumber("accuracy_m", accuracy);
+            }
+            // A voice note's shape survives a relaunch with its bytes: the note goes up with it whenever it goes.
+            if (media.Waveform is { } waveform)
+            {
+                writer.WriteString("waveform", waveform);
             }
             writer.WriteEndObject();
         }

@@ -5,7 +5,9 @@
 //  What takes the field's place on the Mac while a voice message records
 //  (#79, Phase 1 — docs/audio-video-messages-2026-10-04.md, S2.4's desktop
 //  column, S2.5, S2.9, S8.3): [Delete] red dot, "0:42", the level meter
-//  [Stop] — and the slot beside it is the Send arrow.
+//  [Stop] — and the slot beside it is the Send arrow. The meter is the live
+//  waveform of the approved design, scrolling in from the trailing edge,
+//  and the steady five-bar meter under Reduce Motion.
 //
 //  IN THE ROW, NEVER ABOVE IT. Phase 0's recording strip was stacked above
 //  the input row with a Stop button that was the window's `.defaultAction`,
@@ -26,6 +28,9 @@ import SwiftUI
 struct MacVoiceRecordingRow: View {
     let elapsed: TimeInterval
     let litBars: Int
+    /// The recording's peaks so far: the live waveform scrolling in from the
+    /// trailing edge (the five-bar meter under Reduce Motion).
+    var peaks: [Float] = []
     /// Started from the paperclip or ⌥⌘R beside words or staged items: no
     /// Stop here, because the slot itself is Stop (S1.3 row 3, S2.4).
     let besideDraft: Bool
@@ -90,7 +95,8 @@ struct MacVoiceRecordingRow: View {
                     .foregroundStyle(.orange)
                     .lineLimit(1)
             } else if fit.showsMeter {
-                VoiceLevelMeter(lit: litBars)
+                VoiceLiveWaveform(peaks: peaks, litBars: litBars, height: 20)
+                    .frame(minWidth: 80, maxWidth: 260)
             }
 
             Spacer(minLength: 0)

@@ -333,7 +333,7 @@ pub async fn attach_attachments(
     let message_ids: Vec<i64> = messages.iter().map(|message| message.id).collect();
     let rows = sqlx::query(
         "SELECT message_id, id, kind, mime, size_bytes, width, height, duration_ms,
-                has_preview, name, latitude, longitude, accuracy_m, sticker, round
+                has_preview, name, latitude, longitude, accuracy_m, sticker, round, waveform
          FROM attachments
          WHERE message_id = ANY($1)
          ORDER BY message_id, position, id",
@@ -1290,7 +1290,7 @@ async fn claim_attachment(
          WHERE id = $1 AND uploader_id = $2 AND message_id IS NULL AND note_id IS NULL
            AND pack_item_id IS NULL
          RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name,
-                   latitude, longitude, accuracy_m, sticker, round",
+                   latitude, longitude, accuracy_m, sticker, round, waveform",
     )
     .bind(attachment_id)
     .bind(uploader_id)
@@ -1661,6 +1661,10 @@ pub async fn list_chats(
                     // And this one, so a row can say "Video message" where
                     // it would say "Video" (protocol.md, "Video messages").
                     round: row.get("round"),
+                    // Not this: a row draws no bubble, so it needs the
+                    // shape of a voice note no more than its duration
+                    // (protocol.md, "A voice note's waveform").
+                    waveform: None,
                 });
         }
     }

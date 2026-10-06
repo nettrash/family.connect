@@ -354,6 +354,7 @@ async fn the_probe_asks_the_browser_and_any_no_is_no() {
     assert_eq!(
         here,
         round_video::Probe {
+            captures: true,
             camera: true,
             records: true
         },
@@ -395,6 +396,311 @@ async fn the_probe_asks_the_browser_and_any_no_is_no() {
         let _gone = refusing("VideoEncoder");
         assert!(round_video::probe().await.records, "kept");
     }
+    round_video::testing::forget();
+}
+
+/// WHETHER THERE IS A CAMERA (S1.2, S1.4: no camera, no video entry), as
+/// each browser lists its devices BEFORE any permission is given: Chromium
+/// and Firefox list at most one device of each kind the device HAS, its id
+/// and label empty (w3c mediacapture-main, "creating a list of device info
+/// objects": "truncate cameraList to its first item"), and none of a kind it
+/// does not have — so a camera counts by its kind alone, and a listing
+/// without one is a device without one, whatever the permission says.
+/// WebKit lists no camera before a grant (bugs.webkit.org 259465), but it
+/// fails the probe and explains instead (see the menu rule below). A
+/// listing that fails knows of no camera. Likewise a microphone (S3.6).
+#[wasm_bindgen_test]
+async fn a_camera_counts_by_kind_and_none_listed_is_none() {
+    async fn listing_says(listing: &str, camera: &str) -> (bool, bool) {
+        run(&format!(
+            "window.__enumerate = navigator.mediaDevices.enumerateDevices; \
+             window.__permissions = navigator.permissions.query; \
+             navigator.mediaDevices.enumerateDevices = () => {listing}; \
+             navigator.permissions.query = (d) => d.name === 'camera' ? {camera} \
+               : Promise.resolve({{state: 'prompt'}});"
+        ));
+        let answer = (
+            round_video::has_camera().await,
+            round_video::has_microphone().await,
+        );
+        run(
+            "navigator.mediaDevices.enumerateDevices = window.__enumerate; \
+             navigator.permissions.query = window.__permissions;",
+        );
+        answer
+    }
+    const PROMPT: &str = "Promise.resolve({state: 'prompt'})";
+    const GRANTED: &str = "Promise.resolve({state: 'granted'})";
+    // Firefox before 131, and any browser that will not say.
+    const WONT_SAY: &str = "Promise.reject(new TypeError('camera'))";
+    let unnamed_camera =
+        "Promise.resolve([{kind: 'videoinput', deviceId: '', label: '', groupId: ''}, \
+                          {kind: 'audioinput', deviceId: '', label: '', groupId: ''}])";
+    let unnamed_microphone =
+        "Promise.resolve([{kind: 'audioinput', deviceId: '', label: '', groupId: ''}])";
+    let unnamed_camera_only =
+        "Promise.resolve([{kind: 'videoinput', deviceId: '', label: '', groupId: ''}])";
+    let nothing = "Promise.resolve([])";
+    let named =
+        "Promise.resolve([{kind: 'videoinput', deviceId: 'a', label: 'FaceTime HD Camera'}, \
+                 {kind: 'audioinput', deviceId: 'b', label: 'Microphone'}])";
+    let failing = "Promise.reject(Object.assign(new Error('no'), {name: 'NotAllowedError'}))";
+
+    for permission in [PROMPT, WONT_SAY, GRANTED] {
+        assert_eq!(
+            listing_says(unnamed_camera, permission).await,
+            (true, true),
+            "Chrome, Edge, Firefox before a grant: one of each, no id, no label ({permission})"
+        );
+        assert_eq!(
+            listing_says(unnamed_microphone, permission).await,
+            (false, true),
+            "a Chrome or Edge device with NO camera: none listed, none there ({permission})"
+        );
+        assert_eq!(
+            listing_says(unnamed_camera_only, permission).await,
+            (true, false),
+            "a camera and no microphone ({permission})"
+        );
+        assert_eq!(
+            listing_says(nothing, permission).await,
+            (false, false),
+            "nothing listed ({permission})"
+        );
+        assert_eq!(
+            listing_says(failing, permission).await,
+            (false, false),
+            "a listing that fails knows of nothing ({permission})"
+        );
+    }
+    assert_eq!(listing_says(named, GRANTED).await, (true, true), "named");
+
+    // Without `navigator.mediaDevices` — an insecure page — nothing records:
+    // the probe says so, and no video entry is offered, not even the one
+    // that explains "Voice messages work." (they do not, there).
+    run(
+        "Object.defineProperty(navigator, 'mediaDevices', {value: undefined, configurable: true});",
+    );
+    round_video::testing::forget();
+    let insecure = (
+        round_video::captures(),
+        round_video::has_camera().await,
+        round_video::has_microphone().await,
+        round_video::probe().await,
+    );
+    run("delete navigator.mediaDevices;");
+    round_video::testing::forget();
+    assert!(!insecure.0, "no capture at all");
+    assert!(!insecure.1 && !insecure.2, "no devices");
+    assert!(!insecure.3.captures && !insecure.3.camera);
+    assert!(
+        !round_video::offers_video_entry(true, true, Some(insecure.3)),
+        "nothing offered on an insecure page"
+    );
+    assert!(round_video::captures(), "the stand-in is gone");
+    assert!(round_video::has_camera().await, "the fake camera is back");
+}
+
+/// THE MENU RULE (S1.5, S1.6), every branch: a server with the keys, a
+/// family or direct chat and a page that can capture at all first; then a
+/// failed probe ALWAYS shows the explaining item, a camera or not; a passing
+/// probe shows the real one where there is a camera; nothing before the
+/// probe has answered.
+#[wasm_bindgen_test]
+fn the_video_entry_is_offered_by_the_probe_and_explains_without_a_camera() {
+    use round_video::{offers_video_entry, Probe};
+    let probe = |captures, camera, records| {
+        Some(Probe {
+            captures,
+            camera,
+            records,
+        })
+    };
+    for camera in [false, true] {
+        for records in [false, true] {
+            let answered = probe(true, camera, records);
+            assert!(!offers_video_entry(false, true, answered), "no keys");
+            assert!(!offers_video_entry(true, false, answered), "the assistant");
+            assert_eq!(
+                offers_video_entry(true, true, answered),
+                !records || camera,
+                "camera {camera}, records {records}"
+            );
+            assert!(
+                !offers_video_entry(true, true, probe(false, camera, records)),
+                "an insecure page: camera {camera}, records {records}"
+            );
+        }
+    }
+    assert!(
+        offers_video_entry(true, true, probe(true, false, false)),
+        "Safari"
+    );
+    assert!(
+        !offers_video_entry(true, true, probe(true, false, true)),
+        "Chrome without a camera"
+    );
+    assert!(
+        !offers_video_entry(true, true, probe(false, false, false)),
+        "Safari on http://"
+    );
+    assert!(!offers_video_entry(true, true, None), "not yet answered");
+}
+
+/// THE PROBE, BROWSER BY BROWSER (S8.7), with each browser's answers stood
+/// in: Chrome and Edge on macOS and Windows record — and so does a machine
+/// whose encoder offers Main and not High; Chrome on Linux (OpenH264's
+/// Baseline, no AAC encoder), Firefox (no AAC encoder), a browser without
+/// frame callbacks and Safari, whatever it answers, do not. And what is
+/// asked is no stricter than what is recorded: H.264 High at level 3.0 then
+/// Main, 480 × 480, in real time — never a hardware preference, which a
+/// machine with only a software encoder would answer "no" to — and AAC-LC
+/// at 48 kHz mono.
+#[wasm_bindgen_test]
+async fn the_probe_decides_browser_by_browser_and_asks_nothing_stricter() {
+    use crate::webcodecs::testing::{fake_class, Stand};
+    use js_sys::Reflect;
+    struct Browser {
+        name: &'static str,
+        vendor: Option<&'static str>,
+        video: &'static str,
+        audio: &'static str,
+        frames: bool,
+        records: bool,
+    }
+    let browsers = [
+        Browser {
+            name: "Chrome or Edge on macOS or Windows",
+            vendor: Some("Google Inc."),
+            video: "c.codec.startsWith('avc1.64') || c.codec.startsWith('avc1.4d')",
+            audio: "c.codec === 'mp4a.40.2'",
+            frames: true,
+            records: true,
+        },
+        Browser {
+            name: "a hardware encoder that offers Main and not High",
+            vendor: Some("Google Inc."),
+            video: "c.codec.startsWith('avc1.4d')",
+            audio: "c.codec === 'mp4a.40.2'",
+            frames: true,
+            records: true,
+        },
+        Browser {
+            name: "Chrome on Linux",
+            vendor: Some("Google Inc."),
+            video: "c.codec.startsWith('avc1.42')",
+            audio: "false",
+            frames: true,
+            records: false,
+        },
+        Browser {
+            name: "Firefox",
+            vendor: Some(""),
+            video: "c.codec.startsWith('avc1.')",
+            audio: "c.codec === 'opus'",
+            frames: true,
+            records: false,
+        },
+        Browser {
+            name: "a browser without frame callbacks",
+            vendor: Some(""),
+            video: "true",
+            audio: "true",
+            frames: false,
+            records: false,
+        },
+        Browser {
+            name: "Safari",
+            vendor: Some("Apple Computer, Inc."),
+            video: "true",
+            audio: "true",
+            frames: true,
+            records: false,
+        },
+    ];
+    for browser in browsers {
+        round_video::testing::forget();
+        run("window.__asked = [];");
+        let _video = Stand::in_for(
+            "VideoEncoder",
+            &fake_class(&format!(
+                "async (c) => {{ window.__asked.push(['video', c]); return {{supported: {}}}; }}",
+                browser.video
+            )),
+        );
+        let _audio = Stand::in_for(
+            "AudioEncoder",
+            &fake_class(&format!(
+                "async (c) => {{ window.__asked.push(['audio', c]); return {{supported: {}}}; }}",
+                browser.audio
+            )),
+        );
+        if let Some(vendor) = browser.vendor {
+            run(&format!(
+                "Object.defineProperty(navigator, 'vendor', {{value: {vendor:?}, configurable: true}});"
+            ));
+        }
+        if !browser.frames {
+            run(
+                "window.__rvfc = HTMLVideoElement.prototype.requestVideoFrameCallback; \
+                 delete HTMLVideoElement.prototype.requestVideoFrameCallback;",
+            );
+        }
+        let answer = round_video::probe().await;
+        if !browser.frames {
+            run("HTMLVideoElement.prototype.requestVideoFrameCallback = window.__rvfc;");
+        }
+        run("delete navigator.vendor;");
+        assert_eq!(answer.records, browser.records, "{}", browser.name);
+        assert!(answer.camera, "{}: a camera either way", browser.name);
+        let asked = js_sys::Array::from(
+            &Reflect::get(&js_sys::global(), &JsValue::from_str("__asked")).unwrap(),
+        );
+        let field =
+            |config: &JsValue, key: &str| Reflect::get(config, &JsValue::from_str(key)).unwrap();
+        for pair in asked.iter() {
+            let pair = js_sys::Array::from(&pair);
+            let config = pair.get(1);
+            assert!(
+                field(&config, "hardwareAcceleration").is_undefined(),
+                "{}: no hardware preference",
+                browser.name
+            );
+            match pair.get(0).as_string().as_deref() {
+                Some("video") => {
+                    let codec = field(&config, "codec").as_string().unwrap();
+                    assert!(
+                        ["avc1.64001e", "avc1.4d401e"].contains(&codec.as_str()),
+                        "{}: {codec}",
+                        browser.name
+                    );
+                    assert_eq!(field(&config, "width").as_f64(), Some(480.0));
+                    assert_eq!(field(&config, "height").as_f64(), Some(480.0));
+                    assert_eq!(
+                        field(&config, "latencyMode").as_string().as_deref(),
+                        Some("realtime")
+                    );
+                }
+                _ => {
+                    assert_eq!(
+                        field(&config, "codec").as_string().as_deref(),
+                        Some("mp4a.40.2")
+                    );
+                    assert_eq!(field(&config, "sampleRate").as_f64(), Some(48_000.0));
+                    assert_eq!(field(&config, "numberOfChannels").as_f64(), Some(1.0));
+                }
+            }
+        }
+        if browser.records {
+            assert!(
+                asked.length() >= 2,
+                "{}: both encoders were asked",
+                browser.name
+            );
+        }
+    }
+    assert!(!round_video::is_webkit(), "the stand-ins are gone");
+    assert!(round_video::has_frame_callbacks());
     round_video::testing::forget();
 }
 
@@ -1279,6 +1585,7 @@ mod recorder_tests {
         let (_log, on_action) = recorder();
         {
             let _probed = Probed::as_if(Probe {
+                captures: true,
                 camera: true,
                 records: false,
             });
@@ -1337,6 +1644,7 @@ mod recorder_tests {
         {
             // A server from before video messages: nothing at all.
             let _probed = Probed::as_if(Probe {
+                captures: true,
                 camera: true,
                 records: true,
             });
@@ -1364,6 +1672,7 @@ mod recorder_tests {
             // No camera: none.
             drop(_probed);
             let _probed = Probed::as_if(Probe {
+                captures: true,
                 camera: false,
                 records: true,
             });
@@ -1375,6 +1684,7 @@ mod recorder_tests {
         {
             // During a call: dimmed, and saying why.
             let _probed = Probed::as_if(Probe {
+                captures: true,
                 camera: true,
                 records: true,
             });
@@ -1421,6 +1731,284 @@ mod recorder_tests {
             handle.destroy();
         }
         root.remove();
+    }
+
+    /// Whether the paperclip's menu holds "Record Video Message": None, or
+    /// whether it is dimmed — and what it says when chosen.
+    async fn paperclip_video_item(root: &Element) -> Option<(bool, String)> {
+        query(root, "[aria-label='Attach']").dyn_into_html().click();
+        TimeoutFuture::new(20).await;
+        let found = root
+            .query_selector_all(".attach-menu [role=menuitem]")
+            .unwrap();
+        let item = (0..found.length())
+            .filter_map(|index| found.item(index))
+            .map(|node| node.unchecked_into::<HtmlElement>())
+            .find(|item| item.text_content().as_deref() == Some("Record Video Message"));
+        let Some(item) = item else {
+            query(root, "[aria-label='Attach']").dyn_into_html().click();
+            TimeoutFuture::new(20).await;
+            return None;
+        };
+        let dimmed = item.get_attribute("aria-disabled").as_deref() == Some("true");
+        item.click();
+        TimeoutFuture::new(50).await;
+        let said = root
+            .query_selector(".media-notice")
+            .unwrap()
+            .and_then(|notice| notice.text_content())
+            .unwrap_or_default()
+            // Its Dismiss button's ✕ is not what it says.
+            .trim_end_matches('✕')
+            .to_string();
+        if let Some(dismiss) = root
+            .query_selector(".media-notice [aria-label='Dismiss']")
+            .unwrap()
+        {
+            dismiss.dyn_into_html().click();
+            TimeoutFuture::new(30).await;
+        }
+        Some((dimmed, said))
+    }
+
+    /// Whether the microphone's own menu (a right-click) holds "Record Video
+    /// Message": None, or whether it is dimmed and its reason.
+    async fn microphone_video_item(root: &Element) -> Option<(bool, String)> {
+        let mic = query(root, ".composer .slot");
+        let init = web_sys::MouseEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        mic.dispatch_event(
+            &web_sys::MouseEvent::new_with_mouse_event_init_dict("contextmenu", &init).unwrap(),
+        )
+        .unwrap();
+        TimeoutFuture::new(20).await;
+        let found = root
+            .query_selector_all(".slot-menu [role=menuitem]")
+            .unwrap();
+        let items: Vec<HtmlElement> = (0..found.length())
+            .filter_map(|index| found.item(index))
+            .map(|node| node.unchecked_into::<HtmlElement>())
+            .collect();
+        assert!(!items.is_empty(), "the microphone's menu opens");
+        let answer = items
+            .iter()
+            .find(|item| item.text_content().as_deref() == Some("Record Video Message"))
+            .map(|item| {
+                let dimmed = item.get_attribute("aria-disabled").as_deref() == Some("true");
+                let reason = item
+                    .get_attribute("aria-describedby")
+                    .and_then(|id| document().get_element_by_id(&id))
+                    .and_then(|reason| reason.text_content())
+                    .unwrap_or_default();
+                (dimmed, reason)
+            });
+        press(&items[0], "Escape");
+        TimeoutFuture::new(20).await;
+        answer
+    }
+
+    /// SAFARI, AND EVERY BROWSER WHOSE PROBE FAILS (S1.5, S1.6): against a
+    /// server with video messages, in a family or a direct chat, the
+    /// paperclip's "Record Video Message" and the microphone's are SHOWN and
+    /// explain — whether or not the browser has listed a camera, which
+    /// WebKit does not before a capture is granted. No video button there
+    /// (S1.4). Where the probe passes, a listed camera gives the real
+    /// entries; a browser that lists none offers nothing. An insecure page,
+    /// where voice does not work either, offers nothing to say it does. The
+    /// assistant's chat and a server without the keys offer nothing whatever
+    /// the browser.
+    #[wasm_bindgen_test]
+    async fn the_explaining_entry_never_waits_for_a_listed_camera() {
+        let explains = "This browser can't record video messages. Voice messages work.";
+        let root = pane_of(600, 700);
+        let (_log, on_action) = recorder();
+        for (camera, browser) in [
+            (false, "Safari, no camera listed"),
+            (true, "a camera listed"),
+        ] {
+            let _probed = Probed::as_if(Probe {
+                captures: true,
+                camera,
+                records: false,
+            });
+            let handle = render(&root, props(on_action.clone()));
+            TimeoutFuture::new(100).await;
+            assert!(door(&root).is_none(), "{browser}: no video button");
+            let paperclip = paperclip_video_item(&root).await;
+            assert!(dialog().is_none(), "{browser}: nothing opens");
+            let microphone = microphone_video_item(&root).await;
+            handle.destroy();
+            assert_eq!(
+                paperclip,
+                Some((true, explains.to_string())),
+                "{browser}: the paperclip's item is shown, dimmed, and explains"
+            );
+            assert_eq!(
+                microphone,
+                Some((true, explains.to_string())),
+                "{browser}: the microphone's item too"
+            );
+        }
+        {
+            // The probe fails, and still nothing where there are no video
+            // messages at all.
+            let _probed = Probed::as_if(Probe {
+                captures: true,
+                camera: false,
+                records: false,
+            });
+            let mut older = props(on_action.clone());
+            older.round = None;
+            let handle = render(&root, older);
+            TimeoutFuture::new(100).await;
+            assert_eq!(
+                paperclip_video_item(&root).await,
+                None,
+                "a server without the keys"
+            );
+            assert_eq!(microphone_video_item(&root).await, None);
+            handle.destroy();
+            let mut assistant = props(on_action.clone());
+            assistant.item.chat.kind = "ai".into();
+            let handle = render(&root, assistant);
+            TimeoutFuture::new(100).await;
+            assert_eq!(
+                paperclip_video_item(&root).await,
+                None,
+                "the assistant's chat"
+            );
+            handle.destroy();
+        }
+        for camera in [false, true] {
+            // An insecure page: nothing records, voice included — no entry
+            // at all, so none says "Voice messages work."
+            let _probed = Probed::as_if(Probe {
+                captures: false,
+                camera,
+                records: false,
+            });
+            let handle = render(&root, props(on_action.clone()));
+            TimeoutFuture::new(100).await;
+            assert!(door(&root).is_none(), "http://: no video button");
+            assert_eq!(
+                paperclip_video_item(&root).await,
+                None,
+                "http://, camera {camera}: no paperclip item"
+            );
+            assert_eq!(
+                microphone_video_item(&root).await,
+                None,
+                "http://, camera {camera}: no microphone item"
+            );
+            handle.destroy();
+        }
+        {
+            // The probe passes: the real entries, with a camera.
+            let _probed = Probed::as_if(Probe {
+                captures: true,
+                camera: true,
+                records: true,
+            });
+            let handle = render(&root, props(on_action.clone()));
+            assert!(until(1_000, || door(&root).is_some()).await, "the button");
+            assert_eq!(
+                microphone_video_item(&root).await.map(|(dimmed, _)| dimmed),
+                Some(false)
+            );
+            let paperclip = paperclip_video_item(&root).await;
+            let opened = until(2_000, || dialog().is_some()).await;
+            if opened {
+                button_labelled("Close").click();
+                assert!(until(1_000, || dialog().is_none()).await);
+            }
+            handle.destroy();
+            assert_eq!(paperclip.map(|(dimmed, _)| dimmed), Some(false));
+            assert!(opened, "the paperclip's item opens the recorder");
+        }
+        {
+            // The probe passes, and no camera listed: a device without
+            // one — nothing.
+            let _probed = Probed::as_if(Probe {
+                captures: true,
+                camera: false,
+                records: true,
+            });
+            let handle = render(&root, props(on_action.clone()));
+            TimeoutFuture::new(100).await;
+            assert!(door(&root).is_none());
+            assert_eq!(paperclip_video_item(&root).await, None);
+            assert_eq!(microphone_video_item(&root).await, None);
+            handle.destroy();
+        }
+        root.remove();
+    }
+
+    /// A CAMERA — OR A MICROPHONE — NOT THERE when it is asked for (S3.6):
+    /// the recorder says what video messages need, with the camera off and
+    /// Record dimmed. Never "Couldn't start recording.", which blames the
+    /// recorder. "Record a voice message instead" is offered only where a
+    /// microphone is KNOWN to exist (listed by `enumerateDevices`): the
+    /// combined request's NotFoundError may be about the microphone itself.
+    #[wasm_bindgen_test]
+    async fn no_camera_at_all_says_what_video_messages_need() {
+        let with_microphone = "[{kind: 'videoinput', deviceId: '', label: '', groupId: ''}, \
+              {kind: 'audioinput', deviceId: '', label: '', groupId: ''}]";
+        let camera_only = "[{kind: 'videoinput', deviceId: '', label: '', groupId: ''}]";
+        for (listing, microphone) in [(with_microphone, true), (camera_only, false)] {
+            let root = pane_of(600, 700);
+            let (_log, on_action) = recorder();
+            let handle = render(&root, props(on_action));
+            assert!(until(5_000, || door(&root).is_some()).await);
+            run(&format!(
+                "window.__gum = navigator.mediaDevices.getUserMedia; \
+                 navigator.mediaDevices.getUserMedia = () => Promise.reject( \
+                   Object.assign(new Error('none'), {{name: 'NotFoundError'}})); \
+                 window.__enumerate = navigator.mediaDevices.enumerateDevices; \
+                 navigator.mediaDevices.enumerateDevices = () => Promise.resolve({listing}); \
+                 window.__query = navigator.permissions.query; \
+                 navigator.permissions.query = () => Promise.resolve({{state: 'prompt'}});"
+            ));
+            let restore = || {
+                run("navigator.mediaDevices.getUserMedia = window.__gum; \
+                     navigator.mediaDevices.enumerateDevices = window.__enumerate; \
+                     navigator.permissions.query = window.__query;")
+            };
+            TimeoutFuture::new(650).await;
+            door(&root).unwrap().click();
+            let needs = "Video messages need the camera and the microphone.";
+            let settled = until(2_000, || dialog().is_some() && has(".recorder-glyph")).await;
+            // The voice offer, where it comes, comes with the glyph.
+            TimeoutFuture::new(100).await;
+            let line = status();
+            let record_dimmed = dialog()
+                .is_some()
+                .then(|| slot().get_attribute("aria-disabled"))
+                .flatten();
+            let voice = dialog()
+                .map(|dialog| dialog.text_content().unwrap_or_default())
+                .is_some_and(|text| text.contains("Record a voice message instead"))
+                || has(".recorder-voice");
+            let glyph = has(".recorder-glyph");
+            let video = has("video");
+            if dialog().is_some() {
+                button_labelled("Close").click();
+            }
+            restore();
+            assert!(settled, "the recorder settles: {line}");
+            assert!(line.contains(needs), "says what is needed: {line}");
+            assert!(!line.contains("Couldn't start recording."));
+            assert_eq!(record_dimmed.as_deref(), Some("true"), "Record dimmed");
+            assert_eq!(
+                voice, microphone,
+                "a voice message offered only with a microphone listed"
+            );
+            assert!(glyph, "the slashed camera");
+            assert!(!video, "the camera is off");
+            assert!(until(1_000, || dialog().is_none()).await);
+            handle.destroy();
+            root.remove();
+        }
     }
 
     /// A CAMERA REFUSED (S3.2): the recorder opens straight to the refusal —
@@ -1674,18 +2262,32 @@ mod recorder_tests {
                 status.bottom() <= circle.top(),
                 "the status above the circle"
             );
+            // The control row's bottom where the composer's row's is, and
+            // the ONE big slot — 64 across, its word under it — at its
+            // trailing end, in the Send button's place (the approved
+            // design).
             let row = pick(".recorder-row");
-            assert_eq!(
-                (row.top(), row.bottom()),
-                (f64::from(height) - 64.0, f64::from(height))
-            );
+            assert_eq!(row.bottom(), f64::from(height));
+            assert!(row.height() >= 64.0);
             let slot = pick(".recorder-slot");
+            assert_eq!((slot.width(), slot.height()), (64.0, 64.0));
             assert_eq!(
                 slot.right(),
                 f64::from(width) - 16.0,
                 "the Send button's place"
             );
-            assert!((slot.top() + slot.height() / 2.0 - (f64::from(height) - 32.0)).abs() < 1.0);
+            let caption = pick(".recorder-slot-item .recorder-caption");
+            assert!(
+                caption.top() >= slot.bottom() && caption.bottom() <= f64::from(height),
+                "its word under it"
+            );
+            let close = pick(".recorder-leading .recorder-control");
+            assert_eq!((close.width(), close.height()), (44.0, 44.0));
+            assert!(
+                (close.top() + close.height() / 2.0 - (slot.top() + slot.height() / 2.0)).abs()
+                    <= 10.5,
+                "the smaller buttons beside it"
+            );
             assert!(
                 row.top() >= circle.bottom(),
                 "the controls under the circle"

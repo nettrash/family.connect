@@ -417,24 +417,52 @@ struct RoundVideoSurface: UIViewRepresentable {
 }
 #elseif os(macOS)
 /// The Mac's surface: a layer-hosting view whose layer IS the player layer
-/// (S8.3 — never SwiftUI's `VideoPlayer`), cut to a circle.
+/// (S8.3 — never SwiftUI's `VideoPlayer`), cut to a circle BY ITSELF.
+///
+/// The cut has to be the player layer's own. `masksToBounds` set before the
+/// layer was handed to the view did not survive — measured false once
+/// hosted, most likely AppKit syncing it to the view's `clipsToBounds`,
+/// false by default since macOS 14 — so the player layer kept its corner
+/// radius and lost the clip: a radius with nothing to clip is a SQUARE
+/// video (RoundMacSurfaceTests). Whether
+/// a SwiftUI `clipShape` around a hosted `AVPlayerLayer` holds once the
+/// video is composited on screen is not something to lean on — the
+/// recorder's camera preview (`CameraPreviewView`, layer-BACKED) keeps its
+/// own clip and is round, and the iPhone's surface clips itself too.
+/// So: `clipsToBounds` on, and the radius and the clip applied again at
+/// every size change, not only when AppKit gets round to `layout()`.
 final class RoundPlayerLayerView: NSView {
     let playerLayer = AVPlayerLayer()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         playerLayer.videoGravity = .resizeAspectFill
-        playerLayer.masksToBounds = true
         layer = playerLayer
         wantsLayer = true
+        clipsToBounds = true
+        cutRound()
         setAccessibilityElement(false)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        cutRound()
+    }
+
     override func layout() {
         super.layout()
+        cutRound()
+    }
+
+    /// A circle as wide as the view, clipping everything the layer draws.
+    private func cutRound() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         playerLayer.cornerRadius = min(bounds.width, bounds.height) / 2
+        playerLayer.masksToBounds = true
+        CATransaction.commit()
     }
 
     /// Clicks belong to the circle's gestures, not to this view.
@@ -527,11 +555,21 @@ struct RoundVideoTile: View {
         #endif
     }
 
-    private var plays: RoundVideoPlays { .shared }
+    /// Where this device keeps what it has played — the app's store; a test
+    /// hands in its own.
+    var plays: RoundVideoPlays = .shared
 
     /// The dot: somebody else's circle this device has not played (S5.2).
     private var showsUnplayedDot: Bool {
         !isMine && upload.playable && attachment.id > 0 && !plays.isPlayed(attachment.id)
+    }
+
+    /// The dot in words: "Not played" while it shows, then "Played" — on
+    /// somebody else's circle only, as the voice bubble says it and as
+    /// Android, Windows and the web say it of a circle.
+    var playedValue: String {
+        guard !isMine, upload.playable, attachment.id > 0 else { return "" }
+        return showsUnplayedDot ? String(localized: "Not played") : String(localized: "Played")
     }
 
     /// The poster, and only the poster: the protocol's "a tile never
@@ -607,6 +645,9 @@ struct RoundVideoTile: View {
         }
         .frame(width: diameter, height: diameter)
         .clipShape(Circle())
+        // The circle sits alone on the chat's background, lifted by a soft
+        // shadow (the approved design) — no balloon.
+        .shadow(color: .black.opacity(Self.shadowOpacity), radius: 8, y: 4)
         .overlay { rings }
         .overlay { centreGlyph }
         .overlay(alignment: .bottom) { footer }
@@ -633,7 +674,7 @@ struct RoundVideoTile: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(String(localized: "Video message, \(durationLabel)")))
-        .accessibilityValue(showsUnplayedDot ? Text("Not played") : Text(verbatim: ""))
+        .accessibilityValue(Text(verbatim: playedValue))
         .accessibilityAddTraits(.isButton)
         .accessibilityAddTraits(.startsMediaSession)
         .accessibilityHint(!upload.playable ? Text(verbatim: "") : playback.phase == .playing ? Text("Pause") : Text("Play"))
@@ -642,6 +683,16 @@ struct RoundVideoTile: View {
         .accessibilityAction(named: Text("Open Full Screen")) { openFullScreen() }
     }
 
+    /// How far OUTSIDE the circle's edge its one ring runs — off the
+    /// picture, so it never covers a face (the approved design).
+    static let ringOutset: CGFloat = 6
+
+    /// The soft shadow under the circle.
+    static let shadowOpacity: Double = 0.16
+
+    /// EXACTLY ONE ring at a time, just outside the edge: the thin neutral
+    /// one while your own circle goes up, or the accent one showing how far
+    /// it has played.
     @ViewBuilder
     private var rings: some View {
         if isSending {
@@ -651,21 +702,26 @@ struct RoundVideoTile: View {
                 .trim(from: 0, to: reduceMotion ? 1 : 0.25)
                 .stroke(Color.secondary.opacity(0.7), style: StrokeStyle(lineWidth: 2, lineCap: .round))
                 .rotationEffect(.degrees(sendingSpin ? 360 : 0))
-                .padding(1)
+                .padding(-Self.ringOutset)
                 .onAppear {
                     guard !reduceMotion else { return }
                     withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
                         sendingSpin = true
                     }
                 }
-        } else if playback.phase == .playing || playback.phase == .paused
-                    || (playback.phase == .loading && playback.hasFrames) {
+        } else if showsProgressRing {
             Circle()
                 .trim(from: 0, to: ringProgress)
                 .stroke(accent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-                .padding(1.5)
+                .padding(-Self.ringOutset)
         }
+    }
+
+    /// The accent ring runs while it plays or waits paused mid-way.
+    private var showsProgressRing: Bool {
+        playback.phase == .playing || playback.phase == .paused
+            || (playback.phase == .loading && playback.hasFrames)
     }
 
     @ViewBuilder
@@ -678,7 +734,9 @@ struct RoundVideoTile: View {
                     .tint(.white)
             }
             .accessibilityHidden(true)
-        case .idle, .paused:
+        case .idle, .paused, .playing:
+            // The disc fades out as it starts and back in when it pauses —
+            // instantly under Reduce Motion.
             if upload.playable {
                 ZStack {
                     Circle().fill(.black.opacity(0.45))
@@ -687,31 +745,34 @@ struct RoundVideoTile: View {
                         .foregroundStyle(.white)
                         .offset(x: 2)
                 }
-                .frame(width: 44, height: 44)
+                .frame(width: 48, height: 48)
+                .opacity(playback.phase == .playing ? 0 : 1)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: playback.phase)
                 .accessibilityHidden(true)
             }
-        case .playing, .failed:
+        case .failed:
             EmptyView()
         }
     }
 
-    /// The duration capsule at the bottom centre inside the circle, and the
-    /// unplayed dot beside it (S5.2).
+    /// The length badge at the bottom centre inside the circle — white on a
+    /// dark translucent capsule — with the unplayed dot inside it (S5.2, the
+    /// approved design).
     private var footer: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
             Text(verbatim: durationLabel)
                 .font(.caption2.weight(.medium).monospacedDigit())
-                .foregroundStyle(.white)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(.black.opacity(0.55), in: Capsule())
             if showsUnplayedDot {
                 Circle()
-                    .fill(accent)
-                    .frame(width: 8, height: 8)
+                    .fill(.white)
+                    .frame(width: 6, height: 6)
             }
         }
-        .padding(.bottom, diameter * 0.07)
+        .foregroundStyle(.white)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .background(.black.opacity(0.55), in: Capsule())
+        .padding(.bottom, diameter * 0.06)
         .accessibilityHidden(true)
     }
 
