@@ -244,6 +244,20 @@ public sealed partial class ChatsView : UserControl
     private long? playingAudio;
 
     /// <summary>
+    /// The one VIDEO MESSAGE playing in place (S5.3): its machine, its frame-server player, EVERY copy drawn of each circle,
+    /// the copies whose brush has been handed the player's frames (each given its poster back before the player goes), and
+    /// whether this machine's frame server has failed — after which every circle opens the viewer instead.
+    /// </summary>
+    private readonly RoundPlayback roundPlayback = new();
+    private readonly DrawnCopies<long, RoundCopy> roundCopies = new();
+    private readonly List<RoundCopy> roundShowing = [];
+    private RoundFramePlayer? roundEngine;
+    private AttachmentDto? roundVideo;
+    private DispatcherQueueTimer? roundClock;
+    private bool roundReducedMotion;
+    private bool roundFallback;
+
+    /// <summary>
     /// Voice messages (the approved design of 2026-10-05): which ones this device has played — the dot's own knowledge, kept
     /// in the cache and so this account's — and the speed chosen on this device, 1×, 1.5× or 2×.
     /// </summary>
@@ -576,6 +590,12 @@ public sealed partial class ChatsView : UserControl
                     // No app sound while something records (S1.7) — not even one the system's media keys start: every press
                     // here is refused, and this is what a key outside the app reaches.
                     audio.Pause();
+                }
+                if (AudioRunning)
+                {
+                    // One thing plays at a time (S5.3): a voice note starting — from its bubble, its review chip, a media
+                    // key — pauses a circle playing in place.
+                    YieldRound();
                 }
                 ShowPlayback();
             }
@@ -2695,6 +2715,8 @@ public sealed partial class ChatsView : UserControl
     /// <summary>Open a message's photos and videos at full size, at the one clicked.</summary>
     private void OpenViewer(IReadOnlyList<AttachmentDto> items, int index, bool round = false)
     {
+        // A circle playing in place makes way for the viewer (one thing at a time, S5.3) — Open Full Screen included.
+        YieldRound();
         viewing = new MediaAlbum(items, index, round);
         ViewerOverlay.Visibility = Visibility.Visible;
         ShowViewerItem();
@@ -3998,6 +4020,11 @@ public sealed partial class ChatsView : UserControl
         {
             DimPlay(toggle);
         }
+        // A circle says the same in its HelpText while a recording runs.
+        foreach (var copy in roundCopies.All)
+        {
+            DrawRoundCopy(copy);
+        }
     }
 
     private void DimPlay(Button toggle)
@@ -4857,6 +4884,14 @@ public sealed partial class ChatsView : UserControl
     /// recording on its way to playing is called off, so its bytes landing do not start it under the microphone.
     /// </summary>
     private void QuietForRecording()
+    {
+        QuietBesidesRound();
+        // And a circle playing in place: a recording starting pauses playback (S5.3).
+        YieldRound();
+    }
+
+    /// <summary>Everything that plays, but a circle in place: what a recording quiets, and what a circle starting quiets.</summary>
+    private void QuietBesidesRound()
     {
         fetchingAudio = 0;
         fetchingLocal++;
@@ -6104,6 +6139,9 @@ public sealed partial class ChatsView : UserControl
         audioRows.Clear();
         stagedRows.Clear();
         parkedRows.Clear();
+        // And a circle playing in place stops with its chat (S5.3).
+        StopRound();
+        roundCopies.Clear();
     }
 
     /// <summary>
@@ -7734,15 +7772,58 @@ public sealed partial class ChatsView : UserControl
     // ---- video messages ------------------------------------------------------------------------
     //
     // A VIDEO MESSAGE (docs/protocol.md, "Video messages"; docs/audio-video-messages-2026-10-04.md, S5): one square video
-    // sent to be drawn round. In this version a click plays it in the viewer, inside a ring painted over its corners
-    // (S5.3); playing inside the thread waits for the clipping trial (Blocked 1).
+    // sent to be drawn round. A click plays it IN PLACE (S5.3, 2026-10-06): inside its own circle, at the same size, with
+    // sound — the frames of a frame-server MediaPlayer copied into the very ellipse that draws its poster, so it is round by
+    // construction (RoundFramePlayer). Open Full Screen — its menu, or the expand control while it plays — is the viewer,
+    // with its ring painted over the square clip's corners. RoundInline.PlaysInPlace false puts back the viewer on a click.
+
+    /// <summary>One circle as drawn, so the circle that plays in place can keep every copy of itself up to date.</summary>
+    private sealed class RoundCopy(
+        AttachmentDto video, bool mine, Button circle, ImageBrush brush, Grid disc, ProgressRing spinner,
+        Microsoft.UI.Xaml.Shapes.Path ring, Button expand, TextBlock? length, Ellipse? dot, TextBlock failure)
+    {
+        public AttachmentDto Video { get; } = video;
+
+        public bool Mine { get; } = mine;
+
+        public Button Circle { get; } = circle;
+
+        /// <summary>The ellipse's one brush: the poster at rest, the player's frames while it plays.</summary>
+        public ImageBrush Brush { get; } = brush;
+
+        public Grid Disc { get; } = disc;
+
+        public ProgressRing Spinner { get; } = spinner;
+
+        public Microsoft.UI.Xaml.Shapes.Path Ring { get; } = ring;
+
+        public Button Expand { get; } = expand;
+
+        public TextBlock? Length { get; } = length;
+
+        public Ellipse? Dot { get; } = dot;
+
+        public TextBlock Failure { get; } = failure;
+
+        /// <summary>The poster, once it has landed.</summary>
+        public ImageSource? Poster { get; set; }
+
+        /// <summary>Whether any of it is on the screen (assumed until its scroller says otherwise).</summary>
+        public bool InView { get; set; } = true;
+
+        /// <summary>Whether its play disc shows, and the fade that is taking it there.</summary>
+        public bool DiscShown { get; set; } = true;
+
+        public Animation.Storyboard? DiscFade { get; set; }
+    }
 
     /// <summary>
     /// A circle in a conversation (S5.2): NO BALLOON, the square poster filling an ellipse of the one size — a neutral
     /// disc of that size until the poster lands, so the row never changes height — a play disc in the middle, the
     /// duration in a capsule at the bottom and, until this device has played it, an accent dot beside it. Only the poster
-    /// is fetched to draw it; the video itself only when it is opened. A click opens it a beat late, because a double
-    /// click on it is the heart (S5.3).
+    /// is fetched to draw it; the video itself only when it is tapped. A click plays it in place a beat late, because a
+    /// double click on it is the heart (S5.3); while it plays the same ellipse shows its frames, ONE accent ring runs round
+    /// the outside of the edge, and an expand control at the top trailing edge opens it full screen (S5.4).
     /// </summary>
     private FrameworkElement RoundVideoElement(AttachmentDto video, bool mine, Action heart)
     {
@@ -7760,7 +7841,9 @@ public sealed partial class ChatsView : UserControl
         var shadow = new Grid { Width = Diameter, Height = Diameter, IsHitTestVisible = false };
         face.Children.Add(ground);
         CastShadow(shadow, ground, Diameter);
-        var poster = new Ellipse();
+        // THE circle: one ellipse, one brush — the poster's picture at rest and the player's frames while it plays.
+        var brush = new ImageBrush { Stretch = Stretch.UniformToFill };
+        var poster = new Ellipse { Fill = brush };
         face.Children.Add(poster);
         var disc = new Grid
         {
@@ -7781,26 +7864,43 @@ public sealed partial class ChatsView : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         });
         face.Children.Add(disc);
-        // The badge, at the bottom centre on a dark capsule: the length and — until this device has played someone else's
-        // circle — a white dot beside it, inside the capsule (the approved design).
+        // While it loads — from the tap until it plays, and in a stall — a loading ring over the poster (S5.3).
+        var spinner = new ProgressRing
+        {
+            Width = RoundLook.PlayDisc,
+            Height = RoundLook.PlayDisc,
+            IsActive = false,
+            Visibility = Visibility.Collapsed,
+            Foreground = white,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+        };
+        AutomationProperties.SetAccessibilityView(spinner, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        face.Children.Add(spinner);
+        // The badge, at the bottom centre on a dark capsule: the length — how far it has played, once it has started — and,
+        // until this device has played someone else's circle, a white dot beside it, inside the capsule (the approved design).
         var badge = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        TextBlock? words = null;
         if (RoundLook.Capsule(video) is { } length)
         {
-            var words = new TextBlock { Text = length, FontSize = 12, Foreground = white, VerticalAlignment = VerticalAlignment.Center };
+            words = new TextBlock { Text = length, FontSize = 12, Foreground = white, VerticalAlignment = VerticalAlignment.Center };
             Typography.SetNumeralAlignment(words, FontNumeralAlignment.Tabular);
             badge.Children.Add(words);
         }
+        Ellipse? dot = null;
         if (RoundLook.ShowsDot(mine, played))
         {
             // THIS DEVICE's own knowledge: kept per account, never sent, wiped at sign-out (S5.2) — and never on the
             // reader's own circles.
-            badge.Children.Add(new Ellipse
+            dot = new Ellipse
             {
                 Width = RoundLook.Dot,
                 Height = RoundLook.Dot,
                 Fill = white,
                 VerticalAlignment = VerticalAlignment.Center,
-            });
+            };
+            badge.Children.Add(dot);
         }
         if (badge.Children.Count > 0)
         {
@@ -7815,7 +7915,7 @@ public sealed partial class ChatsView : UserControl
                 Child = badge,
             });
         }
-        // A button, so Tab reaches it and Enter or Space opens it like a click; drawn as nothing but the circle.
+        // A button, so Tab reaches it and Enter or Space plays and pauses it like a click; drawn as nothing but the circle.
         var circle = new Button
         {
             Content = face,
@@ -7830,24 +7930,126 @@ public sealed partial class ChatsView : UserControl
         {
             AutomationProperties.SetItemStatus(circle, status);
         }
-        circle.Click += (_, _) => Soon(() => OpenRound(video));
+        circle.Click += (_, _) => Soon(() => TapRound(video));
         // The heart, here and handled: a button may keep the gesture from the balloon, and it must not land twice.
         circle.DoubleTapped += (_, e) =>
         {
             e.Handled = true;
             heart();
         };
-        _ = ShowPosterAsync(poster, video);
-        var standing = new Grid { HorizontalAlignment = circle.HorizontalAlignment };
+        // ONE accent ring, OUTSIDE the edge — never over a face — as far as it has played (S5.3); nothing at rest.
+        var outer = Diameter + 2 * RoundInline.RingReach;
+        var ring = new Microsoft.UI.Xaml.Shapes.Path
+        {
+            Width = outer,
+            Height = outer,
+            Margin = new Thickness(-RoundInline.RingReach),
+            Stroke = (Brush)resources["AccentFillColorDefaultBrush"],
+            StrokeThickness = RoundLook.Ring,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed,
+        };
+        AutomationProperties.SetAccessibilityView(ring, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        // While it plays, an expand control at the top trailing edge: a 28 glyph disc in a 44 target — Open Full Screen (S5.4).
+        var glyph = new Grid { Width = RoundInline.ExpandGlyph, Height = RoundInline.ExpandGlyph };
+        glyph.Children.Add(new Ellipse { Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0x8C, 0, 0, 0)) });
+        glyph.Children.Add(new FontIcon
+        {
+            // FullScreen, in Segoe Fluent Icons.
+            Glyph = ((char)0xE740).ToString(),
+            FontSize = 14,
+            Foreground = white,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var expand = new Button
+        {
+            Content = glyph,
+            Width = RoundInline.ExpandTarget,
+            Height = RoundInline.ExpandTarget,
+            Padding = new Thickness(0),
+            BorderThickness = new Thickness(0),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            CornerRadius = new CornerRadius(RoundInline.ExpandTarget / 2),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Visibility = Visibility.Collapsed,
+        };
+        AutomationProperties.SetName(expand, say.Get("Open Full Screen"));
+        ToolTipService.SetToolTip(expand, say.Get("Open Full Screen"));
+        expand.Click += (_, _) => OpenRound(video);
+        expand.DoubleTapped += (_, e) => e.Handled = true;
+        // A failure leaves the poster, and says so under it (S5.3).
+        var failure = new TextBlock
+        {
+            Text = say.Get("Couldn't load the video. Tap to try again."),
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            MaxWidth = Diameter,
+            Opacity = 0.8,
+            HorizontalAlignment = circle.HorizontalAlignment,
+            Visibility = Visibility.Collapsed,
+        };
+        AutomationProperties.SetLiveSetting(failure, AutomationLiveSetting.Polite);
+        // The ring reaches past the circle: the room for it is kept on every side, so nothing ever clips it and the row is
+        // the same height whether it plays or not.
+        var standing = new Grid { HorizontalAlignment = circle.HorizontalAlignment, Margin = new Thickness(RoundInline.RingReach) };
         AutomationProperties.SetAccessibilityView(shadow, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
         standing.Children.Add(shadow);
         standing.Children.Add(circle);
-        return standing;
+        standing.Children.Add(ring);
+        standing.Children.Add(expand);
+        var column = new StackPanel { Spacing = 4, HorizontalAlignment = circle.HorizontalAlignment };
+        column.Children.Add(standing);
+        column.Children.Add(failure);
+
+        var copy = new RoundCopy(video, mine, circle, brush, disc, spinner, ring, expand, words, dot, failure);
+        // Every copy on the screen is kept up to date — this one from now, and whenever it comes back — and none once it goes.
+        roundCopies.Add(video.Id, copy);
+        standing.Loaded += (_, _) =>
+        {
+            if (!gone)
+            {
+                roundCopies.Add(video.Id, copy);
+            }
+        };
+        standing.Unloaded += (_, _) =>
+        {
+            roundCopies.Remove(video.Id, copy);
+            if (roundPlayback.Id == video.Id && roundCopies.Of(video.Id).Count == 0)
+            {
+                // Its last copy is gone — the message went, the thread panel closed. A redraw puts a new copy up first, so
+                // this looks again once the redraw has settled before it stops anything.
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (!gone && roundPlayback.Id == video.Id && roundCopies.Of(video.Id).Count == 0)
+                    {
+                        StopRound();
+                    }
+                });
+            }
+        };
+        // Scrolled wholly out of view, it stops (S5.3) — unless another copy of it is still on the screen.
+        standing.EffectiveViewportChanged += (_, args) =>
+        {
+            var seen = args.EffectiveViewport;
+            copy.InView = RoundInline.InView(seen.X, seen.Y, seen.Width, seen.Height, Diameter, Diameter);
+            if (!copy.InView && !gone && roundPlayback.Id == video.Id && roundCopies.Of(video.Id).All(other => !other.InView))
+            {
+                StopRound();
+            }
+        };
+        DrawRoundCopy(copy);
+        _ = ShowPosterAsync(copy);
+        return column;
     }
 
     /// <summary>The square poster, filling its ellipse — the same small copy the viewer shows while the video loads.</summary>
-    private async Task ShowPosterAsync(Ellipse poster, AttachmentDto video)
+    private async Task ShowPosterAsync(RoundCopy copy)
     {
+        var video = copy.Video;
         if (!video.HasPreview)
         {
             // No poster was ever made: the neutral disc stays, and the video is never downloaded to draw one.
@@ -7877,13 +8079,476 @@ public sealed partial class ChatsView : UserControl
                 }
                 picture = pictures[key] = decoded;
             }
-            poster.Fill = new ImageBrush { ImageSource = picture, Stretch = Stretch.UniformToFill };
+            if (gone)
+            {
+                return;
+            }
+            // Kept by the copy, and drawn now unless its frames are showing — they give it back when they go.
+            copy.Poster = picture;
+            DrawRoundCopy(copy);
         }
         catch (Exception e)
         {
             Diagnostics.Write($"drawing a video message: {e.GetType().Name}");
         }
     }
+
+    // ---- a circle playing in place ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A click on a circle (the single click, after the heart's double-click window): what <see cref="RoundPlayback.Tap"/>
+    /// says — play, pause, give up a load, try again — or, on a machine whose frame server failed (or with
+    /// <see cref="RoundInline.PlaysInPlace"/> off), the viewer.
+    /// </summary>
+    private void TapRound(AttachmentDto video)
+    {
+        if (gone)
+        {
+            return;
+        }
+        if (!RoundInline.PlaysInPlace || roundFallback)
+        {
+            OpenRound(video);
+            return;
+        }
+        var step = roundPlayback.Tap(video.Id, recordingStart.Quiet(recorder is not null));
+        if (step.Tap == RoundTap.Refused)
+        {
+            // No app sound while something records (S1.7).
+            Explain(services.Say.Get("You can play this after recording."));
+            return;
+        }
+        ApplyRound(step.Act, video);
+        if (step.Replaced is { } other)
+        {
+            DrawRound(other);
+        }
+        DrawRound(video.Id);
+    }
+
+    /// <summary>Do to the one player what the machine said.</summary>
+    private void ApplyRound(RoundAct act, AttachmentDto? video = null)
+    {
+        switch (act)
+        {
+            case RoundAct.Load when video is not null:
+                LetGoOfRoundEngine();
+                // One thing plays at a time: a voice note — and the viewer's video — stop for the circle (S5.3).
+                QuietBesidesRound();
+                _ = LoadRoundAsync(video, roundPlayback.Load);
+                break;
+            case RoundAct.Play:
+                QuietBesidesRound();
+                roundEngine?.Play();
+                break;
+            case RoundAct.Pause:
+                roundEngine?.Pause();
+                break;
+            case RoundAct.Stop:
+                LetGoOfRoundEngine();
+                break;
+        }
+        RunRoundClock();
+    }
+
+    /// <summary>
+    /// The tapped circle's video: the whole MP4 through the attachment cache — the session's header, kept on disk, exactly
+    /// what the viewer fetches — opened in a frame-server player whose frames go into the circle's own ellipse.
+    /// </summary>
+    private async Task LoadRoundAsync(AttachmentDto video, int load)
+    {
+        byte[]? bytes;
+        try
+        {
+            var (got, error) = await connection.Attachments.BytesAsync(video);
+            bytes = got;
+            if (error is not null)
+            {
+                Diagnostics.Write($"a video message's video: {error.Code} {error.Status}");
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"fetching a video message: {e.GetType().Name}");
+            bytes = null;
+        }
+        // Given up, replaced or stopped meanwhile: the bytes land on nothing.
+        if (gone || roundPlayback.Load != load || roundPlayback.Phase != RoundPhase.Loading)
+        {
+            return;
+        }
+        if (bytes is null)
+        {
+            FailRound(load);
+            return;
+        }
+        RoundFramePlayer engine;
+        try
+        {
+            engine = new RoundFramePlayer(DispatcherQueue, RoundFrames.Side(RoundLook.Diameter, XamlRoot?.RasterizationScale ?? 1));
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"making a video message's player: {e.GetType().Name}");
+            FailRound(load);
+            return;
+        }
+        roundEngine = engine;
+        bool Current() => !gone && ReferenceEquals(roundEngine, engine) && roundPlayback.Load == load;
+        engine.Opened += total =>
+        {
+            if (!Current())
+            {
+                return;
+            }
+            if (roundPlayback.Opened(load, total))
+            {
+                if (recordingStart.Quiet(recorder is not null))
+                {
+                    // A recording began while it loaded: it does not start under it (S1.7).
+                    YieldRound();
+                    return;
+                }
+                QuietBesidesRound();
+                engine.Play();
+            }
+            DrawRound(video.Id);
+        };
+        engine.StateChanged += state =>
+        {
+            if (!Current())
+            {
+                return;
+            }
+            switch (state)
+            {
+                case Windows.Media.Playback.MediaPlaybackState.Playing:
+                    roundPlayback.Playing(load);
+                    if (recordingStart.Quiet(recorder is not null))
+                    {
+                        YieldRound();
+                        return;
+                    }
+                    break;
+                case Windows.Media.Playback.MediaPlaybackState.Paused:
+                    roundPlayback.PausedByPlayer(load);
+                    break;
+                case Windows.Media.Playback.MediaPlaybackState.Buffering:
+                    roundPlayback.Waiting(load);
+                    break;
+            }
+            RunRoundClock();
+            DrawRound(video.Id);
+        };
+        engine.FirstFrame += () =>
+        {
+            if (Current())
+            {
+                roundPlayback.FirstFrame(load);
+                DrawRound(video.Id);
+            }
+        };
+        engine.Ended += () =>
+        {
+            if (!Current())
+            {
+                return;
+            }
+            var (act, through) = roundPlayback.Ended(load);
+            ApplyRound(act);
+            if (through)
+            {
+                MarkRoundPlayed(video);
+            }
+            DrawRound(video.Id);
+        };
+        engine.Failed += () =>
+        {
+            if (Current())
+            {
+                FailRound(load);
+            }
+        };
+        engine.FramesFailed += () =>
+        {
+            if (Current())
+            {
+                RoundToViewer(video, "its frames cannot be copied");
+            }
+        };
+        roundVideo = video;
+        engine.Open(bytes, video.Mime ?? "video/mp4");
+    }
+
+    /// <summary>
+    /// The player plays but its frames cannot be had on this machine: from now on every circle opens the viewer, which plays
+    /// it in its MediaPlayerElement as before — this one at once.
+    /// </summary>
+    private void RoundToViewer(AttachmentDto video, string why)
+    {
+        Diagnostics.Write($"a video message played in place: {why}; circles open the viewer from now on");
+        roundFallback = true;
+        StopRound();
+        OpenRound(video);
+    }
+
+    /// <summary>It could not be fetched or played: the poster, with "Couldn't load the video. Tap to try again." under it.</summary>
+    private void FailRound(int load)
+    {
+        if (roundPlayback.Id is not { } id)
+        {
+            return;
+        }
+        ApplyRound(roundPlayback.Failed(load));
+        DrawRound(id);
+        foreach (var copy in roundCopies.Of(id).Where(copy => copy.InView))
+        {
+            Announce(copy.Failure);
+        }
+    }
+
+    /// <summary>Something else plays — a voice note, the viewer, a recording: a circle playing in place makes way (S5.3).</summary>
+    private void YieldRound()
+    {
+        if (roundPlayback.Id is not { } id)
+        {
+            return;
+        }
+        ApplyRound(roundPlayback.Yield());
+        DrawRound(id);
+    }
+
+    /// <summary>Its row left the screen, its chat closed, the window let go: back to its poster, the player let go (S5.3).</summary>
+    private void StopRound()
+    {
+        var id = roundPlayback.Stop();
+        LetGoOfRoundEngine();
+        RunRoundClock();
+        if (id is { } stopped)
+        {
+            DrawRound(stopped);
+        }
+    }
+
+    /// <summary>Played through here: its dot goes, now and on every redraw, and Narrator hears "Played" (S5.3, S6).</summary>
+    private void MarkRoundPlayed(AttachmentDto video)
+    {
+        try
+        {
+            playedRounds.MarkPlayed(video.Id);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"remembering what was played: {e.GetType().Name}");
+        }
+        foreach (var copy in roundCopies.Of(video.Id))
+        {
+            if (copy.Dot is { } dot)
+            {
+                dot.Visibility = Visibility.Collapsed;
+            }
+            if (RoundLook.Value(copy.Mine, played: true, services.Say) is { } status)
+            {
+                AutomationProperties.SetItemStatus(copy.Circle, status);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The player goes: every circle its frames were drawn in gets its poster back FIRST — the frames are a surface outside
+    /// the managed heap, closed with the player, and must not be closed under a brush still drawing them.
+    /// </summary>
+    private void LetGoOfRoundEngine()
+    {
+        if (roundEngine is not { } engine)
+        {
+            return;
+        }
+        roundEngine = null;
+        foreach (var copy in roundShowing)
+        {
+            if (ReferenceEquals(copy.Brush.ImageSource, engine.Picture))
+            {
+                copy.Brush.ImageSource = copy.Poster;
+            }
+        }
+        roundShowing.Clear();
+        engine.Dispose();
+    }
+
+    /// <summary>The circle's clock: the ring and the time move while it plays, and stand still otherwise.</summary>
+    private void RunRoundClock()
+    {
+        if (roundPlayback.Phase != RoundPhase.Playing || roundEngine is null || gone)
+        {
+            roundClock?.Stop();
+            return;
+        }
+        if (roundClock is null)
+        {
+            roundClock = DispatcherQueue.CreateTimer();
+            roundClock.Interval = TimeSpan.FromMilliseconds(RoundInline.TickMs);
+            roundClock.Tick += (_, _) => TickRound();
+        }
+        if (!roundClock.IsRunning)
+        {
+            // Asked once per play, not ten times a second: Windows' animations off steps the ring once a second (S6).
+            roundReducedMotion = !StickerImaging.AnimationsWanted();
+            roundClock.Start();
+        }
+    }
+
+    private void TickRound()
+    {
+        if (gone || roundEngine is not { } engine || roundPlayback.Id is not { } id || roundPlayback.Phase != RoundPhase.Playing)
+        {
+            roundClock?.Stop();
+            return;
+        }
+        roundPlayback.Progress(roundPlayback.Load, engine.Position, engine.Duration);
+        if (RoundFrames.Starved(roundPlayback.Phase, roundPlayback.HasFrames, roundPlayback.Position) && roundVideo is { } video
+            && video.Id == id)
+        {
+            // Sound with a still poster is not playing a video.
+            RoundToViewer(video, "no frame in two seconds of playing");
+            return;
+        }
+        DrawRound(id);
+    }
+
+    /// <summary>Every copy of one circle, as the machine has it now.</summary>
+    private void DrawRound(long id)
+    {
+        if (gone)
+        {
+            return;
+        }
+        foreach (var copy in roundCopies.Of(id))
+        {
+            DrawRoundCopy(copy);
+        }
+    }
+
+    /// <summary>
+    /// One copy: its ellipse's picture (the frames once one is in, the poster otherwise), the play disc, the loading ring, the
+    /// ONE accent ring, the capsule's time, the expand control, the failure line, and what a press does next for Narrator.
+    /// </summary>
+    private void DrawRoundCopy(RoundCopy copy)
+    {
+        try
+        {
+            var id = copy.Video.Id;
+            var phase = roundPlayback.PhaseOf(id);
+            var current = roundPlayback.Id == id;
+            var hasFrames = current && roundPlayback.HasFrames;
+            var seen = current && roundPlayback.SeenPlaying;
+            var position = current ? roundPlayback.Position : 0;
+            var total = current && roundPlayback.Total > 0 ? roundPlayback.Total : (copy.Video.DurationMs ?? 0) / 1000.0;
+
+            var frames = RoundInline.ShowsFrames(phase, hasFrames) ? roundEngine?.Picture : null;
+            var picture = frames ?? copy.Poster;
+            if (!ReferenceEquals(copy.Brush.ImageSource, picture))
+            {
+                copy.Brush.ImageSource = picture;
+            }
+            if (frames is not null && !roundShowing.Contains(copy))
+            {
+                roundShowing.Add(copy);
+            }
+
+            FadeRoundDisc(copy, RoundInline.ShowsDisc(phase));
+            var loading = RoundInline.ShowsSpinner(phase);
+            copy.Spinner.IsActive = loading;
+            copy.Spinner.Visibility = loading ? Visibility.Visible : Visibility.Collapsed;
+
+            var fraction = RoundInline.Ring(phase, seen, position, total, roundReducedMotion);
+            if (fraction <= 0)
+            {
+                copy.Ring.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                var outer = RoundLook.Diameter + 2 * RoundInline.RingReach;
+                copy.Ring.Data = RingArc(fraction, outer / 2, RoundLook.Diameter / 2 + RoundInline.RingGap + RoundLook.Ring / 2);
+                copy.Ring.Visibility = Visibility.Visible;
+            }
+
+            if (copy.Length is { } length && RoundInline.Capsule(copy.Video, phase, seen, position) is { } said
+                && !string.Equals(length.Text, said, StringComparison.Ordinal))
+            {
+                length.Text = said;
+            }
+            copy.Expand.Visibility = RoundInline.ShowsExpand(phase, hasFrames) ? Visibility.Visible : Visibility.Collapsed;
+            copy.Failure.Visibility = RoundInline.ShowsFailure(phase) ? Visibility.Visible : Visibility.Collapsed;
+
+            // Its name stays "Video message, 0:23" and its status Played or Not played; what a press does next — Play or
+            // Pause, the default action (S6) — is its help, or why nothing plays while something records (S1.7).
+            var help = recorder is not null && phase is not (RoundPhase.Playing or RoundPhase.Loading)
+                ? services.Say.Get("You can play this after recording.")
+                : RoundInline.Action(phase, services.Say);
+            if (!string.Equals(AutomationProperties.GetHelpText(copy.Circle), help, StringComparison.Ordinal))
+            {
+                AutomationProperties.SetHelpText(copy.Circle, help);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a video message as it plays: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>A copy's play disc, faded in or out over 150 ms — or simply there or not with Windows' animations off.</summary>
+    private static void FadeRoundDisc(RoundCopy copy, bool shown)
+    {
+        if (shown == copy.DiscShown)
+        {
+            return;
+        }
+        copy.DiscShown = shown;
+        copy.DiscFade?.Stop();
+        copy.DiscFade = null;
+        var to = shown ? 1.0 : 0.0;
+        if (!StickerImaging.AnimationsWanted())
+        {
+            copy.Disc.Opacity = to;
+            return;
+        }
+        var fade = new Animation.DoubleAnimation
+        {
+            To = to,
+            Duration = new Duration(TimeSpan.FromMilliseconds(ComposerButton.SlotCrossfadeMs)),
+        };
+        Animation.Storyboard.SetTarget(fade, copy.Disc);
+        Animation.Storyboard.SetTargetProperty(fade, "Opacity");
+        copy.DiscFade = new Animation.Storyboard();
+        copy.DiscFade.Children.Add(fade);
+        copy.DiscFade.Begin();
+    }
+
+    /// <summary>
+    /// A ring's arc, clockwise from 12 o'clock to <paramref name="fraction"/> of the way round a circle of
+    /// <paramref name="radius"/> about (<paramref name="centre"/>, <paramref name="centre"/>) — the whole circle as it reaches the end.
+    /// </summary>
+    private static Geometry RingArc(double fraction, double centre, double radius)
+    {
+        if (fraction >= 0.999)
+        {
+            return new EllipseGeometry { Center = new Windows.Foundation.Point(centre, centre), RadiusX = radius, RadiusY = radius };
+        }
+        var (x, y) = RoundVideoRules.RingPoint(fraction, radius, centre);
+        var figure = new PathFigure { StartPoint = new Windows.Foundation.Point(centre, centre - radius), IsClosed = false };
+        figure.Segments.Add(new ArcSegment
+        {
+            Point = new Windows.Foundation.Point(x, y),
+            Size = new Windows.Foundation.Size(radius, radius),
+            IsLargeArc = fraction > 0.5,
+            SweepDirection = SweepDirection.Clockwise,
+        });
+        var path = new PathGeometry();
+        path.Figures.Add(figure);
+        return path;
+    }
+
 
     /// <summary>What a visible circle fetches — its poster — fetched for a hidden one and drawn nowhere.</summary>
     private async Task FetchHiddenPosterAsync(AttachmentDto video)
@@ -8051,27 +8716,7 @@ public sealed partial class ChatsView : UserControl
         var outer = diameter + 2 * (ViewerRingGap + RoundLook.Ring);
         var centre = outer / 2;
         var radius = diameter / 2 + ViewerRingGap + RoundLook.Ring / 2;
-        Geometry ring;
-        if (fraction >= 0.999)
-        {
-            ring = new EllipseGeometry { Center = new Windows.Foundation.Point(centre, centre), RadiusX = radius, RadiusY = radius };
-        }
-        else
-        {
-            var (x, y) = RoundVideoRules.RingPoint(fraction, radius, centre);
-            var figure = new PathFigure { StartPoint = new Windows.Foundation.Point(centre, centre - radius), IsClosed = false };
-            figure.Segments.Add(new ArcSegment
-            {
-                Point = new Windows.Foundation.Point(x, y),
-                Size = new Windows.Foundation.Size(radius, radius),
-                IsLargeArc = fraction > 0.5,
-                SweepDirection = SweepDirection.Clockwise,
-            });
-            var path = new PathGeometry();
-            path.Figures.Add(figure);
-            ring = path;
-        }
-        ViewerRoundRing.Data = ring;
+        ViewerRoundRing.Data = RingArc(fraction, centre, radius);
         ViewerRoundRing.Visibility = Visibility.Visible;
     }
 
@@ -8245,6 +8890,12 @@ public sealed partial class ChatsView : UserControl
                 && PlaybackPauses.Pauses(happened, viewerRound ? Playing.RoundVideo : Playing.Video))
             {
                 ViewerVideo.MediaPlayer?.Pause();
+            }
+            // A circle playing in place, by the same rule as the viewer's circle.
+            if (roundPlayback.Id is { } circle)
+            {
+                ApplyRound(roundPlayback.Interrupt(happened));
+                DrawRound(circle);
             }
             // And the clip the recorder is playing back in REVIEW, which is a circle like any other.
             roundRecorder?.PausePlayback(happened);

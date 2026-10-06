@@ -15,9 +15,10 @@ namespace FamilyConnect.App.Logic;
 /// and until it lands a neutral disc of the same size holds the row's height.
 /// </para>
 /// <para>
-/// <b>THIS VERSION PLAYS IT IN THE VIEWER</b> (S5.3): the square clip with its corners painted in the viewer's solid
-/// backdrop, exactly one accent ring OUTSIDE the edge running round as it plays (the approved design of 2026-10-05), and a
-/// play disc that fades out while it does. Playing inside the thread waits for the clipping trial (Blocked 1).
+/// <b>A TAP PLAYS IT IN PLACE</b> (S5.3; 2026-10-06 — <see cref="RoundInline"/>, <see cref="RoundPlayback"/>): inside its own
+/// circle, at the same size, with sound. <b>OPEN FULL SCREEN PLAYS IT IN THE VIEWER</b> (S5.4): the square clip with its
+/// corners painted in the viewer's solid backdrop, exactly one accent ring OUTSIDE the edge running round as it plays (the
+/// approved design of 2026-10-05), and a play disc that fades out while it does.
 /// </para>
 /// </remarks>
 public static class RoundLook
@@ -31,7 +32,7 @@ public static class RoundLook
     /// <summary>The accent dot beside the duration while this device has not played it.</summary>
     public const double Dot = 8;
 
-    /// <summary>The ring outside the edge: the accent as it plays in the viewer, a neutral one while one of the reader's own uploads.</summary>
+    /// <summary>The ring outside the edge: the accent as it plays — in place or in the viewer — a neutral one while one of the reader's own uploads.</summary>
     public const double Ring = 3;
 
     /// <summary>The largest circle the viewer draws: the recording's own 480 pixels.</summary>
@@ -189,7 +190,7 @@ public enum Playing
     /// <summary>A voice note or an audio file in a bubble, or a staged or not-sent note.</summary>
     VoiceNote,
 
-    /// <summary>A video message — on Windows, in the viewer's circle (S5.3).</summary>
+    /// <summary>A video message — on Windows in place, in its own circle (S5.3), or in the viewer's circle (S5.4).</summary>
     RoundVideo,
 
     /// <summary>An ordinary video in the viewer.</summary>

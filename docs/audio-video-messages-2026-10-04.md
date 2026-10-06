@@ -1214,6 +1214,15 @@ photo, a body (which the server refuses anyway) — is drawn as the ordinary mes
 - **Windows in this version**: a tap opens the existing viewer overlay (`Views/ChatsView.xaml:249-308`),
   where the square clip plays inside a ring painted over its corners on the viewer's solid backdrop.
   Playing inside the thread waits for the clipping trial (Blocked 1).
+  *(2026-10-06: superseded — Windows now plays a circle IN PLACE like every other client, and the viewer is
+  Open Full Screen's alone. It no longer waits for T2, because nothing is asked to clip a video: a `MediaPlayer`
+  in frame-server mode (`IsVideoFrameServerEnabled`) copies each frame — `CopyFrameToVideoSurface` into a
+  `VideoFrame.CreateAsDirect3D11SurfaceBacked` surface, read back by `SoftwareBitmap.CreateCopyFromSurfaceAsync`,
+  at the clip's rate and at most 30 fps — into a `SoftwareBitmapSource` that is the image of the same `ImageBrush`
+  filling the poster's `Ellipse`, so the picture is round by construction (`win/src/FamilyConnect.App/Services/RoundFramePlayer.cs`;
+  the rules in `App.Logic/RoundPlayback.cs`, tested). `RoundInline.PlaysInPlace` puts the viewer back on a tap,
+  and a machine whose frames cannot be copied falls back to the viewer by itself. It has not run on Windows
+  yet; `win/README.md` lists what to check.)*
 
 #### S5.4 Menus, full screen, editing
 
@@ -1458,7 +1467,7 @@ Nothing else: no tour, no explainer screen, no mode bubble.
 - The recording row moves from above the card (`:109-120`) into the input row. No level meter and no
   silence warning in this version.
 - **The recorder** covers the page and the rail. Recording round video arrives after the trials
-  (Blocked 1); playback goes through the viewer (S5.3). If T1 finds that `MediaCapture` initialised for
+  (Blocked 1); playback is in place since 2026-10-06, through a frame-server player that needs no clip (S5.3). If T1 finds that `MediaCapture` initialised for
   `AudioAndVideo` holds the microphone in PREVIEW, the status line says "Camera and microphone on · Not
   recording" (S3.4). A real close — Quit, or the close button with Keep running off — over a clip in
   REVIEW is cancelled in `OnClosing` (`MainWindow.xaml.cs:607-616`, `args.Cancel`) to ask first; a
@@ -2197,15 +2206,18 @@ Each item below holds back only its own piece; everything else ships.
 1. **Windows runtime trials**, on the owner's ARM64 machine — the only Windows runtime there is
    (`win/README.md:14`): T1, the frame-source preview on its webcam, and whether `MediaCapture` for
    `AudioAndVideo` holds the microphone in PREVIEW; T2, `CornerRadius = D/2` on `MediaPlayerElement` first
-   (#8264 was closed after "some fixes in WASDK 1.4"; the app is on 2.4.0), then an ellipse composition clip;
+   (#8264 was closed after "some fixes in WASDK 1.4"; the app is on 2.4.0), then an ellipse composition clip
+   — *(2026-10-06: T2 now covers only the RECORDER's live preview and REVIEW; a received circle plays in place
+   without any clip, through a frame-server player drawing into the poster's own ellipse — S5.3. What it needs from
+   the machine instead is a smoke test of that player: the checklist in `win/README.md`)*;
    T3, a 480 × 480 `MediaTranscoder` output with 64 kbit/s AAC, `moov` first after Faststart; T4, touch and
    pen on a microphone with `IsHoldingEnabled = false` (no menu from a touch or pen hold, a click records)
    and a pen barrel tap (the menu); T5, Narrator reading every state; T6, the camera while a WebView2 call
    has it; T7, a smoke test of Phase 0 and Phase 1 — `DisplayRequest` (it once threw under the Windows App
    SDK, #3002), the `AppCapability` checks, the session-lock notification and which API delivers it,
    Ctrl+Shift+R, the menu, the parked store and the icon slot — because CI never runs the app
-   (`ci.yml:788-800`). T7 holds Windows' Phase 0 and Phase 1; Phase 3d and inline circles wait for the
-   rest. A `MediaFrameReader` fallback for #9756 cameras is not trialled: it waits for such a camera.
+   (`ci.yml:788-800`). T7 holds Windows' Phase 0 and Phase 1; Phase 3d waits for the rest (inline circles
+   no longer do — 2026-10-06, S5.3). A `MediaFrameReader` fallback for #9756 cameras is not trialled: it waits for such a camera.
 2. **A Safari 26 trial on a Mac and an iPhone** of the live canvas → `VideoFrame` → `VideoEncoder` →
    `mp4.rs` path, and of the microphone coming back inside the Record click without a second prompt.
    Web video recording on WebKit waits for it.
