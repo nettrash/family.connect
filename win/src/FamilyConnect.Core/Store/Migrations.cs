@@ -320,8 +320,22 @@ public static class Migrations
     ];
 
     /// <summary>
+    /// Step 8: WHICH CACHED ATTACHMENT SETS KNOW THE STICKER AND VIDEO-MESSAGE FLAGS (docs/audio-video-messages-2026-10-04.md,
+    /// S5.8; iOS <c>MessageEntity.attachmentsKnowRound</c>, Android MIGRATION_30_31). A build before #58 decoded every
+    /// attachment without <c>sticker</c>, and one before #79 without <c>round</c>, and wrote the set back into
+    /// <c>attachments_json</c> with only the fields it knew — so a sticker it cached reads as a photo and a circle as a
+    /// square video, FOR GOOD: a chat held in sequence is never paged again, and the catch-up only ever adds. 0 is the truth
+    /// for every row already here, because nothing says which build wrote it; every set this build writes is 1, and
+    /// <c>Resync</c> reads the 0s that could be either once more (<see cref="ChatStore.FlagRepairCandidates"/>).
+    /// </summary>
+    private static readonly string[] Eight =
+    [
+        "ALTER TABLE messages ADD COLUMN attachments_know_flags INTEGER NOT NULL DEFAULT 0",
+    ];
+
+    /// <summary>
     /// Every step, in order. The index is the version it upgrades FROM, so
     /// <c>All.Count</c> is the schema this build expects.
     /// </summary>
-    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five, Six, Seven];
+    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five, Six, Seven, Eight];
 }

@@ -651,7 +651,16 @@ public sealed partial class ChatsView : UserControl
             typing.Heard(chatId, userId);
             DispatcherQueue.TryEnqueue(ShowTyping);
         };
-        onResync = _ => QueueRedraw();
+        onResync = report =>
+        {
+            if (report.FlagsRepaired > 0)
+            {
+                // Stickers and circles an older build cached as plain photos and videos, read again (schema step 8): the one
+                // line that says, in the owner's log, that the cache was not as empty as it looked.
+                Diagnostics.Write($"resync: {report.FlagsRepaired} cached sticker/video-message set(s) repaired");
+            }
+            QueueRedraw();
+        };
         onLink = link => DispatcherQueue.TryEnqueue(() => ShowLink(link));
         onRefused = (_, _) => QueueRedraw();
         // A peer's read marker and an answer mid-stream live outside the cache; they redraw all the same.
@@ -1207,6 +1216,7 @@ public sealed partial class ChatsView : UserControl
         var pending = chat.Pending();
         var drawn = string.Join(Row, bubbles.Select(bubble => string.Join(Field,
             bubble.Message.Id, bubble.Message.EditSeq, bubble.Message.ReactionSeq, bubble.Message.Poll?.PollSeq, bubble.Reads,
+            BubbleRules.MediaMark(bubble.Message),
             connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0),
             connection.Chats.IsBlocked(bubble.Message.ReplyTo?.Parent?.SenderId ?? 0))));
         drawn += Row + string.Join(Row, pending.Select(row => string.Join(Field, row.ClientMsgId, row.Failed)));
@@ -3319,7 +3329,8 @@ public sealed partial class ChatsView : UserControl
         var pending = chain.Pending();
         var drawn = string.Join(Row, bubbles.Select(bubble => string.Join(Field,
             bubble.Message.Id, bubble.Message.EditSeq, bubble.Message.ReactionSeq, bubble.Message.Poll?.PollSeq,
-            bubble.Message.ReplyCount, bubble.Reads, connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0),
+            bubble.Message.ReplyCount, bubble.Reads, BubbleRules.MediaMark(bubble.Message),
+            connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0),
             connection.Chats.IsBlocked(bubble.Message.ReplyTo?.Parent?.SenderId ?? 0))));
         drawn = $"{chain.RootId}{Field}{chain.Loaded}{Field}{chain.Failure?.Code}{Field}{string.Join(',', connection.Chats.Blocked())}" +
             $"{Field}{connection.Chats.Members().Count}{Field}{connection.Answers.Version}{Field}{DateOnly.FromDateTime(DateTime.Now)}" +

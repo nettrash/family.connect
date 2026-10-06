@@ -116,7 +116,10 @@ public sealed class Resync(
         /// Carried out of the pass as the assistant is, and applied only when <see cref="FamilyRead"/>: a pass that
         /// stopped before that read knows nothing about them, which is not the same as a server without them.
         /// </summary>
-        RoundVideoLimits? RoundVideo = null)
+        RoundVideoLimits? RoundVideo = null,
+        /// <summary>How many cached sets an older build wrote without the sticker or video-message flag were read again
+        /// and changed (schema step 8).</summary>
+        int FlagsRepaired = 0)
     {
         /// <summary>Whether every read finished. A flush that ran anyway is not a failure.</summary>
         public bool Complete => Stopped is null;
@@ -271,7 +274,97 @@ public sealed class Resync(
             var items = await PackAsync(pack, packMark, began, ct).ConfigureAwait(false);
             report = report with { PackItems = items.PackItems, Stopped = items.Stopped };
         }
+
+        // Last, and only on a pass that read everything: the stickers and circles an older build cached as plain photos
+        // and videos (schema step 8). Best effort — what it cannot finish waits for the next pass, and nothing it meets
+        // is a reason to call this pass failed.
+        if (report.Stopped is null)
+        {
+            report = report with { FlagsRepaired = await RepairFlagsAsync(ct).ConfigureAwait(false) };
+        }
         return report;
+    }
+
+    /// <summary>How many possible stickers and circles one pass reads again at most — iOS's and Android's batch.</summary>
+    public const int FlagRepairBatch = 25;
+
+    /// <summary>What one failed read means to <see cref="RepairFlagsAsync"/>.</summary>
+    public enum FlagRepairOutcome
+    {
+        /// <summary>The server read the request and refused it, or answered what this build cannot read: asking again
+        /// changes nothing. Settled, never asked again.</summary>
+        Settled,
+
+        /// <summary>No answer about this message yet (a 5xx, a timeout): asked again next pass; the pass goes on.</summary>
+        AskAgainLater,
+
+        /// <summary>Nothing about this message at all — the network, the session, the server's patience: every other read
+        /// would fail the same way, so the rest wait for the next pass.</summary>
+        EndPass,
+    }
+
+    /// <summary>
+    /// iOS's <c>roundRepairOutcome</c> and Android's <c>repairUnknownRoundFlags</c>, in this client's error shape: a
+    /// transport failure, a 401 and a 429 end the pass; a 5xx, a 408 and <c>internal</c> are asked again; any other 4xx,
+    /// and a 2xx whose body would not decode (<see cref="ApiClient"/> calls that <c>validation</c> with the 2xx status),
+    /// settle the one message.
+    /// </summary>
+    public static FlagRepairOutcome RepairOutcome(ApiError error) =>
+        error.Code == ErrorCodes.Transport || error.Status == 401 || error.Status == 429
+            || error.Code == ErrorCodes.TooManyRequests || (error.Status == 0 && !error.Canonical)
+            ? FlagRepairOutcome.EndPass
+            : error.Status >= 500 || error.Status == 408 || error.Code == ErrorCodes.Internal
+                ? FlagRepairOutcome.AskAgainLater
+                : FlagRepairOutcome.Settled;
+
+    /// <summary>
+    /// Read again, once, the held messages that may be STICKERS or VIDEO MESSAGES but were cached by a build that did not
+    /// know the flag (#58, #79; docs/audio-video-messages-2026-10-04.md, S5.8) — iOS's
+    /// <c>ChatSyncCoordinator.repairUnknownRoundFlags</c> and Android's <c>MessageRepository.repairUnknownRoundFlags</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A build that predates a flag wrote the set back without it, and a chat held in sequence is never paged again — so
+    /// after the upgrade a sticker kept its grey tile and a circle stayed square, for good, while every other device drew
+    /// the same message right. Each candidate (<see cref="ChatStore.FlagRepairCandidates"/>) is read through
+    /// <c>before_id = id + 1, limit = 1</c> and its set written back (<see cref="ChatStore.RepairMedia"/>), newest first,
+    /// at most <see cref="FlagRepairBatch"/> per pass; a message the server no longer has is settled.
+    /// </para>
+    /// <para>
+    /// ONE FAILED READ IS ABOUT ONE MESSAGE, and the pass goes on past it (<see cref="RepairOutcome"/>): ending on it would
+    /// ask the same unreadable message FIRST on every pass and never reach the older ones.
+    /// </para>
+    /// </remarks>
+    /// <returns>How many held sets changed.</returns>
+    private async Task<int> RepairFlagsAsync(CancellationToken ct)
+    {
+        var repaired = 0;
+        foreach (var held in chats.FlagRepairCandidates(FlagRepairBatch))
+        {
+            var page = await api.Messages(held.ChatId, beforeId: held.Id + 1, limit: 1, ct: ct).ConfigureAwait(false);
+            if (!page.Ok || page.Value is null)
+            {
+                switch (RepairOutcome(page.Error ?? ApiError.Transport("no answer")))
+                {
+                    case FlagRepairOutcome.Settled:
+                        chats.SettleFlags(held.Id);
+                        continue;
+                    case FlagRepairOutcome.AskAgainLater:
+                        continue;
+                    default:
+                        return repaired;
+                }
+            }
+            if ((page.Value.Messages ?? []).FirstOrDefault(message => message.Id == held.Id) is { } server)
+            {
+                repaired += chats.RepairMedia(server) ? 1 : 0;
+            }
+            else
+            {
+                chats.SettleFlags(held.Id);
+            }
+        }
+        return repaired;
     }
 
     /// <summary>One chat's four loops: the messages, then the three sequence feeds.</summary>
