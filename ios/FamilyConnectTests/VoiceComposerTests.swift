@@ -4,17 +4,16 @@
 //
 //  #79, Phase 1: the voice half of the composer, driven end to end through
 //  its seams (docs/audio-video-messages-2026-10-04.md, S2, S4, S6) — a fake
-//  recorder engine, a scratch parked store, a clock that moves only when the
-//  test says, timers that fire only when the test says, and spies for
-//  everything only the composer can do.
+//  recorder engine, a clock that moves only when the test says, and spies
+//  for everything only the composer can do.
 //
 //  The reducer's every step is pinned by RecordVectorTests against the
 //  shared reference. What is pinned HERE is the part no vector can see: that
 //  each effect does the thing it names — the microphone opens and closes,
-//  the arbiter is claimed and given back, a release that sends is parked as
-//  "sending" before the Undo row shows, the five seconds run out on the
-//  injected clock, an interruption inside them sends, Undo reviews, a failed
-//  hand-off becomes a "not sent" row, and nothing recorded is ever dropped.
+//  the arbiter is claimed and given back, the Send arrow hands the note to
+//  the outbox at once, an interruption keeps it as "not sent", and nothing
+//  recorded is ever dropped. (The hold, its Undo window and the "sending"
+//  entry it parked are gone since 2026-10-06; so are their tests.)
 //
 
 import Foundation
@@ -22,7 +21,7 @@ import Testing
 @testable import FamilyConnect
 
 @MainActor
-@Suite("Voice composer: the slot's recording, the Undo window, the interruptions", .serialized)
+@Suite("Voice composer: the slot's recording and the interruptions", .serialized)
 struct VoiceComposerTests {
 
     // MARK: - The harness
@@ -58,67 +57,40 @@ struct VoiceComposerTests {
     }
 
     @MainActor
-    final class Timer: VoiceTimer {
-        let due: UInt64
-        let fire: @MainActor () -> Void
-        var cancelled = false
-        init(due: UInt64, fire: @escaping @MainActor () -> Void) {
-            self.due = due
-            self.fire = fire
-        }
-        func cancel() { cancelled = true }
-    }
-
-    @MainActor
     final class Harness {
         let root: URL
-        let store: ParkedRecordings
         let arbiter = VoiceRecordingArbiter()
         let nowPlaying = NowPlaying()
         var voice: VoiceComposer!
 
         var now: UInt64 = 10_000
-        var timers: [Timer] = []
         var engine: Engine?
         var callActive = false
         var permission: RecordGesture.Permission = .granted
         var answer = true
-        var taught = true
-        var reviewSetting = false
-        var assistive = false
         var voiceOver = false
 
         var announced: [String] = []
         var spoken: [String] = []
         var reply: ReplyToDTO? = ReplyToDTO(messageID: 41, senderID: 7, excerpt: "Dinner at 8?")
-        var restored: [ReplyToDTO?] = []
         var sent: [(recording: AudioRecorder.Recording, reply: ReplyToDTO?)] = []
         var sendSucceeds = true
         var reviewed: [AudioRecorder.Recording] = []
         var parked: [AudioRecorder.Recording] = []
-        var sentParked: [ParkedRecordings.Entry] = []
-        var parkedSendSucceeds = true
-        var reviewedParked: [ParkedRecordings.Entry] = []
-        var reviewNotices: [String?] = []
         var explained: [ComposerSlot.Dimmed] = []
         var denials = 0
         var hints: [RecordGesture.Hint] = []
         var startFailures: [AudioRecorder.Failure] = []
         var unexpected = 0
-        var locks = 0
         var handsFreeStarts = 0
         var focusReturns = 0
-        var coachMarks = 0
         var blocked: ComposerSlot.Dimmed?
-        var remembered = 0
 
         init() throws {
             let root = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("voice-composer-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             self.root = root
-            let parked = root.appendingPathComponent("parked", isDirectory: true)
-            store = ParkedRecordings(root: { parked }, account: { "u1-test" })
             arbiter.keepAwake = { _ in }
 
             let recorder = AudioRecorder()
@@ -134,90 +106,45 @@ struct VoiceComposerTests {
 
             let voice = VoiceComposer(recorder: recorder)
             voice.clock = { [unowned self] in self.now }
-            voice.schedule = { [unowned self] after, fire in
-                let timer = Timer(due: self.now + after, fire: fire)
-                self.timers.append(timer)
-                return timer
-            }
             voice.permission = { [unowned self] in self.permission }
             voice.requestPermission = { [unowned self] in self.answer }
-            voice.assistive = { [unowned self] in self.assistive }
             voice.voiceOverRunning = { [unowned self] in self.voiceOver }
             voice.speak = { [unowned self] sentence in self.spoken.append(sentence) }
             voice.announce = { [unowned self] sentence in self.announced.append(sentence) }
-            voice.reviewBeforeSending = { [unowned self] in self.reviewSetting }
-            voice.firstReleaseTaught = { [unowned self] in self.taught }
-            voice.rememberFirstReleaseTaught = { [unowned self] in
-                self.taught = true
-                self.remembered += 1
-            }
-            voice.store = store
             voice.arbiter = arbiter
             voice.nowPlaying = nowPlaying
 
             var hooks = VoiceComposer.Hooks()
             hooks.blocked = { [unowned self] in self.blocked }
-            hooks.chatID = { 5 }
             hooks.takeReply = { [unowned self] in
                 let reply = self.reply
                 self.reply = nil
                 return reply
             }
-            hooks.restoreReply = { [unowned self] reply in self.restored.append(reply) }
             hooks.send = { [unowned self] recording, reply in
                 self.sent.append((recording, reply))
                 return self.sendSucceeds
             }
             hooks.review = { [unowned self] in self.reviewed.append($0) }
             hooks.park = { [unowned self] in self.parked.append($0) }
-            hooks.sendParked = { [unowned self] entry in
-                self.sentParked.append(entry)
-                return self.parkedSendSucceeds
-            }
-            hooks.reviewParked = { [unowned self] entry, notice in
-                self.reviewedParked.append(entry)
-                self.reviewNotices.append(notice)
-                self.store.remove(entry)
-            }
             hooks.explain = { [unowned self] in self.explained.append($0) }
             hooks.denied = { [unowned self] in self.denials += 1 }
             hooks.hint = { [unowned self] in self.hints.append($0) }
             hooks.startFailed = { [unowned self] in self.startFailures.append($0) }
             hooks.stoppedUnexpectedly = { [unowned self] in self.unexpected += 1 }
-            hooks.locked = { [unowned self] in self.locks += 1 }
             hooks.startedHandsFree = { [unowned self] in self.handsFreeStarts += 1 }
             hooks.returnFocus = { [unowned self] in self.focusReturns += 1 }
-            hooks.sentHandsFreeByTouch = { [unowned self] in self.coachMarks += 1 }
             voice.hooks = hooks
             self.voice = voice
         }
 
         var recorder: AudioRecorder { voice.recorder }
 
-        /// Fire every timer due by now.
-        func fireDue() {
-            for timer in timers where !timer.cancelled && timer.due <= now {
-                timer.cancelled = true
-                timer.fire()
-            }
-        }
-
-        /// A finger's tap on the microphone: down, and up 100 ms later.
-        func tap(at time: UInt64, byTouch: Bool = true) async {
+        /// A tap on the microphone — the control's completed tap, however
+        /// long the finger stayed: one activation, at the lift.
+        func tap(at time: UInt64) async {
             now = time
-            voice.pressDown(x: 340, y: 780, canHold: byTouch, rtl: false)
-            now = time + 100
-            voice.pressLifted(x: 340, y: 780, inside: true, byTouch: byTouch)
-            await voice.permissionTask?.value
-            await voice.startTask?.value
-        }
-
-        /// A finger held on the microphone until the recognizer's H.
-        func hold(at time: UInt64) async {
-            now = time
-            voice.pressDown(x: 340, y: 780, canHold: true, rtl: false)
-            now = time + 500
-            voice.holdReached()
+            voice.activate()
             await voice.permissionTask?.value
             await voice.startTask?.value
         }
@@ -227,11 +154,6 @@ struct VoiceComposerTests {
             engine?.currentTime = seconds
             engine?.loud = loud
             recorder.tick()
-        }
-
-        func lift(at time: UInt64, x: Double = 340, y: Double = 780) {
-            now = time
-            voice.pressLifted(x: x, y: y, inside: true, byTouch: true)
         }
 
         func fileExists(_ recording: AudioRecorder.Recording) -> Bool {
@@ -278,7 +200,7 @@ struct VoiceComposerTests {
         #expect(h.announced.last == "Voice message sent")
         #expect(h.voice.haptic?.haptic == .success)
         #expect(h.focusReturns == 1)
-        #expect(h.coachMarks == 1, "a hands-free message sent from a touch screen did not cue the coach mark")
+        #expect(h.parked.isEmpty && h.reviewed.isEmpty, "the Send arrow's note waited somewhere instead of going")
     }
 
     @Test("under a second the Send arrow discards: too short, never sent, the file gone")
@@ -411,309 +333,6 @@ struct VoiceComposerTests {
         #expect(h.announced.count == said)
     }
 
-    @Test("✕ during the Undo window ends it by sending, as any other action does (S2.6)")
-    func takingAnItemOffEndsTheUndoWindow() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(2)
-        h.lift(at: 12_600)
-        #expect(h.voice.inUndoWindow)
-
-        h.now = 13_000
-        h.voice.tookOff(voiceNote: false) {}
-
-        #expect(!h.voice.inUndoWindow)
-        #expect(h.sentParked.count == 1)
-    }
-
-    // MARK: - The hold
-
-    @Test("a hold records at H: medium haptic, the hold row, no focus move")
-    func holdStartsAtH() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-
-        #expect(h.voice.isHolding)
-        #expect(h.recorder.isRecording)
-        #expect(h.handsFreeStarts == 0, "a hold moved the field's focus away")
-        #expect(h.voice.haptic?.haptic == .medium)
-    }
-
-    @Test("a recognizer a millisecond early still starts the hold: the tick is placed at H")
-    func earlyRecognizerStillHolds() async throws {
-        let h = try Harness()
-        h.now = 10_000
-        h.voice.pressDown(x: 340, y: 780, canHold: true, rtl: false)
-        h.now = 10_499
-        h.voice.holdReached()
-        await h.voice.startTask?.value
-
-        #expect(h.voice.isHolding)
-    }
-
-    @Test("a release that sends parks the note marked sending BEFORE the Undo row shows")
-    func releaseParksAsSending() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(3.2)
-
-        h.lift(at: 13_700)
-
-        let entries = h.store.entries(for: 5)
-        let entry = try #require(entries.first, "nothing was parked at the release")
-        #expect(entries.count == 1)
-        #expect(entry.sending, "the release's entry is not marked sending")
-        #expect(entry.replyTo?.messageID == 41, "the reply did not go with the released note")
-        #expect(h.store.waiting(for: 5).isEmpty, "the note in its Undo window shows as not sent")
-        #expect(h.voice.inUndoWindow)
-        #expect(h.voice.undoNote == .parked(entry))
-        #expect(h.sent.isEmpty && h.sentParked.isEmpty, "something left the device inside the window")
-        #expect(h.arbiter.holder == nil)
-        #expect(h.reply == nil, "the composer kept the reply the note took")
-    }
-
-    @Test("five seconds on the injected clock send it through the outbox, and the entry goes")
-    func undoWindowRunsOut() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(3.2)
-        h.lift(at: 13_700)
-
-        h.now = 18_699
-        h.fireDue()
-        #expect(h.sentParked.isEmpty, "the window ended a millisecond early")
-
-        h.now = 18_700
-        h.fireDue()
-
-        #expect(h.sentParked.count == 1)
-        #expect(h.store.entries(for: 5).isEmpty, "the hand-off left its entry behind")
-        #expect(!h.voice.inUndoWindow)
-        #expect(h.announced.last == "Voice message sent")
-    }
-
-    @Test("a timer that fires early is armed again for what is left")
-    func earlyTimerRearms() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(2)
-        h.lift(at: 12_600)
-        let first = try #require(h.timers.last)
-        h.now = 14_000
-        first.cancelled = true
-        first.fire()
-
-        #expect(h.sentParked.isEmpty)
-        let again = try #require(h.timers.last)
-        #expect(again !== first, "an early timer was not armed again")
-        #expect(again.due == 17_600)
-    }
-
-    @Test("Undo inside the window reviews instead, and nothing is sent")
-    func undoReviews() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(2.4)
-        h.lift(at: 12_900)
-
-        h.now = 15_000
-        h.voice.undo()
-
-        #expect(h.reviewedParked.count == 1)
-        #expect(h.sentParked.isEmpty && h.sent.isEmpty)
-        #expect(h.announced.last == "Ready to review, 0:02")
-        #expect(!h.voice.inUndoWindow)
-        h.now = 30_000
-        h.fireDue()
-        #expect(h.sentParked.isEmpty, "the window's timer still sent after Undo")
-    }
-
-    @Test("an Undo after the five seconds cannot take it back: the note was already on its way")
-    func lateUndoSends() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(2.4)
-        h.lift(at: 12_900)
-
-        h.now = 17_901
-        h.voice.undo()
-
-        #expect(h.sentParked.count == 1)
-        #expect(h.reviewedParked.isEmpty)
-    }
-
-    @Test("any other action, an interruption or the microphone ends the window by sending")
-    func otherActionsSend() async throws {
-        for end in 0..<3 {
-            let h = try Harness()
-            await h.hold(at: 10_000)
-            h.recorded(2)
-            h.lift(at: 12_600)
-            h.now = 14_000
-            switch end {
-            case 0: h.voice.otherAction()
-            case 1: h.voice.interrupt()
-            default: await h.tap(at: 14_000)
-            }
-            #expect(h.sentParked.count == 1, "case \(end) did not send the released note")
-            #expect(h.reviewedParked.isEmpty)
-        }
-    }
-
-    @Test("a hand-off that fails goes to review with the error, as Send's does (S2.6, S2.5) — never an orphan")
-    func failedHandOffSettles() async throws {
-        let h = try Harness()
-        h.parkedSendSucceeds = false
-        await h.hold(at: 10_000)
-        h.recorded(2)
-        h.lift(at: 12_600)
-        let released = try #require(h.store.entries(for: 5).first)
-
-        h.now = 17_600
-        h.fireDue()
-
-        // The very entry the window parked, handed to review — whose host
-        // keeps it as "not sent" whatever it cannot stage.
-        #expect(h.reviewedParked.map(\.id) == [released.id], "a failed hand-off lost the note")
-        #expect(h.reviewNotices == ["Couldn't send that — try again."])
-        #expect(!h.store.entries(for: 5).contains { $0.sending }, "left marked sending: an orphan until the next launch")
-    }
-
-    @Test("a crash inside the window leaves a not-sent row at the next launch")
-    func crashInsideTheWindow() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(2)
-        h.lift(at: 12_600)
-
-        // The next launch: a fresh store over the same directory, swept.
-        let parked = h.root.appendingPathComponent("parked", isDirectory: true)
-        let relaunched = ParkedRecordings(root: { parked }, account: { "u1-test" })
-        relaunched.sweep()
-
-        let waiting = relaunched.waiting(for: 5)
-        #expect(waiting.count == 1, "a note its sender believed was going vanished in a crash")
-        #expect(relaunched.fileURL(for: try #require(waiting.first)) != nil, "the sweep removed the file")
-    }
-
-    @Test("the first held release on a device reviews and teaches, once")
-    func firstReleaseTeaches() async throws {
-        let h = try Harness()
-        h.taught = false
-        await h.hold(at: 10_000)
-        h.recorded(2)
-        h.lift(at: 12_600)
-
-        #expect(h.reviewed.count == 1)
-        #expect(h.hints == [.nextTimeSends])
-        #expect(h.remembered == 1)
-        #expect(h.store.entries(for: 5).isEmpty)
-
-        await h.hold(at: 20_000)
-        h.recorded(2)
-        h.lift(at: 22_600)
-        #expect(h.store.entries(for: 5).count == 1, "the second release did not open the Undo window")
-    }
-
-    @Test("Review Before Sending, VoiceOver or Switch Control: a held release reviews, untaught")
-    func reviewWhenAskedOrAssisted() async throws {
-        for assisted in [false, true] {
-            let h = try Harness()
-            h.reviewSetting = !assisted
-            h.assistive = assisted
-            await h.hold(at: 10_000)
-            h.recorded(2)
-            h.lift(at: 12_600)
-            #expect(h.reviewed.count == 1)
-            #expect(h.hints.isEmpty)
-            #expect(h.store.entries(for: 5).isEmpty)
-        }
-    }
-
-    @Test("a silent held recording is never sent: review, with 'We didn't hear anything.'")
-    func silentReleaseReviews() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(2, loud: false)
-        h.lift(at: 12_600)
-
-        #expect(h.reviewed.count == 1)
-        #expect(h.hints == [.nothingHeard])
-        #expect(h.sent.isEmpty && h.store.entries(for: 5).isEmpty)
-    }
-
-    @Test("a hold let go under a second keeps recording hands-free, saying so for three seconds")
-    func shortHoldKeepsRecording() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(0.6)
-        h.lift(at: 11_100)
-
-        #expect(h.voice.isHandsFree)
-        #expect(h.recorder.isRecording)
-        #expect(h.voice.showsStillRecording)
-        #expect(h.hints.isEmpty, "the row's own hint went to the notice line")
-        h.now = 14_100
-        h.fireDue()
-        #expect(!h.voice.showsStillRecording)
-    }
-
-    @Test("sliding toward the leading edge arms cancel; letting go then deletes")
-    func slideToCancel() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(2)
-        let file = try #require(h.engine?.url)
-
-        h.now = 11_000
-        h.voice.pressMoved(x: 240, y: 780)
-        #expect(h.voice.isArmed)
-        #expect(h.voice.haptic?.haptic == .selection)
-        h.lift(at: 11_500, x: 240)
-
-        #expect(!h.recorder.isRecording)
-        #expect(!FileManager.default.fileExists(atPath: file.path))
-        #expect(h.announced.last == "Recording deleted")
-        #expect(h.sent.isEmpty && h.reviewed.isEmpty && h.store.entries(for: 5).isEmpty)
-    }
-
-    @Test("sliding up locks: the keyboard goes down and the later lift does nothing")
-    func slideUpLocks() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(2)
-
-        h.now = 11_000
-        h.voice.pressMoved(x: 340, y: 720)
-        #expect(h.voice.isHandsFree)
-        #expect(h.locks == 1)
-        #expect(h.announced.last == "Recording locked")
-
-        h.lift(at: 12_000, y: 720)
-        #expect(h.recorder.isRecording, "the lift after a lock ended the recording")
-        #expect(h.sent.isEmpty && h.reviewed.isEmpty)
-    }
-
-    @Test("the system taking the touch locks a hold, and deletes one armed to cancel")
-    func systemCancel() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(2)
-        h.now = 11_000
-        h.voice.pressCancelled(background: false)
-        #expect(h.voice.isHandsFree)
-        #expect(h.recorder.isRecording)
-
-        let armed = try Harness()
-        await armed.hold(at: 10_000)
-        armed.recorded(2)
-        armed.now = 11_000
-        armed.voice.pressMoved(x: 230, y: 780)
-        armed.voice.pressCancelled(background: false)
-        #expect(!armed.recorder.isRecording)
-        #expect(armed.parked.isEmpty && armed.reviewed.isEmpty)
-    }
-
     // MARK: - Delete
 
     @Test("Delete under ten seconds deletes at once; from ten it stops first and asks")
@@ -823,43 +442,6 @@ struct VoiceComposerTests {
         #expect(h.arbiter.holder == nil)
     }
 
-    @Test("a store that will not take the released note still runs the window from the file — Undo gives its reply back, the end sends it with it")
-    func looseUndoWindow() async throws {
-        for undo in [true, false] {
-            let h = try Harness()
-            // Nobody signed in as far as the store is concerned: it refuses.
-            h.voice.store = ParkedRecordings(
-                root: { h.root.appendingPathComponent("refused", isDirectory: true) }, account: { nil })
-            await h.hold(at: 10_000)
-            h.recorded(2.4)
-            h.lift(at: 12_900)
-
-            guard case let .loose(recording, replyTo: reply)? = h.voice.undoNote else {
-                Issue.record("the window did not run from the recorder's file: \(String(describing: h.voice.undoNote))")
-                continue
-            }
-            #expect(reply?.messageID == 41, "the released note did not take the reply")
-            #expect(h.reply == nil)
-            #expect(h.store.entries(for: 5).isEmpty)
-
-            if undo {
-                h.now = 15_000
-                h.voice.undo()
-                #expect(h.restored.map { $0?.messageID } == [41], "Undo did not give the reply back")
-                #expect(h.reviewed == [recording])
-                #expect(h.sent.isEmpty)
-            } else {
-                h.now = 17_900
-                h.fireDue()
-                #expect(h.sent.count == 1)
-                #expect(h.sent.first?.recording == recording)
-                #expect(h.sent.first?.reply?.messageID == 41, "the note left without its reply")
-                #expect(h.restored.isEmpty && h.reviewed.isEmpty)
-            }
-            #expect(!h.voice.inUndoWindow)
-        }
-    }
-
     @Test("five minutes stop into review with the sentence — never sent")
     func capReviews() async throws {
         let h = try Harness()
@@ -909,10 +491,8 @@ struct VoiceComposerTests {
             }
             return true
         }
-        h.now = 10_000
-        h.voice.pressDown(x: 340, y: 780, canHold: true, rtl: false)
         h.now = 10_100
-        h.voice.pressLifted(x: 340, y: 780, inside: true, byTouch: true)
+        h.voice.activate()
         let stale = h.voice.startTask
         for _ in 0..<50 where gate.continuation == nil { await Task.yield() }
         try #require(gate.continuation != nil, "the first open never reached its prompt")
@@ -950,30 +530,34 @@ struct VoiceComposerTests {
 
     // MARK: - Refusals and permission
 
-    @Test("a dimmed microphone says why, at a tap and at H, and never records")
+    @Test("a dimmed microphone says why, at a tap and from the menu, and never records")
     func blockedExplains() async throws {
         let h = try Harness()
         h.blocked = .call
         await h.tap(at: 10_000)
-        await h.hold(at: 20_000)
+        h.now = 20_000
+        h.voice.record(besideDraft: false)
 
         #expect(h.explained == [.call, .call])
         #expect(!h.recorder.isRecording)
         #expect(h.arbiter.holder == nil)
     }
 
-    @Test("not yet asked: a tap prompts and records on Allow; a hold prompts and never records")
+    @Test("not yet asked: a tap or the menu prompts and records on Allow")
     func permissionFlows() async throws {
         let h = try Harness()
         h.permission = .notAsked
         await h.tap(at: 10_000)
         #expect(h.recorder.isRecording, "Allow after a tap did not record")
 
-        let held = try Harness()
-        held.permission = .notAsked
-        await held.hold(at: 10_000)
-        #expect(!held.recorder.isRecording, "a prompt a hold raised recorded")
-        #expect(held.hints == [.canRecordNow])
+        let menu = try Harness()
+        menu.permission = .notAsked
+        menu.now = 10_000
+        menu.voice.record(besideDraft: true)
+        await menu.voice.permissionTask?.value
+        await menu.voice.startTask?.value
+        #expect(menu.recorder.isRecording, "Allow after the menu did not record")
+        #expect(menu.voice.isBesideDraft, "the menu's recording forgot the draft beside it")
 
         let refused = try Harness()
         refused.permission = .notAsked
@@ -1015,7 +599,6 @@ struct VoiceComposerTests {
     func voiceOverSpeaksFirst() async throws {
         let h = try Harness()
         h.voiceOver = true
-        h.assistive = true
         let gate = SpeechGate()
         h.voice.speak = { sentence in
             h.spoken.append(sentence)
@@ -1035,7 +618,6 @@ struct VoiceComposerTests {
         #expect(h.recorder.isRecording)
         #expect(h.spoken == ["Recording"])
         #expect(!h.announced.contains("Recording"), "'Recording' was said twice")
-        #expect(h.coachMarks == 0)
     }
 
     @Test("Magic Tap stops a recording, pauses the app's playback, and otherwise lets the system have it")
@@ -1065,17 +647,6 @@ struct VoiceComposerTests {
         h.now = 12_500
         #expect(h.voice.escape() == true)
         #expect(h.reviewed.count == 1)
-    }
-
-    @Test("a hands-free message started without a finger does not cue the coach mark")
-    func coachMarkOnlyForTouch() async throws {
-        let h = try Harness()
-        await h.tap(at: 10_000, byTouch: false)
-        h.recorded(2)
-        h.now = 12_500
-        h.voice.activate()
-        #expect(h.sent.count == 1)
-        #expect(h.coachMarks == 0)
     }
 
     // MARK: - What the row says (S2.5, S2.9)
@@ -1108,7 +679,6 @@ struct VoiceComposerTests {
         h.voice.activate()
         await h.voice.startTask?.value
         #expect(h.voice.isHandsFree, "a click did not record hands-free")
-        #expect(!h.voice.isHolding)
 
         h.recorded(1.5)
         h.now = 10_400
@@ -1119,7 +689,6 @@ struct VoiceComposerTests {
         h.voice.activate()
         #expect(h.sent.count == 1)
         #expect(h.voice.state.phase == .idle)
-        #expect(h.coachMarks == 0, "a click cued the touch screen's coach mark")
     }
 
     @Test("the microphone is claimed with the composer's window: minimising THAT window parks it, another's does not")
@@ -1144,9 +713,9 @@ struct VoiceComposerTests {
         #expect(h.arbiter.holder == nil)
     }
 
-    // MARK: - What is said is what happened (S2.5, S2.6, S6)
+    // MARK: - What is said is what happened (S2.5, S6)
 
-    /// The reducer says "Voice message sent" after `.send` and `.undoSend`,
+    /// The reducer says "Voice message sent" after `.send`,
     /// and "Ready to review" after `.review`, believing the step worked. The
     /// composer says them only when it did: a screen reader must never hear
     /// "sent" about a note still on the device (WCAG 4.1.3).
@@ -1172,7 +741,6 @@ struct VoiceComposerTests {
         #expect(!h.announced.contains("Voice message sent"), "VoiceOver heard \"sent\" about a note still on the device")
         #expect(h.announced.last == "Couldn't send that — try again.")
         #expect(h.voice.haptic?.haptic == .warning, "a failed send played the success haptic")
-        #expect(h.coachMarks == 0, "a note that did not go cued the coach mark")
         #expect(h.focusReturns == 1)
     }
 
@@ -1211,77 +779,5 @@ struct VoiceComposerTests {
         #expect(!h.announced.contains { $0.hasPrefix("Ready to review") }, "\"Ready to review\" with nothing staged")
         #expect(h.voice.haptic?.haptic == .warning)
         #expect(h.focusReturns == 1, "too short did not give keyboard focus back to the field")
-    }
-
-    @Test("a release whose recording the recorder could not keep opens no Undo window and says too short")
-    func releaseWithNothingKeptOpensNoWindow() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(3.2)
-        try Self.underTheFloor(h)
-
-        h.lift(at: 13_700)
-
-        #expect(!h.voice.inUndoWindow, "a phantom Undo row for a note that does not exist")
-        #expect(h.voice.undoNote == nil)
-        #expect(h.store.entries(for: 5).isEmpty)
-        #expect(h.hints == [.tooShort])
-        #expect(h.announced.last == "That recording was too short.")
-        #expect(h.voice.haptic?.haptic == .warning)
-
-        h.now = 30_000
-        h.fireDue()
-        #expect(!h.announced.contains("Voice message sent"), "the phantom window announced a send")
-        #expect(h.sentParked.isEmpty && h.sent.isEmpty)
-    }
-
-    @Test("an Undo window whose hand-off fails is Send's (S2.6): in review with the error, never announced as sent")
-    func failedUndoHandOffIsNotAnnouncedAsSent() async throws {
-        let h = try Harness()
-        h.parkedSendSucceeds = false
-        await h.hold(at: 10_000)
-        h.recorded(2)
-        h.lift(at: 12_600)
-
-        h.now = 17_600
-        h.fireDue()
-
-        // S2.5's Send "lands in review with the error — never lost", and the
-        // window's send is "exactly as S2.5's Send".
-        #expect(h.reviewedParked.count == 1, "a failed hand-off did not go to review")
-        #expect(h.reviewNotices == ["Couldn't send that — try again."])
-        #expect(h.store.entries(for: 5).isEmpty, "the entry stayed as a not-sent row beside its review")
-        #expect(!h.announced.contains("Voice message sent"), "VoiceOver heard \"sent\" over a note in review")
-        #expect(h.announced.last == "Couldn't send that — try again.")
-        #expect(h.voice.haptic?.haptic == .warning)
-    }
-
-    @Test("a failed hand-off says so without swallowing what the same step does next: the microphone still opens and says Recording")
-    func failedHandOffKeepsTheNextStepsWords() async throws {
-        let h = try Harness()
-        h.parkedSendSucceeds = false
-        await h.hold(at: 10_000)
-        h.recorded(2)
-        h.lift(at: 12_600)
-
-        await h.tap(at: 14_000)
-
-        #expect(h.reviewedParked.count == 1)
-        #expect(h.voice.isHandsFree, "the tap that ended the window did not record")
-        #expect(h.recorder.isRecording)
-        #expect(Array(h.announced.suffix(2)) == ["Couldn't send that — try again.", "Recording"])
-        #expect(h.voice.haptic?.haptic == .light, "the new recording's haptic was swallowed")
-    }
-
-    @Test("a hand-off that works still says sent: the announcement is kept, not dropped")
-    func workingUndoHandOffStillSaysSent() async throws {
-        let h = try Harness()
-        await h.hold(at: 10_000)
-        h.recorded(2)
-        h.lift(at: 12_600)
-        await h.tap(at: 14_000)
-
-        #expect(h.sentParked.count == 1)
-        #expect(Array(h.announced.suffix(2)) == ["Voice message sent", "Recording"])
     }
 }

@@ -11,11 +11,11 @@
 //! the 600 ms activation guard, the one-second floor, "Delete this
 //! recording?" from ten seconds, what an interruption does.
 //!
-//! The browser has no hold in this version (S8.8: a touch `pointerdown` is
-//! not user activation, and Safari's audio needs one), so a press of any
-//! length is a click — `Activate` — and the hold, the slides and the Undo
-//! window never happen here; nor can a page tell that a screen reader runs
-//! (S6), which a held release would have to.
+//! There is no hold (revised 2026-10-06 — the owner removed it on every
+//! platform; on the web it never existed, S8.8: a touch `pointerdown` is not
+//! user activation, and Safari's audio needs one). A press of any length is
+//! a click — `Activate` — and a long press on the microphone opens nothing:
+//! no callout, no context menu (styles.css, `.composer .voice-slot`).
 //!
 //! The browser asks for the microphone itself, the first time and whenever
 //! it has not been told to remember; a page cannot know beforehand whether
@@ -94,20 +94,17 @@ struct Finished {
     duration_ms: i64,
 }
 
-/// Stop `recording` — its microphone goes off now — and finish what it
-/// heard into a note the way the composer stages one.
 /// Whether the module placed `effect` to describe the effect before it:
-/// shown, said, felt or learnt about it.
+/// shown, said or felt about it.
 fn describes(effect: HoldEffect) -> bool {
     matches!(
         effect,
-        HoldEffect::Announce(_)
-            | HoldEffect::Hint(_)
-            | HoldEffect::Haptic(_)
-            | HoldEffect::FirstReleaseDone
+        HoldEffect::Announce(_) | HoldEffect::Hint(_) | HoldEffect::Haptic(_)
     )
 }
 
+/// Stop `recording` — its microphone goes off now — and finish what it
+/// heard into a note the way the composer stages one.
 fn finish(recording: Recording) -> Finishing {
     async move {
         let recorded = recording.stop().await?;
@@ -159,8 +156,7 @@ impl Ending {
             | HoldEvent::Stop { .. }
             | HoldEvent::Delete { .. }
             | HoldEvent::Answer { .. }
-            | HoldEvent::Record { .. }
-            | HoldEvent::Up { .. } => Ending::ByThePerson,
+            | HoldEvent::Record { .. } => Ending::ByThePerson,
             HoldEvent::Cap { .. } => Ending::ByTheLimit,
             _ => Ending::Interrupted,
         }
@@ -238,7 +234,6 @@ impl Driver {
         Situation {
             permission: Permission::NotAsked,
             blocked,
-            ..Situation::default()
         }
     }
 
@@ -264,8 +259,7 @@ impl Driver {
         let before = self.machine.borrow().hold;
         let (after, effects) = record::hold_step(before, event, &HoldConstants::default());
         self.machine.borrow_mut().hold = after;
-        let recording =
-            |phase: Phase| matches!(phase, Phase::HandsFree { .. } | Phase::Holding { .. });
+        let recording = |phase: Phase| matches!(phase, Phase::HandsFree { .. });
         if recording(before.phase) && !recording(after.phase) {
             // The silence line is about a recording that runs.
             self.quiet();
@@ -304,7 +298,7 @@ impl Driver {
         match effect {
             // The microphone is already open: it was asked for, and the
             // answer is what started this.
-            HoldEffect::Start { .. } => crate::views::attach::pause_all_playing(None),
+            HoldEffect::Start => crate::views::attach::pause_all_playing(None),
             HoldEffect::Send => self.send(told),
             HoldEffect::Review => self.review(told),
             HoldEffect::Park => self.park(),
@@ -328,16 +322,8 @@ impl Driver {
             // same words is quiet for them, so they are said once
             // (conversation.rs).
             HoldEffect::Announce(announcement) => self.announce(said(announcement)),
-            // No hold in a browser (S8.8) — no lock, no slide, no Undo
-            // window — and no haptics off a phone (S2.9).
-            HoldEffect::Lock
-            | HoldEffect::Arm
-            | HoldEffect::Disarm
-            | HoldEffect::UndoWindow
-            | HoldEffect::UndoSend
-            | HoldEffect::UndoReview
-            | HoldEffect::FirstReleaseDone
-            | HoldEffect::Haptic(_) => {}
+            // No haptics off a phone (S2.9).
+            HoldEffect::Haptic(_) => {}
         }
     }
 
@@ -357,10 +343,7 @@ impl Driver {
             started_ms: live.map_or(0.0, Recording::started_ms),
             meter: live.and_then(Recording::meter),
         });
-        let ended = matches!(
-            before,
-            Phase::HandsFree { .. } | Phase::Holding { .. } | Phase::AskingDelete { .. }
-        );
+        let ended = matches!(before, Phase::HandsFree { .. } | Phase::AskingDelete { .. });
         if !ended || machine.hold.phase != Phase::Idle {
             return;
         }

@@ -240,6 +240,19 @@ pub fn conversation(props: &ConversationProps) -> Html {
         });
     }
     let recorder_open = use_state(|| false);
+    // A roster from a server that no longer offers video messages takes the
+    // recorder away mid-way — it is gone, not waiting: closed, so that the
+    // composer it covered is drawn again and it does not spring back open
+    // when the offer returns (decision 41: the composer is hidden while the
+    // recorder is open, which must mean while it is drawn).
+    {
+        let recorder_open = recorder_open.clone();
+        use_effect_with(props.round.is_some(), move |offered| {
+            if !*offered && *recorder_open {
+                recorder_open.set(false);
+            }
+        });
+    }
     let round_said = use_state(|| (0u32, String::new()));
     let pane = use_node_ref();
 

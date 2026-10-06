@@ -13,7 +13,7 @@
  * ComposerSlotVectorsTest holds it to the vectors `win/tools/board-oracle`
  * prints from the reference (`cargo run -- record`, copied to
  * app/src/test/resources/record-vectors.json) — "an oracle, not four
- * readings". The hold reducer is RecordGesture.kt's.
+ * readings". The recording's reducer is RecordGesture.kt's.
  *
  * Words are the apps' English source strings — the catalogue's keys (S10);
  * the screen says each in the reader's language through its own string
@@ -37,31 +37,15 @@ object ComposerSlot {
 
     /**
      * The slot ignores activation for this long only after its OWN activation
-     * changed it — a send that empties the composer, a tap or hold that
-     * starts a recording, a Send or a release that ends one or finds it too
-     * short, a Stop in row 3 that stages the note. A change made by typing,
-     * pasting or staging is never guarded.
+     * changed it — a send that empties the composer, a tap that starts a
+     * recording, a Send that ends one or finds it too short, a Stop in row 3
+     * that stages the note. A change made by typing, pasting or staging is
+     * never guarded.
      */
     const val ACTIVATION_GUARD_MS = 600L
 
-    /** H's floor: H = max(500 ms, the system long-press duration). */
-    const val MIN_HOLD_THRESHOLD_MS = 500L
-
-    /** A press that moves farther than this before H can no longer become a hold. */
-    const val TAP_SLOP = 20.0
-
-    /** Upward from where the press went down: the hold locks hands-free. */
-    const val LOCK_DISTANCE = 60.0
-
-    /** Toward the leading edge: cancel arms at the first, disarms below the second. */
-    const val CANCEL_ARM_DISTANCE = 100.0
-    const val CANCEL_DISARM_DISTANCE = 80.0
-
-    /** Nothing shorter is ever sent; a hold released sooner keeps recording. */
+    /** Nothing shorter is ever sent or staged: "That recording was too short." */
     const val SHORTEST_RECORDING_MS = 1_000L
-
-    /** After a release that sends: the grace before anything leaves the device. */
-    const val UNDO_WINDOW_MS = 5_000L
 
     /** A voice note's length, and where "30 seconds left" is shown and said. */
     const val VOICE_CAP_MS = 300_000L
@@ -88,9 +72,6 @@ object ComposerSlot {
     /** Deleting a recording this long or longer asks first. */
     const val DELETE_ASKS_FROM_MS = 10_000L
 
-    /** "Still recording. Tap Send when you're done." stays this long. */
-    const val STILL_RECORDING_HINT_MS = 3_000L
-
     /** The video recorder's PREVIEW closes after this long with no control used. */
     const val PREVIEW_IDLE_CLOSE_MS = 60_000L
 
@@ -108,23 +89,12 @@ object ComposerSlot {
     const val ROUND_DIAMETER_COMPACT = 200
     const val ROUND_DIAMETER_REGULAR = 240
 
-    /**
-     * H for a system whose own long press takes [systemLongPressMs] —
-     * `ViewConfiguration.getLongPressTimeout()`, which follows the person's
-     * "Touch & hold delay". Never shorter than [MIN_HOLD_THRESHOLD_MS].
-     */
-    fun holdThresholdMs(systemLongPressMs: Long): Long =
-        maxOf(systemLongPressMs, MIN_HOLD_THRESHOLD_MS)
-
     // --- S1.3, the trailing slot -----------------------------------------
 
     /** The voice recording the composer is showing, as far as the slot is concerned. */
     enum class Recording {
         /** No voice recording runs. */
         NONE,
-
-        /** A finger or pen holds the microphone and it records (S2.3). */
-        HELD,
 
         /** Hands-free, started with the composer empty: row 2, the Send arrow. */
         HANDS_FREE,
@@ -178,9 +148,6 @@ object ComposerSlot {
         /** Row 1: the video recorder owns the row. */
         data object Recorder : Slot
 
-        /** Row 2 while a finger holds it: the pressed microphone stays under the finger. */
-        data object HeldMicrophone : Slot
-
         /** Row 2: the Send arrow — stops and sends (S2.5). */
         data object SendVoice : Slot
 
@@ -199,14 +166,19 @@ object ComposerSlot {
         /** Rows 7–9: the microphone, dimmed; activating it says why. */
         data class Dimmed(val reason: ComposerSlot.Dimmed) : Slot
 
-        /** Row 10: the microphone. */
+        /**
+         * Row 10: the microphone — a hands-free recording on activation. A
+         * long press is not a gesture (revised 2026-10-06): it records
+         * nothing and opens nothing while the finger is down, and it is a
+         * tap when it lifts inside.
+         */
         data object Microphone : Slot
 
         /** The S1.3 row this is. */
         val row: Int
             get() = when (this) {
                 Recorder -> 1
-                HeldMicrophone, SendVoice -> 2
+                SendVoice -> 2
                 StopRecording -> 3
                 is Save -> 4
                 Send -> 5
@@ -223,7 +195,7 @@ object ComposerSlot {
         val label: String?
             get() = when (this) {
                 Recorder -> null
-                HeldMicrophone, SendVoice -> "Send voice message"
+                SendVoice -> "Send voice message"
                 StopRecording -> "Stop recording"
                 is Save -> "Save"
                 Send, SendDisabled -> "Send"
@@ -243,7 +215,6 @@ object ComposerSlot {
     fun composerSlot(inputs: SlotInputs): Slot {
         if (inputs.recorderOpen) return Slot.Recorder
         when (inputs.recording) {
-            Recording.HELD -> return Slot.HeldMicrophone
             Recording.HANDS_FREE -> return Slot.SendVoice
             Recording.HANDS_FREE_BESIDE_DRAFT -> return Slot.StopRecording
             Recording.NONE -> Unit
@@ -275,8 +246,6 @@ object ComposerSlot {
         val slot: SlotInputs,
         /** The main composer of a family or a direct chat. */
         val familyOrDirectChat: Boolean,
-        /** A released voice message waits out its Undo window (S2.6). */
-        val undoWindow: Boolean,
         /** The server sends `max_round_video_ms` on `GET /families/mine`. */
         val serverOffersRound: Boolean,
         /** The device has a camera. */
@@ -311,7 +280,7 @@ object ComposerSlot {
 
     /** Whether the video button is hidden, dimmed or shown (S1.4). */
     fun videoDoor(inputs: DoorInputs): Door {
-        if (!inputs.familyOrDirectChat || inputs.undoWindow || !inputs.roundAvailable) return Door.Hidden
+        if (!inputs.familyOrDirectChat || !inputs.roundAvailable) return Door.Hidden
         return when (val slot = composerSlot(inputs.slot)) {
             is Slot.Dimmed -> when (slot.reason) {
                 Dimmed.CALL, Dimmed.BUSY -> Door.Dimmed(slot.reason)

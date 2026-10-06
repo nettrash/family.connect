@@ -3,13 +3,12 @@
 //  FamilyConnectTests
 //
 //  #79, Phase 1: the rows that take the field's place must not grow the bar
-//  (docs/audio-video-messages-2026-10-04.md, S2.3, S2.4, S2.6, S2.7). The
-//  composer's height is what the thread re-pins against on every change
+//  (docs/audio-video-messages-2026-10-04.md, S2.4, S2.7). The composer's
+//  height is what the thread re-pins against on every change
 //  (ConversationView's header) — so the one fact about their ink that matters
-//  is that each is exactly one control tall, whatever it says: the hold row
-//  armed or not, the recording row with its two-line "Still recording" hint,
-//  the Undo row, and the playing review chip no taller than the file chip it
-//  replaced.
+//  is that each is exactly one control tall, whatever it says: the recording
+//  row, and the playing review chip no taller than the file chip it replaced.
+//  (The hold row and the Undo row went with the hold on 2026-10-06.)
 //
 
 import CoreGraphics
@@ -33,23 +32,13 @@ struct VoiceComposerRowsTests {
     }
 
     #if os(iOS)
-    @Test("the hold row is one control tall, armed or not, warned or not", arguments: [
+    @Test("the recording row is one control tall, beside words or not, warned or not", arguments: [
         (false, false), (true, false), (false, true), (true, true),
     ])
-    func holdRow(armed: Bool, warning: Bool) throws {
-        let h = try height(VoiceHoldRow(
-            elapsed: 272, armed: armed, warning: warning, height: Self.control))
-        #expect(h == Int(Self.control), "the hold row is \(h) points tall")
-    }
-
-    @Test("the recording row is one control tall, beside words or not, hinting or not", arguments: [
-        (false, false, false), (true, false, false), (false, true, false), (false, false, true),
-        (true, true, true),
-    ])
-    func recordingRow(besideDraft: Bool, stillRecording: Bool, warning: Bool) throws {
+    func recordingRow(besideDraft: Bool, warning: Bool) throws {
         let h = try height(VoiceRecordingRow(
             elapsed: 42, litBars: 5, besideDraft: besideDraft, warning: warning,
-            stillRecording: stillRecording, control: Self.control,
+            control: Self.control,
             onDelete: {}, onStop: {}, onMagicTap: {}))
         #expect(h == Int(Self.control), "the recording row is \(h) points tall")
     }
@@ -58,20 +47,12 @@ struct VoiceComposerRowsTests {
     func narrowRecordingRow() throws {
         let h = try height(
             VoiceRecordingRow(
-                elapsed: 42, litBars: 5, besideDraft: false, warning: false, stillRecording: false,
+                elapsed: 42, litBars: 5, besideDraft: false, warning: false,
                 control: Self.control, onDelete: {}, onStop: {}, onMagicTap: {}),
             width: 150)
         #expect(h == Int(Self.control))
     }
 
-    @Test("the Undo row fits inside the field it covers")
-    func undoRow() throws {
-        let h = try height(
-            VoiceUndoRow(
-                recordedMS: 12_400, untilMS: 15_000, windowMS: 5_000, clock: { 12_500 }, onUndo: {})
-                .frame(height: Self.control))
-        #expect(h == Int(Self.control))
-    }
     #endif
 
     @Test("the review chip of a voice note is no taller than the file chip it replaced")

@@ -2,16 +2,14 @@
  * VoiceRowsTest.kt
  * Family Connect (Android)
  *
- * What takes the field's place while a voice message is recorded or waits
- * (#79, docs/audio-video-messages-2026-10-04.md, S2.3, S2.4, S2.6), and the
- * review pieces around it (S2.7, S2.8, S6, S1.7):
+ * What takes the field's place while a voice message is recorded (#79,
+ * docs/audio-video-messages-2026-10-04.md, S2.4), and the review pieces
+ * around it (S2.7, S2.8, S6, S1.7). (The hold row and the Undo row went with
+ * the hold on 2026-10-06.)
  *
- *  - the hold row: the clock and "‹ Slide to cancel", then "Release to
- *    cancel" once armed; the lines that replace the meter;
  *  - the recording row: Delete and Stop — no Stop beside a draft, where the
- *    slot is Stop — and "30 seconds left" from 4:30;
- *  - the Undo row: Undo, "Sending voice message · 0:12", and "Sending in 5"
- *    when animations are removed;
+ *    slot is Stop — and "30 seconds left" from 4:30, and the lines that
+ *    replace the meter;
  *  - the staged voice note's ▶ / ❚❚ and its "0:12 / 0:42", dimmed while
  *    recording; the not-sent row's ▶;
  *  - the polite live region and the notice line's two new forms.
@@ -53,36 +51,6 @@ class VoiceRowsTest {
     val compose = createComposeRule()
 
     private val row = Modifier.width(360.dp).height(44.dp)
-
-    @Test
-    fun theHoldRowSaysSlideToCancelAndThenReleaseToCancel() {
-        var armed by mutableStateOf(false)
-        compose.setContent {
-            HoldRow(recordedMs = 7_400, level = 3, line = null, armed = armed, modifier = row)
-        }
-        compose.onNodeWithText("0:07").assertIsDisplayed()
-        compose.onNodeWithText("Slide to cancel").assertIsDisplayed()
-        compose.onNodeWithText("Release to cancel").assertDoesNotExist()
-
-        armed = true
-        compose.onNodeWithText("Release to cancel").assertIsDisplayed()
-        compose.onNodeWithText("Slide to cancel").assertDoesNotExist()
-    }
-
-    /** A hold let go too soon keeps recording and says so in the meter's place (S2.3). */
-    @Test
-    fun theStillRecordingLineTakesTheMetersPlace() {
-        compose.setContent {
-            HoldRow(
-                recordedMs = 600,
-                level = 2,
-                line = ChatViewModel.VoiceLine.STILL_RECORDING,
-                armed = false,
-                modifier = row,
-            )
-        }
-        compose.onNodeWithText("Still recording. Tap Send when you're done.").assertIsDisplayed()
-    }
 
     @Test
     fun theRecordingRowHasDeleteAndStop() {
@@ -153,29 +121,6 @@ class VoiceRowsTest {
             )
         }
         compose.onNodeWithText("We can't hear anything. Is the microphone muted?").assertIsDisplayed()
-    }
-
-    @Test
-    fun theUndoRowOffersUndoAndSaysWhatIsSending() {
-        var undone = 0
-        compose.setContent {
-            UndoRow(recordedMs = 12_000, windowMs = 5_000, onUndo = { undone++ }, modifier = row, steady = false)
-        }
-
-        compose.onNodeWithText("Sending voice message · 0:12").assertIsDisplayed()
-        compose.onNodeWithText("Sending in", substring = true).assertDoesNotExist()
-        compose.onNodeWithText("Undo").performClick()
-
-        assertThat(undone).isEqualTo(1)
-    }
-
-    /** Without animations the emptying line gives way to "Sending in 5" (S2.6, S6). */
-    @Test
-    fun withoutAnimationsTheUndoRowCountsDownInWords() {
-        compose.setContent {
-            UndoRow(recordedMs = 12_000, windowMs = 5_000, onUndo = {}, modifier = row, steady = true)
-        }
-        compose.onNodeWithText("Sending in 5").assertIsDisplayed()
     }
 
     private val voiceNote = MediaPrep.Prepared(
@@ -315,15 +260,4 @@ class VoiceRowsTest {
         compose.onNodeWithContentDescription("Recording").assertDoesNotExist()
     }
 
-    /**
-     * A cancelled touch is the background only when the app went there — a
-     * configuration change tears the gesture down from a stopped activity
-     * and must LOCK the hold, not park it (S4).
-     */
-    @Test
-    fun aConfigurationChangeIsNeverTheBackground() {
-        assertThat(touchCancelIsBackground(changingConfigurations = true, started = false)).isFalse()
-        assertThat(touchCancelIsBackground(changingConfigurations = false, started = false)).isTrue()
-        assertThat(touchCancelIsBackground(changingConfigurations = false, started = true)).isFalse()
-    }
 }

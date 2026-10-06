@@ -10,8 +10,8 @@
 //! Cargo.toml for the one command. `media-plan` is the exception to "the Windows port": its file
 //! is copied to the iOS and Android test resources too, because all three ports implement it.
 //! `record` (issue #79) is the second such exception: the composer's slot, the video button, the
-//! hold and the round video's arithmetic, which the Apple and Android ports implement whole and the
-//! Windows port in part (it has no hold). `waveform` (issue #79) is the third: a voice note's 48
+//! voice recording's reducer and the round video's arithmetic, which the Apple and Android ports
+//! implement whole and the Windows port in part (it has no reducer). `waveform` (issue #79) is the third: a voice note's 48
 //! levels — computed from metered peaks, parsed off the wire, drawn as bars — which every port
 //! implements whole.
 use fc_text::board as b;
@@ -28,7 +28,7 @@ fn main() {
     // `unicode` prints the Rust standard library's own character properties, which those two modules decide by.
     // `media-plan` prints what fc_text::media_plan decides for a picked video or sound file — the one file of
     // vectors the Apple, Android and Windows ports are ALL held to, so it is copied beside each port's tests.
-    // `record` prints fc_text::record — the Send slot, the video button and the hold (issue #79) — copied likewise.
+    // `record` prints fc_text::record — the Send slot, the video button and the voice recording (issue #79) — copied likewise.
     if std::env::args().nth(1).as_deref() == Some("media-plan") {
         media_plan_vectors();
         return;
@@ -1980,9 +1980,10 @@ fn media_plan_vectors() {
 // --- record (issue #79) -----------------------------------------------------------------------------
 //
 // One case per line, `{"name", "function", "input", "expected"}`, keys sorted — the media-plan file's
-// shape. The functions: `constants`, `hold_threshold_ms`, `composer_slot`, `video_door`, `round_cap_ms`,
-// `round_warning_ms`, `round_diameter`, `is_round` and `hold_step`. The Windows port has no hold, so it
-// reads every function but `hold_step` and `hold_threshold_ms`. A `hold_step` case is ONE step — a state,
+// shape. The functions: `constants`, `composer_slot`, `video_door`, `round_cap_ms`, `round_warning_ms`,
+// `round_diameter`, `is_round` and `hold_step` (the voice recording's reducer, which keeps its first name:
+// since 2026-10-06 there is no hold — the microphone's activation is the one way in). The Windows port has
+// no reducer, so it reads every function but `hold_step`. A `hold_step` case is ONE step — a state,
 // an event and the constants in; the next state, the effects and what the slot is told out — taken from a
 // named scenario run through the reducer, so every port meets each transition in a state it can really
 // be in, and checks it without replaying anything.
@@ -2000,7 +2001,6 @@ fn record_recording(recording: fc_text::record::Recording) -> &'static str {
     use fc_text::record::Recording;
     match recording {
         Recording::None => "none",
-        Recording::Held => "held",
         Recording::HandsFree => "hands_free",
         Recording::HandsFreeBesideDraft => "hands_free_beside_draft",
     }
@@ -2025,7 +2025,6 @@ fn record_slot(slot: fc_text::record::Slot) -> serde_json::Value {
     use fc_text::record::Slot;
     let (name, enabled, reason) = match slot {
         Slot::Recorder => ("recorder", None, None),
-        Slot::HeldMicrophone => ("held_microphone", None, None),
         Slot::SendVoice => ("send_voice", None, None),
         Slot::StopRecording => ("stop_recording", None, None),
         Slot::Save { enabled } => ("save", Some(enabled), None),
@@ -2048,7 +2047,6 @@ fn record_door_inputs(i: &fc_text::record::DoorInputs) -> serde_json::Value {
     serde_json::json!({
         "slot": record_slot_inputs(&i.slot),
         "family_or_direct_chat": i.family_or_direct_chat,
-        "undo_window": i.undo_window,
         "server_offers_round": i.server_offers_round,
         "has_camera": i.has_camera,
         "encoder_probe_passes": i.encoder_probe_passes,
@@ -2068,13 +2066,7 @@ fn record_door(door: fc_text::record::Door) -> serde_json::Value {
 
 fn record_constants(c: &fc_text::record::HoldConstants) -> serde_json::Value {
     serde_json::json!({
-        "hold_threshold_ms": c.hold_threshold_ms,
-        "tap_slop": rate(c.tap_slop),
-        "lock_distance": rate(c.lock_distance),
-        "cancel_arm_distance": rate(c.cancel_arm_distance),
-        "cancel_disarm_distance": rate(c.cancel_disarm_distance),
         "shortest_recording_ms": c.shortest_recording_ms,
-        "undo_window_ms": c.undo_window_ms,
         "activation_guard_ms": c.activation_guard_ms,
         "delete_asks_from_ms": c.delete_asks_from_ms,
     })
@@ -2089,9 +2081,6 @@ fn record_situation(s: &fc_text::record::Situation) -> serde_json::Value {
             Permission::Denied => "denied",
         },
         "blocked": s.blocked.map(record_dimmed),
-        "assistive": s.assistive,
-        "first_release": s.first_release,
-        "review_before_sending": s.review_before_sending,
     })
 }
 
@@ -2100,26 +2089,15 @@ fn record_state(s: &fc_text::record::HoldState) -> serde_json::Value {
     use serde_json::json;
     let mut value = match s.phase {
         Phase::Idle => json!({"phase": "idle"}),
-        Phase::Pressed { down_at_ms, down_x, down_y, rtl, may_hold } => json!({
-            "phase": "pressed", "down_at_ms": down_at_ms, "down_x": rate(down_x), "down_y": rate(down_y),
-            "rtl": rtl, "may_hold": may_hold,
-        }),
-        Phase::Holding { down_x, down_y, rtl, armed } => json!({
-            "phase": "holding", "down_x": rate(down_x), "down_y": rate(down_y), "rtl": rtl, "armed": armed,
-        }),
         Phase::HandsFree { beside_draft } => json!({"phase": "hands_free", "beside_draft": beside_draft}),
         Phase::AskingDelete { recorded_ms } => json!({"phase": "asking_delete", "recorded_ms": recorded_ms}),
         Phase::AwaitingPermission { source, beside_draft } => json!({
             "phase": "awaiting_permission",
-            "source": match source { Source::Tap => "tap", Source::Hold => "hold", Source::Menu => "menu" },
+            "source": match source { Source::Tap => "tap", Source::Menu => "menu" },
             "beside_draft": beside_draft,
         }),
     };
     value["guard_until_ms"] = json!(s.guard_until_ms);
-    value["undo"] = match s.undo {
-        Some(note) => json!({"until_ms": note.until_ms, "recorded_ms": note.recorded_ms}),
-        None => serde_json::Value::Null,
-    };
     value
 }
 
@@ -2127,18 +2105,6 @@ fn record_event(e: &fc_text::record::HoldEvent) -> serde_json::Value {
     use fc_text::record::HoldEvent as E;
     use serde_json::json;
     match *e {
-        E::Down { at_ms, x, y, can_hold, rtl } => {
-            json!({"event": "down", "at_ms": at_ms, "x": rate(x), "y": rate(y), "can_hold": can_hold, "rtl": rtl})
-        }
-        E::Move { at_ms, x, y } => json!({"event": "move", "at_ms": at_ms, "x": rate(x), "y": rate(y)}),
-        E::Up { at_ms, x, y, inside, situation, recorded_ms, heard } => json!({
-            "event": "up", "at_ms": at_ms, "x": rate(x), "y": rate(y), "inside": inside,
-            "situation": record_situation(&situation), "recorded_ms": recorded_ms, "heard": heard,
-        }),
-        E::SystemCancel { at_ms, background, recorded_ms } => {
-            json!({"event": "system_cancel", "at_ms": at_ms, "background": background, "recorded_ms": recorded_ms})
-        }
-        E::Tick { at_ms, situation } => json!({"event": "tick", "at_ms": at_ms, "situation": record_situation(&situation)}),
         E::Cap { at_ms } => json!({"event": "cap", "at_ms": at_ms}),
         E::Interruption { at_ms, recorded_ms } => json!({"event": "interruption", "at_ms": at_ms, "recorded_ms": recorded_ms}),
         E::Activate { at_ms, situation, recorded_ms } => json!({
@@ -2152,7 +2118,6 @@ fn record_event(e: &fc_text::record::HoldEvent) -> serde_json::Value {
         E::Delete { at_ms, recorded_ms } => json!({"event": "delete", "at_ms": at_ms, "recorded_ms": recorded_ms}),
         E::Answer { at_ms, delete } => json!({"event": "answer", "at_ms": at_ms, "delete": delete}),
         E::PermissionAnswer { at_ms, granted } => json!({"event": "permission_answer", "at_ms": at_ms, "granted": granted}),
-        E::Undo { at_ms } => json!({"event": "undo", "at_ms": at_ms}),
         E::OtherAction { at_ms } => json!({"event": "other_action", "at_ms": at_ms}),
         E::Emptied { at_ms } => json!({"event": "emptied", "at_ms": at_ms}),
     }
@@ -2163,37 +2128,25 @@ fn record_effect(e: &fc_text::record::HoldEffect) -> serde_json::Value {
     use serde_json::json;
     let plain = |name: &str| json!({"effect": name});
     match *e {
-        F::Start { held } => json!({"effect": "start", "held": held}),
-        F::Lock => plain("lock"),
-        F::Arm => plain("arm"),
-        F::Disarm => plain("disarm"),
+        F::Start => plain("start"),
         F::Delete => plain("delete"),
         F::Send => plain("send"),
         F::Review => plain("review"),
         F::Park => plain("park"),
-        F::UndoWindow => plain("undo_window"),
-        F::UndoSend => plain("undo_send"),
-        F::UndoReview => plain("undo_review"),
         F::AskDelete => plain("ask_delete"),
         F::AskPermission => plain("ask_permission"),
         F::Denied => plain("denied"),
-        F::FirstReleaseDone => plain("first_release_done"),
         F::Explain(reason) => json!({"effect": "explain", "reason": record_dimmed(reason), "text": reason.notice()}),
         F::Hint(hint) => {
             let name = match hint {
-                Hint::StillRecording => "still_recording",
-                Hint::NextTimeSends => "next_time_sends",
-                Hint::NothingHeard => "nothing_heard",
                 Hint::StoppedAtFiveMinutes => "stopped_at_five_minutes",
                 Hint::TooShort => "too_short",
-                Hint::CanRecordNow => "can_record_now",
             };
             json!({"effect": "hint", "hint": name, "text": hint.text()})
         }
         F::Announce(announcement) => {
             let name = match announcement {
                 Announcement::Recording => "recording",
-                Announcement::RecordingLocked => "recording_locked",
                 Announcement::RecordingDeleted => "recording_deleted",
                 Announcement::VoiceMessageSent => "voice_message_sent",
                 Announcement::ReadyToReview { .. } => "ready_to_review",
@@ -2208,8 +2161,6 @@ fn record_effect(e: &fc_text::record::HoldEffect) -> serde_json::Value {
         }
         F::Haptic(haptic) => json!({"effect": "haptic", "haptic": match haptic {
             Haptic::Light => "light",
-            Haptic::Medium => "medium",
-            Haptic::Selection => "selection",
             Haptic::Success => "success",
             Haptic::Warning => "warning",
         }}),
@@ -2219,7 +2170,7 @@ fn record_effect(e: &fc_text::record::HoldEffect) -> serde_json::Value {
 fn record_vectors() {
     use fc_text::record::{
         self as r, AttachmentFlags, Dimmed, DoorInputs, HoldConstants, HoldEvent, HoldState, Permission, Phase,
-        Recording, Situation, SlotInputs, Source, UndoNote, WidthClass,
+        Recording, Situation, SlotInputs, Source, WidthClass,
     };
     use serde_json::json;
 
@@ -2235,13 +2186,7 @@ fn record_vectors() {
         json!({}),
         json!({
             "activation_guard_ms": r::ACTIVATION_GUARD_MS,
-            "min_hold_threshold_ms": r::MIN_HOLD_THRESHOLD_MS,
-            "tap_slop": rate(r::TAP_SLOP),
-            "lock_distance": rate(r::LOCK_DISTANCE),
-            "cancel_arm_distance": rate(r::CANCEL_ARM_DISTANCE),
-            "cancel_disarm_distance": rate(r::CANCEL_DISARM_DISTANCE),
             "shortest_recording_ms": r::SHORTEST_RECORDING_MS,
-            "undo_window_ms": r::UNDO_WINDOW_MS,
             "voice_cap_ms": r::VOICE_CAP_MS,
             "voice_warning_ms": r::VOICE_WARNING_MS,
             "default_max_round_video_ms": r::DEFAULT_MAX_ROUND_VIDEO_MS,
@@ -2252,7 +2197,6 @@ fn record_vectors() {
             "silence_sample_magnitude": r::SILENCE_SAMPLE_MAGNITUDE,
             "silence_warning_after_ms": r::SILENCE_WARNING_AFTER_MS,
             "delete_asks_from_ms": r::DELETE_ASKS_FROM_MS,
-            "still_recording_hint_ms": r::STILL_RECORDING_HINT_MS,
             "preview_idle_close_ms": r::PREVIEW_IDLE_CLOSE_MS,
             "slot_crossfade_ms": r::SLOT_CROSSFADE_MS,
             "recorder_fade_ms": r::RECORDER_FADE_MS,
@@ -2267,22 +2211,6 @@ fn record_vectors() {
             "default_hold_constants": record_constants(&HoldConstants::default()),
         }),
     );
-    for (system, why) in [
-        (0, "a system that names none"),
-        (400, "Android's default touch-and-hold, under the floor"),
-        (500, "iOS, at the floor"),
-        (501, "one over the floor"),
-        (1_000, "Android's \"Medium\" delay"),
-        (1_500, "Android's \"Long\" delay"),
-    ] {
-        case(
-            &format!("H for a {system} ms system long press: {why}"),
-            "hold_threshold_ms",
-            json!({"system_long_press_ms": system}),
-            json!({"hold_threshold_ms": r::hold_threshold_ms(system)}),
-        );
-    }
-
     // --- S1.3, the trailing slot -------------------------------------------------------------------
     // Every row on its own, every pair of rows (the higher must win), and the inputs inside a row.
     let mic = SlotInputs {
@@ -2346,9 +2274,8 @@ fn record_vectors() {
     let typed = with_row(mic, 5);
     let staged = SlotInputs { staged: true, ..mic };
     slot_cases.extend([
-        ("row 2 while a finger holds it: the pressed microphone".to_string(), SlotInputs { recording: Recording::Held, ..mic }),
-        ("row 2 held, with every lower row true".to_string(), SlotInputs {
-            recording: Recording::Held,
+        ("row 2 with every lower row true".to_string(), SlotInputs {
+            recording: Recording::HandsFree,
             editing: true,
             draft_blank: false,
             assistant_chat: true,
@@ -2388,7 +2315,6 @@ fn record_vectors() {
     let open = DoorInputs {
         slot: mic,
         family_or_direct_chat: true,
-        undo_window: false,
         server_offers_round: true,
         has_camera: true,
         encoder_probe_passes: true,
@@ -2409,12 +2335,12 @@ fn record_vectors() {
             (format!("{why}, in a browser whose probe fails"), DoorInputs { encoder_probe_passes: false, ..at }),
             (format!("{why}, in a build that does not record round video"), DoorInputs { records_round_video: false, ..at }),
             (format!("{why}, in a thread or the assistant's chat"), DoorInputs { family_or_direct_chat: false, ..at }),
-            (format!("{why}, during the Undo window"), DoorInputs { undo_window: true, ..at }),
         ]);
     }
     door_cases.extend([
         ("items staged".to_string(), DoorInputs { slot: staged, ..open }),
-        ("held".to_string(), DoorInputs { slot: SlotInputs { recording: Recording::Held, ..mic }, ..open }),
+        ("recording hands-free".to_string(), DoorInputs { slot: SlotInputs { recording: Recording::HandsFree, ..mic }, ..open }),
+        ("recording beside a draft".to_string(), DoorInputs { slot: SlotInputs { recording: Recording::HandsFreeBesideDraft, ..mic }, ..open }),
         ("editing with the field cleared".to_string(), DoorInputs { slot: with_row(mic, 4), ..open }),
         ("a call and busy: the call's sentence".to_string(), DoorInputs { slot: SlotInputs { call: true, busy: true, ..mic }, ..open }),
         ("busy with a not-sent message: dimmed for busy".to_string(), DoorInputs { slot: SlotInputs { busy: true, not_sent: true, ..mic }, ..open }),
@@ -2487,36 +2413,12 @@ fn record_vectors() {
         );
     }
 
-    // --- S2.1 and S2.3, the hold, as scenarios ------------------------------------------------------
-    const X: f64 = 340.0;
-    const Y: f64 = 780.0;
+    // --- S2.1, S2.2 and S2.5, the voice recording, as scenarios -------------------------------------
+    // Every activation of the slot is `activate` — the platform button's own completed tap, however long
+    // the press was held, a click, Enter or Space, a screen reader's. There is no press, hold or slide.
     let sit = Situation::default();
     let not_asked = Situation { permission: Permission::NotAsked, ..sit };
     let denied = Situation { permission: Permission::Denied, ..sit };
-    let first = Situation { first_release: true, ..sit };
-    let down = |at_ms: u64| HoldEvent::Down { at_ms, x: X, y: Y, can_hold: true, rtl: false };
-    let mv = |at_ms: u64, dx: f64, dy: f64| HoldEvent::Move { at_ms, x: X + dx, y: Y + dy };
-    let up_with = |at_ms: u64, dx: f64, dy: f64, recorded_ms: u64, heard: bool, situation: Situation| HoldEvent::Up {
-        at_ms,
-        x: X + dx,
-        y: Y + dy,
-        inside: true,
-        situation,
-        recorded_ms,
-        heard,
-    };
-    let up = |at_ms: u64, recorded_ms: u64| up_with(at_ms, 0.0, 0.0, recorded_ms, true, sit);
-    let up_outside = |at_ms: u64| HoldEvent::Up {
-        at_ms,
-        x: X + 90.0,
-        y: Y,
-        inside: false,
-        situation: sit,
-        recorded_ms: 0,
-        heard: false,
-    };
-    let tick = |at_ms: u64| HoldEvent::Tick { at_ms, situation: sit };
-    let tick_with = |at_ms: u64, situation: Situation| HoldEvent::Tick { at_ms, situation };
     let activate = |at_ms: u64, recorded_ms: u64| HoldEvent::Activate { at_ms, situation: sit, recorded_ms };
     let activate_with = |at_ms: u64, situation: Situation| HoldEvent::Activate { at_ms, situation, recorded_ms: 0 };
     let record = |at_ms: u64, beside_draft: bool, situation: Situation, recorded_ms: u64| HoldEvent::Record {
@@ -2525,161 +2427,56 @@ fn record_vectors() {
         situation,
         recorded_ms,
     };
-    let cancel = |at_ms: u64, background: bool, recorded_ms: u64| HoldEvent::SystemCancel { at_ms, background, recorded_ms };
     let interruption = |at_ms: u64, recorded_ms: u64| HoldEvent::Interruption { at_ms, recorded_ms };
     let stop = |at_ms: u64, recorded_ms: u64| HoldEvent::Stop { at_ms, recorded_ms };
     let delete = |at_ms: u64, recorded_ms: u64| HoldEvent::Delete { at_ms, recorded_ms };
     let answer = |at_ms: u64, granted: bool| HoldEvent::PermissionAnswer { at_ms, granted };
+    let other = |at_ms: u64| HoldEvent::OtherAction { at_ms };
     let idle = HoldState::default();
-    let waiting = HoldState { undo: Some(UndoNote { until_ms: 9_000, recorded_ms: 3_000 }), ..idle };
     let defaults = HoldConstants::default();
 
     type Scenario = (&'static str, HoldState, HoldConstants, Vec<HoldEvent>);
     let scenarios: Vec<Scenario> = vec![
         (
-            "a tap records hands-free, a second tap inside the guard is ignored, the same slot sends",
+            "a tap records hands-free, a second tap inside the guard is ignored, the same slot sends, and the microphone it leaves is guarded",
             idle,
             defaults,
-            vec![down(0), up(120, 0), activate(719, 599), activate(5_120, 5_000), down(5_500), down(5_720), up(5_800, 0)],
+            vec![activate(120, 0), activate(719, 599), activate(5_120, 5_000), activate(5_719, 0), activate(5_720, 0)],
         ),
-        ("a double tap on the microphone finds the recording too short", idle, defaults, vec![down(0), up(100, 0), activate(700, 600)]),
-        ("Send at a millisecond under a second is too short", idle, defaults, vec![down(0), up(100, 0), activate(1_200, 999)]),
-        ("Send at exactly a second sends", idle, defaults, vec![down(0), up(100, 0), activate(1_200, 1_000)]),
+        ("a double tap on the microphone finds the recording too short", idle, defaults, vec![activate(100, 0), activate(700, 600)]),
+        ("Send at a millisecond under a second is too short", idle, defaults, vec![activate(100, 0), activate(1_200, 999)]),
+        ("Send at exactly a second sends", idle, defaults, vec![activate(100, 0), activate(1_200, 1_000)]),
         (
-            "a text Send emptied the composer: a press inside the guard is ignored whole",
+            "a text Send emptied the composer: an activation inside the guard is ignored whole",
             idle,
             defaults,
-            vec![HoldEvent::Emptied { at_ms: 1_000 }, down(1_599), tick(2_100), up(2_200, 0), down(2_300), up(2_400, 0)],
+            vec![HoldEvent::Emptied { at_ms: 1_000 }, activate(1_599, 0), activate(1_600, 0)],
         ),
         (
             "a text Send emptied the composer, then words typed and deleted: never guarded, the microphone records",
             idle,
             defaults,
-            vec![HoldEvent::Emptied { at_ms: 1_000 }, HoldEvent::OtherAction { at_ms: 1_100 }, HoldEvent::OtherAction { at_ms: 1_200 }, activate(1_300, 0)],
-        ),
-        (
-            "a text Send emptied the composer, then something staged: never guarded, a touch taps",
-            idle,
-            defaults,
-            vec![HoldEvent::Emptied { at_ms: 1_000 }, HoldEvent::OtherAction { at_ms: 1_100 }, down(1_200), up(1_300, 0)],
+            vec![HoldEvent::Emptied { at_ms: 1_000 }, other(1_100), other(1_200), activate(1_300, 0)],
         ),
         (
             "Record Voice Message beside a draft, Stop, then a character typed: the row-5 Send is no longer guarded",
             idle,
             defaults,
-            vec![record(1_000, true, sit, 0), activate(4_000, 3_000), HoldEvent::OtherAction { at_ms: 4_100 }],
+            vec![record(1_000, true, sit, 0), activate(4_000, 3_000), other(4_100)],
         ),
         (
             "while a recording runs nothing lifts the guard on its Send",
             idle,
             defaults,
-            vec![down(0), up(100, 0), HoldEvent::OtherAction { at_ms: 300 }, activate(400, 300)],
+            vec![activate(100, 0), other(300), activate(400, 300)],
         ),
-        ("a press lifted outside does nothing", idle, defaults, vec![down(0), mv(50, 60.0, 0.0), up_outside(200)]),
-        (
-            "a press that wanders past the slop never holds, and still taps",
-            idle,
-            defaults,
-            vec![down(0), mv(40, 12.0, 16.5), tick(500), tick(900), up(1_200, 0)],
-        ),
-        ("a press that moves exactly twenty still holds", idle, defaults, vec![down(0), mv(40, 12.0, 16.0), tick(500)]),
-        (
-            "a hold let go after three seconds: the Undo window, then sent",
-            idle,
-            defaults,
-            vec![down(0), tick(499), tick(500), mv(900, -30.0, -20.0), up(3_500, 3_000), tick(8_499), tick(8_500)],
-        ),
-        ("a hold let go, then Undo: review", idle, defaults, vec![down(0), tick(500), up(3_500, 3_000), HoldEvent::Undo { at_ms: 8_499 }]),
-        (
-            "a hold let go, and an Undo that comes too late",
-            idle,
-            defaults,
-            vec![down(0), tick(500), up(3_500, 3_000), HoldEvent::Undo { at_ms: 8_500 }],
-        ),
-        ("the first release on a device reviews and teaches", idle, defaults, vec![down(0), tick(500), up_with(3_500, 0.0, 0.0, 3_000, true, first)]),
-        (
-            "Review Before Sending: a release reviews, and teaches nothing untrue",
-            idle,
-            defaults,
-            vec![down(0), tick(500), up_with(3_500, 0.0, 0.0, 3_000, true, Situation { review_before_sending: true, first_release: true, ..sit })],
-        ),
-        (
-            "a screen reader running: a release reviews, never the Undo window",
-            idle,
-            defaults,
-            vec![down(0), tick(500), up_with(3_500, 0.0, 0.0, 3_000, true, Situation { assistive: true, first_release: true, ..sit })],
-        ),
-        ("a silent hold is never sent", idle, defaults, vec![down(0), tick(500), up_with(3_500, 0.0, 0.0, 3_000, false, first)]),
-        (
-            "a hold let go under a second keeps recording, guarded, until Send",
-            idle,
-            defaults,
-            vec![down(0), tick(500), up(1_200, 999), activate(1_799, 1_500), activate(4_000, 3_500)],
-        ),
-        ("a hold let go at exactly a second", idle, defaults, vec![down(0), tick(500), up(1_600, 1_000)]),
-        (
-            "slide to cancel: armed at 100, kept at 80, disarmed below it, armed again, let go",
-            idle,
-            defaults,
-            vec![
-                down(0),
-                tick(500),
-                mv(600, -99.5, 0.0),
-                mv(650, -100.0, 0.0),
-                mv(700, -80.0, 0.0),
-                mv(750, -79.5, 0.0),
-                mv(800, -140.0, 0.0),
-                up_with(2_000, -140.0, 0.0, 1_500, true, sit),
-            ],
-        ),
-        (
-            "slide up to lock at 60; the lift does nothing; the slot sends",
-            idle,
-            defaults,
-            vec![down(0), tick(500), mv(700, 0.0, -59.5), mv(750, -10.0, -60.0), up(900, 400), activate(6_000, 5_500)],
-        ),
-        (
-            "an armed cancel refuses the lock; disarming locks in the same move",
-            idle,
-            defaults,
-            vec![down(0), tick(500), mv(600, -100.0, -60.0), mv(650, -110.0, -70.0), mv(700, -50.0, -70.0), up(900, 400)],
-        ),
-        (
-            "right to left: cancel slides right",
-            idle,
-            defaults,
-            vec![
-                HoldEvent::Down { at_ms: 0, x: X, y: Y, can_hold: true, rtl: true },
-                tick(500),
-                mv(600, -150.0, 0.0),
-                mv(650, 100.0, 0.0),
-                up_with(2_000, 100.0, 0.0, 1_500, true, sit),
-            ],
-        ),
-        ("a lift beyond the lock with no move before it locks", idle, defaults, vec![down(0), tick(500), up_with(2_000, 0.0, -65.0, 1_500, true, sit)]),
-        ("a lift beyond the cancel with no move before it deletes", idle, defaults, vec![down(0), tick(500), up_with(2_000, -120.0, 0.0, 1_500, true, sit)]),
-        ("an Up before any Tick reached H is a tap, however late", idle, defaults, vec![down(0), up(2_000, 0)]),
-        (
-            "a mouse press held three seconds is a click",
-            idle,
-            defaults,
-            vec![HoldEvent::Down { at_ms: 0, x: X, y: Y, can_hold: false, rtl: false }, tick(500), tick(3_000), up(3_100, 0)],
-        ),
-        ("H follows a longer system touch-and-hold delay", idle, HoldConstants::for_system(1_000), vec![down(0), tick(500), tick(999), tick(1_000)]),
         (
             "a tap with the microphone never asked: the prompt, then Allow records",
             idle,
             defaults,
-            vec![down(0), up_with(100, 0.0, 0.0, 0, false, not_asked), answer(4_000, true)],
+            vec![activate_with(100, not_asked), answer(4_000, true)],
         ),
-        ("a tap with the microphone never asked: Don't Allow", idle, defaults, vec![down(0), up_with(100, 0.0, 0.0, 0, false, not_asked), answer(4_000, false)]),
-        (
-            "a hold with the microphone never asked: the prompt, and Allow records nothing",
-            idle,
-            defaults,
-            vec![down(0), tick_with(500, not_asked), up(900, 0), answer(3_000, true)],
-        ),
-        ("a hold with the microphone never asked: Don't Allow", idle, defaults, vec![down(0), tick_with(500, not_asked), answer(3_000, false)]),
+        ("a tap with the microphone never asked: Don't Allow", idle, defaults, vec![activate_with(100, not_asked), answer(4_000, false)]),
         (
             "Record Voice Message with the microphone never asked, beside a draft",
             idle,
@@ -2687,18 +2484,18 @@ fn record_vectors() {
             vec![record(0, true, not_asked, 0), answer(4_000, true)],
         ),
         ("a denied microphone, from a tap", idle, defaults, vec![activate_with(0, denied)]),
-        ("a denied microphone, at H", idle, defaults, vec![down(0), tick_with(500, denied), up(700, 0)]),
+        ("a denied microphone, from the paperclip", idle, defaults, vec![record(0, false, denied, 0)]),
         (
             "dimmed by a call: a tap explains, before any prompt",
             idle,
             defaults,
-            vec![down(0), up_with(100, 0.0, 0.0, 0, false, Situation { blocked: Some(Dimmed::Call), permission: Permission::NotAsked, ..sit })],
+            vec![activate_with(100, Situation { blocked: Some(Dimmed::Call), permission: Permission::NotAsked })],
         ),
         (
-            "dimmed while busy: H explains, and the lift does nothing",
+            "dimmed while busy: the shortcut explains",
             idle,
             defaults,
-            vec![down(0), tick_with(500, Situation { blocked: Some(Dimmed::Busy), ..sit }), up(900, 0)],
+            vec![record(0, false, Situation { blocked: Some(Dimmed::Busy), ..sit }, 0)],
         ),
         (
             "dimmed by a not-sent message: the paperclip explains",
@@ -2706,50 +2503,34 @@ fn record_vectors() {
             defaults,
             vec![record(0, false, Situation { blocked: Some(Dimmed::NotSent), ..sit }, 0)],
         ),
-        (
-            "the system cancels a hold: locked, then sent from the slot",
-            idle,
-            defaults,
-            vec![down(0), tick(500), cancel(2_500, false, 2_000), activate(6_000, 5_500)],
-        ),
-        ("the system cancels an armed hold: deleted", idle, defaults, vec![down(0), tick(500), mv(900, -100.0, 0.0), cancel(2_500, false, 2_000)]),
-        ("the system cancels a hold in the background: parked", idle, defaults, vec![down(0), tick(500), cancel(2_500, true, 2_000)]),
-        ("the system cancels a hold in the background under a second: deleted", idle, defaults, vec![down(0), tick(500), cancel(1_400, true, 900)]),
-        ("the system cancels a press: nothing", idle, defaults, vec![down(0), cancel(200, false, 0)]),
-        ("an interruption during a hold parks it", idle, defaults, vec![down(0), tick(500), interruption(4_000, 3_500)]),
-        ("an interruption during a hold under a second deletes it", idle, defaults, vec![down(0), tick(500), interruption(1_400, 999)]),
-        ("an interruption hands-free parks it", idle, defaults, vec![down(0), up(100, 0), interruption(9_000, 8_900)]),
-        ("an interruption while pressed: nothing", idle, defaults, vec![down(0), interruption(200, 0)]),
+        ("an interruption hands-free parks it", idle, defaults, vec![activate(100, 0), interruption(9_000, 8_900)]),
+        ("an interruption hands-free under a second deletes it", idle, defaults, vec![activate(100, 0), interruption(900, 800)]),
+        ("an interruption beside a draft parks it", idle, defaults, vec![record(0, true, sit, 0), interruption(5_000, 5_000)]),
         (
             "an interruption while the prompt is up abandons it",
             idle,
             defaults,
             vec![activate_with(0, not_asked), interruption(1_000, 0), answer(2_000, true)],
         ),
-        ("five minutes, hands-free: review", idle, defaults, vec![down(0), up(100, 0), HoldEvent::Cap { at_ms: 300_100 }]),
-        (
-            "five minutes while held: review, and the later lift does nothing",
-            idle,
-            defaults,
-            vec![down(0), tick(500), HoldEvent::Cap { at_ms: 300_500 }, up(301_000, 300_000)],
-        ),
-        ("Stop reviews", idle, defaults, vec![down(0), up(100, 0), stop(9_000, 8_900)]),
-        ("Stop under a second is too short", idle, defaults, vec![down(0), up(100, 0), stop(1_000, 900)]),
+        ("five minutes, hands-free: review", idle, defaults, vec![activate(100, 0), HoldEvent::Cap { at_ms: 300_100 }]),
+        ("five minutes beside a draft: review", idle, defaults, vec![record(0, true, sit, 0), HoldEvent::Cap { at_ms: 300_000 }]),
+        ("Stop reviews", idle, defaults, vec![activate(100, 0), stop(9_000, 8_900)]),
+        ("Stop under a second is too short", idle, defaults, vec![activate(100, 0), stop(1_000, 900)]),
         ("Magic Tap with nothing recording never starts one", idle, defaults, vec![stop(0, 0)]),
-        ("Delete under ten seconds", idle, defaults, vec![down(0), up(100, 0), delete(9_000, 9_999)]),
+        ("Delete under ten seconds", idle, defaults, vec![activate(100, 0), delete(9_000, 9_999)]),
         (
             "Delete at ten seconds stops and asks; Delete",
             idle,
             defaults,
-            vec![down(0), up(100, 0), delete(10_200, 10_000), HoldEvent::Answer { at_ms: 11_000, delete: true }],
+            vec![activate(100, 0), delete(10_200, 10_000), HoldEvent::Answer { at_ms: 11_000, delete: true }],
         ),
         (
             "Delete at ten seconds stops and asks; Keep",
             idle,
             defaults,
-            vec![down(0), up(100, 0), delete(12_200, 12_000), HoldEvent::Answer { at_ms: 13_000, delete: false }],
+            vec![activate(100, 0), delete(12_200, 12_000), HoldEvent::Answer { at_ms: 13_000, delete: false }],
         ),
-        ("an interruption while asking parks it", idle, defaults, vec![down(0), up(100, 0), delete(12_200, 12_000), interruption(13_000, 12_000)]),
+        ("an interruption while asking parks it", idle, defaults, vec![activate(100, 0), delete(12_200, 12_000), interruption(13_000, 12_000)]),
         (
             "Record Voice Message beside a draft: the slot is Stop, it stages the note, and a double tap cannot send it",
             idle,
@@ -2763,25 +2544,7 @@ fn record_vectors() {
             defaults,
             vec![record(0, false, sit, 0), record(9_000, false, sit, 9_000)],
         ),
-        ("the shortcut during a hold stops into review", idle, defaults, vec![down(0), tick(500), record(4_000, false, sit, 3_500)]),
-        ("the Undo window: another action sends it early", waiting, defaults, vec![HoldEvent::OtherAction { at_ms: 6_000 }]),
-        ("the Undo window: an interruption sends it now", waiting, defaults, vec![interruption(6_000, 0)]),
-        ("the Undo window: a text Send sends it first", waiting, defaults, vec![HoldEvent::Emptied { at_ms: 6_000 }]),
-        ("the Undo window: the microphone sends it and records again", waiting, defaults, vec![activate(6_000, 0)]),
-        (
-            "the Undo window: a touch lifted outside leaves it running; a tap sends it and records",
-            waiting,
-            defaults,
-            vec![down(6_000), up_outside(6_200), down(6_400), up(6_500, 0)],
-        ),
-        ("the Undo window: a hold sends it and holds", waiting, defaults, vec![down(6_000), tick(6_500)]),
-        ("the Undo window runs out during a press, which then holds", waiting, defaults, vec![down(8_800), tick(9_000), tick(9_300)]),
-        (
-            "the release's guard swallows a tap, not the window",
-            idle,
-            defaults,
-            vec![down(0), tick(500), up(3_500, 3_000), down(3_800), up(3_900, 0), activate(4_099, 0), activate(4_100, 0)],
-        ),
+        ("the shortcut during a tapped recording stops into review, never sending", idle, defaults, vec![activate(0, 0), record(4_000, false, sit, 3_500)]),
     ];
 
     for (name, start, constants, events) in &scenarios {
@@ -2790,7 +2553,7 @@ fn record_vectors() {
             let (next, effects) = r::hold_step(state, *event, constants);
             let label = record_event(event)["event"].as_str().unwrap().to_string();
             case(
-                &format!("hold: {name} — step {}: {label}", index + 1),
+                &format!("voice: {name} — step {}: {label}", index + 1),
                 "hold_step",
                 json!({"state": record_state(&state), "event": record_event(event), "constants": record_constants(constants)}),
                 json!({
@@ -2804,41 +2567,33 @@ fn record_vectors() {
     }
 
     // --- events out of place: nothing changes ---------------------------------------------------------
-    let pressed = r::hold_step(idle, down(0), &defaults).0;
-    let holding = HoldState { phase: Phase::Holding { down_x: X, down_y: Y, rtl: false, armed: false }, guard_until_ms: 1_100, undo: None };
-    let hands_free = HoldState { phase: Phase::HandsFree { beside_draft: false }, ..idle };
+    let hands_free = HoldState { phase: Phase::HandsFree { beside_draft: false }, guard_until_ms: 700 };
     let asking = HoldState { phase: Phase::AskingDelete { recorded_ms: 12_000 }, ..idle };
     let prompting = HoldState { phase: Phase::AwaitingPermission { source: Source::Menu, beside_draft: true }, ..idle };
     let still: Vec<(&str, HoldState, HoldEvent)> = vec![
-        ("an Up with nothing pressed", idle, up(10, 0)),
-        ("a Move with nothing pressed", idle, mv(10, -200.0, -200.0)),
-        ("a system cancel with nothing pressed", idle, cancel(10, true, 5_000)),
         ("Delete with nothing recording", idle, delete(10, 5_000)),
         ("an answer nobody was asked for", idle, HoldEvent::Answer { at_ms: 10, delete: true }),
         ("a permission answer with no prompt", idle, answer(10, true)),
-        ("Undo with no note waiting", idle, HoldEvent::Undo { at_ms: 10 }),
-        ("another action with no note waiting", idle, HoldEvent::OtherAction { at_ms: 10 }),
+        ("another action with nothing guarded", idle, other(10)),
         ("five minutes with nothing recording", idle, HoldEvent::Cap { at_ms: 10 }),
-        ("a Tick with nothing pressed", idle, tick(10_000)),
-        ("an Activate while pressed", pressed, activate(100, 0)),
-        ("a second finger while pressed", pressed, down(100)),
-        ("the paperclip while pressed", pressed, record(100, false, sit, 0)),
-        ("a second finger while held", holding, down(2_000)),
-        ("an Activate while held", holding, activate(2_000, 1_500)),
-        ("a Tick while held", holding, tick(9_000)),
-        ("a touch on the Send arrow is an Activate, not a Down", hands_free, down(2_000)),
-        ("a Move hands-free", hands_free, mv(2_000, 0.0, -300.0)),
-        ("an Up hands-free", hands_free, up(2_000, 1_500)),
-        ("a system cancel hands-free", hands_free, cancel(2_000, true, 1_500)),
+        ("an interruption with nothing recording", idle, interruption(10, 0)),
+        ("another action while recording keeps the guard", hands_free, other(300)),
+        ("an answer nobody was asked for, while recording", hands_free, HoldEvent::Answer { at_ms: 300, delete: true }),
+        ("a permission answer while recording", hands_free, answer(300, true)),
         ("an Activate while asking", asking, activate(20_000, 0)),
+        ("the shortcut while asking", asking, record(20_000, false, sit, 12_000)),
         ("Stop while asking", asking, stop(20_000, 12_000)),
+        ("Delete while asking", asking, delete(20_000, 12_000)),
+        ("five minutes while asking", asking, HoldEvent::Cap { at_ms: 20_000 }),
         ("an Activate while the prompt is up", prompting, activate(20_000, 0)),
-        ("an Up while the prompt is up", prompting, up(20_000, 0)),
+        ("the paperclip while the prompt is up", prompting, record(20_000, false, sit, 0)),
+        ("Stop while the prompt is up", prompting, stop(20_000, 0)),
+        ("a delete answer while the prompt is up", prompting, HoldEvent::Answer { at_ms: 20_000, delete: true }),
     ];
     for (name, state, event) in &still {
         let (next, effects) = r::hold_step(*state, *event, &defaults);
         case(
-            &format!("hold, out of place: {name}"),
+            &format!("voice, out of place: {name}"),
             "hold_step",
             json!({"state": record_state(state), "event": record_event(event), "constants": record_constants(&defaults)}),
             json!({

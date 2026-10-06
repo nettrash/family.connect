@@ -24,7 +24,7 @@ struct NotSentVoiceRowTests {
         ParkedRecordings.Entry(
             id: "e1", chatID: 5, fileName: "e1.m4a", durationMS: 42_000,
             replyTo: replyTo, caption: caption,
-            createdAt: Date(timeIntervalSince1970: 0), sending: false)
+            createdAt: Date(timeIntervalSince1970: 0))
     }
 
     private func height(of row: NotSentVoiceRow) throws -> Int {

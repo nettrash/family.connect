@@ -80,8 +80,6 @@ class SettingsViewModel @Inject constructor(
         /** Whether this device may fetch link previews. */
         val linkPreviewsEnabled: Boolean = true,
         val mapPreviewsEnabled: Boolean = true,
-        /** Voice messages' "Review before sending" (#79, S9): this device's. */
-        val reviewBeforeSending: Boolean = false,
         /** My profile-picture version; 0 = none, and the button says "Add". */
         val avatarVersion: Long = 0,
         /**
@@ -151,7 +149,6 @@ class SettingsViewModel @Inject constructor(
                     it.copy(
                         linkPreviewsEnabled = stored.linkPreviewsEnabled,
                         mapPreviewsEnabled = stored.mapPreviewsEnabled,
-                        reviewBeforeSending = stored.reviewBeforeSending,
                         avatarVersion = stored.myAvatarVersion,
                         // Followed rather than read once at [load]: a
                         // `family_owner` frame can hand this device the
@@ -187,11 +184,6 @@ class SettingsViewModel @Inject constructor(
 
     fun setMapPreviewsEnabled(enabled: Boolean) {
         viewModelScope.launch { settings.setMapPreviewsEnabled(enabled) }
-    }
-
-    /** S9's switch: a held release keeps the voice message for review instead of sending it. */
-    fun setReviewBeforeSending(enabled: Boolean) {
-        viewModelScope.launch { settings.setReviewBeforeSending(enabled) }
     }
 
     /** Open the consent screen from the row, rather than from a send. */

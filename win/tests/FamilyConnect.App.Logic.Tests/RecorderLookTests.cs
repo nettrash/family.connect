@@ -32,21 +32,10 @@ public sealed class RecorderLookTests
     }
 
     /// <summary>
-    /// The slot's column sits so the SLOT is centred on Send at any text size: its caption's measured height is taken off,
-    /// not a fixed 18 — at 100 % an 11-px caption is about 15 tall, and a fixed 18 put the slot 3 below Send's centre.
+    /// The slot's target is the disc and its halo. (Until 2026-10-06 its column was also lifted so the slot sat centred on
+    /// Send's row; the controls now stand on their own bar — decision 41 — with the slot under Send's centre across, and
+    /// RecorderFrameTests holds where it stands.)
     /// </summary>
-    [Theory]
-    [InlineData(14.6)]
-    [InlineData(18)]
-    [InlineData(22)]
-    [InlineData(33)]
-    public void TheSlotIsCentredOnSendWhateverTheCaptionsHeight(double caption)
-    {
-        const double sendCentre = 40;
-        var bottom = RecorderLook.SlotColumnBottom(sendCentre, caption);
-        // The column, from the bottom up: the caption, the gap, then the slot's target.
-        var slotCentre = bottom + caption + RecorderLook.CaptionGap + RecorderLook.SlotTarget / 2;
-        Assert.Equal(sendCentre, slotCentre, 6);
-        Assert.Equal(RecorderLook.Slot + 2 * RecorderLook.Halo, RecorderLook.SlotTarget);
-    }
+    [Fact]
+    public void TheSlotsTargetIsItsDiscAndHalo() => Assert.Equal(RecorderLook.Slot + 2 * RecorderLook.Halo, RecorderLook.SlotTarget);
 }

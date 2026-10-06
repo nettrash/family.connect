@@ -144,18 +144,6 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(parkedRecordings = transform(_state.value.parkedRecordings))
     }
 
-    override suspend fun setReviewBeforeSending(enabled: Boolean) {
-        _state.value = _state.value.copy(reviewBeforeSending = enabled)
-    }
-
-    override suspend fun setHeldReleaseTaught() {
-        _state.value = _state.value.copy(heldReleaseTaught = true)
-    }
-
-    override suspend fun setVoiceCoachMarkShown() {
-        _state.value = _state.value.copy(voiceCoachMarkShown = true)
-    }
-
     override suspend fun setRoundPreviewTaught() {
         _state.value = _state.value.copy(roundPreviewTaught = true)
     }

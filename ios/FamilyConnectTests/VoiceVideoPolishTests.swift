@@ -13,12 +13,16 @@
 //    - the speed cycle, remembered;
 //    - a recording's menu: no Copy, Edit or Share; Show text, Playback speed
 //      (voice), Save to Files — ordinary messages' menus unchanged;
-//    - the held microphone grows, red, under the finger; a touch long press
-//      on the microphone meets nothing but the hold;
+//    - the microphone at rest is the tint; a touch long press on it meets
+//      nothing at all (the hold is gone, 2026-10-06);
 //    - the video message's badge carries its unplayed dot INSIDE it, white,
 //      and the circle has a soft shadow;
 //    - the recorder's one big button: a red disc, a red disc with a white
-//      square, a disc in the tint — 64 across.
+//      square, a disc in the tint — 64 across;
+//    - the recorder's layout (decision 41): the status, the circle, the
+//      controls, their captions and the solid bar never overlap, at 320, 375
+//      and 430 wide, on its side, on an iPad and at the largest text — and
+//      the composer is neither drawn nor hittable while a recorder is open.
 //
 //  ImageRenderer at scale 1, as RoundBubbleTests and VoiceComposerRowsTests.
 //
@@ -359,7 +363,7 @@ struct VoiceVideoPolishTests {
 
     #if os(iOS)
 
-    // MARK: - The held microphone
+    // MARK: - The microphone
 
     /// A view in a real window, laid out and drawn from its layer tree —
     /// for what ImageRenderer cannot draw: the slot's UIKit control and the
@@ -399,7 +403,7 @@ struct VoiceVideoPolishTests {
     private func slotExtent(_ slot: ComposerSlot, matching: ((r: UInt8, g: UInt8, b: UInt8, a: UInt8)) -> Bool) throws -> Int {
         let pixels = try Self.hosted(
             RecordSendSlot(
-                slot: slot, isPressed: false, focusRequest: 0, side: 36, glyph: 30,
+                slot: slot, focusRequest: 0, side: 36, glyph: 30,
                 events: RecordSendEvents())
                 .tint(Color(red: 0, green: 0, blue: 1)),
             size: CGSize(width: 120, height: 120))
@@ -412,22 +416,19 @@ struct VoiceVideoPolishTests {
         return maxX < 0 ? 0 : maxX - minX + 1
     }
 
-    @Test("held, the microphone grows red under the finger; at rest it is the tint")
-    func heldMicrophoneGrows() throws {
+    @Test("at rest the microphone is the tint, never the held red")
+    func restingMicrophone() throws {
         let resting = try slotExtent(.microphone, matching: Self.isBlue)
         let restingRed = try slotExtent(.microphone, matching: Self.isRed)
-        let held = try slotExtent(.heldMicrophone, matching: Self.isRed)
         #expect(resting > 20, "the resting microphone was not drawn in the tint")
         #expect(restingRed == 0, "the resting microphone is red")
-        #expect(Double(held) >= Double(resting) * 1.25,
-                "the held microphone is \(held) across, the resting one \(resting)")
     }
 
-    @Test("a finger's long press on the microphone meets only the hold — in a window, too")
-    func longPressMeetsOnlyTheHold() throws {
+    @Test("a finger's long press on the microphone meets nothing — in a window, too")
+    func longPressMeetsNothing() throws {
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         let control = RecordSendControl(frame: CGRect(x: 78, y: 78, width: 44, height: 44))
-        control.update(slot: .microphone, offersVideo: true, rtl: false, events: RecordSendEvents())
+        control.update(slot: .microphone, offersVideo: true, events: RecordSendEvents())
         window.addSubview(control)
         window.makeKeyAndVisible()
         window.layoutIfNeeded()
@@ -437,20 +438,20 @@ struct VoiceVideoPolishTests {
         // context-menu interaction driven by the SECONDARY CLICK, and two
         // relationship recognizers that only order others (measured on the
         // iOS 26 SDK). Every recognizer a FINGER can reach on the control —
-        // whatever an interaction installed — is the hold or one of those
-        // three; nothing a finger's press can drive to a menu.
+        // whatever an interaction installed — is one of those; there is no
+        // long press at all, and nothing a finger's press can drive to a
+        // menu, a callout or a recording.
         #expect(!control.isContextMenuInteractionEnabled)
         let finger = NSNumber(value: UITouch.TouchType.direct.rawValue)
         let reachable = (control.gestureRecognizers ?? []).filter {
             $0.isEnabled && $0.allowedTouchTypes.contains(finger)
         }
         let longPresses = reachable.filter { $0 is UILongPressGestureRecognizer }
-        #expect(longPresses.count == 1 && longPresses.first === control.longPress,
-                "a finger's long press can reach \(longPresses.map { type(of: $0) })")
+        #expect(longPresses.isEmpty, "a finger's long press can reach \(longPresses.map { type(of: $0) })")
         let harmless: Set<String> = [
             "_UISecondaryClickDriverGestureRecognizer", "_UIRelationshipGestureRecognizer",
         ]
-        for recognizer in reachable where recognizer !== control.longPress {
+        for recognizer in reachable {
             let name = String(describing: type(of: recognizer))
             #expect(harmless.contains(name), "a finger can reach \(name)")
         }
@@ -610,23 +611,6 @@ struct VoiceVideoPolishTests {
         defer { session.delete() }
         let send = try bigButton(session, matching: Self.isBlue)
         #expect(abs(send.width - 64) <= 2, "Send is \(send.width) across")
-    }
-
-    // MARK: - The Undo row under Reduce Motion
-
-    @Test("the Undo window counts whole seconds down and drains its line")
-    func undoCountdown() {
-        var now: UInt64 = 10_000
-        let row = VoiceUndoRow(
-            recordedMS: 12_000, untilMS: 15_000, windowMS: 5_000, clock: { now }, onUndo: {})
-        #expect(row.secondsLeft == 5)
-        #expect(row.fractionLeft == 1)
-        now = 12_500
-        #expect(row.secondsLeft == 3)
-        #expect(abs(row.fractionLeft - 0.5) < 0.001)
-        now = 15_000
-        #expect(row.secondsLeft == 0)
-        #expect(row.fractionLeft == 0)
     }
 
     #endif

@@ -3,14 +3,14 @@
  * Family Connect (Android)
  *
  * The composer, wired for voice (#79, docs/audio-video-messages-2026-10-04.md,
- * S1.3, S1.5, S2.3, S2.4, S2.6): the slot is the microphone when the
- * composer is empty and Send once a character is typed; the assistant's chat
- * keeps today's disabled Send and loses "Record voice message"; the paperclip
- * says "Record voice message" and "Take video", never "Record audio" or
- * "Record video"; the hold row and the recording row take the field's place
- * AND the buttons', the field staying composed underneath, hidden from
- * TalkBack; the Undo row takes the field's alone and leaves the paperclip
- * usable — whose use ends the window.
+ * S1.3, S1.5, S2.4): the slot is the microphone when the composer is empty
+ * and Send once a character is typed; the assistant's chat keeps today's
+ * disabled Send and loses "Record voice message"; the paperclip says "Record
+ * voice message" and "Take video", never "Record audio" or "Record video";
+ * the recording row takes the field's place AND the buttons', the field
+ * staying composed underneath, hidden from TalkBack. And (decision 41, the
+ * video recorder's layout, 2026-10-06): while the recorder is open the whole
+ * composer row is not drawn, not in TalkBack's tree, and takes no touch.
  */
 
 package me.nettrash.familyconnect.ui.chat
@@ -33,6 +33,12 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.isPopup
+import androidx.compose.ui.test.assertCountEquals
 import com.google.common.truth.Truth.assertThat
 import me.nettrash.familyconnect.ui.chat.ComposerSlot.Recording
 import org.junit.Rule
@@ -68,9 +74,11 @@ class InputBarVoiceTest {
         hold: () -> RecordGesture.HoldState = { RecordGesture.HoldState() },
         assistantChat: Boolean = false,
         announcement: ChatViewModel.VoiceAnnouncement? = null,
+        recorderOpen: () -> Boolean = { false },
     ) {
         compose.setContent {
             val state = hold()
+            ComposerUnderRecorder(recorderOpen = recorderOpen()) {
             InputBar(
                 state = field,
                 onSend = { calls += "send" },
@@ -97,8 +105,10 @@ class InputBarVoiceTest {
                 recordingMs = if (state.recording != Recording.NONE) 2_000L else null,
                 onStopRecording = { calls += "stop" },
                 onDeleteRecording = { calls += "delete" },
-                onUndoVoiceMessage = { calls += "undo" },
                 onOtherAction = { calls += "other action" },
+                // The slot's activation is recorded too: a touch that reached
+                // the microphone must show up here.
+                onActivateSlot = { calls += "activate" },
                 showsPoll = false,
                 onStartPoll = {},
                 onDiscardStaged = {},
@@ -117,6 +127,7 @@ class InputBarVoiceTest {
                 assistantIsUnnamed = false,
                 onReviewAssistantConsent = {},
             )
+            }
         }
     }
 
@@ -163,61 +174,20 @@ class InputBarVoiceTest {
         compose.onNodeWithText("Take video").assertIsDisplayed()
     }
 
-    /**
-     * Held: the hold row takes the field's place AND the buttons' (S2.3); the
-     * field stays composed under it, hidden from TalkBack, so a keyboard that
-     * was up stays up.
-     */
-    @Test
-    fun whileHeldTheHoldRowReplacesTheFieldAndTheButtons() {
-        show(hold = {
-            RecordGesture.HoldState(phase = RecordGesture.Phase.Holding(340.0, 780.0, rtl = false, armed = false))
-        })
-
-        compose.onNodeWithText("Slide to cancel").assertIsDisplayed()
-        paperclip().assertDoesNotExist()
-        compose.onNode(hasSetTextAction())
-            .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.HideFromAccessibility))
-        // The pressed microphone stays under the finger (S1.3 row 2).
-        compose.onNodeWithContentDescription("Send voice message").assertIsDisplayed()
-    }
-
     /** Hands-free: Delete, Stop, and the slot sends (S2.4). */
     @Test
     fun handsFreeTheRecordingRowHasDeleteAndStopAndTheSlotSends() {
         show(hold = { RecordGesture.HoldState(phase = RecordGesture.Phase.HandsFree(besideDraft = false)) })
 
         paperclip().assertDoesNotExist()
+        // The field stays composed under the row, hidden from TalkBack.
+        compose.onNode(hasSetTextAction())
+            .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.HideFromAccessibility))
         compose.onNodeWithContentDescription("Delete recording").performClick()
         compose.onNodeWithContentDescription("Stop recording").performClick()
         compose.onNodeWithContentDescription("Send voice message").assertIsDisplayed()
 
         assertThat(calls).containsExactly("delete", "stop").inOrder()
-    }
-
-    /**
-     * The Undo row takes the FIELD's place only: the paperclip stays usable
-     * beside it — and using it ends the window, by sending (S2.6).
-     */
-    @Test
-    fun theUndoRowLeavesThePaperclipUsableAndUsingItEndsTheWindow() {
-        var undo by mutableStateOf<RecordGesture.UndoNote?>(
-            RecordGesture.UndoNote(untilMs = Long.MAX_VALUE, recordedMs = 12_000),
-        )
-        show(hold = { RecordGesture.HoldState(undo = undo) })
-
-        compose.onNodeWithText("Sending voice message · 0:12").assertIsDisplayed()
-        compose.onNode(hasSetTextAction())
-            .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.HideFromAccessibility))
-        // The composer is empty, so the slot is the microphone (S2.6).
-        compose.onNodeWithContentDescription("Record voice message").assertIsDisplayed()
-        compose.onNodeWithText("Undo").performClick()
-        paperclip().performClick()
-
-        assertThat(calls).containsExactly("undo", "other action").inOrder()
-        undo = null
-        compose.onNode(hasSetTextAction())
-            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.HideFromAccessibility))
     }
 
     /** The composer carries the polite live region, over the recording row as anywhere (S6). */
@@ -234,5 +204,65 @@ class InputBarVoiceTest {
                     androidx.compose.ui.semantics.LiveRegionMode.Polite,
                 ),
             )
+    }
+
+    /**
+     * THE OWNER'S RULE (2026-10-06), in the real composer: a long press on
+     * the microphone opens nothing — no paperclip menu, no microphone menu,
+     * no popup of any kind — and starts nothing while the finger is down;
+     * lifted inside, it is one ordinary tap.
+     */
+    @Test
+    fun aLongPressOnTheComposersMicrophoneOpensNothingAndIsOneTapWhenLifted() {
+        show()
+        val mic = compose.onNodeWithContentDescription("Record voice message")
+
+        mic.performTouchInput {
+            down(center)
+            advanceEventTime(viewConfiguration.longPressTimeoutMillis * 4)
+            moveBy(androidx.compose.ui.geometry.Offset(1f, 0f))
+        }
+        compose.waitForIdle()
+        assertThat(calls).isEmpty()
+        compose.onAllNodes(isPopup()).assertCountEquals(0)
+        compose.onNodeWithText("Take video").assertDoesNotExist()
+        compose.onNodeWithText("Record video message").assertDoesNotExist()
+
+        mic.performTouchInput { up() }
+        compose.waitForIdle()
+        assertThat(calls).containsExactly("activate")
+        compose.onAllNodes(isPopup()).assertCountEquals(0)
+    }
+
+    /**
+     * Decision 41: while the video recorder is open the composer row is NOT
+     * DRAWN — no paperclip, field or microphone in TalkBack's tree — and a
+     * touch where the paperclip and the microphone were reaches neither. It
+     * comes back whole when the recorder closes, the draft with it.
+     */
+    @Test
+    fun whileTheVideoRecorderIsOpenTheComposerIsNotThereAndTakesNoTouch() {
+        var open by mutableStateOf(false)
+        field.setTextAndPlaceCursorAtEnd("")
+        show(recorderOpen = { open })
+        val clip = paperclip().fetchSemanticsNode().boundsInRoot.center
+        val mic = compose.onNodeWithContentDescription("Record voice message").fetchSemanticsNode().boundsInRoot.center
+
+        open = true
+        compose.waitForIdle()
+        paperclip().assertDoesNotExist()
+        compose.onNodeWithContentDescription("Record voice message").assertDoesNotExist()
+        compose.onNode(hasSetTextAction()).assertDoesNotExist()
+        compose.onRoot().performTouchInput { click(clip) }
+        compose.onRoot().performTouchInput { click(mic) }
+        compose.onRoot().performTouchInput { longClick(mic) }
+        compose.waitForIdle()
+        assertThat(calls).isEmpty()
+        compose.onNodeWithText("Take video").assertDoesNotExist()
+
+        open = false
+        compose.waitForIdle()
+        paperclip().assertIsDisplayed()
+        compose.onNodeWithContentDescription("Record voice message").assertIsDisplayed()
     }
 }

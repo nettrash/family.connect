@@ -178,16 +178,6 @@ public static class RecorderLook
     /// <summary>The gap between a round button and its caption.</summary>
     public const double CaptionGap = 2;
 
-    /// <summary>
-    /// How far above the conversation's bottom edge the slot's column (the slot, the gap, its caption) sits so that the SLOT is
-    /// centred where Send is (S3.3: the pointer never moves) — with the caption's height as it is MEASURED at the reader's
-    /// text size, never a guess, which would put the slot off Send's centre by the difference.
-    /// </summary>
-    /// <param name="sendCentreFromBottom">How far Send's centre is above the conversation's bottom edge.</param>
-    /// <param name="captionHeight">The caption's measured height.</param>
-    public static double SlotColumnBottom(double sendCentreFromBottom, double captionHeight) =>
-        sendCentreFromBottom - SlotTarget / 2 - CaptionGap - Math.Max(0, captionHeight);
-
     /// <summary>Whether the thin track ring is drawn: wherever the circle shows a picture or a clip.</summary>
     public static bool ShowsTrack(RecorderStage stage) =>
         stage is RecorderStage.Preview or RecorderStage.Recording or RecorderStage.Review;

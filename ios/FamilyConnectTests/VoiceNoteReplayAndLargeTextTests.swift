@@ -132,7 +132,7 @@ struct VoiceNoteReplayAndLargeTextTests {
 
     private static let entry = ParkedRecordings.Entry(
         id: "e1", chatID: 5, fileName: "e1.m4a", durationMS: 42_000,
-        replyTo: nil, caption: nil, createdAt: Date(timeIntervalSince1970: 0), sending: false,
+        replyTo: nil, caption: nil, createdAt: Date(timeIntervalSince1970: 0),
         waveform: String(repeating: "39cf", count: 12))
 
     /// 358 is an iPhone 17's composer; 343 an iPhone SE's.

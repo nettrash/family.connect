@@ -5,11 +5,18 @@
 //! It covers the whole window: a `position: fixed; inset: 0` layer, a dialog
 //! for screen readers (`role="dialog"`, `aria-modal`, "Video message"), with
 //! everything else on the page made `inert` while it is open — a dark scrim,
-//! 70 % over the sidebar and 30 % over the conversation so the message being
-//! answered stays readable, opaque where transparency is reduced (S3.3). Over
-//! the conversation pane: a status line on its own backing, the circle, the
-//! reply the video will carry, and a control row exactly where the composer's
-//! row is, with the slot in the Send button's place.
+//! opaque where transparency is reduced (S3.3). Over the conversation pane:
+//! a status line in its own capsule, the circle, the reply the video will
+//! carry, and a control row exactly where the composer's row is, with the
+//! slot in the Send button's place.
+//!
+//! **Revised 2026-10-06 (decision 41).** On the owner's iPhone the composer
+//! row showed through the recorder's controls and the chat competed with the
+//! circle. Now the composer is not drawn while the recorder is open
+//! (composer.rs, `is-covered`: hidden and inert), the controls stand on their
+//! own solid bar, the conversation is blurred under a darker scrim, and the
+//! circle is never larger than the room between the status and the controls
+//! (styles.css, `.recorder-stage`) — at any window size, text size or banner.
 //!
 //! **PREVIEW** — the camera on and mirrored, the microphone OFF; Close, the
 //! camera choice, "Record a voice message instead", and Record, dimmed until
@@ -1851,11 +1858,11 @@ pub fn round_recorder(props: &RecorderProps) -> Html {
                 <svg class={classes!("recorder-ring", kind)} aria-hidden="true"
                      width={ring_size.to_string()} height={ring_size.to_string()}
                      viewBox={format!("0 0 {ring_size} {ring_size}")}>
-                    <circle class="recorder-track"
+                    <circle class="recorder-track" vector-effect="non-scaling-stroke"
                             cx={(ring_size / 2.0).to_string()} cy={(ring_size / 2.0).to_string()}
                             r={(diameter / 2.0 + 3.0).to_string()} />
                     if let Some(length) = length {
-                        <circle class="recorder-arc"
+                        <circle class="recorder-arc" vector-effect="non-scaling-stroke"
                                 cx={(ring_size / 2.0).to_string()} cy={(ring_size / 2.0).to_string()}
                                 r={(diameter / 2.0 + 3.0).to_string()} pathLength="100"
                                 stroke-dasharray={format!("{length:.2} 100")}

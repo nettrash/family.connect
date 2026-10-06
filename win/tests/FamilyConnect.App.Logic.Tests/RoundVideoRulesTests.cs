@@ -44,7 +44,7 @@ public sealed class RoundVideoRulesTests
         var empty = new SlotInputs(
             RecorderOpen: false, Recording: Recording.None, Editing: false, DraftBlank: true, Staged: false,
             AssistantChat: false, CanRecord: true, Call: false, Busy: false, NotSent: false);
-        var off = new DoorInputs(empty, FamilyOrDirectChat: true, UndoWindow: false, ServerOffersRound: true, HasCamera: true,
+        var off = new DoorInputs(empty, FamilyOrDirectChat: true, ServerOffersRound: true, HasCamera: true,
             EncoderProbePasses: true, RecordsRoundVideo: RoundVideoRules.RecordingEnabled);
         Assert.Equal(DoorKind.Hidden, ComposerButton.VideoDoor(off).Kind);
         Assert.Equal(DoorKind.Shown, ComposerButton.VideoDoor(off with { RecordsRoundVideo = true }).Kind);

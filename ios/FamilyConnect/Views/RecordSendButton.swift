@@ -5,24 +5,21 @@
 //  The composer's trailing slot on iPhone and iPad: Send when there is
 //  something to send, the microphone when the composer is empty, the Send
 //  arrow or the Stop square while a voice message records (#79,
-//  docs/audio-video-messages-2026-10-04.md, S1.3, S2.3, S6, S8.1, S8.2).
+//  docs/audio-video-messages-2026-10-04.md, S1.3, S6, S8.1, S8.2).
 //
-//  WHY UIKIT. The hold needs a touch that can SLIDE — 100 points toward the
-//  leading edge to cancel, 60 up to lock — and SwiftUI's long press fails
-//  after 10 points, so it cannot drive one (Checked facts). And a press that
-//  wanders past the slop and lifts inside the button must still be a tap, the
-//  way any UIKit button's is. So the control is a `UIControl` in a
-//  `UIViewRepresentable`:
+//  ONE GESTURE (revised 2026-10-06). The hold-to-talk walkie-talkie is gone:
+//  the microphone does one thing, and a tap starts a hands-free recording.
+//  The control is a plain `UIControl` whose only action is `.touchUpInside`
+//  — UIKit's own completed tap, with its generous "inside" — so a press that
+//  is held a long time and lifts inside is still a tap, and nothing at all
+//  happens while the finger is down: no recording, no menu, no callout.
 //
-//  - a `UILongPressGestureRecognizer` (0.5 s, `allowableMovement` 20, finger
-//    and Pencil only) is the hold, and its own timer is the reducer's tick at
-//    H; once it begins it owns the touch, reporting the slide and the lift;
-//  - the control's own `.touchUpInside` / `.touchUpOutside` is the tap, with
-//    UIKit's generous "inside" — and a hold that begins cancels it, because
-//    a recognizer that recognises cancels the view's touches;
-//  - NEVER a context menu: on iOS `.contextMenu` claims the touch long press.
-//    An iPad pointer's SECONDARY click opens the microphone's menu through a
-//    `UIEditMenuInteraction` presented at the click instead (S8.2).
+//  - NO long-press recognizer, and NEVER a context menu: on iOS
+//    `.contextMenu` claims the touch long press. An iPad pointer's SECONDARY
+//    click opens the microphone's menu through a `UIEditMenuInteraction`
+//    presented at the click instead (S8.2) — presented only by that click.
+//  - No pointer interaction either: its press recognizer accepts a finger's
+//    touch too (measured on iOS 27).
 //
 //  The glyph is drawn by SwiftUI underneath (`RecordSendSlot`), in the
 //  composer's own scaled sizes and tint; this control is transparent, and it
@@ -38,17 +35,9 @@ import UIKit
 
 /// What the slot reports. The composer turns these into reducer events.
 struct RecordSendEvents {
-    /// A press went down on the microphone, in window coordinates.
-    var pressDown: (_ x: Double, _ y: Double, _ canHold: Bool) -> Void = { _, _, _ in }
-    var pressMoved: (_ x: Double, _ y: Double) -> Void = { _, _ in }
-    /// The press lifted; `inside` is UIKit's own touch-up-inside.
-    var pressLifted: (_ x: Double, _ y: Double, _ inside: Bool, _ byTouch: Bool) -> Void = { _, _, _, _ in }
-    /// The system cancelled the press.
-    var pressCancelled: () -> Void = {}
-    /// The long press reached H.
-    var holdReached: () -> Void = {}
-    /// The slot was activated, but not by a press on the microphone — a tap
-    /// on Send or Stop, VoiceOver, Switch Control, Full Keyboard Access.
+    /// The slot was activated: a tap that lifted inside (however long it was
+    /// held), VoiceOver, Switch Control, Full Keyboard Access. A press going
+    /// down or being held reports nothing.
     var activated: () -> Void = {}
     /// The secondary menu's Record Voice Message.
     var recordFromMenu: () -> Void = {}
@@ -64,13 +53,19 @@ struct RecordSendEvents {
     var magicTap: () -> Bool = { false }
     /// VoiceOver's escape gesture; false lets it go on up.
     var escape: () -> Bool = { false }
+    /// Asked the moment a finger, a pen or a pointer goes DOWN on the
+    /// control: true when the activation guard runs then. Such a press is
+    /// ignored WHOLE, however late it lifts (S1.1) — a slow second tap must
+    /// not send the recording the first tap started, nor what a Stop just
+    /// staged. It is a question, never an event: nothing reaches the reducer
+    /// for a press going down. Android, Windows and the web ask the same at
+    /// their press's down.
+    var pressIgnored: () -> Bool = { false }
 }
 
 /// The slot: the glyph, and the control over it.
 struct RecordSendSlot: View {
     let slot: ComposerSlot
-    /// A finger is down on the microphone, before H.
-    let isPressed: Bool
     /// Bumped to move VoiceOver's focus to the slot.
     let focusRequest: Int
     /// The composer's scaled control side and glyph size.
@@ -81,28 +76,18 @@ struct RecordSendSlot: View {
     /// accessibility action exist (S1.6).
     var offersVideo = false
 
-    @Environment(\.layoutDirection) private var layoutDirection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The control is highlighted — a finger is down on it. Drawn only: it
+    /// changes nothing the slot does.
+    @State private var isPressed = false
 
     var body: some View {
         let target = max(side, CGFloat(RecordRules.minTargetApplePT))
         ZStack {
-            if isHeld {
-                // The held microphone grows under the finger, red, with a
-                // soft halo — so the hand can see it is recording while it
-                // covers half the button (the approved design).
-                Circle()
-                    .fill(Color.red.opacity(0.2))
-                    .frame(width: side * Self.heldScale + 20, height: side * Self.heldScale + 20)
-                    .accessibilityHidden(true)
-            }
             Image(systemName: symbol)
                 .font(.system(size: glyph))
-                .symbolRenderingMode(isHeld ? .palette : .monochrome)
-                .foregroundStyle(
-                    isHeld ? AnyShapeStyle(.white) : looksDisabled ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.tint),
-                    isHeld ? AnyShapeStyle(Color.red) : AnyShapeStyle(.tint))
-                .scaleEffect(isHeld ? Self.heldScale : isPressed ? 0.88 : 1)
+                .foregroundStyle(looksDisabled ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.tint))
+                .scaleEffect(isPressed ? 0.88 : 1)
                 // Send ↔ microphone is a 150 ms cross-fade, none under Reduce
                 // Motion (S1.1, S1.3).
                 .id(symbol)
@@ -113,7 +98,6 @@ struct RecordSendSlot: View {
         .frame(width: side, height: side)
         .animation(reduceMotion ? nil : .easeInOut(duration: Double(RecordRules.slotCrossfadeMS) / 1000), value: symbol)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isPressed)
-        .animation(reduceMotion ? nil : .spring(duration: 0.2), value: isHeld)
         .overlay {
             // The hit area grows to 44 points; the glyph and the bar do not
             // (S1.1): the control is laid out at the target and padded back
@@ -121,24 +105,18 @@ struct RecordSendSlot: View {
             RecordSendControlView(
                 slot: slot,
                 offersVideo: offersVideo,
-                rtl: layoutDirection == .rightToLeft,
                 focusRequest: focusRequest,
-                events: events)
+                events: events,
+                highlighted: { isPressed = $0 })
                 .frame(width: target, height: target)
                 .padding(-(target - side) / 2)
         }
     }
 
-    /// How much the held microphone grows under the finger.
-    static let heldScale: CGFloat = 1.35
-
-    /// A finger holds the microphone and it records.
-    private var isHeld: Bool { slot == .heldMicrophone }
-
     private var symbol: String {
         switch slot {
         case .stopRecording: "stop.circle.fill"
-        case .microphone, .dimmed, .heldMicrophone: "mic.circle.fill"
+        case .microphone, .dimmed: "mic.circle.fill"
         case .recorder, .sendVoice, .save, .send, .sendDisabled: "arrow.up.circle.fill"
         }
     }
@@ -156,19 +134,21 @@ struct RecordSendSlot: View {
 private struct RecordSendControlView: UIViewRepresentable {
     let slot: ComposerSlot
     let offersVideo: Bool
-    let rtl: Bool
     let focusRequest: Int
     let events: RecordSendEvents
+    let highlighted: (Bool) -> Void
 
     func makeUIView(context: Context) -> RecordSendControl {
         let control = RecordSendControl()
-        control.update(slot: slot, offersVideo: offersVideo, rtl: rtl, events: events)
+        control.update(slot: slot, offersVideo: offersVideo, events: events)
+        control.highlightChanged = highlighted
         context.coordinator.focusRequest = focusRequest
         return control
     }
 
     func updateUIView(_ control: RecordSendControl, context: Context) {
-        control.update(slot: slot, offersVideo: offersVideo, rtl: rtl, events: events)
+        control.update(slot: slot, offersVideo: offersVideo, events: events)
+        control.highlightChanged = highlighted
         if context.coordinator.focusRequest != focusRequest {
             context.coordinator.focusRequest = focusRequest
             // After this update lands, so the label VoiceOver reads is the
@@ -186,28 +166,21 @@ private struct RecordSendControlView: UIViewRepresentable {
     }
 }
 
-/// The control itself: touches, the hold, the secondary click, and the
-/// slot's accessibility.
-final class RecordSendControl: UIControl, UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate {
+/// The control itself: the tap, the secondary click, and the slot's
+/// accessibility.
+final class RecordSendControl: UIControl, UIEditMenuInteractionDelegate {
 
     private(set) var slot: ComposerSlot = .send
     /// Round video is available: Record Video Message in the menu, and the
     /// accessibility action (S1.6).
     private(set) var offersVideo = false
-    private var rtl = false
     private var events = RecordSendEvents()
+    /// Told when the control's highlight changes, for the glyph's press.
+    var highlightChanged: (Bool) -> Void = { _ in }
 
-    /// Whether the press being tracked went down on the microphone — decided
-    /// once, at touch-down, so a slot that changes under a finger does not
-    /// turn half a press into something else.
-    private var pressIsMicrophone = false
-    private var pressByTouch = false
-    private var pressTracked = false
-
-    /// The hold, and an iPad pointer's secondary click. Internal rather
-    /// than private so a test can read how they are configured — the
-    /// numbers S8.1 and S8.2 name are the whole of what makes them right.
-    let longPress = UILongPressGestureRecognizer()
+    /// An iPad pointer's secondary click — the control's ONLY gesture
+    /// recognizer. Internal rather than private so a test can read how it
+    /// is configured: S8.2's numbers are the whole of what makes it right.
     let secondaryClick = UITapGestureRecognizer()
     private var editMenu: UIEditMenuInteraction?
 
@@ -216,21 +189,9 @@ final class RecordSendControl: UIControl, UIGestureRecognizerDelegate, UIEditMen
         backgroundColor = .clear
         isAccessibilityElement = true
 
-        addTarget(self, action: #selector(upInside(_:event:)), for: .touchUpInside)
-        addTarget(self, action: #selector(upOutside(_:event:)), for: .touchUpOutside)
-        addTarget(self, action: #selector(touchCancelled), for: .touchCancel)
-
-        // The hold: finger and Pencil, never a pointer — a click of any
-        // length is a tap (S8.2).
-        longPress.minimumPressDuration = Double(VoiceComposer.systemLongPressMS) / 1000
-        longPress.allowableMovement = CGFloat(RecordRules.tapSlop)
-        longPress.allowedTouchTypes = [
-            NSNumber(value: UITouch.TouchType.direct.rawValue),
-            NSNumber(value: UITouch.TouchType.pencil.rawValue),
-        ]
-        longPress.addTarget(self, action: #selector(held(_:)))
-        longPress.delegate = self
-        addGestureRecognizer(longPress)
+        // The one action: UIKit's completed tap. Nothing for touch-down,
+        // nothing while it is held.
+        addTarget(self, action: #selector(tapped), for: .touchUpInside)
 
         // An iPad pointer's secondary click opens the menu (S1.6, S8.2).
         secondaryClick.buttonMaskRequired = .secondary
@@ -241,22 +202,15 @@ final class RecordSendControl: UIControl, UIGestureRecognizerDelegate, UIEditMen
         let menu = UIEditMenuInteraction(delegate: self)
         addInteraction(menu)
         editMenu = menu
-        // No pointer interaction: its press recognizer accepts a finger's
-        // touch too (measured on iOS 27), and nothing but the hold may meet
-        // a finger's long press here.
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    func update(slot: ComposerSlot, offersVideo: Bool = false, rtl: Bool, events: RecordSendEvents) {
-        self.rtl = rtl
+    func update(slot: ComposerSlot, offersVideo: Bool = false, events: RecordSendEvents) {
         self.events = events
         guard slot != self.slot || offersVideo != self.offersVideo || accessibilityLabel == nil else { return }
         self.slot = slot
         self.offersVideo = offersVideo
-        // The hold exists only on the microphone — and while a held one
-        // records, so the finger's slide and lift keep reaching it.
-        longPress.isEnabled = slot.isMicrophone || slot == .heldMicrophone || longPressIsActive
         applyAccessibility()
         toolTip = Self.toolTip(for: slot)
     }
@@ -267,87 +221,40 @@ final class RecordSendControl: UIControl, UIGestureRecognizerDelegate, UIEditMen
         slot.isMicrophone ? String(localized: "Record a voice message") : slot.label
     }
 
-    private var longPressIsActive: Bool {
-        longPress.state == .began || longPress.state == .changed
+    override var isHighlighted: Bool {
+        didSet {
+            if isHighlighted != oldValue { highlightChanged(isHighlighted) }
+        }
     }
 
     // MARK: - The tap
 
+    /// The press now down went down inside the activation guard (S1.1), so
+    /// its lift is no tap. Decided at the down, kept until the lift.
+    private var pressWentDownGuarded = false
+
     override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
         // A secondary click is the menu's, never a tap that records.
         if let event, event.buttonMask.contains(.secondary) { return false }
-        pressTracked = true
-        pressIsMicrophone = slot.isMicrophone
-        pressByTouch = touch.type == .direct || touch.type == .pencil
-        if pressIsMicrophone {
-            let point = touch.location(in: nil)
-            events.pressDown(Double(point.x), Double(point.y), pressByTouch)
-        }
-        return true
+        // Whether this press can BE a tap is decided now, as it goes down
+        // (S1.1). Nothing else is decided while it is down.
+        pressWentDownGuarded = events.pressIgnored()
+        return super.beginTracking(touch, with: event)
     }
 
-    override func continueTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
-        if pressIsMicrophone, !longPressIsActive {
-            let point = touch.location(in: nil)
-            events.pressMoved(Double(point.x), Double(point.y))
-        }
-        return true
+    override func cancelTracking(with event: UIEvent?) {
+        pressWentDownGuarded = false
+        super.cancelTracking(with: event)
     }
 
-    @objc private func upInside(_ sender: UIControl, event: UIEvent) {
-        lifted(event: event, inside: true)
-    }
-
-    @objc private func upOutside(_ sender: UIControl, event: UIEvent) {
-        lifted(event: event, inside: false)
-    }
-
-    private func lifted(event: UIEvent, inside: Bool) {
-        guard pressTracked else { return }
-        pressTracked = false
-        if pressIsMicrophone {
-            let point = event.allTouches?.first?.location(in: nil) ?? .zero
-            events.pressLifted(Double(point.x), Double(point.y), inside, pressByTouch)
-        } else if inside {
-            events.activated()
-        }
-    }
-
-    @objc private func touchCancelled() {
-        guard pressTracked else { return }
-        pressTracked = false
-        // A hold that begins cancels the tap's touches: that is the hold
-        // taking over, not the system taking the touch away.
-        guard pressIsMicrophone, !longPressIsActive else { return }
-        events.pressCancelled()
-    }
-
-    // MARK: - The hold
-
-    @objc private func held(_ recognizer: UILongPressGestureRecognizer) {
-        let point = recognizer.location(in: nil)
-        switch recognizer.state {
-        case .began:
-            pressTracked = false
-            events.holdReached()
-        case .changed:
-            events.pressMoved(Double(point.x), Double(point.y))
-        case .ended:
-            events.pressLifted(Double(point.x), Double(point.y), bounds.contains(recognizer.location(in: self)), true)
-            longPress.isEnabled = slot.isMicrophone
-        case .cancelled, .failed:
-            if recognizer.state == .cancelled { events.pressCancelled() }
-            longPress.isEnabled = slot.isMicrophone
-        default:
-            break
-        }
-    }
-
-    func gestureRecognizer(
-        _ gestureRecognizer: UIGestureRecognizer,
-        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
-    ) -> Bool {
-        false
+    /// A press that lifted inside, however long it was held — unless it went
+    /// down inside the activation guard. The composer decides what each slot
+    /// does with it, as it does for VoiceOver's activation.
+    @objc private func tapped() {
+        let guarded = pressWentDownGuarded
+        pressWentDownGuarded = false
+        guard !guarded else { return }
+        events.activated()
     }
 
     // MARK: - The secondary click (iPad)
@@ -403,7 +310,7 @@ final class RecordSendControl: UIControl, UIGestureRecognizerDelegate, UIEditMen
             accessibilityValue = reason.notice
             accessibilityUserInputLabels = microphoneInputLabels
             accessibilityCustomActions = videoActions
-        case .sendVoice, .heldMicrophone:
+        case .sendVoice:
             accessibilityCustomActions = [
                 UIAccessibilityCustomAction(name: String(localized: "Stop and listen first")) { [weak self] _ in
                     self?.events.stopAndListen()
@@ -449,9 +356,7 @@ final class RecordSendControl: UIControl, UIGestureRecognizerDelegate, UIEditMen
         ]
     }
 
-    /// VoiceOver's activation is an activation, never a touch: the reducer
-    /// hears `activate`, so a screen reader can neither hold nor slide by
-    /// accident.
+    /// VoiceOver's activation is the same activation as a tap.
     override func accessibilityActivate() -> Bool {
         switch slot {
         case .sendDisabled, .save(enabled: false), .recorder:

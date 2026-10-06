@@ -10,9 +10,9 @@
  *
  * How a recording is started and ended is the composer's business, not this
  * file's: since #79 (docs/audio-video-messages-2026-10-04.md) the Send slot is
- * the microphone — a tap records hands-free on every client, and on a touch
- * screen holding it is a walkie-talkie — and every one of those decisions is
- * the shared reducer's (ui/chat/RecordGesture.kt). This only records.
+ * the microphone — a tap records hands-free on every client (there is no
+ * hold; revised 2026-10-06) — and every one of those decisions is the shared
+ * reducer's (ui/chat/RecordGesture.kt). This only records.
  *
  * RECORD_AUDIO genuinely is required and genuinely must be granted at
  * runtime: this app owns the microphone while recording rather than

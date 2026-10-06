@@ -147,6 +147,9 @@ public sealed partial class ChatsView : UserControl
     private string? slotName;
     private string? slotHelp;
     private string? slotTooltip;
+
+    /// <summary>A finger or a pen is down on the slot, and its tooltip is taken away until it lifts (ComposerButton.TooltipDuring).</summary>
+    private bool slotTipHidden;
     private Animation.Storyboard? slotFade;
 
     /// <summary>How many voice messages that were not sent the open chat's rows show: the microphone's row 9 (S1.3).</summary>
@@ -3630,10 +3633,24 @@ public sealed partial class ChatsView : UserControl
         var device = DeviceOf(e.Pointer.PointerDeviceType);
         var barrel = device == SlotDevice.Pen && e.GetCurrentPoint(SendButton).Properties.IsBarrelButtonPressed;
         slotPointerPress = slotGuard.PointerDown(Environment.TickCount64, device, barrel);
+        // A long press on the microphone shows nothing (2026-10-06): no tooltip opens under a finger or a pen while it is down.
+        if (!ComposerButton.TooltipDuring(device) && !slotTipHidden)
+        {
+            slotTipHidden = true;
+            ToolTipService.SetToolTip(SendButton, null);
+        }
     }
 
     /// <summary>The pointer's press is over — lifted, cancelled or its capture lost — with or without a click.</summary>
-    private void OnSlotPointerEnded(object sender, PointerRoutedEventArgs e) => EndSlotPress(slotPointerPress);
+    private void OnSlotPointerEnded(object sender, PointerRoutedEventArgs e)
+    {
+        if (slotTipHidden)
+        {
+            slotTipHidden = false;
+            ToolTipService.SetToolTip(SendButton, slotTooltip);
+        }
+        EndSlotPress(slotPointerPress);
+    }
 
     /// <summary>
     /// A press ends — after the click it made, if it made one: the button's own handling comes first, and this goes to the
@@ -3796,7 +3813,10 @@ public sealed partial class ChatsView : UserControl
             _ = EndRecordingAsync(RecordingEnd.Stopped);
             return;
         }
-        if (recordingStart.Starting || asking is not null || ViewerOverlay.Visibility == Visibility.Visible || Kind(chat) == "ai")
+        // Not under the video recorder either: the composer is hidden while it is open (decision 41), and a voice recording
+        // started behind it would be one nobody can see, on the microphone the camera's recording holds.
+        if (recordingStart.Starting || asking is not null || ViewerOverlay.Visibility == Visibility.Visible || Kind(chat) == "ai"
+            || RecorderOpen)
         {
             return;
         }
@@ -3867,7 +3887,10 @@ public sealed partial class ChatsView : UserControl
         if (slotTooltip != face.Tooltip)
         {
             slotTooltip = face.Tooltip;
-            ToolTipService.SetToolTip(SendButton, face.Tooltip);
+            if (!slotTipHidden)
+            {
+                ToolTipService.SetToolTip(SendButton, face.Tooltip);
+            }
         }
         SlotLook.Opacity = face.Enabled && !face.LooksDimmed ? 1 : 0.4;
         ShowSlotGlyph(face.Glyph);
@@ -7522,7 +7545,6 @@ public sealed partial class ChatsView : UserControl
         return ComposerButton.VideoDoor(new DoorInputs(
             inputs,
             FamilyOrDirectChat: Kind(chat) is "family" or "direct",
-            UndoWindow: false,
             ServerOffersRound: connection.Session.State.RoundVideo is not null,
             HasCamera: hasCamera,
             EncoderProbePasses: true,

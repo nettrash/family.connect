@@ -9,16 +9,25 @@
  * never a Dialog, which would shift the layout and could be dismissed by
  * accident (S3.3). [VideoRecorderHost] wraps everything MainActivity draws:
  * while the recorder is open the app beneath it is out of TalkBack's reach
- * and keyboard focus cannot enter it, and the scrim takes every touch. The
- * scrim is black at 70 % on a compact window; on a wide one 70 % over the
- * list pane and 30 % over the conversation, so the message being answered
- * stays readable.
+ * and keyboard focus cannot enter it, and the scrim takes every touch.
  *
- * Over the conversation pane: a status line on its own backing, the circle,
- * the reply banner, and a control row exactly where the composer row is, the
- * slot in the Send button's place. A pane shorter than 480 dp — a phone on
- * its side — stands the controls in a column at the trailing edge. The
- * layout chosen when RECORDING starts is kept until Stop (S3.3).
+ * REVISED 2026-10-06 (decision 41): on the owner's iPhone the composer row
+ * showed through the recorder and its controls landed on the paperclip, ✨,
+ * the field and Send, and a thin scrim let the chat compete with the camera.
+ * So, here as on every platform: the composer row is not drawn while the
+ * recorder is open (ChatScreen's ComposerUnderRecorder) and takes no hits;
+ * the scrim is black at 85 % (75 % over a wide window's conversation pane)
+ * and, from Android 12, the app beneath is blurred too (RenderEffect, which
+ * costs nothing while the chat is still); the controls sit on their OWN
+ * solid dark bar at the bottom of the pane, which runs under the navigation
+ * bar and pads its contents clear of it; the status line sits in its own
+ * capsule at the top; and the circle is fitted into what is left between
+ * the two, so it never overlaps either at any size — a compact phone, a
+ * phone on its side, a tablet, large text.
+ *
+ * A pane shorter than 480 dp — a phone on its side — stands the controls in
+ * a column on their own bar at the trailing edge. The layout chosen when
+ * RECORDING starts is kept until Stop (S3.3).
  *
  * The recorder itself lives outside the activity (AppVideoMessageRecorder);
  * a rebuilt activity draws this again, hands CameraX its new PreviewView and
@@ -28,6 +37,18 @@
 package me.nettrash.familyconnect.ui.chat
 
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.StrokeCap
@@ -157,6 +178,16 @@ import kotlin.math.roundToInt
 private val RecordingRed = Color(0xFFE53935)
 private val ScrimColor = Color.Black
 
+/** The controls' own bar: solid, so nothing beneath can show through it (decision 41). */
+internal val RecorderBarColor = Color(0xFF111216)
+
+/** How dark the scrim is: over a compact window and a wide one's side panes, and over a wide one's conversation. */
+internal const val SCRIM_ALPHA = 0.85f
+internal const val SCRIM_PANE_ALPHA = 0.75f
+
+/** How much the app beneath is blurred, where the platform does it cheaply (Android 12+). */
+private val BACKDROP_BLUR = 16.dp
+
 /**
  * Everything MainActivity draws, with the recorder over it while it is open.
  * While a call is live the recorder stays open underneath the call screen —
@@ -183,6 +214,11 @@ fun VideoRecorderHost(recorder: AppVideoMessageRecorder?, content: @Composable (
                         Modifier
                             .clearAndSetSemantics { }
                             .focusProperties { onEnter = { cancelFocusChange() } }
+                            // So the chat does not compete with the camera
+                            // (decision 41): a RenderEffect from Android 12,
+                            // nothing below it — where the scrim alone is
+                            // dark enough.
+                            .blur(BACKDROP_BLUR, BlurredEdgeTreatment.Rectangle)
                     } else {
                         Modifier
                     },
@@ -192,6 +228,39 @@ fun VideoRecorderHost(recorder: AppVideoMessageRecorder?, content: @Composable (
             content()
         }
         if (showing) RecorderOnScreen(recorder, state)
+    }
+}
+
+/**
+ * The composer row while the video recorder is open (decision 41): NOT
+ * DRAWN, not hittable, not focusable and out of TalkBack's reach — kept
+ * composed and laid out, so the conversation above it does not jump and the
+ * draft under it is kept. Closed, it is simply [content].
+ */
+@Composable
+internal fun ComposerUnderRecorder(recorderOpen: Boolean, content: @Composable () -> Unit) {
+    Box(
+        modifier = if (recorderOpen) {
+            Modifier
+                .testTag("composer-under-recorder")
+                .graphicsLayer { alpha = 0f }
+                .clearAndSetSemantics { }
+                .focusProperties { onEnter = { cancelFocusChange() } }
+                .focusGroup()
+                // Every touch stops here, before anything inside can see it.
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        do {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            event.changes.forEach { it.consume() }
+                        } while (event.changes.any { it.pressed })
+                    }
+                }
+        } else {
+            Modifier
+        },
+    ) {
+        content()
     }
 }
 
@@ -408,31 +477,39 @@ internal fun RecorderLayer(
         } else {
             Modifier.fillMaxSize()
         }
-        BoxWithConstraints(
-            modifier = paneModifier
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(8.dp),
-        ) {
+        BoxWithConstraints(modifier = paneModifier) {
+            // Measured as S3.3 measures it — the pane inside the safe area and
+            // an 8-unit margin — though the bars themselves run to its edges.
+            val insets = WindowInsets.safeDrawing.asPaddingValues()
+            val direction = LocalLayoutDirection.current
+            val inner = maxWidth - insets.calculateLeftPadding(direction) - insets.calculateRightPadding(direction) - 16.dp
+            val innerHeight = maxHeight - insets.calculateTopPadding() - insets.calculateBottomPadding() - 16.dp
             val bannerHeight = if (state.session?.reply != null) BANNER_HEIGHT_DP else 0
             val measured = RoundRecorderRules.layout(
-                paneWidth = maxWidth.value.toInt(),
-                paneHeight = maxHeight.value.toInt(),
+                paneWidth = inner.value.toInt(),
+                paneHeight = innerHeight.value.toInt(),
                 bannerHeight = bannerHeight,
             )
             recorder.currentLayout = measured
             // Kept from Record until Stop: the controls never move under the thumb (S3.5).
             val layout = state.lockedLayout ?: measured
-            val circle: @Composable () -> Unit = {
-                RecorderCircle(
-                    recorder = recorder,
-                    state = state,
-                    diameter = layout.diameter,
-                    player = player,
-                    preview = preview,
-                )
-            }
             val status: @Composable () -> Unit = {
                 StatusLine(state = state, recorder = recorder, onOpenSettings = onOpenSettings)
+            }
+            // The circle in whatever room the status and the bar leave it:
+            // S3.3's diameter at most, never more than fits — so it can never
+            // reach the status above it or the bar below it.
+            val circle: @Composable (Modifier) -> Unit = { modifier ->
+                BoxWithConstraints(modifier = modifier.testTag("round-video-circle-room"), contentAlignment = Alignment.Center) {
+                    val room = (minOf(maxWidth, maxHeight) - RING_GAP * 2).coerceAtLeast(0.dp)
+                    RecorderCircle(
+                        recorder = recorder,
+                        state = state,
+                        diameter = minOf(layout.diameter.dp, room),
+                        player = player,
+                        preview = preview,
+                    )
+                }
             }
             val banner: @Composable () -> Unit = {
                 val session = state.session
@@ -455,17 +532,31 @@ internal fun RecorderLayer(
                 )
             }
             if (layout.column) {
-                Row(modifier = Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+                Row(modifier = Modifier.fillMaxSize()) {
                     Column(
-                        modifier = Modifier.weight(1f).fillMaxSize(),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Vertical + WindowInsetsSides.Start))
+                            .padding(8.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.SpaceEvenly,
                     ) {
                         status()
-                        circle()
+                        Spacer(Modifier.height(8.dp))
+                        circle(Modifier.weight(1f).fillMaxWidth())
                     }
+                    // The bar at the trailing edge, running under the system
+                    // bars there; scrollable, so large text never pushes a
+                    // control out of reach or onto another.
                     Column(
-                        modifier = Modifier.width(184.dp),
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .background(RecorderBarColor)
+                            .testTag("round-video-controls-bar")
+                            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Vertical + WindowInsetsSides.End))
+                            .width(CONTROL_COLUMN_WIDTH)
+                            .verticalScroll(rememberScrollState())
+                            .padding(8.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
                     ) {
@@ -474,16 +565,33 @@ internal fun RecorderLayer(
                     }
                 }
             } else {
-                Column(
-                    modifier = Modifier.fillMaxSize(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    status()
-                    Spacer(Modifier.weight(1f))
-                    circle()
-                    Spacer(Modifier.weight(1f))
-                    banner()
-                    controls(false)
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+                            .padding(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        status()
+                        Spacer(Modifier.height(8.dp))
+                        circle(Modifier.weight(1f).fillMaxWidth())
+                    }
+                    // The bar where the composer row was, on its own solid
+                    // ground, running under the navigation bar.
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(RecorderBarColor)
+                            .testTag("round-video-controls-bar")
+                            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal))
+                            .padding(start = 8.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        banner()
+                        controls(false)
+                    }
                 }
             }
         }
@@ -511,20 +619,24 @@ private fun Scrim(pane: Rect?, compactWindow: Boolean, onTouch: () -> Unit) {
             },
     ) {
         if (pane == null || compactWindow) {
-            drawRect(ScrimColor.copy(alpha = 0.7f))
+            drawRect(ScrimColor.copy(alpha = SCRIM_ALPHA))
             return@Canvas
         }
-        // 70 % over the sidebar and rail, 30 % over the conversation pane.
-        val outer = ScrimColor.copy(alpha = 0.7f)
+        // 85 % over the sidebar and rail, 75 % over the conversation pane:
+        // dark enough that the chat does not compete (decision 41).
+        val outer = ScrimColor.copy(alpha = SCRIM_ALPHA)
         drawRect(outer, topLeft = Offset.Zero, size = Size(size.width, pane.top))
         drawRect(outer, topLeft = Offset(0f, pane.bottom), size = Size(size.width, size.height - pane.bottom))
         drawRect(outer, topLeft = Offset(0f, pane.top), size = Size(pane.left, pane.height))
         drawRect(outer, topLeft = Offset(pane.right, pane.top), size = Size(size.width - pane.right, pane.height))
-        drawRect(ScrimColor.copy(alpha = 0.3f), topLeft = pane.topLeft, size = pane.size)
+        drawRect(ScrimColor.copy(alpha = SCRIM_PANE_ALPHA), topLeft = pane.topLeft, size = pane.size)
     }
 }
 
-/** The status line on its own backing (S3.4), and whatever the state has to say under it. */
+/**
+ * The status line in its own capsule above the circle (S3.4, decision 41),
+ * and whatever the state has to say under it.
+ */
 @Composable
 private fun StatusLine(
     state: VideoMessageRecorder.State,
@@ -571,14 +683,19 @@ private fun StatusLine(
         }
     }
     state.notice?.let { lines += stringResource(it.text) }
+    // A capsule while it is one line; rounded corners once it says more.
+    val oneLine = lines.size + (if (recordingClock != null) 1 else 0) <= 1 &&
+        phase !is VideoMessageRecorder.Phase.CameraRefused &&
+        phase !is VideoMessageRecorder.Phase.MicrophoneRefused &&
+        !(phase is VideoMessageRecorder.Phase.Preview && phase.busy)
     Surface(
-        color = Color.Black.copy(alpha = 0.6f),
+        color = RecorderBarColor,
         contentColor = Color.White,
-        shape = RoundedCornerShape(16.dp),
+        shape = if (oneLine) RoundedCornerShape(percent = 50) else RoundedCornerShape(16.dp),
         modifier = Modifier.widthIn(max = 480.dp).testTag("round-video-status"),
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             if (recordingClock != null) {
@@ -644,7 +761,7 @@ private fun VoiceInsteadText(state: VideoMessageRecorder.State, recorder: VideoM
 private fun RecorderCircle(
     recorder: VideoMessageRecorder,
     state: VideoMessageRecorder.State,
-    diameter: Int,
+    diameter: Dp,
     player: ReviewPlayer?,
     preview: @Composable (Modifier) -> Unit,
 ) {
@@ -673,9 +790,8 @@ private fun RecorderCircle(
             }
         }
     }
-    val ringGap = 6.dp
     Box(
-        modifier = Modifier.size(diameter.dp + ringGap * 2),
+        modifier = Modifier.size(diameter + RING_GAP * 2).testTag("round-video-circle"),
         contentAlignment = Alignment.Center,
     ) {
         // The ring just OUTSIDE the circle, so it never covers a face (the
@@ -684,7 +800,7 @@ private fun RecorderCircle(
         // recording (orange from the warning), the accent while the clip plays.
         Canvas(modifier = Modifier.fillMaxSize().testTag("round-video-recorder-ring")) {
             val stroke = 3.dp.toPx()
-            val radius = diameter.dp.toPx() / 2f + 2.dp.toPx() + stroke / 2f
+            val radius = diameter.toPx() / 2f + 2.dp.toPx() + stroke / 2f
             val topLeft = Offset(center.x - radius, center.y - radius)
             val arcSize = Size(radius * 2, radius * 2)
             val showsTrack = phase is VideoMessageRecorder.Phase.Preview ||
@@ -713,7 +829,8 @@ private fun RecorderCircle(
         }
         Box(
             modifier = Modifier
-                .size(diameter.dp)
+                .size(diameter)
+                .testTag("round-video-circle-face")
                 .clip(CircleShape)
                 .background(Color(0xFF2B2B2B)),
             contentAlignment = Alignment.Center,
@@ -1153,6 +1270,12 @@ private fun RecorderAnnouncer(announcement: VideoMessageRecorder.Announcement?) 
 
 /** The reply banner's height, in dp — what S3.3's diameter takes off. */
 private const val BANNER_HEIGHT_DP = 56
+
+/** The ring's room outside the circle, on each side. */
+private val RING_GAP = 6.dp
+
+/** The trailing control bar's width, for a phone on its side (S3.3). */
+private val CONTROL_COLUMN_WIDTH = 184.dp
 
 /**
  * REVIEW's playback of the local clip: one MediaPlayer, the app's

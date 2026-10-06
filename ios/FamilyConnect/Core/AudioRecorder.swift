@@ -11,10 +11,10 @@
 //  Tap to start, tap to stop, everywhere: hold-to-talk is a phone gesture
 //  that has no sensible desktop equivalent, and the composer is shared with a
 //  Mac where the mouse button would have to stay down for the length of the
-//  message. Since #79's Phase 1 a phone or tablet ALSO lets a finger hold the
-//  microphone to talk — a shortcut, never the only way, decided by the shared
-//  rules (RecordGesture) and driven by the composer (VoiceComposer); this
-//  recorder neither knows nor cares which of the two started it.
+//  message. (#79's first draft also let a phone's finger hold the microphone
+//  to talk; the owner removed that on 2026-10-06, so a tap is the only way
+//  on every platform — decided by the shared rules (RecordGesture) and driven
+//  by the composer (VoiceComposer).)
 //
 //  Permission is asked by the system on first record. iOS carries
 //  NSMicrophoneUsageDescription already (video capture records sound); the

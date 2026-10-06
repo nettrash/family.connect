@@ -18,6 +18,38 @@ where each piece plugs in, the tests and the phases. The owner asked for a decis
 menu, so it ends with the **decisions taken** and the few things that are genuinely **blocked** — not
 with questions. **No code has been written for it.**
 
+> **Revised 2026-10-06, at the owner's request after testing on his iPhone: the hold is removed.**
+> The microphone in the Send slot does ONE thing on every platform: a tap, click, Enter or
+> screen-reader activation starts a hands-free voice recording; the slot's Send arrow sends it, Stop
+> keeps it for review and a caption, Delete deletes it (asking at 10 s and longer). A long press on it
+> is not a gesture: nothing records and nothing opens while the finger is down — no menu, no callout,
+> no context menu — and the press is the button's ordinary tap when it lifts inside, however long it
+> was held, so a slow or unsteady press is never a dead button. Gone with the hold, because only it
+> needed them: the hold threshold H, the tap slop, lock and slide-to-cancel ("Slide to cancel",
+> "Release to cancel", the lock pill), the hold row, the 5-second Undo window and its crash-safe
+> "sending" entry, the first-release lesson ("Next time, letting go will send it."), "Still recording.
+> Tap Send when you're done.", the silent-release check ("We didn't hear anything."), "You can record
+> now." after a prompt a hold raised, the coach mark (S7.2), and the **Review Before Sending** setting
+> (S9) — with nothing left that a release could send, S9 has nothing to turn off. Everything else
+> stands: the recording row, review, the not-sent row, the 600 ms activation guard, the 1.0 s floor,
+> the 5:00 cap into review, the live silence warning, ⌥⌘R / Ctrl+Shift+R, the pointer secondary-click
+> menu, and "Record Voice Message" in the paperclip. Interruptions never send (protocol.md, amended
+> the same day). The shared reducer `fc_text::record::hold_step` keeps its name and loses the hold's
+> events, phases and effects; `record-vectors.json` is printed again.
+>
+> **The same day, the video recorder's layout was fixed.** On the iPhone the composer row showed
+> through the recorder — undimmed, overlapping its controls — and the scrim let the chat compete with
+> the camera circle. While the recorder is open the composer row is not drawn at all and takes no
+> hits; the recorder's controls sit on their own solid dark, safe-area-aware bar; the backdrop is dark
+> enough, and blurred where the platform does it cheaply, that the chat does not compete; the status
+> line ("Not recording", the red dot and timer, "Video message · 0:23") sits in its own capsule above
+> the circle; and the circle is sized so that it never overlaps the status or the controls, nor any
+> caption under a round button, at any size — a compact or landscape phone, an iPad, the Mac,
+> Android, the web, Windows and large text alike.
+>
+> The sections below are kept as written, so the reasoning stays readable; where they describe the
+> hold, its Undo window, its lesson, its coach mark or Review Before Sending, this note wins.
+
 ---
 
 ## What is asked, and what it implies
@@ -1738,7 +1770,11 @@ The sticker's checklist, step for step:
     records round video on this platform (S1.2);
   - `hold_step(state, event, constants) → (state, effects)` — S2.3 as a reducer over down, move, up,
     system-cancel, timer, cap, interruption, with effects such as start, lock, arm, disarm, delete,
-    review, undo, haptic, hint;
+    review, undo, haptic, hint. (*Revised 2026-10-06:* with the hold gone it keeps its name and reduces
+    activate, record (the paperclip, menu and shortcut), stop, delete and its answer, the permission
+    answer, cap, interruption, the person's other actions and the slot's own emptying, with the effects
+    start, send, review, park, delete, ask-delete, ask-permission, denied, explain, hint, announce and
+    haptic; `hold_threshold_ms` is gone from the module and from the vectors);
   - `round_cap_ms(max)`, `round_warning_ms(max)`, `round_diameter(width_class)`, `is_round(message)`.
 - Vectors printed by the oracle tool (`win/tools/board-oracle`) and checked by iOS and Android (every
   rule, the hold included) and Windows (the slot, the door and the round helpers — it has no hold) in
@@ -1995,6 +2031,14 @@ video as a square one, and a server without phase 2 is offered no video at all.
 
 ## Decisions
 
+> **Revised 2026-10-06.** The hold — and everything only it needed — was removed at the owner's request
+> after device testing: tap-to-record is the one way to record a voice message, on every platform, and a
+> long press on the microphone starts nothing and opens nothing (the note at the top). Decision 1 now
+> reads "tap to record, video on purpose"; decisions 5 and 7 are withdrawn; decision 6 keeps only its
+> completed tap ("recording never starts on touch-down"; an unsteady or slow press still taps when it
+> lifts inside); decision 12 loses its Undo-window clause — an interruption never sends; decision 15
+> stands. Blocked 3 (tuning the hold) is moot. Decision 41 is added below.
+
 1. **The model is "tap to record, hold to talk, video on purpose".** It is the only one of the three that
    serves both halves of a family at once — tap-to-start for grandparents, mouse, keyboard and screen-reader
    users; hold-to-talk for messenger habits — and it won two of three reviews.
@@ -2139,6 +2183,12 @@ video as a square one, and a server without phase 2 is offered no video at all.
 40. **Video entry points exist only in a build that records round video on that platform.** A Phase-2 build
     that can only receive circles, or Windows before 3d, would otherwise show a camera button with nothing
     behind it.
+41. **(2026-10-06) While the video recorder is open, the composer row is not drawn and takes no hits; the
+    recorder's controls have their own solid, safe-area-aware bar, its status its own capsule above the
+    circle, and the circle never overlaps either at any size.** On the owner's iPhone the composer showed
+    through the recorder — Close over the paperclip, Switch over ✨, the "Voice message" caption over the
+    field, the composer's Send over Record — and a thin scrim let the chat compete with the camera. A
+    recorder that "covers the whole window" (decision 10) must cover the composer too.
 
 ## Blocked
 

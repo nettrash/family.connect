@@ -220,20 +220,28 @@ struct ParkedRecordingsTests {
         #expect(store(root: root, account: account).entries(for: 5).map(\.id) == [kept.id], "the repair was not written down")
     }
 
-    /// S2.6: a note left marked "sending" by a crash becomes a not-sent row,
-    /// never an orphan its sender believes went.
-    @Test("an entry still marked sending at launch becomes an ordinary not-sent one")
-    func sweepClearsSending() throws {
+    /// An index written while the hold existed (before 2026-10-06) also
+    /// carried `sending`, the mark of a note in its Undo window. Such an
+    /// entry — one a crash left inside the window — must read as an ordinary
+    /// not-sent row on an upgraded device, never be dropped as unreadable.
+    @Test("an index written while the hold existed reads its 'sending' entry as an ordinary not-sent one")
+    func legacySendingEntry() throws {
         let root = scratchRoot()
         let account = Account("u7-a")
-        _ = try #require(store(root: root, account: account).park(
-            fileAt: try recordingFile(), duration: 3, chatID: 5, replyTo: nil, caption: nil, sending: true))
+        let entry = try #require(store(root: root, account: account).park(
+            fileAt: try recordingFile(), duration: 3, chatID: 5, replyTo: nil, caption: nil))
+        // The index as the old build wrote it: the same entry, marked sending.
+        let index = root.appendingPathComponent("u7-a").appendingPathComponent(ParkedRecordings.indexName)
+        var objects = try #require(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: index)) as? [[String: Any]])
+        objects[0]["sending"] = true
+        try JSONSerialization.data(withJSONObject: objects).write(to: index)
 
         let relaunched = store(root: root, account: account)
         relaunched.sweep()
 
-        #expect(relaunched.entries(for: 5).map(\.sending) == [false])
-        #expect(store(root: root, account: account).entries(for: 5).map(\.sending) == [false])
+        #expect(relaunched.entries(for: 5).map(\.id) == [entry.id], "an upgraded device lost its not-sent note")
+        #expect(relaunched.fileURL(for: entry) != nil)
     }
 
     @Test("the launch sweep takes another account's leftovers")

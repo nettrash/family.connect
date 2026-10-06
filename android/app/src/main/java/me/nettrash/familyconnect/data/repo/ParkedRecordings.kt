@@ -67,16 +67,11 @@ data class ParkedRecording(
     @SerialName("reply_to") val replyTo: ReplyToDto? = null,
     /** Its words, when it had any; they never leave without it. */
     val caption: String = "",
-    /**
-     * Released and waiting out its five-second Undo window (#79, S2.6):
-     * nothing has left the device, and it is not a "not sent" row either — it
-     * is on its way. Written at the release so that a crash cannot lose it:
-     * the outbox hand-off or Undo removes the entry, and a launch that still
-     * finds one marked like this makes it a not-sent row, never an orphan the
-     * sweep takes while its sender believes it went. Absent (false) on every
-     * entry Phase 0 wrote.
-     */
-    val sending: Boolean = false,
+    // There is no "sending" mark any more (#79, revised 2026-10-06): it was
+    // the five-second Undo window's crash-safe entry, and the window went
+    // with the hold. An index a test build wrote with `"sending": true`
+    // still reads — the codec ignores unknown keys — and such an entry is
+    // simply a not-sent row, which is what a launch used to make of it.
     /**
      * Its waveform as the wire spells it (#79; docs/protocol.md, "A voice
      * note's waveform"): the not-sent row draws it, and its Send uploads it.
@@ -131,24 +126,19 @@ class ParkedRecordings internal constructor(
     private val lock = Mutex()
 
     /**
-     * Once per process, at launch (FamilyConnectApp creates this store): a
-     * note a crash left in its Undo window becomes a not-sent row (S2.6), then
-     * the files a crash or a killed app left behind with no entry, and
-     * entries whose file is gone, are swept.
+     * Once per process, at launch (FamilyConnectApp creates this store): the
+     * files a crash or a killed app left behind with no entry, and entries
+     * whose file is gone, are swept.
      */
     internal val launchSweep: Job = scope.launch {
-        runCatching { notSentAfterACrash() }.onFailure { Log.w(TAG, "could not recover: ${it.message}") }
         runCatching { sweep() }.onFailure { Log.w(TAG, "sweep failed: ${it.message}") }
     }
 
-    /**
-     * This chat's voice messages that were not sent, oldest first. A note in
-     * its Undo window is not one of them: it is on its way.
-     */
+    /** This chat's voice messages that were not sent, oldest first. */
     fun forChat(chatId: Long): Flow<List<ParkedRecording>> =
         settings.state
             .map { state ->
-                state.parkedRecordings.filter { it.chatId == chatId && !it.sending && file(it).exists() }
+                state.parkedRecordings.filter { it.chatId == chatId && file(it).exists() }
             }
             .distinctUntilChanged()
             .flowOn(Dispatchers.IO)
@@ -175,8 +165,6 @@ class ParkedRecordings internal constructor(
         replyTo: ReplyToDto?,
         caption: String,
         session: Long,
-        /** A released note entering its Undo window (S2.6), not a not-sent row. */
-        sending: Boolean = false,
         /** Its waveform (#79), kept with it so the row and the eventual send both have it. */
         waveform: String? = null,
     ): ParkedRecording? = lock.withLock {
@@ -199,7 +187,6 @@ class ParkedRecordings internal constructor(
                         durationMs = durationMs,
                         replyTo = replyTo,
                         caption = caption,
-                        sending = sending,
                         waveform = waveform,
                     )
                     settings.updateParkedRecordings { it + entry }
@@ -214,36 +201,6 @@ class ParkedRecordings internal constructor(
         // kept at all — the cache copy goes in every case.
         withContext(Dispatchers.IO) { source.delete() }
         kept
-    }
-
-    /**
-     * A note in its Undo window that could not be handed to the outbox
-     * becomes what any interrupted recording is: a not-sent row (S2.8). So
-     * does one that Undo was taking back into review when the chat was left
-     * — and leaving hands it, as it hands a note in review, the words the
-     * field held as its [caption] and the composer's primed reply as its
-     * [replyTo]. Null keeps what the entry already has.
-     */
-    suspend fun markNotSent(id: String, caption: String? = null, replyTo: ReplyToDto? = null): Unit =
-        lock.withLock {
-            settings.updateParkedRecordings { entries ->
-                entries.map {
-                    if (it.id == id && it.sending) {
-                        it.copy(sending = false, caption = caption ?: it.caption, replyTo = replyTo ?: it.replyTo)
-                    } else {
-                        it
-                    }
-                }
-            }
-        }
-
-    /** At launch: whatever a crash left "sending" is not sent (S2.6). */
-    private suspend fun notSentAfterACrash(): Unit = lock.withLock {
-        if (settings.state.first().parkedRecordings.none { it.sending }) return@withLock
-        settings.updateParkedRecordings { entries ->
-            entries.map { if (it.sending) it.copy(sending = false) else it }
-        }
-        Log.i(TAG, "a voice message left in its Undo window is now not sent")
     }
 
     /** Forget one, and its file. Sent or deleted, it is the same removal. */

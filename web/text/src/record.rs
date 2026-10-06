@@ -9,75 +9,64 @@
 //! - [`composer_slot`] — which control the composer's trailing slot is, every
 //!   row of the plan's S1.3, first match wins.
 //! - [`video_door`] — whether the video button inside the empty field is
-//!   hidden, dimmed or shown (S1.4). No build records round video yet, so
-//!   every client passes `records_round_video: false` and the door stays shut
-//!   until its platform's Phase 3; the rule is here so that phase only wires it.
-//! - [`hold_step`] — what a press, a hold, a slide, a release, a timer, the
-//!   length limit or an interruption does to a voice recording (S2.1, S2.3,
-//!   S2.5, S2.6), as a reducer: a state and an event go in, the next state and
-//!   what to do come out.
+//!   hidden, dimmed or shown (S1.4).
+//! - [`hold_step`] — what an activation of the slot, the menu or the shortcut,
+//!   Stop, Delete, the length limit or an interruption does to a voice
+//!   recording (S2.1, S2.2, S2.5), as a reducer: a state and an event go in,
+//!   the next state and what to do come out.
 //!
 //! and the round video's arithmetic ([`round_cap_ms`], [`round_warning_ms`],
 //! [`round_diameter`], [`is_round`]) and the S1.1 constants.
 //!
+//! **Revised 2026-10-06: there is no hold.** The first draft also made the
+//! microphone a walkie-talkie on touch — hold to talk, slide to cancel or to
+//! lock, let go to send after a five-second Undo window. The owner removed it
+//! after testing it on his iPhone, with everything that existed only for it.
+//! The microphone does ONE thing: its activation starts a hands-free
+//! recording, which the slot's Send arrow sends, Stop keeps for review and
+//! Delete deletes. A long press on it is not a gesture: nothing records and
+//! nothing opens while a finger is down — no menu, no callout, no context
+//! menu — and the press is the platform button's ordinary tap when it lifts
+//! inside, however long it was held, so a slow or unsteady press is never a
+//! dead button. The reducer keeps its names (`hold_step`, [`HoldState`],
+//! [`HoldEvent`], [`HoldEffect`], [`HoldConstants`]) so that the ports' types
+//! keep theirs; only the hold's own parts are gone.
+//!
 //! It is only the DECISION. What the composer is, as a client saw it, goes in;
 //! recording, playing, drawing, staging and parking are each platform's own
 //! business. The web client runs this module as it is. The Apple and Android
-//! ports are held to every rule here, the hold included, and the Windows port
-//! to the slot, the door and the round helpers (it has no hold, S8.6), by the
-//! vectors `win/tools/board-oracle` prints from it (`cargo run -- record`),
-//! committed as `record-vectors.json` beside each port's tests — "an oracle,
-//! not four readings". So the names are plain on purpose, and every field is
-//! one a Swift struct, a Kotlin data class and a C# record can carry under the
-//! same name.
+//! ports are held to every rule here, and the Windows port to the slot, the
+//! door and the round helpers (S8.6), by the vectors `win/tools/board-oracle`
+//! prints from it (`cargo run -- record`), committed as `record-vectors.json`
+//! beside each port's tests — "an oracle, not four readings". So the names are
+//! plain on purpose, and every field is one a Swift struct, a Kotlin data class
+//! and a C# record can carry under the same name.
 //!
 //! Words are the apps' English source strings — the catalogue's keys (S10) —
 //! and each client says them in its reader's language. Nothing here
 //! translates, so the vectors read the same in every language.
 //!
-//! Every function is total. Times are milliseconds on one monotonic clock;
-//! distances are the platform's own unit (pt, dp, epx, CSS px) in WINDOW
-//! coordinates, y growing downward as it does on every platform here.
+//! Every function is total. Times are milliseconds on one monotonic clock.
 
 // --- S1.1, the constants ------------------------------------------------------------------------
 
 /// The slot ignores activation for this long only after its OWN activation
-/// changed it — a send that empties the composer, a tap or hold that starts a
-/// recording, a Send or a release that ends one or finds it too short, a Stop
-/// in row 3 that stages the note. A press that goes down while it runs is
-/// ignored whole. A change made by typing, pasting or staging is never
-/// guarded — it lifts the guard ([`HoldEvent::OtherAction`]) — so "ok"
-/// followed at once by Send still sends. The video button
-/// ignores activation for the same 600 ms after it appears.
+/// changed it — a send that empties the composer, a tap that starts a
+/// recording, a Send that ends one or finds it too short, a Stop in row 3
+/// that stages the note. An activation while it runs is ignored whole. A
+/// change made by typing, pasting or staging is never guarded — it lifts the
+/// guard ([`HoldEvent::OtherAction`]) — so "ok" followed at once by Send still
+/// sends. The video button ignores activation for the same 600 ms after it
+/// appears.
 pub const ACTIVATION_GUARD_MS: u64 = 600;
 
-/// The hold threshold's floor: H = max(500 ms, the system long-press
-/// duration) — see [`hold_threshold_ms`].
-pub const MIN_HOLD_THRESHOLD_MS: u64 = 500;
-
-/// A press that moves farther than this from where it went down, before H,
-/// can no longer become a hold. It still taps if it lifts inside the button.
-pub const TAP_SLOP: f64 = 20.0;
-
-/// Upward from where the press went down: the hold locks into a hands-free
-/// recording.
-pub const LOCK_DISTANCE: f64 = 60.0;
-
-/// Toward the leading edge — left in a left-to-right layout, right in a
-/// right-to-left one — from where the press went down: cancel is armed at
-/// [`CANCEL_ARM_DISTANCE`] and disarmed again below [`CANCEL_DISARM_DISTANCE`].
-pub const CANCEL_ARM_DISTANCE: f64 = 100.0;
-pub const CANCEL_DISARM_DISTANCE: f64 = 80.0;
-
-/// Nothing shorter is ever sent; a hold released sooner keeps recording.
+/// Nothing shorter is ever sent or staged: "That recording was too short."
 /// It replaces the recorders' 1024-byte rule as the floor people see.
 pub const SHORTEST_RECORDING_MS: u64 = 1_000;
 
-/// After a release that sends: the grace before anything leaves the device.
-pub const UNDO_WINDOW_MS: u64 = 5_000;
-
 /// A voice note's length, unchanged (docs/protocol.md, "A browser is a client
-/// too"), and the moment "30 seconds left" is shown and announced.
+/// too"), and the moment "30 seconds left" is shown and announced. At the cap
+/// the recording stops into review — a length limit never sends.
 pub const VOICE_CAP_MS: u64 = 300_000;
 pub const VOICE_WARNING_MS: u64 = 270_000;
 
@@ -105,9 +94,6 @@ pub const SILENCE_WARNING_AFTER_MS: u64 = 3_000;
 /// Deleting a recording this long or longer asks first.
 pub const DELETE_ASKS_FROM_MS: u64 = 10_000;
 
-/// "Still recording. Tap Send when you're done." stays this long.
-pub const STILL_RECORDING_HINT_MS: u64 = 3_000;
-
 /// The video recorder's PREVIEW closes after this long with no control used.
 pub const PREVIEW_IDLE_CLOSE_MS: u64 = 60_000;
 
@@ -127,15 +113,6 @@ pub const MIN_TARGET_WEB_PX: u32 = 44;
 pub const ROUND_DIAMETER_COMPACT: u32 = 200;
 pub const ROUND_DIAMETER_REGULAR: u32 = 240;
 
-/// The hold threshold H for a system whose own long press takes
-/// `system_long_press_ms` — Android's `ViewConfiguration.getLongPressTimeout()`,
-/// which follows the person's "Touch & hold delay"; iOS passes 500. Never
-/// shorter than [`MIN_HOLD_THRESHOLD_MS`], so a brush does not open the
-/// microphone, and never shorter than the person asked their system for.
-pub fn hold_threshold_ms(system_long_press_ms: u64) -> u64 {
-    system_long_press_ms.max(MIN_HOLD_THRESHOLD_MS)
-}
-
 // --- S1.3, the trailing slot --------------------------------------------------------------------
 
 /// The voice recording the composer is showing, as far as the slot is
@@ -145,9 +122,6 @@ pub enum Recording {
     /// No voice recording runs.
     #[default]
     None,
-    /// A finger or pen is holding the microphone and it records (S2.3). A hold
-    /// only ever begins on the microphone, so the composer was empty.
-    Held,
     /// Hands-free, started with the composer empty: row 2, the Send arrow.
     HandsFree,
     /// Hands-free, started from the paperclip or the shortcut with words typed
@@ -224,9 +198,6 @@ impl SlotInputs {
 pub enum Slot {
     /// Row 1: the video recorder owns the row.
     Recorder,
-    /// Row 2 while a finger holds it: the pressed microphone stays under the
-    /// finger until the recording turns hands-free.
-    HeldMicrophone,
     /// Row 2: the Send arrow — stops and sends (S2.5).
     SendVoice,
     /// Row 3: the Stop square — stops; the note is staged beside the words.
@@ -241,8 +212,9 @@ pub enum Slot {
     SendDisabled,
     /// Rows 7–9: the microphone, dimmed; activating it says why.
     Dimmed(Dimmed),
-    /// Row 10: the microphone — a hands-free recording on activation, and on a
-    /// touch screen the walkie-talkie when held (S2.3).
+    /// Row 10: the microphone — a hands-free recording on activation. A long
+    /// press is not a gesture: it records nothing and opens nothing while the
+    /// finger is down, and it is a tap when it lifts inside.
     Microphone,
 }
 
@@ -251,7 +223,7 @@ impl Slot {
     pub fn row(self) -> u8 {
         match self {
             Slot::Recorder => 1,
-            Slot::HeldMicrophone | Slot::SendVoice => 2,
+            Slot::SendVoice => 2,
             Slot::StopRecording => 3,
             Slot::Save { .. } => 4,
             Slot::Send => 5,
@@ -267,7 +239,7 @@ impl Slot {
     pub fn label(self) -> Option<&'static str> {
         match self {
             Slot::Recorder => None,
-            Slot::HeldMicrophone | Slot::SendVoice => Some("Send voice message"),
+            Slot::SendVoice => Some("Send voice message"),
             Slot::StopRecording => Some("Stop recording"),
             Slot::Save { .. } => Some("Save"),
             Slot::Send | Slot::SendDisabled => Some("Send"),
@@ -296,7 +268,6 @@ pub fn composer_slot(inputs: &SlotInputs) -> Slot {
         return Slot::Recorder;
     }
     match inputs.recording {
-        Recording::Held => return Slot::HeldMicrophone,
         Recording::HandsFree => return Slot::SendVoice,
         Recording::HandsFreeBesideDraft => return Slot::StopRecording,
         Recording::None => {}
@@ -337,9 +308,6 @@ pub struct DoorInputs {
     /// The chat's main composer, in a family or a direct chat — never the
     /// assistant's chat, never a thread.
     pub family_or_direct_chat: bool,
-    /// A released voice message is waiting out its Undo window: its row takes
-    /// the FIELD's place, and the button inside the field goes with it (S2.6).
-    pub undo_window: bool,
     /// The server sends `max_round_video_ms` on `GET /families/mine`.
     pub server_offers_round: bool,
     /// The device has a camera.
@@ -396,12 +364,12 @@ impl Door {
 /// video available; dimmed, with the same sentence, in rows 7 and 8; usable in
 /// row 9, because the not-sent rule is about voice. Hidden otherwise — as soon
 /// as a character is typed, while anything is staged, while editing or
-/// recording, during the Undo window, in the assistant's chat and in threads,
+/// recording, in the assistant's chat and in threads,
 /// against a server without the keys, on a device without a camera, in a
 /// browser whose probe fails, and in every build that does not record round
 /// video.
 pub fn video_door(inputs: &DoorInputs) -> Door {
-    if !inputs.family_or_direct_chat || inputs.undo_window || !inputs.round_available() {
+    if !inputs.family_or_direct_chat || !inputs.round_available() {
         return Door::Hidden;
     }
     match composer_slot(&inputs.slot) {
@@ -469,21 +437,13 @@ pub fn is_round(body: &str, attachments: &[AttachmentFlags]) -> bool {
     body.is_empty() && matches!(attachments, [only] if only.kind == "video" && only.round)
 }
 
-// --- S2.1 and S2.3, the hold and the recording, as a reducer ------------------------------------
+// --- S2.1, S2.2 and S2.5, the recording, as a reducer ------------------------------------------
 
-/// The numbers [`hold_step`] decides by: S1.1's, with H for this system. They
-/// are constants, tuned after one device session (the plan's Blocked 3); they
+/// The numbers [`hold_step`] decides by: S1.1's. They are constants; they
 /// travel as a value so that the vectors can say which ones a case used.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HoldConstants {
-    /// H — [`hold_threshold_ms`].
-    pub hold_threshold_ms: u64,
-    pub tap_slop: f64,
-    pub lock_distance: f64,
-    pub cancel_arm_distance: f64,
-    pub cancel_disarm_distance: f64,
     pub shortest_recording_ms: u64,
-    pub undo_window_ms: u64,
     pub activation_guard_ms: u64,
     pub delete_asks_from_ms: u64,
 }
@@ -491,26 +451,9 @@ pub struct HoldConstants {
 impl Default for HoldConstants {
     fn default() -> Self {
         HoldConstants {
-            hold_threshold_ms: MIN_HOLD_THRESHOLD_MS,
-            tap_slop: TAP_SLOP,
-            lock_distance: LOCK_DISTANCE,
-            cancel_arm_distance: CANCEL_ARM_DISTANCE,
-            cancel_disarm_distance: CANCEL_DISARM_DISTANCE,
             shortest_recording_ms: SHORTEST_RECORDING_MS,
-            undo_window_ms: UNDO_WINDOW_MS,
             activation_guard_ms: ACTIVATION_GUARD_MS,
             delete_asks_from_ms: DELETE_ASKS_FROM_MS,
-        }
-    }
-}
-
-impl HoldConstants {
-    /// S1.1's numbers, with H for a system whose long press takes
-    /// `system_long_press_ms`.
-    pub fn for_system(system_long_press_ms: u64) -> Self {
-        HoldConstants {
-            hold_threshold_ms: hold_threshold_ms(system_long_press_ms),
-            ..HoldConstants::default()
         }
     }
 }
@@ -527,66 +470,32 @@ pub enum Permission {
 }
 
 /// The facts a decision reads at the moment it is made. A port fills it from
-/// what it knows; the defaults are a granted microphone, nothing in the way,
-/// no screen reader, a device that has released before, and Review Before
-/// Sending off.
+/// what it knows; the defaults are a granted microphone and nothing in the way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Situation {
     pub permission: Permission,
-    /// The dimmed row the microphone is in (rows 7–9), if any — at activation
-    /// and at H, nothing records and its sentence is said.
+    /// The dimmed row the microphone is in (rows 7–9), if any — on
+    /// activation nothing records and its sentence is said.
     pub blocked: Option<Dimmed>,
-    /// A screen reader or Switch Control is running: a held release goes to
-    /// review, never to the Undo window (S2.3, S2.6).
-    pub assistive: bool,
-    /// This device has not yet had its first held release taught ("Next
-    /// time, letting go will send it."); [`HoldEffect::FirstReleaseDone`] is
-    /// the port's cue to remember that it has.
-    pub first_release: bool,
-    /// The per-device setting (S9): a held release goes to review.
-    pub review_before_sending: bool,
 }
 
 /// Where a recording that is waiting on the permission prompt came from.
+/// Either way Allow starts recording: the activation meant "record".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
-    /// A completed tap on the microphone, a click, Enter or Space, a screen
-    /// reader's activation: Allow starts recording — the tap meant "record".
+    /// The slot's microphone: a tap, a click, Enter or Space, a screen
+    /// reader's activation. Its start is guarded.
     Tap,
-    /// The hold threshold: a prompt raised by a hold never records, whatever
-    /// the answer; Allow says "You can record now."
-    Hold,
     /// The paperclip's or the microphone menu's "Record Voice Message", or the
-    /// shortcut: Allow starts recording, beside the draft if there is one.
+    /// shortcut: beside the draft if there is one, and never guarded.
     Menu,
 }
 
 /// Where the slot's voice recording is.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    /// Nothing pressed, nothing recording. A released note may still be
-    /// waiting out its Undo window ([`HoldState::undo`]).
+    /// Nothing recording.
     Idle,
-    /// A finger or pen is down on the microphone, before H; nothing records.
-    Pressed {
-        down_at_ms: u64,
-        /// Where it went down, in window coordinates.
-        down_x: f64,
-        down_y: f64,
-        /// The layout is right-to-left: the leading edge is on the right.
-        rtl: bool,
-        /// It can still become a hold: a touch or pen press on iPhone, iPad
-        /// or Android that has not moved beyond the slop.
-        may_hold: bool,
-    },
-    /// Recording, the finger still down: the hold row.
-    Holding {
-        down_x: f64,
-        down_y: f64,
-        rtl: bool,
-        /// Slide-to-cancel is armed: the row reads "Release to cancel".
-        armed: bool,
-    },
     /// Recording, hands-free: the recording row.
     HandsFree {
         /// Started with words typed or items staged (row 3).
@@ -598,24 +507,12 @@ pub enum Phase {
     AwaitingPermission { source: Source, beside_draft: bool },
 }
 
-/// A released note waiting out its Undo window: nothing has left the device.
+/// The reducer's whole state: the phase and the activation guard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UndoNote {
-    /// When the window runs out and the note goes to the outbox.
-    pub until_ms: u64,
-    pub recorded_ms: u64,
-}
-
-/// The reducer's whole state: the phase, the activation guard, and a note in
-/// its Undo window — which is not a phase, because the microphone is usable
-/// while it waits and a new press must not end the window before it is a tap
-/// or a hold.
-#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HoldState {
     pub phase: Phase,
     /// Activation of the slot before this moment is ignored whole. 0: none.
     pub guard_until_ms: u64,
-    pub undo: Option<UndoNote>,
 }
 
 impl Default for HoldState {
@@ -623,7 +520,6 @@ impl Default for HoldState {
         HoldState {
             phase: Phase::Idle,
             guard_until_ms: 0,
-            undo: None,
         }
     }
 }
@@ -632,7 +528,6 @@ impl HoldState {
     /// What [`composer_slot`] is told about this recording.
     pub fn recording(&self) -> Recording {
         match self.phase {
-            Phase::Holding { .. } => Recording::Held,
             Phase::HandsFree {
                 beside_draft: false,
             } => Recording::HandsFree,
@@ -654,49 +549,13 @@ impl HoldState {
 /// one the person sees, which with a screen reader starts only once
 /// "Recording" has been spoken (S6).
 ///
-/// `Down`, `Move`, `Up` and `SystemCancel` are the MICROPHONE's touch — a
-/// press that may become a hold — and matter only from `Idle`. Every other
-/// activation of the slot — the Send arrow, the Stop square, a click, Enter or
-/// Space, a screen reader's — is `Activate`. The lift of a press that went
-/// down on the microphone is always `Up`, whatever the slot shows by then:
-/// after a lock it does nothing (S2.3), so a port must never turn it into
-/// `Activate`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Every activation of the slot — the microphone, the Send arrow, the Stop
+/// square — is `Activate`, whatever activated it: the platform button's own
+/// completed tap (a press that lifts inside, however long it was held), a
+/// click, Enter or Space, a screen reader's. A port never sends anything for
+/// a press going down or being held: a long press is not a gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoldEvent {
-    /// A press went down on the microphone. `can_hold`: a finger or pen on
-    /// iPhone, iPad or Android; false for a mouse, a trackpad, Windows and a
-    /// browser, where a press of any length is a click.
-    Down {
-        at_ms: u64,
-        x: f64,
-        y: f64,
-        can_hold: bool,
-        rtl: bool,
-    },
-    /// It moved, in window coordinates.
-    Move { at_ms: u64, x: f64, y: f64 },
-    /// It lifted; `inside` is the button's own hit test. Its position counts
-    /// as a last move first.
-    Up {
-        at_ms: u64,
-        x: f64,
-        y: f64,
-        inside: bool,
-        situation: Situation,
-        recorded_ms: u64,
-        /// Some peak since the recording started rose above the silence level.
-        heard: bool,
-    },
-    /// The system cancelled the touch: an alert, Control Centre, the
-    /// notification shade, a rotation. `background`: the app has gone there.
-    SystemCancel {
-        at_ms: u64,
-        background: bool,
-        recorded_ms: u64,
-    },
-    /// Time passed. A port sends one at H — its long-press timer — and whenever
-    /// it likes otherwise; the Undo window runs out on every event's clock.
-    Tick { at_ms: u64, situation: Situation },
     /// The recorder stopped itself at the five-minute limit.
     Cap { at_ms: u64 },
     /// Anything but the person stopped it (S4): a call in any phase, the app
@@ -731,17 +590,15 @@ pub enum HoldEvent {
     Answer { at_ms: u64, delete: bool },
     /// The system's microphone prompt answered.
     PermissionAnswer { at_ms: u64, granted: bool },
-    /// The Undo row's Undo.
-    Undo { at_ms: u64 },
     /// Any other action of the person's in the composer: a character typed
     /// or deleted, a paste, a suggestion taken, an item staged or taken off
-    /// the strip, the paperclip, a sticker. It ends the Undo window early,
-    /// and — while nothing records — it lifts the activation guard: a change
-    /// the person made is never guarded (S1.1), so "ok" sent and "x" typed
-    /// and deleted at once leaves a microphone that records, and a photo
-    /// pasted straight after a Send leaves a Send that sends. A port says it
-    /// for every such change, never for its own: a Send emptying the box is
-    /// `Emptied`, and the note a Stop in row 3 stages is the Stop's.
+    /// the strip, the paperclip, a sticker. While nothing records it lifts the
+    /// activation guard: a change the person made is never guarded (S1.1), so
+    /// "ok" sent and "x" typed and deleted at once leaves a microphone that
+    /// records, and a photo pasted straight after a Send leaves a Send that
+    /// sends. A port says it for every such change, never for its own: a Send
+    /// emptying the box is `Emptied`, and the note a Stop in row 3 stages is
+    /// the Stop's.
     OtherAction { at_ms: u64 },
     /// The slot's own Send or Save just emptied the composer: the microphone
     /// it turns into is guarded.
@@ -751,12 +608,7 @@ pub enum HoldEvent {
 impl HoldEvent {
     pub fn at_ms(&self) -> u64 {
         match *self {
-            HoldEvent::Down { at_ms, .. }
-            | HoldEvent::Move { at_ms, .. }
-            | HoldEvent::Up { at_ms, .. }
-            | HoldEvent::SystemCancel { at_ms, .. }
-            | HoldEvent::Tick { at_ms, .. }
-            | HoldEvent::Cap { at_ms }
+            HoldEvent::Cap { at_ms }
             | HoldEvent::Interruption { at_ms, .. }
             | HoldEvent::Activate { at_ms, .. }
             | HoldEvent::Record { at_ms, .. }
@@ -764,7 +616,6 @@ impl HoldEvent {
             | HoldEvent::Delete { at_ms, .. }
             | HoldEvent::Answer { at_ms, .. }
             | HoldEvent::PermissionAnswer { at_ms, .. }
-            | HoldEvent::Undo { at_ms }
             | HoldEvent::OtherAction { at_ms }
             | HoldEvent::Emptied { at_ms } => at_ms,
         }
@@ -775,13 +626,8 @@ impl HoldEvent {
 /// Windows and the web.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Haptic {
-    /// Recording starts from a tap: iPhone `.impact(weight: .light)`, Android
-    /// `ToggleOn`.
+    /// Recording starts: iPhone `.impact(weight: .light)`, Android `ToggleOn`.
     Light,
-    /// Recording starts at H: `.impact(weight: .medium)`, `LongPress`.
-    Medium,
-    /// Lock; cancel armed: `.selection`, `GestureThresholdActivate`.
-    Selection,
     /// Sent: `.success`, `Confirm`.
     Success,
     /// Too short; deleted: `.warning`, `Reject`.
@@ -791,38 +637,24 @@ pub enum Haptic {
 /// A line the composer SHOWS — in the row or its notice line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hint {
-    /// A hold released under a second keeps recording; shown for
-    /// [`STILL_RECORDING_HINT_MS`].
-    StillRecording,
-    /// The first held release on the device goes to review with this.
-    NextTimeSends,
-    /// A held release that never rose above the silence level.
-    NothingHeard,
     StoppedAtFiveMinutes,
     TooShort,
-    /// Allow, after a prompt a hold raised.
-    CanRecordNow,
 }
 
 impl Hint {
     pub fn text(self) -> &'static str {
         match self {
-            Hint::StillRecording => "Still recording. Tap Send when you're done.",
-            Hint::NextTimeSends => "Next time, letting go will send it.",
-            Hint::NothingHeard => "We didn't hear anything.",
             Hint::StoppedAtFiveMinutes => "Recording stopped at five minutes.",
             Hint::TooShort => "That recording was too short.",
-            Hint::CanRecordNow => "You can record now.",
         }
     }
 }
 
 /// What is SPOKEN, politely, to a screen reader (S6) — state changes only,
-/// never the ticking clock. "Not sent" and "Undo available" are never said.
+/// never the ticking clock. "Not sent" is never said.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Announcement {
     Recording,
-    RecordingLocked,
     RecordingDeleted,
     VoiceMessageSent,
     /// "Ready to review, 0:42" — the length as m:ss.
@@ -838,7 +670,6 @@ impl Announcement {
     pub fn text(self) -> &'static str {
         match self {
             Announcement::Recording => "Recording",
-            Announcement::RecordingLocked => "Recording locked",
             Announcement::RecordingDeleted => "Recording deleted",
             Announcement::VoiceMessageSent => "Voice message sent",
             Announcement::ReadyToReview { .. } => "Ready to review, %@",
@@ -854,19 +685,9 @@ impl Announcement {
 /// been spoken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoldEffect {
-    /// Open the microphone and record: the hold row when `held`, otherwise
-    /// the recording row. Keep the screen awake, pause anything playing; a
-    /// hands-free start moves focus to the slot.
-    Start {
-        held: bool,
-    },
-    /// Hands-free from here: the hold row becomes the recording row, the
-    /// keyboard goes down, and the finger's later lift does nothing.
-    Lock,
-    /// Cancel armed: the row turns red and reads "Release to cancel".
-    Arm,
-    /// "‹ Slide to cancel" again.
-    Disarm,
+    /// Open the microphone and record: the recording row. Keep the screen
+    /// awake, pause anything playing, move focus to the slot.
+    Start,
     /// Stop the recording if it runs, and delete it.
     Delete,
     /// Stop it, and hand it to the outbox now, with the primed reply.
@@ -875,14 +696,6 @@ pub enum HoldEffect {
     Review,
     /// Stop it, and keep it as the chat's "Voice message not sent" row (S2.8).
     Park,
-    /// Stop it, write it to the parked store marked "sending", and show the
-    /// Undo row: nothing has left the device yet (S2.6).
-    UndoWindow,
-    /// The note in its Undo window goes to the outbox now; its "sending"
-    /// entry goes with the hand-off.
-    UndoSend,
-    /// The note in its Undo window goes to review instead; nothing is sent.
-    UndoReview,
     /// Stop it, and ask "Delete this recording?" [Delete] [Keep].
     AskDelete,
     /// Raise the system's microphone prompt.
@@ -894,38 +707,24 @@ pub enum HoldEffect {
     Hint(Hint),
     Announce(Announcement),
     Haptic(Haptic),
-    /// Remember, on this device, that its first held release has been taught.
-    FirstReleaseDone,
 }
 
-/// One step of the slot's voice recording (S2.1, S2.3, S2.5, S2.6): the state
-/// and an event in, the next state and what to do out.
+/// One step of the slot's voice recording (S2.1, S2.2, S2.5): the state and
+/// an event in, the next state and what to do out.
 ///
 /// The rules, in the order they are asked:
 ///
-/// - **The Undo window runs out on every event's clock.** A note whose five
-///   seconds have passed is sent before the event itself is looked at.
-/// - **The activation guard** swallows a press that goes down, or an
-///   `Activate`, while it runs — whole: it can become neither a tap nor a
-///   hold. Nothing else is guarded, and the person's own change to the
-///   composer (`OtherAction`) lifts it.
-/// - **A press** becomes a tap when it lifts inside the button, wherever it
-///   wandered, and nothing when it lifts outside; it becomes a hold only on a
-///   `Tick` at H while it has not moved beyond the slop.
-/// - **The microphone's activation** — a tap, H, `Activate`, `Record` — sends
-///   a note still in its Undo window first, then says a dimmed row's sentence,
-///   raises the prompt, gives the denial notice, or starts.
-/// - **A hold** arms cancel at 100 toward the leading edge and disarms it
-///   below 80, and locks at 60 up while cancel is not armed. Its release
-///   deletes when armed; keeps recording hands-free under a second; reviews a
-///   silent recording; reviews when it is the device's first release, when
-///   Review Before Sending is on, or while a screen reader or Switch Control
-///   runs; and otherwise opens the Undo window.
-/// - **Ending a recording**: Send sends (under a second it is too short);
-///   Stop and the shortcut review (too short likewise); Delete deletes under
-///   ten seconds and asks from ten; the five-minute limit reviews; an
-///   interruption parks it as not sent (under a second it is deleted); an
-///   interruption during the Undo window sends.
+/// - **The activation guard** swallows an `Activate` while it runs — whole.
+///   Nothing else is guarded, and the person's own change to the composer
+///   (`OtherAction`) lifts it while nothing records.
+/// - **The microphone's activation** — `Activate` from idle, `Record` — says a
+///   dimmed row's sentence, raises the prompt, gives the denial notice, or
+///   starts a hands-free recording. Allow, after a prompt, starts it.
+/// - **Ending a recording**: the slot's Send arrow sends (under a second it is
+///   too short); the slot's Stop square (row 3), Stop and the shortcut review
+///   (too short likewise); Delete deletes under ten seconds and asks from ten;
+///   the five-minute limit reviews; an interruption parks it as not sent
+///   (under a second it is deleted) — an interruption never sends.
 pub fn hold_step(
     state: HoldState,
     event: HoldEvent,
@@ -936,147 +735,7 @@ pub fn hold_step(
     let at = event.at_ms();
     let c = constants;
 
-    // The Undo window is a grace period after a decision already made, and it
-    // runs out on its own clock: a late timer must not keep a note waiting,
-    // nor let an Undo pressed after the five seconds take it back.
-    if let Some(note) = s.undo {
-        if at >= note.until_ms {
-            undo_send(&mut s, &mut fx);
-        }
-    }
-
     match event {
-        HoldEvent::Down {
-            x,
-            y,
-            can_hold,
-            rtl,
-            ..
-        } => {
-            if s.phase == Phase::Idle && !s.guarded(at) {
-                s.phase = Phase::Pressed {
-                    down_at_ms: at,
-                    down_x: x,
-                    down_y: y,
-                    rtl,
-                    may_hold: can_hold,
-                };
-            }
-        }
-        HoldEvent::Move { x, y, .. } => match s.phase {
-            Phase::Pressed {
-                down_at_ms,
-                down_x,
-                down_y,
-                rtl,
-                may_hold: true,
-            } => {
-                let (dx, dy) = (x - down_x, y - down_y);
-                if dx * dx + dy * dy > c.tap_slop * c.tap_slop {
-                    s.phase = Phase::Pressed {
-                        down_at_ms,
-                        down_x,
-                        down_y,
-                        rtl,
-                        may_hold: false,
-                    };
-                }
-            }
-            Phase::Holding { .. } => slide(&mut s, &mut fx, x, y, c),
-            _ => {}
-        },
-        HoldEvent::Up {
-            x,
-            y,
-            inside,
-            situation,
-            recorded_ms,
-            heard,
-            ..
-        } => match s.phase {
-            Phase::Pressed { .. } => {
-                if inside {
-                    activate_microphone(&mut s, &mut fx, at, &situation, Source::Tap, false, c);
-                } else {
-                    s.phase = Phase::Idle;
-                }
-            }
-            Phase::Holding { .. } => {
-                slide(&mut s, &mut fx, x, y, c);
-                if let Phase::Holding { armed, .. } = s.phase {
-                    s.guard_until_ms = at.saturating_add(c.activation_guard_ms);
-                    if armed {
-                        s.phase = Phase::Idle;
-                        deleted(&mut fx);
-                    } else {
-                        release(&mut s, &mut fx, at, &situation, recorded_ms, heard, c);
-                    }
-                }
-            }
-            _ => {}
-        },
-        HoldEvent::SystemCancel {
-            background,
-            recorded_ms,
-            ..
-        } => match s.phase {
-            Phase::Pressed { .. } => s.phase = Phase::Idle,
-            Phase::Holding { armed: true, .. } => {
-                s.phase = Phase::Idle;
-                deleted(&mut fx);
-            }
-            Phase::Holding { .. } if background => {
-                s.phase = Phase::Idle;
-                interrupted(&mut fx, recorded_ms, c);
-            }
-            Phase::Holding { .. } => {
-                s.phase = Phase::HandsFree {
-                    beside_draft: false,
-                };
-                fx.push(HoldEffect::Lock);
-                fx.push(HoldEffect::Announce(Announcement::RecordingLocked));
-            }
-            _ => {}
-        },
-        HoldEvent::Tick { situation, .. } => {
-            if let Phase::Pressed {
-                down_at_ms,
-                down_x,
-                down_y,
-                rtl,
-                may_hold: true,
-            } = s.phase
-            {
-                if at.saturating_sub(down_at_ms) >= c.hold_threshold_ms {
-                    send_waiting(&mut s, &mut fx);
-                    match refusal(&situation) {
-                        Some(HoldEffect::AskPermission) => {
-                            s.phase = Phase::AwaitingPermission {
-                                source: Source::Hold,
-                                beside_draft: false,
-                            };
-                            fx.push(HoldEffect::AskPermission);
-                        }
-                        Some(effect) => {
-                            s.phase = Phase::Idle;
-                            fx.push(effect);
-                        }
-                        None => {
-                            s.phase = Phase::Holding {
-                                down_x,
-                                down_y,
-                                rtl,
-                                armed: false,
-                            };
-                            s.guard_until_ms = at.saturating_add(c.activation_guard_ms);
-                            fx.push(HoldEffect::Start { held: true });
-                            fx.push(HoldEffect::Announce(Announcement::Recording));
-                            fx.push(HoldEffect::Haptic(Haptic::Medium));
-                        }
-                    }
-                }
-            }
-        }
         HoldEvent::Cap { .. } => {
             if recording(&s) {
                 s.phase = Phase::Idle;
@@ -1085,25 +744,20 @@ pub fn hold_step(
                 fx.push(HoldEffect::Announce(Announcement::StoppedAtFiveMinutes));
             }
         }
-        HoldEvent::Interruption { recorded_ms, .. } => {
-            if s.undo.is_some() {
-                undo_send(&mut s, &mut fx);
+        HoldEvent::Interruption { recorded_ms, .. } => match s.phase {
+            Phase::HandsFree { .. } => {
+                s.phase = Phase::Idle;
+                interrupted(&mut fx, recorded_ms, c);
             }
-            match s.phase {
-                Phase::Holding { .. } | Phase::HandsFree { .. } => {
-                    s.phase = Phase::Idle;
-                    interrupted(&mut fx, recorded_ms, c);
-                }
-                // The question's answer never came: the recording is kept,
-                // never lost and never sent, and the question goes with it.
-                Phase::AskingDelete { .. } => {
-                    s.phase = Phase::Idle;
-                    fx.push(HoldEffect::Park);
-                }
-                Phase::Pressed { .. } | Phase::AwaitingPermission { .. } => s.phase = Phase::Idle,
-                Phase::Idle => {}
+            // The question's answer never came: the recording is kept, never
+            // lost and never sent, and the question goes with it.
+            Phase::AskingDelete { .. } => {
+                s.phase = Phase::Idle;
+                fx.push(HoldEffect::Park);
             }
-        }
+            Phase::AwaitingPermission { .. } => s.phase = Phase::Idle,
+            Phase::Idle => {}
+        },
         HoldEvent::Activate {
             situation,
             recorded_ms,
@@ -1123,7 +777,7 @@ pub fn hold_step(
                             send_now(&mut fx, recorded_ms, c);
                         }
                     }
-                    _ => {}
+                    Phase::AskingDelete { .. } | Phase::AwaitingPermission { .. } => {}
                 }
             }
         }
@@ -1142,11 +796,11 @@ pub fn hold_step(
                 beside_draft,
                 c,
             ),
-            Phase::Holding { .. } | Phase::HandsFree { .. } => {
+            Phase::HandsFree { .. } => {
                 s.phase = Phase::Idle;
                 stop_into_review(&mut fx, recorded_ms, c);
             }
-            _ => {}
+            Phase::AskingDelete { .. } | Phase::AwaitingPermission { .. } => {}
         },
         HoldEvent::Stop { recorded_ms, .. } => {
             if recording(&s) {
@@ -1185,43 +839,24 @@ pub fn hold_step(
             } = s.phase
             {
                 s.phase = Phase::Idle;
-                match (granted, source) {
-                    (false, _) => fx.push(HoldEffect::Denied),
-                    (true, Source::Hold) => fx.push(HoldEffect::Hint(Hint::CanRecordNow)),
-                    (true, source) => {
-                        start_hands_free(&mut s, &mut fx, at, source, beside_draft, c)
-                    }
+                if granted {
+                    start_hands_free(&mut s, &mut fx, at, source, beside_draft, c);
+                } else {
+                    fx.push(HoldEffect::Denied);
                 }
             }
         }
-        HoldEvent::Undo { .. } => {
-            if let Some(note) = s.undo.take() {
-                fx.push(HoldEffect::UndoReview);
-                fx.push(HoldEffect::Announce(Announcement::ReadyToReview {
-                    recorded_ms: note.recorded_ms,
-                }));
-            }
-        }
         HoldEvent::OtherAction { .. } => {
-            if s.undo.is_some() {
-                undo_send(&mut s, &mut fx);
-            }
-            // The person changed the composer: the next press is a decision
-            // of its own, not the second half of a double tap. While a
-            // recording runs the box is behind the row and nothing in it is
-            // the person's to change, so the guard that keeps a double tap
-            // on the microphone from sending stays.
+            // The person changed the composer: the next activation is a
+            // decision of its own, not the second half of a double tap. While
+            // a recording runs the box is behind the row and nothing in it is
+            // the person's to change, so the guard that keeps a double tap on
+            // the microphone from sending stays.
             if s.phase == Phase::Idle {
                 s.guard_until_ms = 0;
             }
         }
         HoldEvent::Emptied { .. } => {
-            // A text Send is an action like any other: a released note that
-            // is still waiting goes first. (A port says OtherAction when the
-            // first character is typed, so this is a backstop.)
-            if s.undo.is_some() {
-                undo_send(&mut s, &mut fx);
-            }
             s.guard_until_ms = at.saturating_add(c.activation_guard_ms);
         }
     }
@@ -1230,13 +865,12 @@ pub fn hold_step(
 
 /// A voice recording runs.
 fn recording(s: &HoldState) -> bool {
-    matches!(s.phase, Phase::Holding { .. } | Phase::HandsFree { .. })
+    matches!(s.phase, Phase::HandsFree { .. })
 }
 
 /// What stands between the microphone's activation and a recording, in this
 /// order: a dimmed row's sentence, the denial notice, or the prompt. None:
-/// start. (The prompt's phase is the caller's to name — it knows where the
-/// start came from.)
+/// start.
 fn refusal(situation: &Situation) -> Option<HoldEffect> {
     if let Some(reason) = situation.blocked {
         return Some(HoldEffect::Explain(reason));
@@ -1248,8 +882,7 @@ fn refusal(situation: &Situation) -> Option<HoldEffect> {
     }
 }
 
-/// The microphone's completed activation from a tap or a menu (H has its own
-/// path, because it starts the HOLD row).
+/// The microphone's completed activation, from the slot or a menu.
 fn activate_microphone(
     s: &mut HoldState,
     fx: &mut Vec<HoldEffect>,
@@ -1259,7 +892,6 @@ fn activate_microphone(
     beside_draft: bool,
     c: &HoldConstants,
 ) {
-    send_waiting(s, fx);
     match refusal(situation) {
         Some(HoldEffect::AskPermission) => {
             s.phase = Phase::AwaitingPermission {
@@ -1289,100 +921,9 @@ fn start_hands_free(
     if source == Source::Tap {
         s.guard_until_ms = at.saturating_add(c.activation_guard_ms);
     }
-    fx.push(HoldEffect::Start { held: false });
+    fx.push(HoldEffect::Start);
     fx.push(HoldEffect::Announce(Announcement::Recording));
     fx.push(HoldEffect::Haptic(Haptic::Light));
-}
-
-/// A held finger moved (or lifted, its position counting as a last move):
-/// arm or disarm cancel, then lock — never while cancel is armed.
-fn slide(s: &mut HoldState, fx: &mut Vec<HoldEffect>, x: f64, y: f64, c: &HoldConstants) {
-    let Phase::Holding {
-        down_x,
-        down_y,
-        rtl,
-        armed,
-    } = s.phase
-    else {
-        return;
-    };
-    let toward_leading = if rtl { x - down_x } else { down_x - x };
-    let up = down_y - y;
-    let mut now_armed = armed;
-    if !armed && toward_leading >= c.cancel_arm_distance {
-        now_armed = true;
-        fx.push(HoldEffect::Arm);
-        fx.push(HoldEffect::Haptic(Haptic::Selection));
-    } else if armed && toward_leading < c.cancel_disarm_distance {
-        now_armed = false;
-        fx.push(HoldEffect::Disarm);
-    }
-    if !now_armed && up >= c.lock_distance {
-        s.phase = Phase::HandsFree {
-            beside_draft: false,
-        };
-        fx.push(HoldEffect::Lock);
-        fx.push(HoldEffect::Announce(Announcement::RecordingLocked));
-        fx.push(HoldEffect::Haptic(Haptic::Selection));
-    } else {
-        s.phase = Phase::Holding {
-            down_x,
-            down_y,
-            rtl,
-            armed: now_armed,
-        };
-    }
-}
-
-/// A hold let go with cancel not armed (S2.3), in the plan's order.
-fn release(
-    s: &mut HoldState,
-    fx: &mut Vec<HoldEffect>,
-    at: u64,
-    situation: &Situation,
-    recorded_ms: u64,
-    heard: bool,
-    c: &HoldConstants,
-) {
-    if recorded_ms < c.shortest_recording_ms {
-        s.phase = Phase::HandsFree {
-            beside_draft: false,
-        };
-        fx.push(HoldEffect::Lock);
-        fx.push(HoldEffect::Hint(Hint::StillRecording));
-        return;
-    }
-    s.phase = Phase::Idle;
-    if !heard {
-        fx.push(HoldEffect::Review);
-        fx.push(HoldEffect::Hint(Hint::NothingHeard));
-        fx.push(HoldEffect::Announce(Announcement::ReadyToReview {
-            recorded_ms,
-        }));
-        return;
-    }
-    if situation.first_release || situation.review_before_sending || situation.assistive {
-        // "Next time, letting go will send it" is said only when it is true:
-        // not to somebody whose releases always review.
-        let teach =
-            situation.first_release && !situation.review_before_sending && !situation.assistive;
-        fx.push(HoldEffect::Review);
-        if teach {
-            fx.push(HoldEffect::Hint(Hint::NextTimeSends));
-        }
-        fx.push(HoldEffect::Announce(Announcement::ReadyToReview {
-            recorded_ms,
-        }));
-        if teach {
-            fx.push(HoldEffect::FirstReleaseDone);
-        }
-        return;
-    }
-    s.undo = Some(UndoNote {
-        until_ms: at.saturating_add(c.undo_window_ms),
-        recorded_ms,
-    });
-    fx.push(HoldEffect::UndoWindow);
 }
 
 /// The person deleted it: said and felt.
@@ -1433,21 +974,6 @@ fn interrupted(fx: &mut Vec<HoldEffect>, recorded_ms: u64, c: &HoldConstants) {
     }
 }
 
-/// The microphone's activation ends the Undo window by sending: letting go
-/// was the person's decision.
-fn send_waiting(s: &mut HoldState, fx: &mut Vec<HoldEffect>) {
-    if s.undo.is_some() {
-        undo_send(s, fx);
-    }
-}
-
-fn undo_send(s: &mut HoldState, fx: &mut Vec<HoldEffect>) {
-    s.undo = None;
-    fx.push(HoldEffect::UndoSend);
-    fx.push(HoldEffect::Announce(Announcement::VoiceMessageSent));
-    fx.push(HoldEffect::Haptic(Haptic::Success));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1496,12 +1022,7 @@ mod tests {
     #[test]
     fn the_constants_are_the_plans() {
         assert_eq!(ACTIVATION_GUARD_MS, 600);
-        assert_eq!(MIN_HOLD_THRESHOLD_MS, 500);
-        assert_eq!(TAP_SLOP, 20.0);
-        assert_eq!(LOCK_DISTANCE, 60.0);
-        assert_eq!((CANCEL_ARM_DISTANCE, CANCEL_DISARM_DISTANCE), (100.0, 80.0));
         assert_eq!(SHORTEST_RECORDING_MS, 1_000);
-        assert_eq!(UNDO_WINDOW_MS, 5_000);
         assert_eq!((VOICE_CAP_MS, VOICE_WARNING_MS), (300_000, 270_000));
         assert_eq!(DEFAULT_MAX_ROUND_VIDEO_MS, 60_000);
         assert_eq!((ROUND_CAP_MARGIN_MS, ROUND_WARNING_LEAD_MS), (500, 10_000));
@@ -1510,7 +1031,6 @@ mod tests {
         assert_eq!(SILENCE_SAMPLE_MAGNITUDE, 0.001);
         assert_eq!(SILENCE_WARNING_AFTER_MS, 3_000);
         assert_eq!(DELETE_ASKS_FROM_MS, 10_000);
-        assert_eq!(STILL_RECORDING_HINT_MS, 3_000);
         assert_eq!(PREVIEW_IDLE_CLOSE_MS, 60_000);
         assert_eq!((SLOT_CROSSFADE_MS, RECORDER_FADE_MS), (150, 200));
         assert_eq!(
@@ -1527,31 +1047,12 @@ mod tests {
         let web = 20.0 * SILENCE_SAMPLE_MAGNITUDE.log10();
         assert!((android - SILENCE_PEAK_DBFS).abs() < 0.25, "{android}");
         assert!((web - SILENCE_PEAK_DBFS).abs() < 1e-9, "{web}");
-        let defaults = HoldConstants::default();
-        assert_eq!(defaults.hold_threshold_ms, 500);
-        assert_eq!(defaults.activation_guard_ms, ACTIVATION_GUARD_MS);
-        assert_eq!(defaults.undo_window_ms, UNDO_WINDOW_MS);
-        assert_eq!(defaults.delete_asks_from_ms, DELETE_ASKS_FROM_MS);
-    }
-
-    #[test]
-    fn the_hold_threshold_follows_a_longer_system_setting_and_never_a_shorter_one() {
-        for (system, h) in [
-            (0, 500),
-            (400, 500),
-            (500, 500),
-            (501, 501),
-            (1_000, 1_000),
-            (1_500, 1_500),
-        ] {
-            assert_eq!(hold_threshold_ms(system), h, "{system}");
-            assert_eq!(HoldConstants::for_system(system).hold_threshold_ms, h);
-        }
         assert_eq!(
-            HoldConstants::for_system(1_000),
+            HoldConstants::default(),
             HoldConstants {
-                hold_threshold_ms: 1_000,
-                ..HoldConstants::default()
+                shortest_recording_ms: 1_000,
+                activation_guard_ms: 600,
+                delete_asks_from_ms: 10_000,
             }
         );
     }
@@ -1694,19 +1195,28 @@ mod tests {
     }
 
     #[test]
-    fn a_hold_keeps_the_pressed_microphone_under_the_finger() {
-        let held = SlotInputs {
-            recording: Recording::Held,
-            ..inputs()
-        };
-        let slot = composer_slot(&held);
-        assert_eq!(slot, Slot::HeldMicrophone);
-        assert_eq!(slot.row(), 2);
-        assert_eq!(slot.label(), Some("Send voice message"));
-        assert!(!slot.is_microphone());
-        // Row 3's words are behind the row: its slot is Stop, never Send.
-        let beside = with_row(inputs(), 3);
-        assert_eq!(composer_slot(&beside), Slot::StopRecording);
+    fn a_recording_beside_a_draft_is_stop_never_send() {
+        // Row 3's words are behind the row: its slot is Stop, never Send —
+        // with words, with items staged, and with every lower row true.
+        for i in [
+            with_row(inputs(), 3),
+            SlotInputs {
+                recording: Recording::HandsFreeBesideDraft,
+                staged: true,
+                ..inputs()
+            },
+            SlotInputs {
+                recording: Recording::HandsFreeBesideDraft,
+                editing: true,
+                draft_blank: false,
+                call: true,
+                busy: true,
+                not_sent: true,
+                ..inputs()
+            },
+        ] {
+            assert_eq!(composer_slot(&i), Slot::StopRecording);
+        }
     }
 
     // --- S1.4 --------------------------------------------------------------------------------------
@@ -1715,7 +1225,6 @@ mod tests {
         DoorInputs {
             slot,
             family_or_direct_chat: true,
-            undo_window: false,
             server_offers_round: true,
             has_camera: true,
             encoder_probe_passes: true,
@@ -1779,27 +1288,24 @@ mod tests {
     }
 
     #[test]
-    fn the_door_is_hidden_outside_a_family_or_direct_chat_and_during_the_undo_window() {
+    fn the_door_is_hidden_outside_a_family_or_direct_chat_and_while_staged_or_recording() {
         let elsewhere = DoorInputs {
             family_or_direct_chat: false,
             ..door(inputs())
         };
         assert_eq!(video_door(&elsewhere), Door::Hidden);
-        let waiting = DoorInputs {
-            undo_window: true,
-            ..door(inputs())
-        };
-        assert_eq!(video_door(&waiting), Door::Hidden);
         let staged = door(SlotInputs {
             staged: true,
             ..inputs()
         });
         assert_eq!(video_door(&staged), Door::Hidden);
-        let held = door(SlotInputs {
-            recording: Recording::Held,
-            ..inputs()
-        });
-        assert_eq!(video_door(&held), Door::Hidden);
+        for recording in [Recording::HandsFree, Recording::HandsFreeBesideDraft] {
+            let recording = door(SlotInputs {
+                recording,
+                ..inputs()
+            });
+            assert_eq!(video_door(&recording), Door::Hidden);
+        }
     }
 
     // --- the round video ---------------------------------------------------------------------------
@@ -1854,10 +1360,7 @@ mod tests {
         }
     }
 
-    // --- S2.1 and S2.3 -----------------------------------------------------------------------------
-
-    const X: f64 = 340.0;
-    const Y: f64 = 780.0;
+    // --- S2.1, S2.2 and S2.5 -----------------------------------------------------------------------
 
     fn c() -> HoldConstants {
         HoldConstants::default()
@@ -1882,73 +1385,6 @@ mod tests {
         Situation::default()
     }
 
-    fn down(at: u64) -> HoldEvent {
-        HoldEvent::Down {
-            at_ms: at,
-            x: X,
-            y: Y,
-            can_hold: true,
-            rtl: false,
-        }
-    }
-
-    fn mv(at: u64, dx: f64, dy: f64) -> HoldEvent {
-        HoldEvent::Move {
-            at_ms: at,
-            x: X + dx,
-            y: Y + dy,
-        }
-    }
-
-    fn up_with(
-        at: u64,
-        dx: f64,
-        dy: f64,
-        recorded_ms: u64,
-        heard: bool,
-        situation: Situation,
-    ) -> HoldEvent {
-        HoldEvent::Up {
-            at_ms: at,
-            x: X + dx,
-            y: Y + dy,
-            inside: true,
-            situation,
-            recorded_ms,
-            heard,
-        }
-    }
-
-    fn up(at: u64, recorded_ms: u64) -> HoldEvent {
-        up_with(at, 0.0, 0.0, recorded_ms, true, sit())
-    }
-
-    fn up_outside(at: u64) -> HoldEvent {
-        HoldEvent::Up {
-            at_ms: at,
-            x: X + 90.0,
-            y: Y,
-            inside: false,
-            situation: sit(),
-            recorded_ms: 0,
-            heard: false,
-        }
-    }
-
-    fn tick(at: u64) -> HoldEvent {
-        HoldEvent::Tick {
-            at_ms: at,
-            situation: sit(),
-        }
-    }
-
-    fn tick_with(at: u64, situation: Situation) -> HoldEvent {
-        HoldEvent::Tick {
-            at_ms: at,
-            situation,
-        }
-    }
-
     fn activate(at: u64, recorded_ms: u64) -> HoldEvent {
         HoldEvent::Activate {
             at_ms: at,
@@ -1957,63 +1393,36 @@ mod tests {
         }
     }
 
-    fn idle() -> HoldState {
-        HoldState::default()
+    fn activate_with(at: u64, situation: Situation) -> HoldEvent {
+        HoldEvent::Activate {
+            at_ms: at,
+            situation,
+            recorded_ms: 0,
+        }
     }
 
-    fn holding(armed: bool) -> HoldState {
-        HoldState {
-            phase: Phase::Holding {
-                down_x: X,
-                down_y: Y,
-                rtl: false,
-                armed,
-            },
-            guard_until_ms: 1_100,
-            undo: None,
-        }
+    fn idle() -> HoldState {
+        HoldState::default()
     }
 
     fn hands_free(beside_draft: bool) -> HoldState {
         HoldState {
             phase: Phase::HandsFree { beside_draft },
             guard_until_ms: 0,
-            undo: None,
         }
     }
 
-    /// Idle with a released note of `recorded_ms` waiting until `until_ms`, the
-    /// release's own guard long over.
-    fn waiting(until_ms: u64, recorded_ms: u64) -> HoldState {
-        HoldState {
-            phase: Phase::Idle,
-            guard_until_ms: 0,
-            undo: Some(UndoNote {
-                until_ms,
-                recorded_ms,
-            }),
-        }
-    }
-
-    fn started(held: bool) -> Vec<HoldEffect> {
+    fn started() -> Vec<HoldEffect> {
         vec![
-            E::Start { held },
+            E::Start,
             E::Announce(A::Recording),
-            E::Haptic(if held { Haptic::Medium } else { Haptic::Light }),
+            E::Haptic(Haptic::Light),
         ]
     }
 
     fn sent() -> Vec<HoldEffect> {
         vec![
             E::Send,
-            E::Announce(A::VoiceMessageSent),
-            E::Haptic(Haptic::Success),
-        ]
-    }
-
-    fn undo_sent() -> Vec<HoldEffect> {
-        vec![
-            E::UndoSend,
             E::Announce(A::VoiceMessageSent),
             E::Haptic(Haptic::Success),
         ]
@@ -2041,12 +1450,9 @@ mod tests {
     }
 
     #[test]
-    fn a_tap_records_hands_free_when_it_lifts_and_the_same_slot_sends() {
-        let (s, fx) = step(idle(), down(0));
-        assert!(fx.is_empty(), "nothing records on touch-down");
-        assert!(matches!(s.phase, Phase::Pressed { may_hold: true, .. }));
-        let (s, fx) = step(s, up(120, 0));
-        assert_eq!(fx, started(false));
+    fn a_tap_records_hands_free_and_the_same_slot_sends() {
+        let (s, fx) = step(idle(), activate(120, 0));
+        assert_eq!(fx, started());
         assert_eq!(
             s.phase,
             Phase::HandsFree {
@@ -2055,7 +1461,14 @@ mod tests {
         );
         assert_eq!(s.guard_until_ms, 720);
         assert_eq!(s.recording(), Recording::HandsFree);
-        let (s, fx) = step(s, activate(5_000, 4_800));
+        assert_eq!(
+            composer_slot(&SlotInputs {
+                recording: s.recording(),
+                ..inputs()
+            }),
+            Slot::SendVoice
+        );
+        let (s, fx) = step(s, activate(5_000, 4_880));
         assert_eq!(fx, sent());
         assert_eq!(s.phase, Phase::Idle);
         assert_eq!(
@@ -2066,7 +1479,7 @@ mod tests {
 
     #[test]
     fn a_double_tap_on_the_microphone_cannot_send_and_one_on_send_cannot_record() {
-        let (s, _) = run(idle(), &[down(0), up(100, 0)]);
+        let (s, _) = step(idle(), activate(100, 0));
         let (s, fx) = step(s, activate(699, 590));
         assert!(fx.is_empty());
         assert_eq!(
@@ -2076,24 +1489,24 @@ mod tests {
             }
         );
         assert!(s.guarded(699) && !s.guarded(700));
-        let (_, fx) = step(s, activate(700, 600));
+        let (s, fx) = step(s, activate(700, 600));
         assert_eq!(fx, too_short_fx());
+        assert_eq!(s.guard_until_ms, 1_300);
+        // The microphone the Send leaves behind is guarded too.
+        let (s, fx) = step(s, activate(1_299, 0));
+        assert!(fx.is_empty());
+        assert_eq!(s.phase, Phase::Idle);
 
-        // A text Send empties the composer: the microphone it becomes is guarded,
-        // and a press that goes down inside the guard is ignored WHOLE.
+        // A text Send empties the composer: the microphone it becomes is guarded.
         let (s, fx) = step(idle(), HoldEvent::Emptied { at_ms: 1_000 });
         assert!(fx.is_empty());
-        let (s, fx) = run(s, &[down(1_599), tick(2_200), up(2_300, 0)]);
-        assert!(fx.iter().all(Vec::is_empty), "{fx:?}");
+        let (s, fx) = step(s, activate(1_599, 0));
+        assert!(fx.is_empty());
         assert_eq!(s.phase, Phase::Idle);
-        let (s, _) = step(s, down(1_600));
-        assert!(matches!(s.phase, Phase::Pressed { .. }));
+        let (_, fx) = step(s, activate(1_600, 0));
+        assert_eq!(fx, started());
         let (_, fx) = step(idle(), activate(1_599, 0));
-        assert_eq!(
-            fx,
-            started(false),
-            "nothing guards a composer nobody emptied"
-        );
+        assert_eq!(fx, started(), "nothing guards a composer nobody emptied");
     }
 
     #[test]
@@ -2110,382 +1523,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_press_that_lifts_outside_does_nothing() {
-        let (s, fx) = run(idle(), &[down(0), mv(50, 60.0, 0.0), up_outside(200)]);
-        assert!(fx.iter().all(Vec::is_empty));
-        assert_eq!(s, idle());
-    }
-
-    #[test]
-    fn a_press_that_wanders_past_the_slop_still_taps_but_never_holds() {
-        let (s, fx) = run(idle(), &[down(0), mv(40, 12.0, 16.5), tick(500), tick(900)]);
-        assert!(fx.iter().all(Vec::is_empty));
-        assert!(matches!(
-            s.phase,
-            Phase::Pressed {
-                may_hold: false,
-                ..
-            }
-        ));
-        let (s, fx) = step(s, up(1_200, 0));
-        assert_eq!(
-            fx,
-            started(false),
-            "an unsteady press is never a dead button"
-        );
-        assert_eq!(
-            s.phase,
-            Phase::HandsFree {
-                beside_draft: false
-            }
-        );
-        // Exactly twenty is not "farther than" twenty.
-        let (s, _) = run(idle(), &[down(0), mv(40, 12.0, 16.0)]);
-        assert!(matches!(s.phase, Phase::Pressed { may_hold: true, .. }));
-        let (s, fx) = step(s, tick(500));
-        assert_eq!(fx, started(true));
-        assert!(matches!(s.phase, Phase::Holding { armed: false, .. }));
-    }
-
-    #[test]
-    fn the_hold_starts_at_h_and_not_a_millisecond_before() {
-        let (s, fx) = run(idle(), &[down(1_000), tick(1_499)]);
-        assert!(fx.iter().all(Vec::is_empty));
-        let (s, fx) = step(s, tick(1_500));
-        assert_eq!(fx, started(true));
-        assert_eq!(s.guard_until_ms, 2_100);
-        assert_eq!(s.recording(), Recording::Held);
-        // A longer system setting moves H with it.
-        let slow = HoldConstants::for_system(1_000);
-        let (s, _) = hold_step(idle(), down(0), &slow);
-        let (s, fx) = hold_step(s, tick(999), &slow);
-        assert!(fx.is_empty());
-        let (_, fx) = hold_step(s, tick(1_000), &slow);
-        assert_eq!(fx, started(true));
-        // An Up before any Tick reached H is a tap, however late.
-        let (_, fx) = run(idle(), &[down(0), up(2_000, 0)]);
-        assert_eq!(fx[1], started(false));
-    }
-
-    #[test]
-    fn a_mouse_press_of_any_length_is_a_click() {
-        let mouse = HoldEvent::Down {
-            at_ms: 0,
-            x: X,
-            y: Y,
-            can_hold: false,
-            rtl: false,
-        };
-        let (s, fx) = run(idle(), &[mouse, tick(500), tick(3_000)]);
-        assert!(fx.iter().all(Vec::is_empty));
-        let (s, fx) = step(s, up(3_100, 0));
-        assert_eq!(fx, started(false));
-        assert_eq!(
-            s.phase,
-            Phase::HandsFree {
-                beside_draft: false
-            }
-        );
-    }
-
-    #[test]
-    fn slide_to_cancel_arms_at_100_and_disarms_below_80() {
-        let (s, fx) = step(holding(false), mv(600, -99.5, 0.0));
-        assert!(fx.is_empty());
-        let (s, fx) = step(s, mv(620, -100.0, 0.0));
-        assert_eq!(fx, vec![E::Arm, E::Haptic(Haptic::Selection)]);
-        let (s, fx) = run(
-            s,
-            &[
-                mv(640, -130.0, 0.0),
-                mv(660, -85.0, 0.0),
-                mv(680, -80.0, 0.0),
-            ],
-        );
-        assert!(fx.iter().all(Vec::is_empty), "80 is not below 80");
-        assert!(matches!(s.phase, Phase::Holding { armed: true, .. }));
-        let (s, fx) = step(s, mv(700, -79.5, 0.0));
-        assert_eq!(fx, vec![E::Disarm]);
-        assert!(matches!(s.phase, Phase::Holding { armed: false, .. }));
-        let (s, _) = step(s, mv(720, -101.0, 0.0));
-        let (s, fx) = step(s, up_with(2_000, -101.0, 0.0, 1_500, true, sit()));
-        assert_eq!(fx, deleted_fx());
-        assert_eq!(s.phase, Phase::Idle);
-        assert_eq!(s.guard_until_ms, 2_600);
-        assert!(s.undo.is_none());
-    }
-
-    #[test]
-    fn in_a_right_to_left_layout_cancel_slides_right() {
-        let rtl = HoldState {
-            phase: Phase::Holding {
-                down_x: X,
-                down_y: Y,
-                rtl: true,
-                armed: false,
-            },
-            ..holding(false)
-        };
-        let (s, fx) = step(rtl, mv(600, -150.0, 0.0));
-        assert!(fx.is_empty(), "left is the trailing edge here");
-        let (_, fx) = step(s, mv(620, 100.0, 0.0));
-        assert_eq!(fx, vec![E::Arm, E::Haptic(Haptic::Selection)]);
-    }
-
-    #[test]
-    fn sliding_up_locks_at_60_and_the_lift_then_does_nothing() {
-        let (s, fx) = step(holding(false), mv(600, 0.0, -59.5));
-        assert!(fx.is_empty());
-        let (s, fx) = step(s, mv(620, -10.0, -60.0));
-        assert_eq!(
-            fx,
-            vec![
-                E::Lock,
-                E::Announce(A::RecordingLocked),
-                E::Haptic(Haptic::Selection)
-            ]
-        );
-        assert_eq!(
-            s.phase,
-            Phase::HandsFree {
-                beside_draft: false
-            }
-        );
-        let (s, fx) = step(s, up(3_000, 2_400));
-        assert!(fx.is_empty(), "lifting a locked hold does nothing");
-        assert_eq!(
-            s.phase,
-            Phase::HandsFree {
-                beside_draft: false
-            }
-        );
-        let (_, fx) = step(s, activate(9_000, 8_400));
-        assert_eq!(fx, sent());
-    }
-
-    #[test]
-    fn a_hold_never_locks_while_cancel_is_armed() {
-        let (s, _) = step(holding(false), mv(600, -100.0, 0.0));
-        let (s, fx) = step(s, mv(620, -110.0, -70.0));
-        assert!(fx.is_empty());
-        assert!(matches!(s.phase, Phase::Holding { armed: true, .. }));
-        // Back below 80 while still up: disarmed, then locked, in one move.
-        let (s, fx) = step(s, mv(640, -50.0, -70.0));
-        assert_eq!(
-            fx,
-            vec![
-                E::Disarm,
-                E::Lock,
-                E::Announce(A::RecordingLocked),
-                E::Haptic(Haptic::Selection)
-            ]
-        );
-        assert_eq!(
-            s.phase,
-            Phase::HandsFree {
-                beside_draft: false
-            }
-        );
-        // A diagonal that arms and rises at once arms and does not lock.
-        let (s, fx) = step(holding(false), mv(600, -100.0, -60.0));
-        assert_eq!(fx, vec![E::Arm, E::Haptic(Haptic::Selection)]);
-        assert!(matches!(s.phase, Phase::Holding { armed: true, .. }));
-    }
-
-    #[test]
-    fn a_lift_counts_its_position_as_a_last_move() {
-        let (s, fx) = step(
-            holding(false),
-            up_with(2_000, 0.0, -65.0, 1_500, true, sit()),
-        );
-        assert_eq!(
-            fx,
-            vec![
-                E::Lock,
-                E::Announce(A::RecordingLocked),
-                E::Haptic(Haptic::Selection)
-            ]
-        );
-        assert_eq!(
-            s.phase,
-            Phase::HandsFree {
-                beside_draft: false
-            }
-        );
-        assert_eq!(s.guard_until_ms, 1_100, "a locked lift is no release");
-        let (_, fx) = step(
-            holding(false),
-            up_with(2_000, -120.0, 0.0, 1_500, true, sit()),
-        );
-        let mut expected = vec![E::Arm, E::Haptic(Haptic::Selection)];
-        expected.extend(deleted_fx());
-        assert_eq!(fx, expected);
-    }
-
-    #[test]
-    fn a_hold_let_go_under_a_second_keeps_recording_hands_free() {
-        let (s, fx) = step(holding(false), up(1_400, 999));
-        assert_eq!(fx, vec![E::Lock, E::Hint(Hint::StillRecording)]);
-        assert_eq!(
-            s.phase,
-            Phase::HandsFree {
-                beside_draft: false
-            }
-        );
-        assert_eq!(
-            s.guard_until_ms, 2_000,
-            "a release that finds it too short guards the slot"
-        );
-        let (_, fx) = step(holding(false), up(1_400, 1_000));
-        assert_eq!(fx, vec![E::UndoWindow]);
-        // Under a second wins over silence: it is still recording.
-        let (_, fx) = step(holding(false), up_with(1_400, 0.0, 0.0, 400, false, sit()));
-        assert_eq!(fx, vec![E::Lock, E::Hint(Hint::StillRecording)]);
-    }
-
-    #[test]
-    fn a_silent_hold_is_never_sent() {
-        let (s, fx) = step(
-            holding(false),
-            up_with(4_000, 0.0, 0.0, 3_000, false, sit()),
-        );
-        assert_eq!(
-            fx,
-            vec![
-                E::Review,
-                E::Hint(Hint::NothingHeard),
-                E::Announce(A::ReadyToReview { recorded_ms: 3_000 })
-            ]
-        );
-        assert_eq!(s.phase, Phase::Idle);
-        assert!(s.undo.is_none());
-        // Silence comes before the first release: the lesson waits for a real one.
-        let first = Situation {
-            first_release: true,
-            ..sit()
-        };
-        let (_, fx) = step(
-            holding(false),
-            up_with(4_000, 0.0, 0.0, 3_000, false, first),
-        );
-        assert!(!fx.contains(&E::FirstReleaseDone));
-    }
-
-    #[test]
-    fn the_first_release_on_a_device_reviews_and_teaches() {
-        let first = Situation {
-            first_release: true,
-            ..sit()
-        };
-        let (s, fx) = step(holding(false), up_with(4_000, 0.0, 0.0, 2_500, true, first));
-        assert_eq!(
-            fx,
-            vec![
-                E::Review,
-                E::Hint(Hint::NextTimeSends),
-                E::Announce(A::ReadyToReview { recorded_ms: 2_500 }),
-                E::FirstReleaseDone
-            ]
-        );
-        assert_eq!(s.phase, Phase::Idle);
-        assert_eq!(s.guard_until_ms, 4_600);
-    }
-
-    #[test]
-    fn review_before_sending_and_a_screen_reader_review_without_a_lesson_that_would_be_untrue() {
-        for situation in [
-            Situation {
-                review_before_sending: true,
-                ..sit()
-            },
-            Situation {
-                assistive: true,
-                ..sit()
-            },
-            Situation {
-                first_release: true,
-                review_before_sending: true,
-                ..sit()
-            },
-            Situation {
-                first_release: true,
-                assistive: true,
-                ..sit()
-            },
-        ] {
-            let (s, fx) = step(
-                holding(false),
-                up_with(4_000, 0.0, 0.0, 2_500, true, situation),
-            );
-            assert_eq!(fx, reviewed(2_500), "{situation:?}");
-            assert!(s.undo.is_none());
-        }
-    }
-
-    #[test]
-    fn otherwise_the_undo_window_opens_and_sends_after_five_seconds() {
-        let (s, fx) = step(holding(false), up(4_000, 3_000));
-        assert_eq!(fx, vec![E::UndoWindow]);
-        assert_eq!(s.phase, Phase::Idle);
-        assert_eq!(
-            s.undo,
-            Some(UndoNote {
-                until_ms: 9_000,
-                recorded_ms: 3_000
-            })
-        );
-        assert_eq!(
-            s.recording(),
-            Recording::None,
-            "the slot shows the microphone"
-        );
-        let (s, fx) = step(s, tick(8_999));
-        assert!(fx.is_empty());
-        let (s, fx) = step(s, tick(9_000));
-        assert_eq!(fx, undo_sent());
-        assert!(s.undo.is_none());
-    }
-
-    #[test]
-    fn undo_takes_the_note_to_review_until_the_window_has_run_out() {
-        let (s, fx) = step(waiting(9_000, 3_000), HoldEvent::Undo { at_ms: 8_999 });
-        assert_eq!(
-            fx,
-            vec![
-                E::UndoReview,
-                E::Announce(A::ReadyToReview { recorded_ms: 3_000 })
-            ]
-        );
-        assert!(s.undo.is_none());
-        // Late: the window ran out on its own clock, and the Undo finds nothing.
-        let (s, fx) = step(waiting(9_000, 3_000), HoldEvent::Undo { at_ms: 9_000 });
-        assert_eq!(fx, undo_sent());
-        assert!(s.undo.is_none());
-    }
-
-    #[test]
-    fn any_other_action_or_an_interruption_ends_the_window_by_sending() {
-        for e in [
-            HoldEvent::OtherAction { at_ms: 6_000 },
-            HoldEvent::Interruption {
-                at_ms: 6_000,
-                recorded_ms: 0,
-            },
-            HoldEvent::Emptied { at_ms: 6_000 },
-        ] {
-            let (s, fx) = step(waiting(9_000, 3_000), e);
-            assert_eq!(fx, undo_sent(), "{e:?}");
-            assert!(s.undo.is_none());
-        }
-        let (s, _) = step(waiting(9_000, 3_000), HoldEvent::Emptied { at_ms: 6_000 });
-        assert_eq!(s.guard_until_ms, 6_600);
-    }
-
     /// S1.1: "A change caused by typing, pasting, a suggestion, deleting text
     /// or staging is NEVER guarded". The guard is there for the second half
     /// of a double tap; the person's own change to the composer between two
-    /// presses means the next one is a new decision.
+    /// activations means the next one is a new decision.
     #[test]
     fn the_persons_own_change_to_the_composer_lifts_the_guard() {
         // "ok" sent, then "x" typed and deleted inside the guard: the
@@ -2497,21 +1538,11 @@ mod tests {
         assert!(!s.guarded(1_300), "typed: not guarded");
         assert_eq!(s.guard_until_ms, 0);
         let (_, fx) = step(s, activate(1_300, 0));
-        assert_eq!(fx, started(false));
-        // The same for a touch that goes down after the change.
-        let (s, _) = run(
-            idle(),
-            &[
-                HoldEvent::Emptied { at_ms: 1_000 },
-                HoldEvent::OtherAction { at_ms: 1_100 },
-            ],
-        );
-        let (_, fx) = run(s, &[down(1_200), up(1_300, 0)]);
-        assert_eq!(fx[1], started(false));
+        assert_eq!(fx, started());
 
-        // The Stop square's own staging guards a second press; the person
-        // typing after it does not leave the row-5 Send they then press
-        // guarded (a port asks `guarded` before such a Send).
+        // The Stop square's own staging guards a second activation; the
+        // person typing after it does not leave the row-5 Send they then
+        // press guarded (a port asks `guarded` before such a Send).
         let record = HoldEvent::Record {
             at_ms: 1_000,
             beside_draft: true,
@@ -2526,7 +1557,7 @@ mod tests {
         // While a recording runs the box is behind the row and cannot be the
         // person's to change: nothing it says lifts the guard that keeps a
         // double tap on the microphone from sending.
-        let (s, _) = run(idle(), &[down(0), up(100, 0)]);
+        let (s, _) = step(idle(), activate(100, 0));
         let (s, fx) = step(s, HoldEvent::OtherAction { at_ms: 300 });
         assert!(fx.is_empty());
         assert!(s.guarded(400));
@@ -2538,115 +1569,22 @@ mod tests {
                 beside_draft: false
             }
         );
-        // Nor while held.
-        let (s, _) = step(holding(false), HoldEvent::OtherAction { at_ms: 700 });
-        assert_eq!(s.guard_until_ms, 1_100);
     }
 
     #[test]
-    fn the_microphone_during_the_window_sends_the_note_and_records_again() {
-        let (s, fx) = step(waiting(9_000, 3_000), activate(6_000, 0));
-        let mut expected = undo_sent();
-        expected.extend(started(false));
-        assert_eq!(fx, expected);
-        assert_eq!(
-            s.phase,
-            Phase::HandsFree {
-                beside_draft: false
-            }
-        );
-        assert!(s.undo.is_none());
-        // A touch ends the window only once it IS a tap or a hold.
-        let (s, fx) = step(waiting(9_000, 3_000), down(6_000));
-        assert!(fx.is_empty());
-        assert!(s.undo.is_some());
-        let (s, fx) = step(s, up_outside(6_200));
-        assert!(
-            fx.is_empty(),
-            "a press lifted outside is nothing, and the window runs on"
-        );
-        assert!(s.undo.is_some());
-        let (_, fx) = run(s, &[down(6_400), up(6_500, 0)]);
-        assert_eq!(fx[1], expected);
-        let (s, fx) = run(waiting(9_000, 3_000), &[down(6_000), tick(6_500)]);
-        let mut held = undo_sent();
-        held.extend(started(true));
-        assert_eq!(fx[1], held);
-        assert!(matches!(s.phase, Phase::Holding { .. }));
-    }
-
-    #[test]
-    fn the_release_guards_the_microphone_but_not_the_window() {
-        let (s, _) = step(holding(false), up(4_000, 3_000));
-        let (s, fx) = run(s, &[down(4_300), up(4_400, 0), activate(4_599, 0)]);
-        assert!(fx.iter().all(Vec::is_empty), "{fx:?}");
-        assert!(s.undo.is_some());
-        let (s, fx) = step(s, activate(4_600, 0));
-        let mut expected = undo_sent();
-        expected.extend(started(false));
-        assert_eq!(fx, expected);
-        assert_eq!(s.guard_until_ms, 5_200);
-    }
-
-    #[test]
-    fn the_window_runs_out_in_the_middle_of_a_press() {
-        let (s, fx) = run(waiting(9_000, 3_000), &[down(8_800), tick(9_000)]);
-        assert_eq!(fx[1], undo_sent());
-        assert!(matches!(s.phase, Phase::Pressed { .. }));
-        let (_, fx) = step(s, tick(9_300));
-        assert_eq!(fx, started(true));
-    }
-
-    #[test]
-    fn a_system_cancel_locks_a_hold_deletes_an_armed_one_and_parks_in_the_background() {
-        let cancel = |background, recorded_ms| HoldEvent::SystemCancel {
-            at_ms: 3_000,
-            background,
-            recorded_ms,
-        };
-        let (s, fx) = step(holding(false), cancel(false, 2_000));
-        assert_eq!(fx, vec![E::Lock, E::Announce(A::RecordingLocked)]);
-        assert_eq!(
-            s.phase,
-            Phase::HandsFree {
-                beside_draft: false
-            }
-        );
-        let (s, fx) = step(holding(true), cancel(false, 2_000));
-        assert_eq!(fx, deleted_fx());
-        assert_eq!(s.phase, Phase::Idle);
-        let (_, fx) = step(holding(true), cancel(true, 2_000));
-        assert_eq!(fx, deleted_fx(), "armed is a decision, foreground or not");
-        let (s, fx) = step(holding(false), cancel(true, 2_000));
-        assert_eq!(fx, vec![E::Park]);
-        assert_eq!(s.phase, Phase::Idle);
-        let (_, fx) = step(holding(false), cancel(true, 999));
-        assert_eq!(fx, vec![E::Delete]);
-        let (s, fx) = run(idle(), &[down(0), cancel(false, 0)]);
-        assert!(fx.iter().all(Vec::is_empty));
-        assert_eq!(s.phase, Phase::Idle);
-        let (s, fx) = step(hands_free(false), cancel(true, 9_000));
-        assert!(fx.is_empty(), "a hands-free recording has no touch to lose");
-        assert_eq!(s, hands_free(false));
-    }
-
-    #[test]
-    fn an_interruption_parks_a_recording_and_deletes_one_under_a_second() {
+    fn an_interruption_parks_a_recording_deletes_one_under_a_second_and_never_sends() {
         let interruption = |recorded_ms| HoldEvent::Interruption {
             at_ms: 3_000,
             recorded_ms,
         };
-        for recording in [
-            holding(false),
-            holding(true),
-            hands_free(false),
-            hands_free(true),
-        ] {
+        for recording in [hands_free(false), hands_free(true)] {
             let (s, fx) = step(recording, interruption(1_000));
             assert_eq!(fx, vec![E::Park], "{recording:?}");
             assert_eq!(s.phase, Phase::Idle);
             let (_, fx) = step(recording, interruption(999));
             assert_eq!(fx, vec![E::Delete]);
+            let (_, fx) = step(recording, interruption(250_000));
+            assert!(!fx.contains(&E::Send), "an interruption never sends");
         }
         let asking = HoldState {
             phase: Phase::AskingDelete {
@@ -2657,9 +1595,9 @@ mod tests {
         let (s, fx) = step(asking, interruption(12_000));
         assert_eq!(fx, vec![E::Park]);
         assert_eq!(s.phase, Phase::Idle);
-        let (s, fx) = run(idle(), &[down(0), interruption(0)]);
-        assert!(fx.iter().all(Vec::is_empty));
-        assert_eq!(s.phase, Phase::Idle);
+        let (s, fx) = step(idle(), interruption(0));
+        assert!(fx.is_empty());
+        assert_eq!(s, idle());
         let prompting = HoldState {
             phase: Phase::AwaitingPermission {
                 source: Source::Tap,
@@ -2680,8 +1618,8 @@ mod tests {
     }
 
     #[test]
-    fn five_minutes_reviews_and_the_later_lift_does_nothing() {
-        for recording in [holding(false), hands_free(false), hands_free(true)] {
+    fn five_minutes_reviews_and_never_sends() {
+        for recording in [hands_free(false), hands_free(true)] {
             let (s, fx) = step(recording, HoldEvent::Cap { at_ms: 301_000 });
             assert_eq!(
                 fx,
@@ -2692,8 +1630,7 @@ mod tests {
                 ]
             );
             assert_eq!(s.phase, Phase::Idle);
-            let (_, fx) = step(s, up(302_000, 300_000));
-            assert!(fx.is_empty());
+            assert_eq!(s.guard_until_ms, recording.guard_until_ms);
         }
         let (_, fx) = step(idle(), HoldEvent::Cap { at_ms: 1 });
         assert!(fx.is_empty());
@@ -2701,7 +1638,7 @@ mod tests {
 
     #[test]
     fn stop_reviews_and_under_a_second_is_too_short() {
-        for recording in [hands_free(false), hands_free(true), holding(false)] {
+        for recording in [hands_free(false), hands_free(true)] {
             let (s, fx) = step(
                 recording,
                 HoldEvent::Stop {
@@ -2772,7 +1709,7 @@ mod tests {
         );
         assert_eq!(fx, reviewed(10_000));
         assert_eq!(s3.phase, Phase::Idle);
-        let (_, fx) = step(holding(false), delete(400));
+        let (_, fx) = step(hands_free(true), delete(400));
         assert_eq!(fx, deleted_fx());
     }
 
@@ -2785,7 +1722,7 @@ mod tests {
             recorded_ms: 0,
         };
         let (s, fx) = step(idle(), record);
-        assert_eq!(fx, started(false));
+        assert_eq!(fx, started());
         assert_eq!(s.phase, Phase::HandsFree { beside_draft: true });
         assert_eq!(s.recording(), Recording::HandsFreeBesideDraft);
         assert_eq!(s.guard_until_ms, 0, "the paperclip is not the slot");
@@ -2812,13 +1749,12 @@ mod tests {
             recorded_ms,
         };
         let (s, fx) = step(idle(), shortcut(0, 0));
-        assert_eq!(fx, started(false));
+        assert_eq!(fx, started());
+        assert_eq!(s.guard_until_ms, 0, "the shortcut is not the slot");
         let (s, fx) = step(s, shortcut(100, 100));
         assert_eq!(fx, too_short_fx());
         assert_eq!(s.phase, Phase::Idle);
         let (_, fx) = step(hands_free(false), shortcut(9_000, 8_000));
-        assert_eq!(fx, reviewed(8_000));
-        let (_, fx) = step(holding(false), shortcut(9_000, 8_000));
         assert_eq!(fx, reviewed(8_000));
     }
 
@@ -2828,11 +1764,8 @@ mod tests {
             permission: Permission::NotAsked,
             ..sit()
         };
-        let (s, fx) = run(
-            idle(),
-            &[down(0), up_with(100, 0.0, 0.0, 0, false, not_asked)],
-        );
-        assert_eq!(fx[1], vec![E::AskPermission]);
+        let (s, fx) = step(idle(), activate_with(100, not_asked));
+        assert_eq!(fx, vec![E::AskPermission]);
         assert_eq!(
             s.phase,
             Phase::AwaitingPermission {
@@ -2847,7 +1780,7 @@ mod tests {
                 granted: true,
             },
         );
-        assert_eq!(fx, started(false), "the tap meant record");
+        assert_eq!(fx, started(), "the tap meant record");
         assert_eq!(
             s2.phase,
             Phase::HandsFree {
@@ -2881,91 +1814,45 @@ mod tests {
                 granted: true,
             },
         );
-        assert_eq!(fx, started(false));
+        assert_eq!(fx, started());
         assert_eq!(s.phase, Phase::HandsFree { beside_draft: true });
         assert_eq!(s.guard_until_ms, 0);
     }
 
     #[test]
-    fn a_prompt_raised_by_a_hold_never_records() {
-        let not_asked = Situation {
-            permission: Permission::NotAsked,
-            ..sit()
-        };
-        let (s, fx) = run(idle(), &[down(0), tick_with(500, not_asked)]);
-        assert_eq!(fx[1], vec![E::AskPermission]);
-        assert_eq!(
-            s.phase,
-            Phase::AwaitingPermission {
-                source: Source::Hold,
-                beside_draft: false
-            }
-        );
-        let (s2, fx) = run(
-            s,
-            &[
-                up(900, 0),
-                HoldEvent::PermissionAnswer {
-                    at_ms: 3_000,
-                    granted: true,
-                },
-            ],
-        );
-        assert!(fx[0].is_empty(), "the finger's lift is not an answer");
-        assert_eq!(fx[1], vec![E::Hint(Hint::CanRecordNow)]);
-        assert_eq!(s2.phase, Phase::Idle);
-        let (_, fx) = step(
-            s,
-            HoldEvent::PermissionAnswer {
-                at_ms: 3_000,
-                granted: false,
-            },
-        );
-        assert_eq!(fx, vec![E::Denied]);
-    }
-
-    #[test]
-    fn a_denied_microphone_gives_the_notice_from_a_tap_and_at_h() {
+    fn a_denied_microphone_gives_the_notice() {
         let denied = Situation {
             permission: Permission::Denied,
             ..sit()
         };
+        let (s, fx) = step(idle(), activate_with(0, denied));
+        assert_eq!(fx, vec![E::Denied]);
+        assert_eq!(s, idle(), "and nothing is guarded");
         let (s, fx) = step(
             idle(),
-            HoldEvent::Activate {
+            HoldEvent::Record {
                 at_ms: 0,
+                beside_draft: false,
                 situation: denied,
                 recorded_ms: 0,
             },
         );
         assert_eq!(fx, vec![E::Denied]);
-        assert_eq!(s, idle(), "and nothing is guarded");
-        let (s, fx) = run(idle(), &[down(0), tick_with(500, denied), up(700, 0)]);
-        assert_eq!(fx[1], vec![E::Denied]);
-        assert!(fx[2].is_empty());
-        assert_eq!(s.phase, Phase::Idle);
+        assert_eq!(s, idle());
     }
 
     #[test]
-    fn a_dimmed_microphone_explains_from_a_tap_at_h_and_from_the_menu() {
+    fn a_dimmed_microphone_explains_from_a_tap_and_from_the_menu() {
         for reason in [Dimmed::Call, Dimmed::Busy, Dimmed::NotSent] {
             let blocked = Situation {
                 blocked: Some(reason),
                 // A dimmed row's sentence comes before any prompt.
                 permission: Permission::NotAsked,
-                ..sit()
             };
-            let (s, fx) = run(
-                idle(),
-                &[down(0), up_with(100, 0.0, 0.0, 0, false, blocked)],
-            );
-            assert_eq!(fx[1], vec![E::Explain(reason)]);
+            let (s, fx) = step(idle(), activate_with(100, blocked));
+            assert_eq!(fx, vec![E::Explain(reason)]);
             assert_eq!(s, idle());
-            let (s, fx) = run(idle(), &[down(0), tick_with(500, blocked), up(900, 0)]);
-            assert_eq!(fx[1], vec![E::Explain(reason)]);
-            assert!(fx[2].is_empty());
-            assert_eq!(s.phase, Phase::Idle);
-            let (_, fx) = step(
+            let (s, fx) = step(
                 idle(),
                 HoldEvent::Record {
                     at_ms: 0,
@@ -2975,6 +1862,7 @@ mod tests {
                 },
             );
             assert_eq!(fx, vec![E::Explain(reason)]);
+            assert_eq!(s, idle());
         }
     }
 
@@ -2993,18 +1881,13 @@ mod tests {
             },
             ..idle()
         };
-        let pressed = step(idle(), down(0)).0;
+        let record = |at_ms| HoldEvent::Record {
+            at_ms,
+            beside_draft: false,
+            situation: sit(),
+            recorded_ms: 0,
+        };
         let cases: Vec<(HoldState, HoldEvent)> = vec![
-            (idle(), up(10, 0)),
-            (idle(), mv(10, -200.0, -200.0)),
-            (
-                idle(),
-                HoldEvent::SystemCancel {
-                    at_ms: 10,
-                    background: true,
-                    recorded_ms: 5_000,
-                },
-            ),
             (
                 idle(),
                 HoldEvent::Delete {
@@ -3026,29 +1909,24 @@ mod tests {
                     granted: true,
                 },
             ),
-            (idle(), HoldEvent::Undo { at_ms: 10 }),
             (idle(), HoldEvent::OtherAction { at_ms: 10 }),
-            (idle(), tick(10_000)),
-            (pressed, activate(100, 0)),
-            (pressed, down(100)),
             (
-                pressed,
-                HoldEvent::Record {
-                    at_ms: 100,
-                    beside_draft: false,
-                    situation: sit(),
-                    recorded_ms: 0,
+                hands_free(false),
+                HoldEvent::Answer {
+                    at_ms: 2_000,
+                    delete: true,
                 },
             ),
-            (holding(false), down(2_000)),
-            (holding(false), activate(2_000, 1_500)),
-            (holding(false), tick(9_000)),
-            (hands_free(false), down(2_000)),
-            (hands_free(false), mv(2_000, 0.0, -300.0)),
-            (hands_free(false), up(2_000, 1_500)),
-            (hands_free(false), tick(9_000)),
+            (
+                hands_free(false),
+                HoldEvent::PermissionAnswer {
+                    at_ms: 2_000,
+                    granted: true,
+                },
+            ),
+            (hands_free(false), HoldEvent::OtherAction { at_ms: 2_000 }),
             (asking, activate(20_000, 0)),
-            (asking, down(20_000)),
+            (asking, record(20_000)),
             (
                 asking,
                 HoldEvent::Stop {
@@ -3056,8 +1934,16 @@ mod tests {
                     recorded_ms: 12_000,
                 },
             ),
+            (
+                asking,
+                HoldEvent::Delete {
+                    at_ms: 20_000,
+                    recorded_ms: 12_000,
+                },
+            ),
+            (asking, HoldEvent::Cap { at_ms: 20_000 }),
             (prompting, activate(20_000, 0)),
-            (prompting, up(20_000, 0)),
+            (prompting, record(20_000)),
             (
                 prompting,
                 HoldEvent::Answer {
@@ -3065,6 +1951,7 @@ mod tests {
                     delete: true,
                 },
             ),
+            (prompting, HoldEvent::Cap { at_ms: 20_000 }),
         ];
         for (s, e) in cases {
             let (after, fx) = step(s, e);
@@ -3076,8 +1963,6 @@ mod tests {
     #[test]
     fn the_slot_is_told_what_records_and_the_guard_is_strict() {
         assert_eq!(idle().recording(), Recording::None);
-        assert_eq!(step(idle(), down(0)).0.recording(), Recording::None);
-        assert_eq!(holding(true).recording(), Recording::Held);
         assert_eq!(hands_free(false).recording(), Recording::HandsFree);
         assert_eq!(
             hands_free(true).recording(),
@@ -3092,13 +1977,85 @@ mod tests {
         assert!(!idle().guarded(0));
     }
 
+    /// Nothing but the slot's Send arrow sends: walk every phase through every
+    /// event and look for a Send anywhere else.
+    #[test]
+    fn only_the_slots_send_arrow_ever_sends() {
+        let phases = [
+            idle(),
+            hands_free(false),
+            hands_free(true),
+            HoldState {
+                phase: Phase::AskingDelete {
+                    recorded_ms: 12_000,
+                },
+                ..idle()
+            },
+            HoldState {
+                phase: Phase::AwaitingPermission {
+                    source: Source::Tap,
+                    beside_draft: false,
+                },
+                ..idle()
+            },
+        ];
+        let events = |at_ms: u64| {
+            [
+                HoldEvent::Cap { at_ms },
+                HoldEvent::Interruption {
+                    at_ms,
+                    recorded_ms: 9_000,
+                },
+                HoldEvent::Activate {
+                    at_ms,
+                    situation: sit(),
+                    recorded_ms: 9_000,
+                },
+                HoldEvent::Record {
+                    at_ms,
+                    beside_draft: false,
+                    situation: sit(),
+                    recorded_ms: 9_000,
+                },
+                HoldEvent::Stop {
+                    at_ms,
+                    recorded_ms: 9_000,
+                },
+                HoldEvent::Delete {
+                    at_ms,
+                    recorded_ms: 9_000,
+                },
+                HoldEvent::Answer {
+                    at_ms,
+                    delete: false,
+                },
+                HoldEvent::PermissionAnswer {
+                    at_ms,
+                    granted: true,
+                },
+                HoldEvent::OtherAction { at_ms },
+                HoldEvent::Emptied { at_ms },
+            ]
+        };
+        for s in phases {
+            for e in events(50_000) {
+                let (_, fx) = step(s, e);
+                let is_send_arrow =
+                    s == hands_free(false) && matches!(e, HoldEvent::Activate { .. });
+                assert_eq!(fx.contains(&E::Send), is_send_arrow, "{s:?} {e:?}");
+            }
+        }
+    }
+
     #[test]
     fn the_clocks_never_overflow() {
         let late = u64::MAX - 10;
-        let (s, _) = run(idle(), &[down(late - 600), tick(late)]);
+        let (s, fx) = step(idle(), activate(late, 0));
+        assert_eq!(fx, started());
         assert_eq!(s.guard_until_ms, u64::MAX);
-        let (s, fx) = step(s, up(late, 2_000));
-        assert_eq!(fx, vec![E::UndoWindow]);
-        assert_eq!(s.undo.map(|note| note.until_ms), Some(u64::MAX));
+        let (s, _) = step(hands_free(false), activate(late, 2_000));
+        assert_eq!(s.guard_until_ms, u64::MAX);
+        let (s, _) = step(idle(), HoldEvent::Emptied { at_ms: late });
+        assert_eq!(s.guard_until_ms, u64::MAX);
     }
 }

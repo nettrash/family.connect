@@ -44,9 +44,9 @@ fun interface Clock {
 /**
  * Injectable MONOTONIC clock — milliseconds that never jump, the time base
  * of pointer events and of `delay` on the main thread (`SystemClock
- * .uptimeMillis` in the app). What the voice-message reducer times a press,
- * the activation guard and the Undo window by (#79): a wall clock set
- * forward mid-hold must not decide anything.
+ * .uptimeMillis` in the app). What the voice-message reducer times the
+ * activation guard by (#79): a wall clock set forward between two taps must
+ * not decide anything.
  */
 fun interface Uptime {
     fun now(): Long

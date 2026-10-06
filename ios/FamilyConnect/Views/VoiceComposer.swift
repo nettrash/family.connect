@@ -4,23 +4,26 @@
 //
 //  The voice half of a composer (#79, Phase 1 —
 //  docs/audio-video-messages-2026-10-04.md, S2): the reducer's state, the
-//  recorder, the Undo window and the clock it runs on, and the turning of
-//  each `RecordGesture.HoldEffect` into the thing it names.
+//  recorder and the clock it runs on, and the turning of each
+//  `RecordGesture.HoldEffect` into the thing it names.
 //
 //  WHERE THE LINE IS. `RecordGesture.step` decides — a pure function held to
 //  the shared vectors. This object DOES: it opens and closes the microphone,
-//  writes the crash-safe "sending" entry a release leaves in the parked store,
-//  arms the timer that ends the Undo window, speaks, and buzzes. What only the
-//  composer knows — its reply, its staged items, its notice line, the
-//  coordinator that queues a send — it is asked through `Hooks`, closures the
-//  composer sets once. So the whole voice flow can be driven in a test with a
-//  fake recorder, a scratch store and a clock that moves only when told to
-//  (VoiceComposerTests), which is the only way the five-second window, a
-//  crash inside it and the interruptions that end it can be checked at all.
+//  speaks, and buzzes. What only the composer knows — its reply, its staged
+//  items, its notice line, the coordinator that queues a send — it is asked
+//  through `Hooks`, closures the composer sets once. So the whole voice flow
+//  can be driven in a test with a fake recorder and a clock that moves only
+//  when told to (VoiceComposerTests).
 //
-//  Shared, with no `#if os` around the type: the Mac's Phase 1 asks the same
-//  questions with a click where the phone has a finger, and must not grow a
-//  second copy of the flow.
+//  ONE WAY IN (revised 2026-10-06). There is no hold: the microphone's
+//  activation — a tap that lifts inside, however long it was held, a click,
+//  Return, VoiceOver — is `activate()`, and nothing is said for a press going
+//  down. The Undo window and its crash-safe "sending" entry went with the
+//  hold: a voice note leaves only by the slot's Send arrow.
+//
+//  Shared, with no `#if os` around the type: the Mac asks the same questions
+//  with a click where the phone has a finger, and must not grow a second copy
+//  of the flow.
 //
 //  THE RECORDING'S ONE WAY OUT. Every effect that ends a recording takes it
 //  through `takeRecording`, which also gives the microphone back to the
@@ -30,8 +33,8 @@
 //  decides where it goes. Anything the reducer had no use for is kept as "not
 //  sent": a recording cannot be made again (S2.8).
 //
-//  WHAT IS SAID IS WHAT HAPPENED. The reducer follows `.send` and `.undoSend`
-//  with "Voice message sent" and the success haptic, and `.review` with
+//  WHAT IS SAID IS WHAT HAPPENED. The reducer follows `.send` with "Voice
+//  message sent" and the success haptic, and `.review` with
 //  "Ready to review" — it cannot know that the outbox refused the note or
 //  that the recorder kept nothing. This object does, so an effect that moves
 //  a recording reports a `Miss`, and the words, haptic, hint and lesson the
@@ -51,26 +54,14 @@ import UIKit
 import AppKit
 #endif
 
-/// A timer the composer can cancel; a test's fires when the test says.
-@MainActor
-protocol VoiceTimer: AnyObject {
-    func cancel()
-}
-
 @MainActor
 @Observable
 final class VoiceComposer {
 
     // MARK: - What the composer draws
 
-    /// The reducer's state — the phase, the guard and the Undo note.
+    /// The reducer's state — the phase and the guard.
     private(set) var state = RecordGesture.HoldState()
-
-    /// The released note waiting out its Undo window, and where it is kept.
-    private(set) var undoNote: UndoNote?
-
-    /// "Still recording. Tap Send when you're done." in the row, for 3 s.
-    private(set) var showsStillRecording = false
 
     /// The haptic to play next — a serial so that two alike play twice.
     private(set) var haptic: HapticCue?
@@ -78,16 +69,6 @@ final class VoiceComposer {
     /// Bumped when a hands-free recording starts: VoiceOver's focus goes to
     /// the slot, and stays there while it runs (S2.4).
     private(set) var slotFocusRequest = 0
-
-    /// Where a released note waits for its five seconds (S2.6).
-    nonisolated enum UndoNote: Equatable, Sendable {
-        /// In the parked store, marked "sending" — so a crash inside the
-        /// window leaves a "not sent" row, never an orphan.
-        case parked(ParkedRecordings.Entry)
-        /// The store would not take it (nobody signed in, a full disk): the
-        /// window still runs, from the recorder's own file.
-        case loose(AudioRecorder.Recording, replyTo: ReplyToDTO?)
-    }
 
     nonisolated struct HapticCue: Equatable, Sendable {
         let haptic: RecordGesture.Haptic
@@ -100,12 +81,8 @@ final class VoiceComposer {
     struct Hooks {
         /// The dimmed row a recording would meet now (call, busy, not sent).
         var blocked: () -> ComposerSlot.Dimmed? = { nil }
-        /// The chat a "sending" entry is parked under.
-        var chatID: () -> Int64? = { nil }
         /// Take the primed reply off the composer for a note leaving with it.
         var takeReply: () -> ReplyToDTO? = { nil }
-        /// Give a reply back — a note that went to review instead of out.
-        var restoreReply: (ReplyToDTO?) -> Void = { _ in }
         /// Hand a recording to the outbox with this reply. False when it
         /// could not be queued — the hook keeps it then, never loses it.
         var send: (AudioRecorder.Recording, ReplyToDTO?) -> Bool = { _, _ in false }
@@ -113,13 +90,6 @@ final class VoiceComposer {
         var review: (AudioRecorder.Recording) -> Void = { _ in }
         /// Keep a recording as the chat's "not sent" row (S2.8).
         var park: (AudioRecorder.Recording) -> Void = { _ in }
-        /// Hand a parked "sending" entry to the outbox. False when it could
-        /// not be queued.
-        var sendParked: (ParkedRecordings.Entry) -> Bool = { _ in false }
-        /// Stage a parked "sending" entry for review, and remove it — with
-        /// this sentence in the composer's notice line, if one is given.
-        /// What cannot be staged stays as an ordinary "not sent" row.
-        var reviewParked: (ParkedRecordings.Entry, String?) -> Void = { _, _ in }
         /// Say a dimmed row's sentence.
         var explain: (ComposerSlot.Dimmed) -> Void = { _ in }
         /// The denial notice, with Open Settings.
@@ -130,14 +100,10 @@ final class VoiceComposer {
         var startFailed: (AudioRecorder.Failure) -> Void = { _ in }
         /// The recorder failed mid-recording (S4).
         var stoppedUnexpectedly: () -> Void = {}
-        /// The hold locked: the keyboard goes down (S2.3).
-        var locked: () -> Void = {}
         /// A hands-free recording started: the field gives up its focus.
         var startedHandsFree: () -> Void = {}
         /// Sent, deleted or too short: keyboard focus back to the field.
         var returnFocus: () -> Void = {}
-        /// A hands-free voice message was sent from a touch screen (S7.2).
-        var sentHandsFreeByTouch: () -> Void = {}
     }
 
     // MARK: - What it is made of
@@ -151,25 +117,16 @@ final class VoiceComposer {
 
     // MARK: - Seams (the app gets the system; a test gets fakes)
 
-    /// One monotonic clock, in milliseconds, for the press, the guard and
-    /// the Undo window.
+    /// One monotonic clock, in milliseconds, for the activation guard.
     @ObservationIgnored var clock: () -> UInt64 = VoiceComposer.uptimeMS
-    /// Run `fire` after this many milliseconds.
-    @ObservationIgnored var schedule: (UInt64, @escaping @MainActor () -> Void) -> any VoiceTimer = VoiceComposer.taskTimer
     @ObservationIgnored var permission: () -> RecordGesture.Permission = VoiceComposer.systemPermission
     @ObservationIgnored var requestPermission: () async -> Bool = VoiceComposer.askTheSystem
-    /// VoiceOver or Switch Control: a held release reviews (S2.3).
-    @ObservationIgnored var assistive: () -> Bool = VoiceComposer.assistiveTechnologyRuns
     /// VoiceOver alone: the microphone opens once "Recording" is spoken (S6).
     @ObservationIgnored var voiceOverRunning: () -> Bool = VoiceComposer.voiceOverRuns
     /// Say this and return once it has been said (bounded).
     @ObservationIgnored var speak: (String) async -> Void = VoiceComposer.speakAndWait
     /// Say this, politely.
     @ObservationIgnored var announce: (String) -> Void = VoiceComposer.post
-    @ObservationIgnored var reviewBeforeSending: () -> Bool = { AppSettings.voiceReviewBeforeSending }
-    @ObservationIgnored var firstReleaseTaught: () -> Bool = { AppSettings.voiceFirstReleaseTaught }
-    @ObservationIgnored var rememberFirstReleaseTaught: () -> Void = { AppSettings.voiceFirstReleaseTaught = true }
-    @ObservationIgnored var store: ParkedRecordings = .shared
     @ObservationIgnored var arbiter: VoiceRecordingArbiter = .shared
     @ObservationIgnored var nowPlaying: NowPlaying = .shared
     /// The window this composer is drawn in, handed to the arbiter with the
@@ -194,45 +151,19 @@ final class VoiceComposer {
     /// "Recording" was spoken before the microphone opened, so the
     /// reducer's announcement of it is not said twice.
     @ObservationIgnored private var spokeRecording = false
-    @ObservationIgnored private var undoTimer: (any VoiceTimer)?
-    @ObservationIgnored private var armedUntil: UInt64?
-    @ObservationIgnored private var hintTimer: (any VoiceTimer)?
     @ObservationIgnored private var hapticSerial = 0
-    /// The lift being handled came from a finger or a Pencil.
-    @ObservationIgnored private var touchInFlight = false
-    /// The recording running now was started by a finger's tap.
-    @ObservationIgnored private var startedByTouch = false
     @ObservationIgnored private var warnedThirty = false
     @ObservationIgnored private var warnedSilence = false
 
     init(
         recorder: AudioRecorder? = nil,
-        constants: RecordGesture.HoldConstants = .forSystem(longPressMS: VoiceComposer.systemLongPressMS)
+        constants: RecordGesture.HoldConstants = .standard
     ) {
         self.recorder = recorder ?? AudioRecorder()
         self.constants = constants
     }
 
-    /// The long press iOS names (S1.1): 500 ms — the recognizer's minimum
-    /// duration that drives the hold.
-    nonisolated static let systemLongPressMS: UInt64 = 500
-
     // MARK: - Reading the state
-
-    var isPressed: Bool {
-        if case .pressed = state.phase { return true }
-        return false
-    }
-
-    var isHolding: Bool {
-        if case .holding = state.phase { return true }
-        return false
-    }
-
-    var isArmed: Bool {
-        if case .holding(_, _, _, true) = state.phase { return true }
-        return false
-    }
 
     var isHandsFree: Bool {
         if case .handsFree = state.phase { return true }
@@ -245,15 +176,12 @@ final class VoiceComposer {
     }
 
     /// A voice recording runs, as far as the slot is concerned.
-    var isRecording: Bool { isHolding || isHandsFree }
+    var isRecording: Bool { isHandsFree }
 
     var isAskingDelete: Bool {
         if case .askingDelete = state.phase { return true }
         return false
     }
-
-    /// The Undo row is up.
-    var inUndoWindow: Bool { state.undo != nil }
 
     /// A row-5 Send must be ignored now: the slot's own activation just
     /// changed it (S1.1).
@@ -276,48 +204,12 @@ final class VoiceComposer {
         UInt64(max(0, recorder.recordedNow) * 1000)
     }
 
-    // MARK: - What happened: the microphone's touch
+    // MARK: - What happened
 
-    /// A finger, a Pencil or a pointer went down on the microphone.
-    func pressDown(x: Double, y: Double, canHold: Bool, rtl: Bool) {
-        handle(.down(atMS: clock(), x: x, y: y, canHold: canHold, rtl: rtl))
-    }
-
-    func pressMoved(x: Double, y: Double) {
-        handle(.move(atMS: clock(), x: x, y: y))
-    }
-
-    /// The press lifted; `inside` is the control's own hit test.
-    func pressLifted(x: Double, y: Double, inside: Bool, byTouch: Bool) {
-        touchInFlight = byTouch
-        defer { touchInFlight = false }
-        handle(.up(
-            atMS: clock(), x: x, y: y, inside: inside, situation: situation(),
-            recordedMS: recordedMS, heard: recorder.heardSound))
-    }
-
-    /// The system took the touch away; `background`: the app went there.
-    func pressCancelled(background: Bool) {
-        handle(.systemCancel(atMS: clock(), background: background, recordedMS: recordedMS))
-    }
-
-    /// The long-press recognizer reached H. Its own timer is the port's
-    /// long-press timer, so the tick is placed no earlier than H after the
-    /// press — a recognizer that fires a millisecond before this clock says
-    /// H has passed must still start the hold.
-    func holdReached() {
-        var at = clock()
-        if case let .pressed(downAtMS, _, _, _, _) = state.phase {
-            at = max(at, RecordGesture.saturatingAdd(downAtMS, constants.holdThresholdMS))
-        }
-        handle(.tick(atMS: at, situation: situation()))
-    }
-
-    // MARK: - What happened: everything else
-
-    /// The slot was activated without a touch of the microphone: the Send
-    /// arrow, the Stop square, a click on a dimmed or plain microphone that
-    /// is not a press (VoiceOver, Switch Control, Full Keyboard Access), ⌘↩.
+    /// The slot was activated — the microphone, the Send arrow, the Stop
+    /// square — by a finger's tap (however long it was held), a click,
+    /// VoiceOver, Switch Control, Full Keyboard Access, ⌘↩. A press going
+    /// down or being held says nothing: a long press is not a gesture.
     func activate() {
         handle(.activate(atMS: clock(), situation: situation(), recordedMS: recordedMS))
     }
@@ -343,14 +235,9 @@ final class VoiceComposer {
         handle(.answer(atMS: clock(), delete: delete))
     }
 
-    /// The Undo row's Undo.
-    func undo() {
-        handle(.undo(atMS: clock()))
-    }
-
     /// Anything else the person did — a character typed or deleted, a paste,
-    /// the paperclip, a sticker, Reply: the Undo window ends by sending, and
-    /// an idle slot's activation guard is lifted (S1.1). Never for a change
+    /// the paperclip, a sticker, Reply: an idle slot's activation guard is
+    /// lifted (S1.1). Never for a change
     /// the slot's own action made — the draft a Send clears or a Save
     /// restores — or a double tap on Send could open the microphone.
     func otherAction() {
@@ -413,15 +300,6 @@ final class VoiceComposer {
             try? FileManager.default.removeItem(at: held.url)
             self.held = nil
         }
-        if case .loose(let recording, _) = undoNote {
-            try? FileManager.default.removeItem(at: recording.url)
-        }
-        undoNote = nil
-        undoTimer?.cancel()
-        undoTimer = nil
-        armedUntil = nil
-        hintTimer?.cancel()
-        showsStillRecording = false
         state = RecordGesture.HoldState()
         arbiter.release(id)
     }
@@ -449,9 +327,8 @@ final class VoiceComposer {
 
     /// Run one event through the reducer and do what it says, in its order —
     /// except what it says ABOUT an effect that missed: the announcement,
-    /// haptic, hint and lesson right after it describe a success that did not
-    /// happen, and give way to what did. The step's next thing (a recording
-    /// a tap starts as it ends the Undo window) is still done and said.
+    /// haptic and hint right after it describe a success that did not
+    /// happen, and give way to what did.
     func handle(_ event: RecordGesture.HoldEvent) {
         let (next, effects) = RecordGesture.step(state, event, constants)
         state = next
@@ -465,7 +342,6 @@ final class VoiceComposer {
             missed = perform(effect)
         }
         if let missed { tell(missed) }
-        armUndoTimer()
     }
 
     /// An effect that moves a recording, and did not.
@@ -497,24 +373,14 @@ final class VoiceComposer {
     }
 
     private func situation() -> RecordGesture.Situation {
-        RecordGesture.Situation(
-            permission: permission(),
-            blocked: hooks.blocked(),
-            assistive: assistive(),
-            firstRelease: !firstReleaseTaught(),
-            reviewBeforeSending: reviewBeforeSending())
+        RecordGesture.Situation(permission: permission(), blocked: hooks.blocked())
     }
 
     @discardableResult
     private func perform(_ effect: RecordGesture.HoldEffect) -> Miss? {
         switch effect {
-        case .start(let held):
-            begin(held: held)
-        case .lock:
-            hooks.locked()
-        case .arm, .disarm:
-            // Drawn from the phase.
-            break
+        case .start:
+            begin()
         case .delete:
             discardRecording()
         case .send:
@@ -527,12 +393,6 @@ final class VoiceComposer {
             hooks.review(recording)
         case .park:
             if let recording = takeRecording(.interruption) { hooks.park(recording) }
-        case .undoWindow:
-            return openUndoWindow()
-        case .undoSend:
-            return sendUndoNote()
-        case .undoReview:
-            reviewUndoNote()
         case .askDelete:
             // Stopped first, then asked: the recording waits for the answer.
             held = takeRecording(.ownStop)
@@ -543,7 +403,7 @@ final class VoiceComposer {
         case .explain(let reason):
             hooks.explain(reason)
         case .hint(let hint):
-            show(hint)
+            hooks.hint(hint)
         case .announce(let announcement):
             if announcement == .recording, spokeRecording {
                 spokeRecording = false
@@ -553,29 +413,23 @@ final class VoiceComposer {
         case .haptic(let haptic):
             hapticSerial += 1
             self.haptic = HapticCue(haptic: haptic, serial: hapticSerial)
-        case .firstReleaseDone:
-            rememberFirstReleaseTaught()
         }
         return nil
     }
 
     // MARK: - Starting
 
-    private func begin(held: Bool) {
+    private func begin() {
         // One recording in the whole app: another composer's is parked first
         // (S1.7). Then nothing of the app's plays under the microphone.
         arbiter.claim(id, window: window()) { [weak self] how in self?.letGo(how) }
         nowPlaying.pauseAll()
         warnedThirty = false
         warnedSilence = false
-        showsStillRecording = false
-        startedByTouch = !held && touchInFlight
         recorder.onEnded = { [weak self] ended in self?.recorderEnded(ended) }
         recorder.onTick = { [weak self] in self?.recorderTicked() }
-        if !held {
-            slotFocusRequest += 1
-            hooks.startedHandsFree()
-        }
+        slotFocusRequest += 1
+        hooks.startedHandsFree()
         startAttempt += 1
         let attempt = startAttempt
         // With VoiceOver running the microphone opens only once "Recording"
@@ -668,17 +522,12 @@ final class VoiceComposer {
     }
 
     private func sendRecording() -> Miss? {
-        let byTouch = startedByTouch
-        startedByTouch = false
         let wasThere = hasRecording
         guard let recording = takeRecording(.ownStop) else {
             return wasThere ? .nothingKept : .nothingThere
         }
         let reply = hooks.takeReply()
         let queued = hooks.send(recording, reply)
-        if queued, byTouch, !voiceOverRunning() {
-            hooks.sentHandsFreeByTouch()
-        }
         hooks.returnFocus()
         return queued ? nil : .notQueued
     }
@@ -725,117 +574,10 @@ final class VoiceComposer {
         }
     }
 
-    private func show(_ hint: RecordGesture.Hint) {
-        guard hint == .stillRecording else {
-            hooks.hint(hint)
-            return
-        }
-        showsStillRecording = true
-        hintTimer?.cancel()
-        hintTimer = schedule(RecordRules.stillRecordingHintMS) { [weak self] in
-            self?.showsStillRecording = false
-        }
-    }
-
-    // MARK: - The Undo window (S2.6)
-
-    /// A release that sends: stopped, and parked marked "sending" BEFORE the
-    /// window shows — nothing has left the device, and a crash inside the
-    /// five seconds leaves a "not sent" row rather than nothing at all.
-    private func openUndoWindow() -> Miss? {
-        let wasThere = hasRecording
-        guard let recording = takeRecording(.ownStop) else {
-            // No note, so no window: an Undo row over nothing would end in
-            // a "Voice message sent" about nothing.
-            state.undo = nil
-            return wasThere ? .nothingKept : .nothingThere
-        }
-        let reply = hooks.takeReply()
-        if let chatID = hooks.chatID(),
-           let entry = store.park(
-               fileAt: recording.url, duration: recording.duration, chatID: chatID,
-               replyTo: reply, caption: nil, sending: true, waveform: recording.waveform)
-        {
-            undoNote = .parked(entry)
-        } else {
-            undoNote = .loose(recording, replyTo: reply)
-        }
-        return nil
-    }
-
-    /// Five seconds passed, or something else happened: to the outbox,
-    /// "exactly as S2.5's Send" (S2.6) — so a hand-off that fails lands in
-    /// review with the error, never lost, as Send's does. (Leaving the chat,
-    /// which also ends the window, cancels that staging, and the entry is an
-    /// ordinary "not sent" row instead.)
-    private func sendUndoNote() -> Miss? {
-        guard let note = undoNote else { return .nothingThere }
-        undoNote = nil
-        switch note {
-        case .parked(let entry):
-            if hooks.sendParked(entry) {
-                store.remove(entry)
-                return nil
-            }
-            hooks.reviewParked(entry, String(localized: "Couldn't send that — try again."))
-            return .notQueued
-        case .loose(let recording, let reply):
-            return hooks.send(recording, reply) ? nil : .notQueued
-        }
-    }
-
-    /// Undo: review instead, and nothing is sent.
-    private func reviewUndoNote() {
-        guard let note = undoNote else { return }
-        undoNote = nil
-        switch note {
-        case .parked(let entry):
-            hooks.reviewParked(entry, nil)
-        case .loose(let recording, let reply):
-            hooks.restoreReply(reply)
-            hooks.review(recording)
-        }
-    }
-
-    /// The window runs out on the reducer's clock; the timer only makes sure
-    /// an event arrives when it does. A timer that fires early finds the
-    /// window still open and is armed again for what is left.
-    private func armUndoTimer() {
-        guard let until = state.undo?.untilMS else {
-            undoTimer?.cancel()
-            undoTimer = nil
-            armedUntil = nil
-            return
-        }
-        guard armedUntil != until else { return }
-        undoTimer?.cancel()
-        armedUntil = until
-        let wait = RecordGesture.saturatingSub(until, clock())
-        undoTimer = schedule(wait) { [weak self] in
-            guard let self else { return }
-            self.armedUntil = nil
-            self.handle(.tick(atMS: self.clock(), situation: self.situation()))
-        }
-    }
-
     // MARK: - The system's defaults
 
     nonisolated static func uptimeMS() -> UInt64 {
         UInt64(ProcessInfo.processInfo.systemUptime * 1000)
-    }
-
-    private final class TaskTimer: VoiceTimer {
-        let task: Task<Void, Never>
-        init(task: Task<Void, Never>) { self.task = task }
-        func cancel() { task.cancel() }
-    }
-
-    static func taskTimer(afterMS: UInt64, fire: @escaping @MainActor () -> Void) -> any VoiceTimer {
-        TaskTimer(task: Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(Int(min(afterMS, UInt64(Int.max)))))
-            guard !Task.isCancelled else { return }
-            fire()
-        })
     }
 
     static func systemPermission() -> RecordGesture.Permission {
@@ -863,14 +605,6 @@ final class VoiceComposer {
         }
         #else
         await AVCaptureDevice.requestAccess(for: .audio)
-        #endif
-    }
-
-    static func assistiveTechnologyRuns() -> Bool {
-        #if os(iOS)
-        UIAccessibility.isVoiceOverRunning || UIAccessibility.isSwitchControlRunning
-        #else
-        NSWorkspace.shared.isVoiceOverEnabled || NSWorkspace.shared.isSwitchControlEnabled
         #endif
     }
 
@@ -938,11 +672,11 @@ final class VoiceComposer {
 }
 
 private extension RecordGesture.HoldEffect {
-    /// What is shown, said, felt or learnt about the effect before it — the
-    /// reducer always places these after the thing they describe.
+    /// What is shown, said or felt about the effect before it — the reducer
+    /// always places these after the thing they describe.
     var describesTheEffectBefore: Bool {
         switch self {
-        case .announce, .haptic, .hint, .firstReleaseDone: true
+        case .announce, .haptic, .hint: true
         default: false
         }
     }

@@ -114,15 +114,6 @@ nonisolated enum AppSettings {
         /// boolean under this key; superseded by the pair above and only
         /// referenced by wipe() so upgraded installs shed it.
         static let legacyDeviceRegistered = "v1.deviceRegistered"
-        /// Settings › Voice Messages › Review Before Sending (#79, S9): a
-        /// held release keeps the message for review instead of opening the
-        /// Undo window. A DEVICE preference, like the previews above, so a
-        /// sign-out does not touch it — and never on the wire.
-        static let voiceReviewBeforeSending = "v1.voice.reviewBeforeSending"
-        /// The first held release on THIS device has been taught ("Next
-        /// time, letting go will send it.", S2.3, S7). Per device, kept
-        /// across sign-outs: it is about the hands, not the account.
-        static let voiceFirstReleaseTaught = "v1.voice.firstReleaseTaught"
         /// The speed voice messages play at — 1×, 1.5× or 2× — as the
         /// bubble's speed chip last left it (#79). A DEVICE preference: kept
         /// across sign-outs, never on the wire.
@@ -228,13 +219,6 @@ nonisolated enum AppSettings {
         set { defaults.set(!newValue, forKey: Key.mapPreviewsDisabled) }
     }
 
-    /// Review Before Sending (S9): off by default — a missing key reads as
-    /// off, which is the plan's default.
-    static var voiceReviewBeforeSending: Bool {
-        get { defaults.bool(forKey: Key.voiceReviewBeforeSending) }
-        set { defaults.set(newValue, forKey: Key.voiceReviewBeforeSending) }
-    }
-
     /// The voice-message playback speed this device remembers: one of
     /// `VoicePlaybackSpeed.rates`, 1 when unset or unknown.
     static var voicePlaybackRate: Double {
@@ -243,13 +227,6 @@ nonisolated enum AppSettings {
             return VoicePlaybackSpeed.rates.contains(stored) ? stored : 1
         }
         set { defaults.set(newValue, forKey: Key.voicePlaybackRate) }
-    }
-
-    /// Whether this device's first held release has been taught. A missing
-    /// key reads as "not yet", so the first release reviews and teaches.
-    static var voiceFirstReleaseTaught: Bool {
-        get { defaults.bool(forKey: Key.voiceFirstReleaseTaught) }
-        set { defaults.set(newValue, forKey: Key.voiceFirstReleaseTaught) }
     }
 
     /// `max_round_video_ms` as `GET /families/mine` last reported it, or

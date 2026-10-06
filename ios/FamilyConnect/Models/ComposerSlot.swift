@@ -30,26 +30,15 @@ import Foundation
 // MARK: - S1.1, the constants
 
 /// The numbers every client decides by (S1.1, S5.2), under the reference's
-/// names. They are constants, tuned after one device session (the plan's
-/// Blocked 3).
+/// names. They are constants. (The hold's own numbers — its threshold, the
+/// slop, the lock and cancel distances, the Undo window — went with the hold
+/// on 2026-10-06.)
 nonisolated enum RecordRules {
     /// The slot ignores activation this long after its OWN activation changed
     /// it — and only then. Typing, pasting and staging are never guarded.
     static let activationGuardMS: UInt64 = 600
-    /// The hold threshold's floor: H = max(500 ms, the system long press).
-    static let minHoldThresholdMS: UInt64 = 500
-    /// A press that moves farther than this before H can no longer hold; it
-    /// still taps if it lifts inside the button.
-    static let tapSlop: Double = 20
-    /// Upward, from where the press went down, in window coordinates: locked.
-    static let lockDistance: Double = 60
-    /// Toward the leading edge: cancel armed at 100, disarmed below 80.
-    static let cancelArmDistance: Double = 100
-    static let cancelDisarmDistance: Double = 80
-    /// Nothing shorter is ever sent; a hold released sooner keeps recording.
+    /// Nothing shorter is ever sent or kept for review.
     static let shortestRecordingMS: UInt64 = 1_000
-    /// The grace after a release that sends.
-    static let undoWindowMS: UInt64 = 5_000
     /// Five minutes, and "30 seconds left" at 4:30.
     static let voiceCapMS: UInt64 = 300_000
     static let voiceWarningMS: UInt64 = 270_000
@@ -65,8 +54,6 @@ nonisolated enum RecordRules {
     static let silenceWarningAfterMS: UInt64 = 3_000
     /// Deleting a recording this long or longer asks first.
     static let deleteAsksFromMS: UInt64 = 10_000
-    /// "Still recording. Tap Send when you're done." stays this long.
-    static let stillRecordingHintMS: UInt64 = 3_000
     static let previewIdleCloseMS: UInt64 = 60_000
     /// Send ↔ microphone; none under Reduce Motion.
     static let slotCrossfadeMS: UInt64 = 150
@@ -88,9 +75,6 @@ nonisolated enum RecordRules {
 nonisolated enum ComposerSlot: Equatable, Sendable {
     /// Row 1: the video recorder owns the row.
     case recorder
-    /// Row 2 while a finger holds it: the pressed microphone stays under the
-    /// finger until the recording turns hands-free.
-    case heldMicrophone
     /// Row 2: the Send arrow — stops and sends (S2.5).
     case sendVoice
     /// Row 3: the Stop square — stops; the note is staged beside the words.
@@ -104,16 +88,16 @@ nonisolated enum ComposerSlot: Equatable, Sendable {
     case sendDisabled
     /// Rows 7–9: the microphone, dimmed; activating it says why.
     case dimmed(Dimmed)
-    /// Row 10: the microphone — hands-free on activation, the walkie-talkie
-    /// when held on a touch screen (S2.3).
+    /// Row 10: the microphone — a hands-free recording on activation. A
+    /// long press is not a gesture (revised 2026-10-06): it records nothing
+    /// and opens nothing while the finger is down, and it is a tap when it
+    /// lifts inside.
     case microphone
 
     /// The voice recording the composer is showing, as far as the slot is
     /// concerned (`RecordGesture.HoldState.recording` says it of a state).
     nonisolated enum Recording: Equatable, Sendable {
         case none
-        /// A finger or pen holds the microphone and it records.
-        case held
         /// Hands-free, started with the composer empty: row 2.
         case handsFree
         /// Hands-free, started from the paperclip or the shortcut beside
@@ -193,7 +177,6 @@ nonisolated enum ComposerSlot: Equatable, Sendable {
     static func of(_ inputs: Inputs) -> ComposerSlot {
         if inputs.recorderOpen { return .recorder }
         switch inputs.recording {
-        case .held: return .heldMicrophone
         case .handsFree: return .sendVoice
         case .handsFreeBesideDraft: return .stopRecording
         case .none: break
@@ -211,7 +194,7 @@ nonisolated enum ComposerSlot: Equatable, Sendable {
     var row: Int {
         switch self {
         case .recorder: 1
-        case .heldMicrophone, .sendVoice: 2
+        case .sendVoice: 2
         case .stopRecording: 3
         case .save: 4
         case .send: 5
@@ -228,7 +211,7 @@ nonisolated enum ComposerSlot: Equatable, Sendable {
     var labelKey: String? {
         switch self {
         case .recorder: nil
-        case .heldMicrophone, .sendVoice: "Send voice message"
+        case .sendVoice: "Send voice message"
         case .stopRecording: "Stop recording"
         case .save: "Save"
         case .send, .sendDisabled: "Send"
@@ -240,7 +223,7 @@ nonisolated enum ComposerSlot: Equatable, Sendable {
     var label: String? {
         switch self {
         case .recorder: nil
-        case .heldMicrophone, .sendVoice: String(localized: "Send voice message")
+        case .sendVoice: String(localized: "Send voice message")
         case .stopRecording: String(localized: "Stop recording")
         case .save: String(localized: "Save")
         case .send, .sendDisabled: String(localized: "Send")
@@ -262,7 +245,7 @@ nonisolated enum ComposerSlot: Equatable, Sendable {
     }
 
     /// "The slot is a microphone" — rows 7 to 10, where the video button may
-    /// show (S1.4) and where a press may become a hold (S2.3).
+    /// show (S1.4).
     var isMicrophone: Bool {
         switch self {
         case .dimmed, .microphone: true
@@ -309,9 +292,6 @@ nonisolated enum VideoDoor: Equatable, Sendable {
         var slot = ComposerSlot.Inputs()
         /// The chat's main composer, in a family or a direct chat.
         var familyOrDirectChat = true
-        /// A released voice message is waiting out its Undo window: its row
-        /// takes the field's place, and the button inside it goes too (S2.6).
-        var undoWindow = false
         /// The server sends `max_round_video_ms` on `GET /families/mine`.
         var serverOffersRound = false
         /// The device has a camera.
@@ -331,7 +311,7 @@ nonisolated enum VideoDoor: Equatable, Sendable {
     /// chat with round video available; dimmed, with the slot's sentence, in
     /// rows 7 and 8; usable in row 9, because the not-sent rule is about voice.
     static func of(_ inputs: Inputs) -> VideoDoor {
-        guard inputs.familyOrDirectChat, !inputs.undoWindow, inputs.roundAvailable else {
+        guard inputs.familyOrDirectChat, inputs.roundAvailable else {
             return .hidden
         }
         switch ComposerSlot.of(inputs.slot) {

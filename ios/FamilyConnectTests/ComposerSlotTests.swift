@@ -28,7 +28,7 @@ struct ComposerSlotTests {
     }
 
     private static let slots: [ComposerSlot] = [
-        .recorder, .heldMicrophone, .sendVoice, .stopRecording, .save(enabled: true), .save(enabled: false),
+        .recorder, .sendVoice, .stopRecording, .save(enabled: true), .save(enabled: false),
         .send, .sendDisabled, .dimmed(.call), .dimmed(.busy), .dimmed(.notSent), .microphone,
     ]
 
@@ -51,15 +51,14 @@ struct ComposerSlotTests {
     }
 
     @Test("every hint on screen is its key's", arguments: [
-        RecordGesture.Hint.stillRecording, .nextTimeSends, .nothingHeard, .stoppedAtFiveMinutes, .tooShort,
-        .canRecordNow,
+        RecordGesture.Hint.stoppedAtFiveMinutes, .tooShort,
     ])
     func hints(hint: RecordGesture.Hint) {
         #expect(hint.text == catalogue(hint.key))
     }
 
     @Test("every announcement said is its key's", arguments: [
-        RecordGesture.Announcement.recording, .recordingLocked, .recordingDeleted, .voiceMessageSent, .tooShort,
+        RecordGesture.Announcement.recording, .recordingDeleted, .voiceMessageSent, .tooShort,
         .stoppedAtFiveMinutes,
     ])
     func announcements(announcement: RecordGesture.Announcement) {
@@ -96,10 +95,12 @@ struct ComposerSlotTests {
         }
     }
 
-    @Test("iOS holds at 500 ms, the floor")
-    func iosHoldThreshold() {
-        #expect(VoiceComposer.systemLongPressMS == 500)
-        #expect(RecordGesture.HoldConstants.forSystem(longPressMS: VoiceComposer.systemLongPressMS) == .standard)
+    @MainActor
+    @Test("a composer decides by S1.1's numbers — there is no hold threshold to tune")
+    func composerConstants() {
+        #expect(VoiceComposer().constants == .standard)
+        #expect(RecordGesture.HoldConstants.standard == RecordGesture.HoldConstants(
+            shortestRecordingMS: 1_000, activationGuardMS: 600, deleteAsksFromMS: 10_000))
     }
 
     @Test("u64 arithmetic saturates as the reference's does")
@@ -115,7 +116,7 @@ struct ComposerSlotTests {
     func videoDoorOpensInPhaseThree() {
         #expect(VideoDoor.thisBuildRecords == true)
         let everythingElse = VideoDoor.Inputs(
-            slot: ComposerSlot.Inputs(), familyOrDirectChat: true, undoWindow: false,
+            slot: ComposerSlot.Inputs(), familyOrDirectChat: true,
             serverOffersRound: true, hasCamera: true, encoderProbePasses: true)
         #expect(VideoDoor.of(everythingElse) == .shown)
         // Decision 40 still holds through the input: a build that only

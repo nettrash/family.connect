@@ -5,19 +5,18 @@ namespace FamilyConnect.App.Logic;
 // Voice and video messages from the Send button (docs/audio-video-messages-2026-10-04.md — "the plan" below — issue #79):
 // the composer's trailing slot, the video button inside the empty field, and the round video's arithmetic, ported from
 // fc_text::record and held to it case for case by record-vectors.json (ComposerButtonTests). Windows reads every rule in
-// the vectors but the hold's (S8.6: every input clicks here), and adds the two of its own the plan gives it — which press
-// opens the slot's menu, and the 600 ms guard measured on the slot's own presses.
+// the vectors but the voice reducer's (S8.6: every input clicks here, and the window drives its recording itself), and adds
+// the two of its own the plan gives it — which press opens the slot's menu, and the 600 ms guard measured on the slot's own
+// presses. Amended 2026-10-06 (#79): the phones' hold-to-talk is gone from every client, so the vectors no longer carry a
+// held microphone, a hold threshold or an Undo window — one way into a voice recording, an activation, everywhere.
 
 /// <summary>
-/// The voice recording the composer is showing, as the slot sees it (S1.3). <see cref="Held"/> is the touch hold of the
-/// phones and tablets; Windows never sets it (S8.6), and it is here so the shared vectors read the same in every port.
+/// The voice recording the composer is showing, as the slot sees it (S1.3). Every recording is hands-free: an activation of
+/// the slot or the menu starts it, on every client (the hold was withdrawn 2026-10-06).
 /// </summary>
 public enum Recording
 {
     None,
-
-    /// <summary>A finger or pen holds the microphone and it records (S2.3) — never on Windows.</summary>
-    Held,
 
     /// <summary>Hands-free, started with the composer empty: row 2, the Send arrow.</summary>
     HandsFree,
@@ -70,9 +69,6 @@ public enum SlotKind
     /// <summary>Row 1: the video recorder owns the row.</summary>
     Recorder,
 
-    /// <summary>Row 2 while a finger holds it — never on Windows.</summary>
-    HeldMicrophone,
-
     /// <summary>Row 2: the Send arrow — stops the recording and sends it.</summary>
     SendVoice,
 
@@ -104,7 +100,7 @@ public readonly record struct Slot(SlotKind Kind, bool? Enabled = null, Dimmed? 
     public int Row => Kind switch
     {
         SlotKind.Recorder => 1,
-        SlotKind.HeldMicrophone or SlotKind.SendVoice => 2,
+        SlotKind.SendVoice => 2,
         SlotKind.StopRecording => 3,
         SlotKind.Save => 4,
         SlotKind.Send => 5,
@@ -143,7 +139,6 @@ public readonly record struct Door(DoorKind Kind, Dimmed? Reason = null)
 
 /// <summary>What the video button needs to know besides the slot (S1.4, S1.2).</summary>
 /// <param name="FamilyOrDirectChat">The chat's main composer, in a family or a direct chat — never the assistant's, never a thread.</param>
-/// <param name="UndoWindow">A released voice message waits out its Undo window — never on Windows, which has no hold.</param>
 /// <param name="ServerOffersRound">The server sends <c>max_round_video_ms</c> on <c>GET /families/mine</c>.</param>
 /// <param name="HasCamera">The device has a camera.</param>
 /// <param name="EncoderProbePasses">The web's encoder probe; true everywhere else.</param>
@@ -151,7 +146,6 @@ public readonly record struct Door(DoorKind Kind, Dimmed? Reason = null)
 public readonly record struct DoorInputs(
     SlotInputs Slot,
     bool FamilyOrDirectChat,
-    bool UndoWindow,
     bool ServerOffersRound,
     bool HasCamera,
     bool EncoderProbePasses,
@@ -299,8 +293,6 @@ public static class ComposerButton
         }
         switch (inputs.Recording)
         {
-            case Recording.Held:
-                return new(SlotKind.HeldMicrophone);
             case Recording.HandsFree:
                 return new(SlotKind.SendVoice);
             case Recording.HandsFreeBesideDraft:
@@ -337,7 +329,7 @@ public static class ComposerButton
     public static string? Label(Slot slot, IStringCatalog say) => slot.Kind switch
     {
         SlotKind.Recorder => null,
-        SlotKind.HeldMicrophone or SlotKind.SendVoice => say.Get("Send voice message"),
+        SlotKind.SendVoice => say.Get("Send voice message"),
         SlotKind.StopRecording => say.Get("Stop recording"),
         SlotKind.Save => say.Get("Save"),
         SlotKind.Send or SlotKind.SendDisabled => say.Get("Send"),
@@ -360,7 +352,7 @@ public static class ComposerButton
     /// </summary>
     public static Door VideoDoor(DoorInputs inputs)
     {
-        if (!inputs.FamilyOrDirectChat || inputs.UndoWindow || !inputs.RoundAvailable)
+        if (!inputs.FamilyOrDirectChat || !inputs.RoundAvailable)
         {
             return Door.Hidden;
         }
@@ -392,6 +384,13 @@ public static class ComposerButton
     /// </summary>
     public static bool IsRound(string body, IReadOnlyList<AttachmentFlags> attachments) =>
         body.Length == 0 && attachments is [{ Kind: "video", Round: true }];
+
+    /// <summary>
+    /// Whether the slot's tooltip may open while a press of <paramref name="pressing"/> is down (2026-10-06): never under a
+    /// finger or a pen, where Windows opens a tooltip on a press-and-hold — a callout on a long press, which no client shows on
+    /// the microphone any more — and as ever under a mouse, whose tooltip is a hover's, and for a key or a screen reader.
+    /// </summary>
+    public static bool TooltipDuring(SlotDevice pressing) => pressing is not (SlotDevice.Touch or SlotDevice.Pen);
 
     /// <summary>
     /// What a press on the slot does (S8.6). A click — any pointer, any length, the keyboard, a screen reader — activates,
@@ -430,7 +429,7 @@ public static class ComposerButton
         var record = say.Format("Record a voice message (%@)", RecordShortcut);
         switch (slot.Kind)
         {
-            case SlotKind.HeldMicrophone or SlotKind.SendVoice:
+            case SlotKind.SendVoice:
             {
                 var name = say.Get("Send voice message");
                 return new(SendGlyph, name, name, string.Empty, Enabled: true, LooksDimmed: false);

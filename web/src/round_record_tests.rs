@@ -2305,6 +2305,294 @@ mod recorder_tests {
         }
     }
 
+    /// Whether `element`'s own background is solid: nothing under it shows.
+    fn opaque(element: &Element, window: &web_sys::Window) -> bool {
+        let colour = window
+            .get_computed_style(element)
+            .unwrap()
+            .unwrap()
+            .get_property_value("background-color")
+            .unwrap();
+        colour.starts_with("rgb(")
+    }
+
+    /// What the recorder shows that must not touch — the status capsule,
+    /// the circle with its ring (6 outside it), each round button with its
+    /// caption, the reply banner — and the control area against the status
+    /// and the circle; and each of them inside the `width × height` window.
+    /// Every fault is listed, for a failure to show all of them.
+    fn overlaps(within: &Element, width: f64, height: f64) -> Vec<String> {
+        let mut boxes: Vec<(String, [f64; 4])> = Vec::new();
+        let all = |selector: &str| {
+            let found = within.query_selector_all(selector).unwrap();
+            (0..found.length())
+                .filter_map(|index| found.item(index))
+                .map(|node| node.unchecked_into::<Element>())
+                .collect::<Vec<_>>()
+        };
+        let edges = |element: &Element, out: f64| {
+            let rect = element.get_bounding_client_rect();
+            [
+                rect.left() - out,
+                rect.top() - out,
+                rect.right() + out,
+                rect.bottom() + out,
+            ]
+        };
+        let mut faults = Vec::new();
+        for status in all(".recorder-status") {
+            boxes.push(("the status".into(), edges(&status, 0.0)));
+        }
+        for circle in all(".recorder-circle") {
+            let rect = circle.get_bounding_client_rect();
+            if rect.width() < 1.0 || (rect.width() - rect.height()).abs() > 0.5 {
+                faults.push(format!(
+                    "the circle is {} × {}",
+                    rect.width(),
+                    rect.height()
+                ));
+            }
+            boxes.push(("the circle and its ring".into(), edges(&circle, 6.0)));
+        }
+        for item in all(".recorder-item") {
+            let caption = item
+                .query_selector(".recorder-caption")
+                .unwrap()
+                .and_then(|caption| caption.text_content())
+                .unwrap_or_default();
+            boxes.push((format!("{caption:?} and its caption"), edges(&item, 0.0)));
+        }
+        for banner in all(".recorder-banner") {
+            boxes.push(("the reply banner".into(), edges(&banner, 0.0)));
+        }
+        let meets = |a: &[f64; 4], b: &[f64; 4]| {
+            a[0] < b[2] - 0.5 && b[0] < a[2] - 0.5 && a[1] < b[3] - 0.5 && b[1] < a[3] - 0.5
+        };
+        for (name, edge) in &boxes {
+            if edge[0] < -0.5 || edge[1] < -0.5 || edge[2] > width + 0.5 || edge[3] > height + 0.5 {
+                faults.push(format!("{name} leaves the window: {edge:?}"));
+            }
+        }
+        for (index, (name, edge)) in boxes.iter().enumerate() {
+            for (other, other_edge) in &boxes[index + 1..] {
+                if meets(edge, other_edge) {
+                    faults.push(format!("{name} overlaps {other}: {edge:?} {other_edge:?}"));
+                }
+            }
+        }
+        for dock in all(".recorder-dock") {
+            let dock = edges(&dock, 0.0);
+            for (name, edge) in boxes.iter().filter(|(name, _)| {
+                name.starts_with("the status") || name.starts_with("the circle")
+            }) {
+                if meets(&dock, edge) {
+                    faults.push(format!(
+                        "the control area overlaps {name}: {dock:?} {edge:?}"
+                    ));
+                }
+            }
+        }
+        faults
+    }
+
+    /// THE COMPOSER NEVER SHOWS THROUGH, AND NOTHING OVERLAPS (decision 41,
+    /// 2026-10-06). On the owner's iPhone the composer row was drawn under
+    /// the recorder's controls — Close over the paperclip, the "Voice
+    /// message" caption over the field, the composer's Send under Record —
+    /// and the status floated over the chat. Here, in the real conversation:
+    /// no part of the composer is drawn or takes a hit while the recorder is
+    /// open, and the controls stand on their own solid area. Then the
+    /// recorder's own markup in frames the size of phones held upright
+    /// (320, 375, 430 wide) and on their side, with and without a reply
+    /// banner, and with text twice its size: the status, the circle with its
+    /// ring, every round button with its caption and the banner never
+    /// touch, the control area is solid and meets neither the status nor the
+    /// circle, everything stays in the window, and in a phone-sized window
+    /// the scrim is dark enough (80 % or more) that the chat does not compete.
+    #[wasm_bindgen_test]
+    async fn the_composer_never_shows_through_and_nothing_in_the_recorder_overlaps() {
+        use crate::views::round_recorder::geometry;
+        let window = web_sys::window().unwrap();
+        let viewport = window.inner_height().unwrap().as_f64().unwrap();
+        let mut faults = Vec::new();
+        let mut markup = String::new();
+        for (width, height) in [(320u32, 413u32), (375, 413), (430, 413), (640, 360)] {
+            let height = height.min(viewport as u32);
+            let root = pane_of(width, height);
+            let (_log, on_action) = recorder();
+            let handle = render(&root, props(on_action));
+            open(&root).await;
+            let at = format!("the conversation at {width} × {height}");
+            for selector in [
+                ".composer-wrap",
+                ".composer textarea",
+                ".composer .slot",
+                ".composer .tool",
+            ] {
+                let Some(element) = root.query_selector(selector).unwrap() else {
+                    continue;
+                };
+                let visibility = window
+                    .get_computed_style(&element)
+                    .unwrap()
+                    .unwrap()
+                    .get_property_value("visibility")
+                    .unwrap();
+                if visibility != "hidden" {
+                    faults.push(format!("{at}: {selector} is drawn ({visibility})"));
+                }
+                let rect = element.get_bounding_client_rect();
+                if rect.width() > 0.0 && rect.height() > 0.0 {
+                    let hit = document().element_from_point(
+                        (rect.left() + rect.width() / 2.0) as f32,
+                        (rect.top() + rect.height() / 2.0) as f32,
+                    );
+                    if hit.is_some_and(|hit| root.contains(Some(&hit))) {
+                        faults.push(format!("{at}: {selector} takes a hit"));
+                    }
+                }
+            }
+            let layer = dialog().unwrap();
+            if !opaque(&query(&layer, ".recorder-dock"), &window) {
+                faults.push(format!("{at}: the control area is see-through"));
+            }
+            faults.extend(
+                overlaps(&layer, f64::from(width), f64::from(height))
+                    .into_iter()
+                    .map(|fault| format!("{at}: {fault}")),
+            );
+            markup = layer.outer_html();
+            press(&slot(), "Escape");
+            assert!(until(1_000, || dialog().is_none()).await);
+            handle.destroy();
+            root.remove();
+        }
+        assert!(markup.contains("class=\"recorder is-column\""), "{markup}");
+
+        let banner = "<div class=\"recorder-banner\"><span class=\"banner-text\">\
+                      Replying to Anna: see you at the station at six</span>\
+                      <button type=\"button\" class=\"recorder-banner-drop\">✕</button></div>";
+        let large = "<style>.recorder-caption { font-size: 22px; } \
+                     .recorder-status { font-size: 28px; } .recorder-note { font-size: 26px; }</style>";
+        for (width, height) in [
+            (320u32, 568u32),
+            (375, 667),
+            (430, 932),
+            (568, 320),
+            (667, 375),
+            (932, 430),
+        ] {
+            for (with_banner, large_text) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let shape = geometry(
+                    f64::from(width),
+                    f64::from(height),
+                    if with_banner { 40.0 } else { 0.0 },
+                );
+                let mut sized = if shape.column {
+                    markup.clone()
+                } else {
+                    markup.replace("recorder is-column", "recorder")
+                };
+                let style = format!(
+                    "--pane-left:0px;--pane-top:0px;--pane-width:{width}px;\
+                     --pane-height:{height}px;--row-height:64px;--row-bottom:0px;--circle:{}px",
+                    shape.diameter
+                );
+                let start = sized.find("style=\"").unwrap() + 7;
+                let end = start + sized[start..].find('"').unwrap();
+                sized.replace_range(start..end, &style);
+                if with_banner {
+                    sized = sized.replacen(
+                        "<div class=\"recorder-row\">",
+                        &format!("{banner}<div class=\"recorder-row\">"),
+                        1,
+                    );
+                }
+                if large_text {
+                    sized.push_str(large);
+                }
+                let at = format!(
+                    "a {width} × {height} window{}{}",
+                    if with_banner { ", a reply" } else { "" },
+                    if large_text { ", large text" } else { "" }
+                );
+                let (frame, inner) = framed(width, height, &sized).await;
+                let inner_window = inner.default_view().unwrap();
+                let page = inner.document_element().unwrap();
+                if !opaque(&query(&page, ".recorder-dock"), &inner_window) {
+                    faults.push(format!("{at}: the control area is see-through"));
+                }
+                // A phone-sized window: the chat is dark enough under the
+                // scrim not to compete with the circle.
+                if width < 720 {
+                    let scrim = inner_window
+                        .get_computed_style(&query(&page, ".recorder-pane"))
+                        .unwrap()
+                        .unwrap()
+                        .get_property_value("background-color")
+                        .unwrap();
+                    let alpha = scrim
+                        .strip_prefix("rgba(")
+                        .and_then(|rest| rest.trim_end_matches(')').rsplit(',').next())
+                        .map_or(1.0, |alpha| alpha.trim().parse::<f64>().unwrap_or(0.0));
+                    if alpha < 0.8 {
+                        faults.push(format!("{at}: the scrim is too light ({scrim})"));
+                    }
+                }
+                faults.extend(
+                    overlaps(&page, f64::from(width), f64::from(height))
+                        .into_iter()
+                        .map(|fault| format!("{at}: {fault}")),
+                );
+                frame.remove();
+            }
+        }
+        assert!(faults.is_empty(), "{}", faults.join("\n"));
+    }
+
+    /// THE COMPOSER IS HIDDEN ONLY WHILE THE RECORDER IS DRAWN (decision
+    /// 41). A roster from a server that stops offering video messages takes
+    /// the recorder away without its Close: the composer it covered comes
+    /// back — drawn and taking input, never left invisible under nothing —
+    /// and when the offer returns the recorder stays closed.
+    #[wasm_bindgen_test]
+    async fn a_recorder_taken_away_by_the_server_gives_the_composer_back() {
+        let root = pane_of(600, 700);
+        let (_log, on_action) = recorder();
+        let mut handle = render(&root, props(on_action.clone()));
+        open(&root).await;
+        let wrap = query(&root, ".composer-wrap");
+        assert!(wrap.has_attribute("inert"), "covered while it is open");
+        let mut older = props(on_action.clone());
+        older.round = None;
+        handle.update(older);
+        assert!(until(1_000, || dialog().is_none()).await, "taken away");
+        TimeoutFuture::new(50).await;
+        let visible = |root: &Element| {
+            let wrap = query(root, ".composer-wrap");
+            let area = query(root, ".composer textarea");
+            !wrap.has_attribute("inert")
+                && !wrap.class_list().contains("is-covered")
+                && web_sys::window()
+                    .unwrap()
+                    .get_computed_style(&area)
+                    .unwrap()
+                    .unwrap()
+                    .get_property_value("visibility")
+                    .unwrap()
+                    == "visible"
+        };
+        assert!(visible(&root), "the composer is drawn again");
+        handle.update(props(on_action));
+        TimeoutFuture::new(300).await;
+        assert!(dialog().is_none(), "it does not spring back open");
+        assert!(visible(&root), "and the composer stays");
+        handle.destroy();
+        root.remove();
+    }
+
     /// THE REPLY GOES WITH IT (S1.5, S3.3): the composer's primed reply is
     /// quoted in the recorder over the control row and carried by the video;
     /// its ✕ drops it, there and in the composer.

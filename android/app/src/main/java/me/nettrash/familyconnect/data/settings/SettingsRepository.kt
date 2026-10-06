@@ -336,27 +336,9 @@ data class SettingsState(
      */
     val parkedRecordings: List<ParkedRecording> = emptyList(),
     /**
-     * "Review Before Sending" (#79, S9): a held release keeps the voice
-     * message for review instead of opening the five-second Undo window — the
-     * window's WCAG 2.2.1 "turn off". Off by default, per DEVICE and never on
-     * the wire, so it survives a sign-out like the preview switches.
-     */
-    val reviewBeforeSending: Boolean = false,
-    /**
-     * Whether this device has had its first held release taught — that one
-     * went to review with "Next time, letting go will send it." (S2.3, S7).
-     * Per device: it is about the hand that holds this phone.
-     */
-    val heldReleaseTaught: Boolean = false,
-    /**
-     * Whether "You can also hold the microphone while you talk." has been
-     * shown on this device (S7.2) — once per device, ever.
-     */
-    val voiceCoachMarkShown: Boolean = false,
-    /**
      * The video recorder's PREVIEW has said "Only you can see this until you
      * start recording." on this device (#79, S3.4, S7.5): once per DEVICE,
-     * so it survives a sign-out like the voice teaching above.
+     * so it survives a sign-out like the preview switches.
      */
     val roundPreviewTaught: Boolean = false,
 )
@@ -552,15 +534,6 @@ interface SettingsRepository {
      */
     suspend fun updateParkedRecordings(transform: (List<ParkedRecording>) -> List<ParkedRecording>)
 
-    /** S9's switch (#79). Device-scoped: kept through a sign-out. */
-    suspend fun setReviewBeforeSending(enabled: Boolean)
-
-    /** This device's first held release has been taught (#79, S2.3). Device-scoped. */
-    suspend fun setHeldReleaseTaught()
-
-    /** The voice coach mark has been shown on this device (#79, S7.2). Device-scoped. */
-    suspend fun setVoiceCoachMarkShown()
-
     /** The recorder's first-time PREVIEW line has been shown on this device (#79, S3.4). */
     suspend fun setRoundPreviewTaught()
 
@@ -659,12 +632,12 @@ class DataStoreSettingsRepository @Inject constructor(
         // which no Preferences key type can hold. Account-scoped: NOT among
         // the keys resetKeepingServerUrl keeps.
         val PARKED_RECORDINGS = stringPreferencesKey("parked_recordings")
-        // Device-scoped, all three (#79): kept by resetKeepingServerUrl, like
-        // the preview switches — they are about this phone and the hand on
-        // it, not about the account.
-        val REVIEW_BEFORE_SENDING = booleanPreferencesKey("review_before_sending")
-        val HELD_RELEASE_TAUGHT = booleanPreferencesKey("held_release_taught")
-        val VOICE_COACH_MARK_SHOWN = booleanPreferencesKey("voice_coach_mark_shown")
+        // Device-scoped (#79): kept by resetKeepingServerUrl, like the
+        // preview switches — it is about this phone, not about the account.
+        // (The hold's three device keys — review_before_sending,
+        // held_release_taught, voice_coach_mark_shown — went with the hold
+        // on 2026-10-06; a value a test build stored is never read, and the
+        // next sign-out clears it.)
         val ROUND_PREVIEW_TAUGHT = booleanPreferencesKey("round_preview_taught")
     }
 
@@ -732,9 +705,6 @@ class DataStoreSettingsRepository @Inject constructor(
             // Never throws: a corrupt index reads as empty, like the block
             // list's `toLongOrNull`, and the sweep reclaims the files.
             parkedRecordings = ParkedRecording.decode(prefs[Keys.PARKED_RECORDINGS]),
-            reviewBeforeSending = prefs[Keys.REVIEW_BEFORE_SENDING] == true,
-            heldReleaseTaught = prefs[Keys.HELD_RELEASE_TAUGHT] == true,
-            voiceCoachMarkShown = prefs[Keys.VOICE_COACH_MARK_SHOWN] == true,
             roundPreviewTaught = prefs[Keys.ROUND_PREVIEW_TAUGHT] == true,
         )
     }
@@ -991,18 +961,6 @@ class DataStoreSettingsRepository @Inject constructor(
         }
     }
 
-    override suspend fun setReviewBeforeSending(enabled: Boolean) {
-        dataStore.edit { it[Keys.REVIEW_BEFORE_SENDING] = enabled }
-    }
-
-    override suspend fun setHeldReleaseTaught() {
-        dataStore.edit { it[Keys.HELD_RELEASE_TAUGHT] = true }
-    }
-
-    override suspend fun setVoiceCoachMarkShown() {
-        dataStore.edit { it[Keys.VOICE_COACH_MARK_SHOWN] = true }
-    }
-
     override suspend fun setRoundPreviewTaught() {
         dataStore.edit { it[Keys.ROUND_PREVIEW_TAUGHT] = true }
     }
@@ -1021,12 +979,8 @@ class DataStoreSettingsRepository @Inject constructor(
             // previews back on would resume asking Google for tiles that
             // this person opted out of.
             val keepMapPreviews = prefs[Keys.MAP_PREVIEWS_DISABLED]
-            // The voice-message choices are this DEVICE's (#79): a sign-out
-            // must neither switch Review Before Sending back off under
-            // somebody who needs it, nor teach the same hand twice.
-            val keepReviewBeforeSending = prefs[Keys.REVIEW_BEFORE_SENDING]
-            val keepHeldReleaseTaught = prefs[Keys.HELD_RELEASE_TAUGHT]
-            val keepVoiceCoachMarkShown = prefs[Keys.VOICE_COACH_MARK_SHOWN]
+            // The recorder's first-time line is this DEVICE's (#79): a
+            // sign-out must not teach the same hand twice.
             val keepRoundPreviewTaught = prefs[Keys.ROUND_PREVIEW_TAUGHT]
             // The voice-message speed is this device's too (#79).
             val keepVoiceSpeed = prefs[VOICE_PLAYBACK_SPEED_KEY]
@@ -1035,9 +989,6 @@ class DataStoreSettingsRepository @Inject constructor(
             keepPushToken?.let { prefs[Keys.PUSH_TOKEN] = it }
             keepLinkPreviews?.let { prefs[Keys.LINK_PREVIEWS_DISABLED] = it }
             keepMapPreviews?.let { prefs[Keys.MAP_PREVIEWS_DISABLED] = it }
-            keepReviewBeforeSending?.let { prefs[Keys.REVIEW_BEFORE_SENDING] = it }
-            keepHeldReleaseTaught?.let { prefs[Keys.HELD_RELEASE_TAUGHT] = it }
-            keepVoiceCoachMarkShown?.let { prefs[Keys.VOICE_COACH_MARK_SHOWN] = it }
             keepRoundPreviewTaught?.let { prefs[Keys.ROUND_PREVIEW_TAUGHT] = it }
             keepVoiceSpeed?.let { prefs[VOICE_PLAYBACK_SPEED_KEY] = it }
         }

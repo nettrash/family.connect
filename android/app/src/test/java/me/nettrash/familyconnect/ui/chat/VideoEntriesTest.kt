@@ -59,9 +59,10 @@ class VideoEntriesTest {
         staged: Boolean = false,
         editing: Boolean = false,
         assistantChat: Boolean = false,
+        recording: Recording = Recording.NONE,
     ) = ComposerSlot.SlotInputs(
         recorderOpen = false,
-        recording = Recording.NONE,
+        recording = recording,
         editing = editing,
         draftBlank = true,
         staged = staged,
@@ -75,13 +76,11 @@ class VideoEntriesTest {
     private fun entries(
         slot: ComposerSlot.SlotInputs = slot(),
         familyOrDirectChat: Boolean = true,
-        undoWindow: Boolean = false,
         serverOffersRound: Boolean = true,
         hasCamera: Boolean = true,
     ) = ComposerSlot.DoorInputs(
         slot = slot,
         familyOrDirectChat = familyOrDirectChat,
-        undoWindow = undoWindow,
         serverOffersRound = serverOffersRound,
         hasCamera = hasCamera,
         encoderProbePasses = true,
@@ -233,8 +232,8 @@ class VideoEntriesTest {
     }
 
     @Test
-    fun noVideoButtonDuringTheUndoWindow() {
-        show(entries(undoWindow = true))
+    fun noVideoButtonWhileAVoiceMessageIsRecorded() {
+        show(entries(slot = slot(recording = Recording.HANDS_FREE)))
         videoButton.assertDoesNotExist()
     }
 
