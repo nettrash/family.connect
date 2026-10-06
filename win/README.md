@@ -54,6 +54,8 @@ win/
                 RoundVideoRules, RoundRecorder — recording a video message: the switch, the square, the camera and its
                                 mode, the encodes, what is sent, and the recorder's three states as a machine
                 RecorderFrames — where the recorder's status, circle, banner, bar and controls stand, never overlapping
+                RoundPlayback, RoundInline, RoundFrames — a received video message played IN PLACE: the circle's
+                                machine, what shows in each state, and how often a frame is copied into it
   src/FamilyConnect.App/               the WinUI 3 window: structure + code-behind, no decisions
                 Services/ Connection (one server, wired), LockerTokenStore (the credential
                           locker), AppServices, AppFolders, the settings files, Toasts and
@@ -62,7 +64,8 @@ win/
                           MediaPreparing, LocationFinder, StickerImaging, KeepAwake (the
                           screen on while recording), SessionWatch (lock, screen saver, sleep),
                           ScreenReader (whether one runs, so the microphone waits for it),
-                          VideoMessageRecorder + RoundVideoSetting (a video message's camera, switched off)
+                          VideoMessageRecorder + RoundVideoSetting (a video message's camera, switched off),
+                          RoundFramePlayer (a received circle's frame-server player)
                 Views/    ServerView, SignInView, DoorView, PendingView, OfflineView, ChatsView,
                           BoardView + NoteSheet, FamilyView, SettingsView, CallCardView, and the
                           sheets and cards they open (polls, emoji, dialogs, RoundRecorderLayer)
@@ -451,12 +454,60 @@ loses its dot and says "Played" together (`DrawnCopies`); a note seeked while id
 there; and a voice note on its way is drawn as the bubble it will be, fainter, with "Sending…" under it. The bubble, the
 chips and that pending bubble are `NamedGroup`s, whose automation peer is a Group, so Narrator meets their names — a
 `Border` has none. A circle stands on a soft shadow (cast by a SOLID disc, since the mask takes its alpha) with its length
-and its white dot on a dark capsule at the bottom and a 48 play disc; in the viewer exactly one accent ring runs OUTSIDE
-the edge as it plays, its play disc fades out, and both go back to the poster's look when it ends (`RoundLook.ViewerRing`). A voice or video message's
+and its white dot on a dark capsule at the bottom and a 48 play disc; a click plays it IN PLACE (the next paragraph but one),
+and Open Full Screen plays it in the viewer, where exactly one accent ring runs OUTSIDE the edge as it plays, its play disc
+fades out, and both go back to the poster's look when it ends (`RoundLook.ViewerRing`). A voice or video message's
 menu is the reactions, Reply, Show text, Playback speed (voice), Save…, Open Full Screen (video) and Safety — never Copy or
 Edit (`MessageMenu`); every other message's menu is unchanged. No client has a hold, a hold row or an Undo window any
 more (withdrawn 2026-10-06; Windows never had them). **None of it has run on Windows**: the WAV decode, the second reader of the microphone beside a
 `LowLagMediaRecording`, the shadow, the invisible slider's hit area, the playback rate and what Narrator reads.
+
+**A received video message plays IN PLACE** (S5.3; since 2026-10-06 — before that a click opened the viewer, the plan's
+interim). A click — a beat late, because a double click is the heart — plays the circle inside itself, at the same 240, with
+sound: the play disc fades out, a loading ring stands over the poster until the first frame, exactly ONE accent ring runs
+round the outside of the edge as it plays (stepping once a second with Windows' animations off), the capsule counts up, and
+an expand control at the top trailing edge (Segoe E740, a 28 disc in a 44 target) opens it full screen. A second click
+pauses it (and a click while it still loads gives up); at the end it is back to its poster and its play disc, and someone
+else's circle loses its dot and says "Played" (`RoundLook.ShowsDot`). A failure leaves the poster with "Couldn't load the
+video. Tap to try again." under it. Nothing plays by itself: drawing a circle fetches its poster and nothing else, and the
+MP4 is fetched only on the click — through the attachment cache, the viewer's own path (the session's header, kept on
+disk). **One thing plays at a time**: a circle starting pauses a voice note, a staged or not-sent note and the viewer's video;
+any of those starting — the viewer included, so Open Full Screen too — pauses the circle; a recording starting pauses it and
+none starts under one ("You can play this after recording."); a call, a lock, sleep, a new default output device and a
+hidden window pause it (`PlaybackPauses`); its row scrolled wholly out of view (`EffectiveViewportChanged`), its chat left
+and the window letting go STOP it. Every rule is `RoundPlayback` (rest → loading → playing ⇄ paused → rest, failed; stale
+news of a load given up changes nothing) and `RoundInline`, tested on any OS. **Round by construction**: WinUI 3's
+`MediaPlayerElement` does not clip its video to a `CornerRadius` (microsoft-ui-xaml #8264), so nothing is asked to clip.
+`RoundFramePlayer` runs a `MediaPlayer` with `IsVideoFrameServerEnabled` — it draws nowhere and plays its sound as usual —
+and on `VideoFrameAvailable` (throttled to the clip's own rate, at most 30, never two copies at once: `RoundFrames`) copies
+the frame with `CopyFrameToVideoSurface` into a Direct3D surface of the circle's pixel size
+(`VideoFrame.CreateAsDirect3D11SurfaceBacked`, so no Win2D), reads it back with `SoftwareBitmap.CreateCopyFromSurfaceAsync`
+and hands it to a `SoftwareBitmapSource` — the image source of the SAME `ImageBrush` that fills the poster's `Ellipse`. The
+circle is that ellipse. Narrator meets "Video message, 0:23", its status Played or Not played, and its help text says what a
+press does next (Play or Pause); Enter or Space presses it. `RoundInline.PlaysInPlace = false` puts back the viewer on a
+click; a machine whose frames cannot be had — three failed copies in a row, or two seconds of sound with no frame
+(`RoundFrames.Starved`) — does the same on its own for the rest of the session, opening that circle in the viewer at once,
+and writes "circles open the viewer from now on" to `diagnostics.log`. **None of it has run on Windows.** On the ARM64 machine,
+receive a circle from a phone or the web and check:
+
+- **The picture is round and moving**: a click shows a loading ring for a moment, then the clip plays INSIDE the circle with
+  nothing square showing past its edge, at a steady rate, with sound; the colours are right (not blue-tinted — BGRA read
+  as RGBA — and not transparent, which would leave only the grey disc: the frame's alpha must come back opaque). If the
+  viewer opens by itself instead, the frame server failed: `diagnostics.log` says why ("copying a video message's frame"
+  with its HRESULT, or "no frame in two seconds of playing").
+- **The ring and the controls**: exactly one accent ring outside the edge, not clipped at the top of the first message or at
+  the window's edges; the expand control at the top right opens the viewer, paused in place behind it; a second click
+  pauses (the last frame stays), a third resumes; at the end the poster and its play disc come back and the dot goes —
+  and stays gone after switching chats. With "Animation effects" off in Settings, the ring steps once a second and the disc
+  appears and goes without fading.
+- **One at a time**: start a voice note while a circle plays (the circle pauses) and a circle while a voice note plays (the
+  note pauses); start a recording (it pauses and will not start again until the recording ends); lock the screen, minimise
+  the window, unplug headphones, ring it from a phone (each pauses it); scroll it away (it stops, back to the poster);
+  open another chat (it stops). Double-click a circle: a heart, and nothing plays.
+- **Narrator**: "Video message, 0:23", "Not played" then "Played", and Play/Pause as its help; the failure line is spoken
+  when it appears (turn the network off and click a circle never played on this machine, whose MP4 is not cached yet).
+- **Memory**: play a minute-long circle three times and watch Task Manager — the frames are surfaces outside .NET's heap,
+  given back when it stops, ends or scrolls away.
 
 **Recording a video message is built and switched off** (docs/audio-video-messages-2026-10-04.md, Phase 3d; Blocked 1,
 Decision 28). `RoundVideoRules.RecordingEnabled` is `false`, and while it is, no build draws a way in: no video button in
