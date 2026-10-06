@@ -201,6 +201,15 @@ android {
             // (Room DAO tests and Keystore-free settings tests run on it).
             isIncludeAndroidResources = true
             isReturnDefaultValues = true
+            // The default test JVM heap is 512 MB. With #79's Robolectric
+            // screen and pixel tests the suite outgrew it on CI
+            // (OutOfMemoryError in ChatViewModelTest, run 37441628640), and
+            // Robolectric holds on to each class's environment. A larger
+            // heap, and a fresh JVM every 150 classes, keep it bounded.
+            all {
+                it.maxHeapSize = "3g"
+                it.forkEvery = 150
+            }
         }
     }
     packaging {
