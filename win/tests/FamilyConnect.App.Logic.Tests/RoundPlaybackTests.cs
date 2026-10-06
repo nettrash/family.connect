@@ -429,4 +429,27 @@ public sealed class RoundPlaybackTests
     [InlineData(30u, 0u, null)]
     public void AClipsRateFromItsRatio(uint numerator, uint denominator, double? rate) =>
         Assert.Equal(rate, RoundFrames.Rate(numerator, denominator));
+
+    /// <summary>A mark the same build left behind means it died playing in place; another build's, or none, does not.</summary>
+    [Theory]
+    [InlineData("playing in place: 1111", "1111", true)]
+    [InlineData("playing in place: 1111\r\n", "1111", true)]
+    [InlineData("playing in place: 1111", "2222", false)]
+    [InlineData(null, "1111", false)]
+    [InlineData("", "1111", false)]
+    [InlineData("playing in place: ", "", false)]
+    public void OnlyTheBuildThatDiedPlayingInPlaceOpensTheViewer(string? held, string build, bool tripped) =>
+        Assert.Equal(tripped, RoundCrashGuard.Tripped(held, build));
+
+    [Fact]
+    public void TheMarkNamesTheBuild() =>
+        Assert.True(RoundCrashGuard.Tripped(RoundCrashGuard.Mark("abc"), "abc"));
+
+    [Fact]
+    public void ACopiedFrameIsOpaqueAndKeepsItsColour()
+    {
+        byte[] frame = [1, 2, 3, 0, 4, 5, 6, 128, 7, 8, 9, 255];
+        RoundFrames.Opaque(frame);
+        Assert.Equal(new byte[] { 1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255 }, frame);
+    }
 }

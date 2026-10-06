@@ -489,7 +489,39 @@ public static class RoundFrames
         return side & ~1;
     }
 
+    /// <summary>
+    /// A copied frame made OPAQUE, in place: every fourth byte of premultiplied BGRA — the alpha — set to 255. A video has no
+    /// transparency, but a Direct3D surface the player copied into need not say so, and a frame drawn with the alpha it came
+    /// with could show the grey disc through a face. Opaque premultiplied BGRA is its own colour, so nothing else changes.
+    /// </summary>
+    public static void Opaque(Span<byte> bgra)
+    {
+        for (var i = 3; i < bgra.Length; i += 4)
+        {
+            bgra[i] = 0xFF;
+        }
+    }
+
     /// <summary>A clip's frame rate from its encoding properties' ratio, or null when it does not say.</summary>
     public static double? Rate(uint numerator, uint denominator) =>
         numerator > 0 && denominator > 0 ? (double)numerator / denominator : null;
+}
+
+/// <summary>
+/// The circle that played in place took the whole app down last time: a native failure inside XAML or the media stack ends the
+/// process with no exception any handler sees (0xc000027b), so the view writes a MARK before it starts a circle in place and
+/// clears it when it lets the player go. A mark still there at the next launch, left by THIS SAME BUILD, means that build died
+/// playing in place, and its circles open the viewer from then on; a new build tries in place again.
+/// </summary>
+public static class RoundCrashGuard
+{
+    /// <summary>The mark's file name, beside diagnostics.log.</summary>
+    public const string FileName = "round-inline.mark";
+
+    /// <summary>What the mark says: which build was playing a circle in place.</summary>
+    public static string Mark(string build) => $"playing in place: {build}";
+
+    /// <summary>Whether a mark left behind says this very build died playing in place.</summary>
+    public static bool Tripped(string? held, string build) =>
+        !string.IsNullOrWhiteSpace(build) && string.Equals(held?.Trim(), Mark(build), StringComparison.Ordinal);
 }
