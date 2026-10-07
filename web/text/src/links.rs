@@ -695,6 +695,12 @@ fn bare_tld(label: &str) -> bool {
 
 /// Every `example.com`, `www.example.zz/path` or `пример.рф` with no scheme.
 fn bare_links(text: &str, found: &mut Vec<Found>) {
+    bare_links_skipping(text, found, true);
+}
+
+/// `bare_links`, with the dead-chain jump switchable — so a test can show
+/// the jump changes nothing but the time it takes.
+fn bare_links_skipping(text: &str, found: &mut Vec<Found>, skip: bool) {
     let mut at = 0;
     while let Some(c) = char_at(text, at) {
         // Only at the start of a word: a host does not begin mid-word, and
@@ -712,9 +718,55 @@ fn bare_links(text: &str, found: &mut Vec<Found>) {
                 found.push(f);
                 continue;
             }
+            // Every later word start in a host name that cannot link from
+            // here cannot link either: `a.a.a.…` asked again from each `a`
+            // re-read the whole chain, and 4,000 characters of it took
+            // seconds (quadratic; CI, 2026-10-07).
+            if let Some(end) = dead_chain_end(text, at).filter(|_| skip) {
+                at = end;
+                continue;
+            }
         }
         at += c.len_utf8();
     }
+}
+
+/// Where a host name starting at `start` ends, when NO word start from
+/// `start` up to that end can begin a bare link — so `bare_links` may jump
+/// to it — or `None` when that cannot be promised.
+///
+/// A start later in the same chain reads a SUFFIX of the same labels, ending
+/// at the same last label: fewer labels, the same TLD, the same character
+/// after the host. So a chain refused for too few labels, an unknown TLD or
+/// what follows its host is refused from every start inside it. Promised
+/// only where nothing else differs between starts: no `www` (which lifts the
+/// TLD list and changes the label rules), no `xn--` (a label starting there
+/// reads further than the label it sits in), and no internationalised TLD
+/// (only read after the first label). A label that VOIDS a name needs no
+/// guard: voiding only refuses more, and the jump is taken only on refusals
+/// every suffix shares. The test `the_dead_chain_jump_changes_nothing`
+/// fails without the `www` or the `xn--` guard.
+fn dead_chain_end(text: &str, start: usize) -> Option<usize> {
+    let labels = host_labels(text, start, Labels::Bare, &[UNICODE_TLDS]);
+    let last = labels.last()?.clone();
+    let host_end = last.end;
+    // Four bytes on, to the next character: an `xn--` starting inside the
+    // host runs past its end.
+    let mut tail = (host_end + 4).min(text.len());
+    while !text.is_char_boundary(tail) {
+        tail += 1;
+    }
+    let region = &text[start..tail];
+    if region.to_ascii_lowercase().contains("www")
+        || region.contains("xn--")
+        || UNICODE_TLDS.contains(&&text[last.clone()])
+    {
+        return None;
+    }
+    let refused = labels.len() < 2
+        || !bare_tld(&text[last])
+        || char_at(text, host_end).is_some_and(|c| matches!(c, '@' | '_') || continues_name(c));
+    refused.then_some(host_end)
 }
 
 fn bare_link_at(text: &str, start: usize) -> Option<Found> {
@@ -3003,6 +3055,71 @@ mod tests {
                 text.push_str(PIECES[next() % PIECES.len()]);
             }
             spans(&text);
+        }
+    }
+
+    /// The dead-chain jump (`dead_chain_end`) is only a shortcut: over
+    /// messages stitched from host-name pieces — `www`, `xn--`, separators,
+    /// internationalised TLDs, combining marks, voiding scripts — bare links
+    /// come out exactly as they do with every word start asked.
+    #[test]
+    fn the_dead_chain_jump_changes_nothing() {
+        const PIECES: &[&str] = &[
+            "a",
+            "b",
+            "example",
+            "com",
+            "zz",
+            "io",
+            ".",
+            ".",
+            ".",
+            "-",
+            "_",
+            "--",
+            "www",
+            "WWW",
+            "xn--",
+            "xn",
+            "рф",
+            "한국",
+            "中国",
+            "日本語",
+            "\u{301}",
+            "ไ",
+            "é",
+            "1",
+            "@",
+            "/",
+            ":80",
+            " ",
+            "user",
+            "co",
+            "uk",
+            "x",
+        ];
+        let mut seed: u64 = 0x005e_ed80;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        for _ in 0..200_000 {
+            let mut text = String::new();
+            for _ in 0..1 + next() % 16 {
+                text.push_str(PIECES[next() % PIECES.len()]);
+            }
+            let (mut jumped, mut asked) = (Vec::new(), Vec::new());
+            bare_links_skipping(&text, &mut jumped, true);
+            bare_links_skipping(&text, &mut asked, false);
+            let shape = |found: &[Found]| -> Vec<(usize, usize, Option<String>)> {
+                found
+                    .iter()
+                    .map(|f| (f.start, f.end, f.target.clone()))
+                    .collect()
+            };
+            assert_eq!(shape(&jumped), shape(&asked), "{text:?}");
         }
     }
 

@@ -49,10 +49,11 @@ final class MacHotKey {
         var ref: EventHotKeyRef?
         let status = RegisterEventHotKey(
             Self.keyCode, Self.modifiers, EventHotKeyID(signature: Self.signature, id: 1),
-            GetApplicationEventTarget(), 0, &ref)
+            GetEventDispatcherTarget(), 0, &ref)
         isTaken = status != noErr
         if status == noErr {
             hotKey = ref
+            AppLog.app.info("The \(Self.shortcut, privacy: .public) shortcut is registered")
         } else {
             AppLog.app.error("The \(Self.shortcut, privacy: .public) shortcut could not be registered: \(status)")
         }
@@ -67,12 +68,19 @@ final class MacHotKey {
     private func installHandler() {
         guard handler == nil else { return }
         var pressed = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), macHotKeyPressed, 1, &pressed, nil, &handler)
+        // The event DISPATCHER's target, not the application's: a Cocoa app's
+        // run loop hands a hot key press to the dispatcher. With the application
+        // target, pressing it did nothing on the owner's Mac (#80); this is the
+        // target the established hot-key libraries register with.
+        let status = InstallEventHandler(GetEventDispatcherTarget(), macHotKeyPressed, 1, &pressed, nil, &handler)
+        if status != noErr {
+            AppLog.app.error("The shortcut's handler could not be installed: \(status)")
+        }
     }
 }
 
-/// Carbon's callback: on the main thread, as every application-target event
-/// is. A C function, so it reaches the app through the shared instance.
+/// Carbon's callback: on the main thread, where the main run loop's event
+/// dispatcher calls it. A C function, so it reaches the app through the shared instance.
 nonisolated private func macHotKeyPressed(
     _ next: EventHandlerCallRef?, _ event: EventRef?, _ context: UnsafeMutableRawPointer?
 ) -> OSStatus {
@@ -83,7 +91,10 @@ nonisolated private func macHotKeyPressed(
         MemoryLayout<EventHotKeyID>.size, nil, &id)
     guard status == noErr, id.signature == MacHotKey.signature else { return OSStatus(eventNotHandledErr) }
     DispatchQueue.main.async {
-        MainActor.assumeIsolated { MacHotKey.shared.onPress?() }
+        MainActor.assumeIsolated {
+            AppLog.app.info("The shortcut was pressed")
+            MacHotKey.shared.onPress?()
+        }
     }
     return noErr
 }
