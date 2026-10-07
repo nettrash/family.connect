@@ -96,6 +96,14 @@ None and a button to System Settings ▸ Notifications. Every decision is logged
 (`log stream --predicate 'subsystem == "me.nettrash.FamilyConnect" AND category == "push"'`), so a
 silent Mac can say why. The mention title was also English in every language; it is translated now.
 
+Two holes the PR review (#86) found, both about the pushes a QUIT Mac gets from the server, now that its push
+entitlement survives signing: the switch only silenced the app's own banners, and "never what they wrote" was
+the server's `include_message_body` to keep. So switching notifications off now WITHDRAWS this Mac's device
+from the server (`PushRegistrar.withdraw`, forgotten here only once the server has, retried at the next
+launch if it could not be reached) and switching them on registers it again; and the server pushes a `macos`
+device the body `include_message_body = false` would send, whatever the setting (protocol.md, "A Mac is
+pushed who, never what"). A Mac now says the same thing whether its app was running or quit.
+
 ## What must be checked on a real Mac (none of it can run unsigned)
 
 - Closing the window leaves the menu bar icon and no Dock icon; a click brings the window back where it was,

@@ -261,6 +261,52 @@ struct PushRegistrarTests {
         #expect(requests[2].method == "POST")
     }
 
+    #if os(macOS)
+    @Test("switched off, the Mac withdraws its device — forgetting it only once the server has (PR #86)")
+    func withdraw() async throws {
+        let host = "push-withdraw.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        final class Answer: @unchecked Sendable { var code = 503 }
+        let answer = Answer()
+        StubURLProtocol.register(host: host) { request in
+            switch (request.method, request.url.path()) {
+            case ("POST", "/api/v1/devices"):
+                return .json(201, #"{"device_id": 41}"#)
+            case ("DELETE", "/api/v1/devices/41"):
+                return answer.code == 204
+                    ? .empty(204)
+                    : .json(answer.code, #"{"error": {"code": "\#(answer.code == 404 ? "device_not_found" : "internal")", "message": "no"}}"#)
+            default:
+                return .json(404, #"{"error": {"code": "not_found", "message": "no"}}"#)
+            }
+        }
+        let api = APIClient(serverURL: URL(string: "https://\(host)")!, session: StubURLProtocol.makeSession())
+        let registrar = PushRegistrar(api: api)
+        let box = StoredBox()
+        registrar.loadStored = { (box.token, box.deviceID) }
+        registrar.saveStored = { box.token = $0; box.deviceID = $1 }
+        registrar.loadStoredLanguage = { box.language }
+        registrar.saveStoredLanguage = { box.language = $0 }
+        registrar.shownLanguage = { box.shown }
+        registrar.loadStoredVoIP = { nil }
+        registrar.saveStoredVoIP = { _ in }
+        await registrar.register(tokenHex: "abcd")
+        #expect(box.deviceID == 41)
+
+        // The server cannot be reached: the pair is kept, so the next pass tries again.
+        await registrar.withdraw()
+        #expect(box.deviceID == 41)
+        #expect(box.token == "abcd")
+
+        // A row the server no longer has is gone already.
+        answer.code = 404
+        await registrar.withdraw()
+        #expect(box.deviceID == nil)
+        #expect(box.token == nil)
+        #expect(box.language == nil)
+    }
+    #endif
+
     @Test("deregister with nothing stored issues no request")
     func deregisterEmpty() async throws {
         let host = "push-logout-empty.test"

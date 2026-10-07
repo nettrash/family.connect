@@ -191,6 +191,15 @@ final class PushRegistrar {
     /// live-socket experience — but no branch is silent any more: every
     /// outcome leaves a line in the push log.
     func ensureRegistered() async {
+        #if os(macOS)
+        // "Tell me when a message arrives" switched off (#84): no notification
+        // at all — the server's pushes to a quit Mac included, so this Mac's
+        // device comes off the server rather than merely going quiet here.
+        guard AppSettings.desktopNotificationsEnabled else {
+            await withdraw()
+            return
+        }
+        #endif
         if ensureInFlight {
             AppLog.push.debug("ensureRegistered already in flight; skipping")
             return
@@ -262,6 +271,10 @@ final class PushRegistrar {
     /// above); persist the {token, device_id} pair only after a 2xx so a
     /// failed attempt naturally retries on the next token delivery.
     func register(tokenHex: String) async {
+        #if os(macOS)
+        // A token callback landing after the switch went off (#84).
+        guard AppSettings.desktopNotificationsEnabled else { return }
+        #endif
         let stored = loadStored()
         let storedVoIP = loadStoredVoIP()
         let voip = voipToken
@@ -296,6 +309,31 @@ final class PushRegistrar {
         } catch {
             AppLog.push.info("Device registration failed: \(String(describing: error))")
         }
+    }
+
+    // MARK: - Switched off (macOS, #84)
+
+    /// Take this device off the server, so nothing is pushed to it — and
+    /// forget it here only once the server has: a DELETE that fails (no
+    /// network) keeps the pair, so the next `ensureRegistered` tries again
+    /// rather than leaving a row behind that goes on pushing. A row the
+    /// server no longer has is gone already.
+    func withdraw() async {
+        let stored = loadStored()
+        if let deviceID = stored.deviceID {
+            do {
+                try await api.deleteDevice(id: deviceID)
+            } catch APIError.notFound {
+                // Gone already — the forgetting below is all that is left.
+            } catch {
+                AppLog.push.info("Withdrawing device \(deviceID, privacy: .public) failed; will retry: \(String(describing: error))")
+                return
+            }
+            AppLog.push.info("Withdrew device \(deviceID, privacy: .public): notifications switched off")
+        }
+        saveStored(nil, nil)
+        saveStoredVoIP(nil)
+        saveStoredLanguage(nil)
     }
 
     // MARK: - Logout

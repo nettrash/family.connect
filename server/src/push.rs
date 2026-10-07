@@ -299,14 +299,16 @@ impl ApnsSender {
         };
         // One payload per LANGUAGE, not per device: a family's devices speak two or three at
         // most, and the words are the only thing that differs between them.
-        let mut payloads: std::collections::HashMap<Option<&str>, Value> =
+        // And per Mac-or-not: a Mac is pushed who, never what (`Notification::for_platform`).
+        let mut payloads: std::collections::HashMap<(Option<&str>, bool), Value> =
             std::collections::HashMap::new();
         let mut dead = Vec::new();
         for device in devices {
             let language = device.language.as_deref();
+            let desktop = device.platform == "macos";
             let payload = payloads
-                .entry(language)
-                .or_insert_with(|| apns_payload(note, language));
+                .entry((language, desktop))
+                .or_insert_with(|| apns_payload(&note.for_platform(&device.platform), language));
             if self.send_one(&jwt, payload, device).await {
                 dead.push(device.device_id);
             }
@@ -596,7 +598,7 @@ impl FcmSender {
             .post(url)
             .bearer_auth(token)
             .json(&fcm_message(
-                note,
+                &note.for_platform(&device.platform),
                 &device.push_token,
                 device.language.as_deref(),
             ))
