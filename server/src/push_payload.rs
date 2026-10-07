@@ -153,6 +153,28 @@ pub struct Notification {
     pub event: PushEvent,
 }
 
+impl Notification {
+    /// The notification as a device on `platform` is told it. A Mac is pushed WHO, never WHAT
+    /// (docs/protocol.md, "A Mac is pushed who, never what"; issue #84): the body a server with
+    /// `include_message_body = false` would send, whatever the setting — the rule the desktop
+    /// clients apply to the notifications they raise themselves, so a Mac says the same thing
+    /// whether its app was running or quit. A phone is told the notification as composed.
+    pub fn for_platform(&self, platform: &str) -> Notification {
+        let mut note = self.clone();
+        if platform == "macos" {
+            match note.event {
+                PushEvent::Message { .. } => note.body = Text::say("New message", &[]),
+                PushEvent::BoardNote { .. } => note.body = Text::say("New note", &[]),
+                // A report, a join request and a join carry no family text to withhold.
+                PushEvent::JoinRequest { .. }
+                | PushEvent::Joined { .. }
+                | PushEvent::Report { .. } => {}
+            }
+        }
+        note
+    }
+}
+
 /// Compose the notification for a new message. Title rules per protocol.md:
 /// direct chat → the sender's display name; family chat →
 /// `"<Family> — <Sender>"`. Body: the message text; the KIND of attachment
@@ -1341,6 +1363,52 @@ mod tests {
         let hidden =
             message_notification(false, "direct", "", "Anna", &carrying(picture(true)), 1, 1);
         assert_eq!(hidden.body, "New message");
+    }
+
+    /// A Mac is pushed who, never what (docs/protocol.md; issue #84): the body a server withholding
+    /// message bodies would send, whatever the setting — and a phone is told as composed.
+    #[test]
+    fn a_mac_is_pushed_who_never_what() {
+        let message = message_notification(
+            true,
+            "family",
+            "The Smiths",
+            "Anna",
+            &protocol_message(),
+            1,
+            1,
+        );
+        let mac = message.for_platform("macos");
+        assert_eq!(mac.body, "New message");
+        assert_eq!(mac.body.render(Some("ru")), "Новое сообщение");
+        assert_eq!(
+            mac.title, message.title,
+            "the title is the same for everyone"
+        );
+        assert_eq!(message.for_platform("ios"), message);
+        assert_eq!(message.for_platform("android"), message);
+
+        let note = board_note_notification(BoardNoteAlert {
+            include_body: true,
+            family_name: "The Smiths",
+            author_name: "Anna",
+            family_id: 7,
+            note_id: 3,
+            text: "Milk",
+            badge: 0,
+            mentioned: false,
+        });
+        assert_eq!(note.body, "Milk");
+        assert_eq!(note.for_platform("macos").body, "New note");
+
+        // Nothing to withhold: a report, a join request and a join say the same to a Mac.
+        for other in [
+            report_notification("The Smiths", 7, 0),
+            join_request_notification("The Smiths", "Junior", 7, 0),
+            joined_notification("The Smiths", 7, 0),
+        ] {
+            assert_eq!(other.for_platform("macos"), other);
+        }
     }
 
     /// The server's own words go out in the device's language and somebody's own words exactly as

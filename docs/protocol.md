@@ -6282,6 +6282,15 @@ Titles: direct chat → sender's display name; family chat → `"<Family> — <S
 "Mentioning a member" — the same push, a different title, never a second one). Body: the message
 text, or `"New message"` when the server's `[push] include_message_body = false`.
 
+**A Mac is pushed who, never what** (2026-10-07, issue #84). A `macos` device gets the body
+`include_message_body = false` would send WHATEVER the setting — `"New message"` for a message,
+`"New note"` for a board note — with the same title as everyone else. A desktop banner is read on a
+screen other people walk past and stays in Notification Center afterwards, and it is the rule every
+desktop client already applies to the notifications it raises itself: Windows and a browser (see "A
+browser notifies ITSELF") and the Mac's own banners from its live socket. So a Mac says the same
+thing whether the app was running or quit. A phone (`ios`, `android`) is unchanged: its lock screen
+is the operator's call, through `include_message_body`.
+
 A new board note pushes with `"kind": "board_note"` and `family_id` + `note_id` instead of chat and
 message ids. Title `"<Family> — <Author>"`, body the note's text (or `"New note"` when
 `include_message_body = false`, the same switch that governs message bodies). Tapping it opens the

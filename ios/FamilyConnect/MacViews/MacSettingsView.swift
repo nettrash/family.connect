@@ -27,7 +27,6 @@
 #if os(macOS)
 
 import SwiftUI
-import UserNotifications
 
 struct MacSettingsView: View {
     @Environment(AppSession.self) private var session
@@ -161,7 +160,13 @@ struct MacSettingsView: View {
             Toggle("Tell me when a message arrives", isOn: $desktopNotifications)
                 .onChange(of: desktopNotifications) { _, newValue in
                     AppSettings.desktopNotificationsEnabled = newValue
-                    if newValue { Task { await askIfNeverAsked() } }
+                    // Off is off for the server's pushes too: this Mac's
+                    // device is withdrawn, and switching on registers it
+                    // again — asking macOS first if it never has (PR #86).
+                    Task {
+                        await MacAppDelegate.registrar?.ensureRegistered()
+                        notificationAccess = await MacNotificationAccess.current()
+                    }
                 }
             if desktopNotifications, notificationAccess.needsSystemSettings {
                 Button("Open Notification Settings…") { MacNotificationAccess.openSystemSettings() }
@@ -182,16 +187,6 @@ struct MacSettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { notificationAccess = await MacNotificationAccess.current() }
         }
-    }
-
-    /// Switched on with macOS never having been asked: ask now, where the
-    /// person has just said they want them.
-    private func askIfNeverAsked() async {
-        let center = UNUserNotificationCenter.current()
-        if await center.notificationSettings().authorizationStatus == .notDetermined {
-            _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
-        }
-        notificationAccess = await MacNotificationAccess.current()
     }
 
     /// Keep running in the menu bar, open at login, and the shortcut that

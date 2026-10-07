@@ -626,6 +626,44 @@ async fn a_join_request_pushes_the_offline_family_owner() {
     );
 }
 
+/// A Mac is pushed who, never what (docs/protocol.md; issue #84): the same message reaches the
+/// member's iPhone with its words and their Mac with "New message", under the default
+/// `include_message_body = true`.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_mac_is_pushed_who_and_never_what() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, member, _member_id) = family_of_two(&ts).await;
+    let chat_id = ts.family_chat_id(&owner).await;
+    register_device(&ts, &member, "ios", "member-iphone").await;
+    register_device(&ts, &member, "macos", "member-mac").await;
+
+    post_message_id(&ts, &owner, chat_id, "Dinner at 7?").await;
+
+    let requests = mock
+        .wait_for(2, |path| path.starts_with("/3/device/"))
+        .await;
+    let alert_of = |token: &str| {
+        requests
+            .iter()
+            .find(|request| request.path == format!("/3/device/{token}"))
+            .map(|request| request.body["aps"]["alert"].clone())
+            .unwrap_or_else(|| panic!("nothing reached {token}"))
+    };
+    assert_eq!(
+        alert_of("member-iphone"),
+        json!({"title": "The Smiths — Olive", "body": "Dinner at 7?"})
+    );
+    assert_eq!(
+        alert_of("member-mac"),
+        json!({"title": "The Smiths — Olive", "body": "New message"})
+    );
+}
+
 /// Each device is told in ITS language (docs/protocol.md, "The words of a push"; issue #82): the
 /// owner's Russian iPhone, German iPad and an iPhone from an app that never said a language get one
 /// join request in three — the server's own sentence translated, the requester's name as written.
