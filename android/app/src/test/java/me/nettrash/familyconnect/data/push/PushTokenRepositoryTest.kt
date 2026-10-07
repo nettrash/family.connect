@@ -97,6 +97,19 @@ class PushTokenRepositoryTest {
     }
 
     @Test
+    fun aDeviceWithNoPushTokenIsNotReRegisteredForALanguage() = runTest(dispatcher) {
+        logIn()
+        val repository = newRepository() // no Firebase: a null token
+        shown = "ru"
+        repository.registerCurrentToken()
+        shown = "de"
+        repository.registerCurrentToken()
+
+        // One row: a tokenless POST inserts, so a second would orphan the first.
+        assertThat(authApi.deviceCalls).isEqualTo(1)
+    }
+
+    @Test
     fun theLanguageIsOneOfTheNineOrEnglish() {
         for (language in PushLanguage.ALL) {
             assertThat(PushLanguage.of(language)).isEqualTo(language)

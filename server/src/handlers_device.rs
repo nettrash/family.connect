@@ -44,15 +44,20 @@ pub struct RegisterDeviceRequest {
     /// The language the app is SHOWN in on this device, which its pushes are written in
     /// (docs/protocol.md, "Devices" and "The words of a push"). The voip token's double option
     /// again: absent leaves the row's language alone, `null` or `""` clears it, a string sets it.
+    ///
+    /// Read as any JSON value, not a string: a number or an object is a malformed language, stored as
+    /// none — never a refused registration (PR #85 review), which would cost the device every push.
     #[serde(default, deserialize_with = "present_option")]
-    pub language: Option<Option<String>>,
+    pub language: Option<Option<serde_json::Value>>,
 }
 
 /// A registered language as it is stored: a well-formed tag — letters, digits and `-`, at most 35
 /// characters, the longest BCP 47 tag anybody sends — or nothing. Never a refusal: a device that
-/// cannot register gets no push at all, which is a far worse failure than an English one.
+/// cannot register gets no push at all, which is a far worse failure than an English one. An `_` is
+/// read as `-`, so Java's `fr_CA` is the `fr-CA` that `push_text::language` already understands.
 pub fn stored_language(sent: Option<&str>) -> Option<String> {
-    let tag = sent?.trim();
+    let tag = sent?.trim().replace('_', "-");
+    let tag = tag.as_str();
     let well_formed = !tag.is_empty()
         && tag.len() <= 35
         && tag.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
@@ -102,7 +107,12 @@ pub async fn register_device(
         .map(str::to_string);
 
     let language_set = req.language.is_some();
-    let language_value = stored_language(req.language.as_ref().and_then(|inner| inner.as_deref()));
+    let language_value = stored_language(
+        req.language
+            .as_ref()
+            .and_then(|inner| inner.as_ref())
+            .and_then(serde_json::Value::as_str),
+    );
 
     let device_id: i64 = match push_token {
         Some(token) => {
@@ -195,5 +205,30 @@ pub async fn healthz(State(state): State<AppState>) -> Result<Response, ApiError
         Err(_elapsed) => Err(ApiError::Internal(anyhow::anyhow!(
             "database health check timed out after 2s"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stored_language;
+
+    #[test]
+    fn a_language_is_stored_well_formed_or_not_at_all() {
+        assert_eq!(stored_language(Some("sr-Latn")).as_deref(), Some("sr-Latn"));
+        assert_eq!(stored_language(Some(" de ")).as_deref(), Some("de"));
+        // Java's spelling is read as the tag it means.
+        assert_eq!(stored_language(Some("fr_CA")).as_deref(), Some("fr-CA"));
+        for malformed in [
+            "",
+            "  ",
+            "-de",
+            "de-",
+            "ru; DROP TABLE",
+            "日本語",
+            &"a".repeat(36),
+        ] {
+            assert_eq!(stored_language(Some(malformed)), None, "{malformed:?}");
+        }
+        assert_eq!(stored_language(None), None);
     }
 }
