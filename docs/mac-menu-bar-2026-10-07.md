@@ -81,6 +81,21 @@ close would keep the app running there). Three modifiers, as on the Mac, and nev
 is AltGr, and AltGr+F TYPES "[" on Hungarian and Czech keyboards. "Open with Ctrl+Alt+Shift+F" in
 Settings, on by default; "Another app is using Ctrl+Alt+Shift+F." when it is taken.
 
+## The Mac's own notifications, as Windows' (issue #84)
+
+A Mac with its window open raises its own banners from the live socket (the server pushes nothing to a
+device whose socket is live), and #84 found two Macs it never reached: one macOS had never been allowed
+to show the app's notifications, or showed them as None — every banner raised into nothing, with no word
+anywhere about why. The Mac now follows the Windows client's `NotificationRules`
+(`DesktopNotificationRules`, tested on both runs): the banner says who wrote — "<Family> — <Sender>",
+or "… mentioned you" — over "New message", never the words; a new board note is announced too ("New
+note", only when the board badge calls it new, and not while the board window is in front); nothing
+from a blocked member or the assistant's answer to one; and Settings ▸ Notifications has "Tell me when a
+message arrives" (on by default, this Mac's), with a line under it when macOS has them off or set to
+None and a button to System Settings ▸ Notifications. Every decision is logged by id with its reason
+(`log stream --predicate 'subsystem == "me.nettrash.FamilyConnect" AND category == "push"'`), so a
+silent Mac can say why. The mention title was also English in every language; it is translated now.
+
 ## What must be checked on a real Mac (none of it can run unsigned)
 
 - Closing the window leaves the menu bar icon and no Dock icon; a click brings the window back where it was,

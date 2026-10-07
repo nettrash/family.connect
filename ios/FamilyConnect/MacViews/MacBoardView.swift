@@ -177,7 +177,12 @@ struct MacBoardView: View {
         // marks what it is showing, whenever what it shows changes and
         // whenever it becomes the front one.
         .onChange(of: boardMark, initial: true) { _, _ in markSeenIfFrontmost() }
-        .onChange(of: windowActivation, initial: true) { _, _ in markSeenIfFrontmost() }
+        .onChange(of: windowActivation, initial: true) { _, activation in
+            markSeenIfFrontmost()
+            // In front, a note landing here is not news to announce (#84).
+            coordinator.boardInFront = activation == .key
+        }
+        .onDisappear { coordinator.boardInFront = false }
         .sheet(isPresented: $composing) {
             MacNoteEditor(
                 text: $draftText, color: $draftColor, size: $draftSize, font: $draftFont,
