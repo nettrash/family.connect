@@ -1,0 +1,55 @@
+{
+  "_comment": "The server's own push sentences that the apps never say themselves (docs/protocol.md, \"The words of a push\"). Every other push word comes from the apps' Localizable.xcstrings. generate.py turns both into src/push_words.rs.",
+  "strings": {
+    "%@ asked to join": {
+      "de": "%@ möchte beitreten",
+      "es": "%@ pidió unirse",
+      "fr": "%@ demande à rejoindre la famille",
+      "ja": "%@が参加をリクエストしました",
+      "ru": "%@ просит вступить в семью",
+      "sr": "%@ тражи да се придружи",
+      "sr-Latn": "%@ traži da se pridruži",
+      "zh-Hans": "%@ 请求加入"
+    },
+    "%@ — %@ mentioned you": {
+      "de": "%@ — %@ hat dich erwähnt",
+      "es": "%@ — %@ te mencionó",
+      "fr": "%@ — %@ vous a mentionné",
+      "ja": "%@ — %@があなたをメンションしました",
+      "ru": "%@ — %@ упоминает тебя",
+      "sr": "%@ — %@ те је поменуо/ла",
+      "sr-Latn": "%@ — %@ te je pomenuo/la",
+      "zh-Hans": "%@ — %@ 提到了你"
+    },
+    "New note": {
+      "de": "Neue Notiz",
+      "es": "Nueva nota",
+      "fr": "Nouvelle note",
+      "ja": "新しいメモ",
+      "ru": "Новая заметка",
+      "sr": "Нова белешка",
+      "sr-Latn": "Nova beleška",
+      "zh-Hans": "新便签"
+    },
+    "New report": {
+      "de": "Neue Meldung",
+      "es": "Nueva denuncia",
+      "fr": "Nouveau signalement",
+      "ja": "新しい報告",
+      "ru": "Новая жалоба",
+      "sr": "Нова пријава",
+      "sr-Latn": "Nova prijava",
+      "zh-Hans": "新举报"
+    },
+    "You're in — welcome to %@": {
+      "de": "Du bist dabei – willkommen bei %@",
+      "es": "Ya estás dentro: te damos la bienvenida a %@",
+      "fr": "C’est fait — bienvenue dans %@",
+      "ja": "参加しました — %@へようこそ",
+      "ru": "Ты в семье — добро пожаловать в %@",
+      "sr": "Ту си — добро дошао/ла у %@",
+      "sr-Latn": "Tu si — dobro došao/la u %@",
+      "zh-Hans": "你已加入——欢迎来到 %@"
+    }
+  }
+}

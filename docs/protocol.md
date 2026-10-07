@@ -5801,7 +5801,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `POST /devices` | `{platform: "ios"\|"macos"\|"android", push_token: string\|null, voip_token?: string\|null}` → `201 {device_id}`. Upserts by token when non-null. `voip_token` is the iOS PushKit VoIP token, the one an incoming call is delivered to (see "Push notifications"): ABSENT leaves whatever the row holds untouched, `null` or `""` clears it, a string sets it — the same absent-is-not-null rule every optional field on this wire follows, here because the two tokens arrive from the OS at different moments and a launch that has only one of them must not wipe the other. Only an `ios` device has one; a Mac never registers one and is never rung by push. `macos` is delivered over APNs alongside `ios` — the macOS build shares the iOS bundle id, so it shares the APNs topic and the payload is identical; it is a distinct platform in the DATA because a Mac claiming to be an iPhone makes every future question about delivery harder to answer. The caller's SESSION is recorded on the row as well, which is what makes the push gate per-device — see "Push notifications"; re-POST on every launch so it stays true. |
+| `POST /devices` | `{platform: "ios"\|"macos"\|"android", push_token: string\|null, voip_token?: string\|null, language?: string\|null}` → `201 {device_id}`. Upserts by token when non-null. `voip_token` is the iOS PushKit VoIP token, the one an incoming call is delivered to (see "Push notifications"): ABSENT leaves whatever the row holds untouched, `null` or `""` clears it, a string sets it — the same absent-is-not-null rule every optional field on this wire follows, here because the two tokens arrive from the OS at different moments and a launch that has only one of them must not wipe the other. Only an `ios` device has one; a Mac never registers one and is never rung by push. `macos` is delivered over APNs alongside `ios` — the macOS build shares the iOS bundle id, so it shares the APNs topic and the payload is identical; it is a distinct platform in the DATA because a Mac claiming to be an iPhone makes every future question about delivery harder to answer. The caller's SESSION is recorded on the row as well, which is what makes the push gate per-device — see "Push notifications"; re-POST on every launch so it stays true. `language` (2026-10-07, issue #82) is the language the app is SHOWN in on this device — one of `en`, `de`, `es`, `fr`, `ja`, `ru`, `sr`, `sr-Latn`, `zh-Hans`, the apps' nine localisations — and it is what the server writes this device's pushes in (see "The words of a push"). The same absent-is-not-null rule as `voip_token`: ABSENT leaves the row's language alone, `null` or `""` clears it (English), a string sets it. The server never refuses a registration over it: a value that is not a language tag (letters, digits and `-`, at most 35 characters; an `_` is read as `-`) — a number or an object included — is stored as no language, and a well-formed tag it has no words for is stored and spoken in English — so an app with a tenth language works with an older server, and says it in English until the server learns it. |
 | `DELETE /devices/{id}` | → `204`. Error: `device_not_found`. |
 
 ### Calls
@@ -6290,7 +6290,7 @@ board.
 A report pushes to the family owner with `"kind": "report"` and `family_id`, and never carries the
 reported text, regardless of `include_message_body`: the excerpt is the very content somebody asked
 to have looked at, and a lock screen is where it must not be readable. Title is the family name and
-body the fixed English "New report", which `include_message_body` does not vary because there is
+body the fixed "New report" (in the device's language — "The words of a push"), which `include_message_body` does not vary because there is
 nothing there to withhold. Tapping it opens the owner's report inbox. A report naming the owner
 pushes to nobody (see "Reporting a member").
 
@@ -6350,6 +6350,24 @@ count, and that is a correct rendering of the same data.
 Tapping a notification opens the chat named by `chat_id` (or the board for `board_note`, the
 join-requests screen for `join_request`, the chat list for `joined`, the report inbox for
 `report`).
+
+### The words of a push
+
+A push is read on a lock screen whose app is not running, so its words are the SERVER's — and they
+are written in the language of the DEVICE they go to (the `language` that device registered, see
+"Devices"; 2026-10-07, issue #82), not in English for everyone. One event can therefore go out in
+several languages: a mother's phone in Russian and her son's in German, for the same photo.
+
+Only the server's OWN words are translated: `"Photo"`, `"Sticker"`, `"Video"`, `"Video message"`,
+`"Audio"`, `"Location"`, `"File"`, the counts (`"3 Photos"`, `"2 Videos"`, `"2 Audio"`, `"4 Files"`,
+`"N attachments"`), `"New message"`, `"New note"`, `"New report"`, `"<Family> — <Sender> mentioned
+you"`, `"<Requester> asked to join"` and `"You're in — welcome to <Family>"`. What somebody WROTE —
+a message, a caption, a note, a file's name, a location's label, a display name, a family's name —
+goes out exactly as written, in every language; nothing is machine-translated. A device with no
+language (an app from before this rule, or one that cleared it), or with one the server has no
+words for, gets the English given everywhere in this section. The words are the apps' own: the
+nine localisations of the same sentences in the apps' string catalogue, so a push and the app it
+opens never disagree about what a thing is called.
 
 ### Incoming calls
 

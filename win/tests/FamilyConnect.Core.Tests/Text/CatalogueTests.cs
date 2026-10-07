@@ -40,43 +40,11 @@ public class CatalogueTests
         return [.. keys];
     }
 
-    /// <summary>The five sentences nobody has translated yet, named rather than pretended.</summary>
-    private static readonly string[] EnglishForNow =
-        ["%@ — %@", "%@ — %@ mentioned you", "Chat", "New note",
-         "%@ GB", "%@ KB", "%@ MB", "%lld byte", "%lld bytes", "Zero KB",
-         "Delete the family?", "Leave and Delete", "The server is busy. Try again in a moment.",
-         "Tell me when a message arrives", "What hasn't been sent yet is lost.",
-         "While this window is not in front, a notification says who wrote — never what they wrote.",
-         "Windows is not showing notifications for Family Connect. Allow them in Windows Settings, under Notifications.",
-         "Family Connect for Windows %@", "Locations", "Notifications",
-         "Report sent.", "Message %@", "Safety for %@", "More for %@", "a photo",
-         "Caption",
-         "+%lld",
-         "View the photo",
-         "The assistant is answering",
-         "Jump to the newest message",
-         "Call with %@",
-         "You've blocked them.",
-         "Zoom in",
-         "Zoom out",
-         "Finding your location…",
-         "Position",
-         "Event",
-         "Only the person who wrote a note can change it.",
-         "Pick when it ends, or turn the end off.",
-         "Pick when it starts.",
-         "That note has been taken down.",
-         "That's more things than one list holds.",
-         "The end can't be before the start.",
-         "The photo took too long to pin. Try again.",
-         "Title",
-         "You're not in a family, so there is no board.",
-         "Add Event",
-         "Couldn't send your answer.",
-         "A photo is still being pinned. Add the next one when it is on the board.",
-         "Couldn't move the note.",
-         "Pinning…",
-         "The board pins one photo at a time — the first is on its way."];
+    /// <summary>
+    /// The sentences nobody has translated yet, named rather than pretended — NONE since #82 (2026-10-07), when the last
+    /// 52 got their eight languages. A new one belongs here, and in win/i18n/win.json as an empty object, until it does.
+    /// </summary>
+    private static readonly string[] EnglishForNow = [];
 
     [Fact]
     public void ThisPortActuallyDrawsSomething()

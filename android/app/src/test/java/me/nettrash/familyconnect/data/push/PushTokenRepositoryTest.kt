@@ -42,11 +42,15 @@ class PushTokenRepositoryTest {
     /** Firebase's answer; null = no google-services.json in this build. */
     private var firebaseToken: String? = null
 
+    /** The locale folder the app is shown in (#82). */
+    private var shown = "en"
+
     private fun newRepository() = PushTokenRepository(
         authApi = authApi,
         settings = settings,
         tokenStore = tokenStore,
         pushTokenProvider = { firebaseToken },
+        pushLanguage = { shown },
     )
 
     private suspend fun logIn() {
@@ -68,6 +72,52 @@ class PushTokenRepositoryTest {
         val state = settings.state.first()
         assertThat(state.pushToken).isEqualTo("fcm-1")
         assertThat(state.pushDeviceId).isEqualTo(5L)
+    }
+
+    // -- The language pushes are written in (docs/protocol.md, "The words of a push"; #82) --
+
+    @Test
+    fun theShownLanguageRidesAlongAndANewOneRePostsTheSameToken() = runTest(dispatcher) {
+        logIn()
+        val repository = newRepository()
+
+        shown = "ru"
+        repository.onNewToken("fcm-1")
+        repository.registerCurrentToken() // same token, same language — not news
+        firebaseToken = "fcm-1"
+        repository.registerCurrentToken()
+        assertThat(authApi.deviceLanguages).containsExactly("ru")
+
+        // Switched to Serbian in Latin script: the same token goes again, in it.
+        shown = "sr-Latn"
+        repository.registerCurrentToken()
+        assertThat(authApi.deviceRegistrations).containsExactly("fcm-1", "fcm-1").inOrder()
+        assertThat(authApi.deviceLanguages).containsExactly("ru", "sr-Latn").inOrder()
+        assertThat(settings.state.first().pushLanguage).isEqualTo("sr-Latn")
+    }
+
+    @Test
+    fun aDeviceWithNoPushTokenIsNotReRegisteredForALanguage() = runTest(dispatcher) {
+        logIn()
+        val repository = newRepository() // no Firebase: a null token
+        shown = "ru"
+        repository.registerCurrentToken()
+        shown = "de"
+        repository.registerCurrentToken()
+
+        // One row: a tokenless POST inserts, so a second would orphan the first.
+        assertThat(authApi.deviceCalls).isEqualTo(1)
+    }
+
+    @Test
+    fun theLanguageIsOneOfTheNineOrEnglish() {
+        for (language in PushLanguage.ALL) {
+            assertThat(PushLanguage.of(language)).isEqualTo(language)
+        }
+        assertThat(PushLanguage.of("zh-hans")).isEqualTo("zh-Hans")
+        assertThat(PushLanguage.of(" de ")).isEqualTo("de")
+        assertThat(PushLanguage.of("pt-BR")).isEqualTo("en")
+        assertThat(PushLanguage.of(null)).isEqualTo("en")
     }
 
     @Test

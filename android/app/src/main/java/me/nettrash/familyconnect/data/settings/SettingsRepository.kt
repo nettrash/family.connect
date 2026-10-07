@@ -85,6 +85,8 @@ data class SettingsState(
     val pushToken: String? = null,
     /** `device_id` from POST /devices — account-scoped, cleared on logout. */
     val pushDeviceId: Long? = null,
+    /** The language POST /devices last confirmed (#82) — a new one re-POSTs. */
+    val pushLanguage: String? = null,
     /**
      * Whether a message's first web link gets a preview card. On by
      * default, but switchable because building one means THIS device
@@ -359,6 +361,7 @@ interface SettingsRepository {
     suspend fun setFamilyName(name: String?)
     suspend fun setPushToken(token: String?)
     suspend fun setPushDeviceId(deviceId: Long?)
+    suspend fun setPushLanguage(language: String?)
     suspend fun setLinkPreviewsEnabled(enabled: Boolean)
 
     /**
@@ -571,6 +574,7 @@ class DataStoreSettingsRepository @Inject constructor(
         val FAMILY_NAME = stringPreferencesKey("family_name")
         val PUSH_TOKEN = stringPreferencesKey("push_token")
         val PUSH_DEVICE_ID = longPreferencesKey("push_device_id")
+        val PUSH_LANGUAGE = stringPreferencesKey("push_language")
         // Stored inverted so a missing key reads as "on".
         val LINK_PREVIEWS_DISABLED = booleanPreferencesKey("link_previews_disabled")
         val BOARD_CURSOR = longPreferencesKey("board_cursor")
@@ -654,6 +658,7 @@ class DataStoreSettingsRepository @Inject constructor(
             myAvatarVersion = prefs[Keys.MY_AVATAR_VERSION] ?: 0,
             pushToken = prefs[Keys.PUSH_TOKEN],
             pushDeviceId = prefs[Keys.PUSH_DEVICE_ID],
+            pushLanguage = prefs[Keys.PUSH_LANGUAGE],
             // `toLongOrNull` rather than `toLong`: a corrupt entry must
             // not throw inside the map every screen collects.
             maxFamilyMembers = prefs[Keys.MAX_FAMILY_MEMBERS],
@@ -750,6 +755,12 @@ class DataStoreSettingsRepository @Inject constructor(
     override suspend fun setPushDeviceId(deviceId: Long?) {
         dataStore.edit {
             if (deviceId == null) it.remove(Keys.PUSH_DEVICE_ID) else it[Keys.PUSH_DEVICE_ID] = deviceId
+        }
+    }
+
+    override suspend fun setPushLanguage(language: String?) {
+        dataStore.edit {
+            if (language == null) it.remove(Keys.PUSH_LANGUAGE) else it[Keys.PUSH_LANGUAGE] = language
         }
     }
 

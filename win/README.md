@@ -309,9 +309,11 @@ the thing this design exists to avoid. So `win/i18n/generate.py` writes eight JS
 needs none: its keys are its values) which ship embedded in `FamilyConnect.Core`, and the app's own
 XAML chrome may still use `.resw` for labels nobody else has to agree with.
 
-A sentence nobody has translated yet reads in ENGLISH rather than as a slug, and the five that are
-English for now are NAMED in `win/i18n/win.json` — a test fails on any other untranslated key, so
-a new string cannot go quietly missing in nine catalogues that look complete. Completeness is asked
+A sentence nobody has translated yet reads in ENGLISH rather than as a slug, and any that are
+English for now are NAMED in `win/i18n/win.json` (as an empty object) — a test fails on any other
+untranslated key, so a new string cannot go quietly missing in nine catalogues that look complete.
+Since issue #82 (2026-10-07) there are NONE: every sentence the port draws is in all nine, and the
+"Every string in every language" CI job checks the Apple and web catalogues the same way. Completeness is asked
 of the TABLE and not of the answer, because "Video" in German and "Photo" in French are real
 translations identical to the English.
 
@@ -387,9 +389,9 @@ saves through the save picker; a place opens in Maps. Bytes are fetched once by 
 into `FileBlobStore` (one file per key, written whole or not at all, wiped with the SQLite cache
 when the server changes). The measuring — sizes in the reader's decimal format, shapes, the
 location line with a POINT, the Maps link — is `fc_text::media` ported and pinned by the oracle.
-File sizes, "Zero KB" and "%lld byte(s)" are English for now: the Apple apps use the system's byte
-formatter, so the shared catalogue has no such sentences, and this port's catalogue has no plural
-forms (two keys stand in for English's one and other).
+File sizes, "Zero KB" and "%lld byte(s)" are this port's own sentences, translated in
+`win/i18n/win.json` (#82): the Apple apps use the system's byte formatter, so the shared catalogue
+has no such sentences, and two keys stand in for English's one and other.
 
 **A recording is never lost to an interruption, and never sent by one** (docs/audio-video-messages-2026-10-04.md,
 Phase 0; issue #79). The person's Stop stages a voice note for review, as before. Anything else that ends a recording —

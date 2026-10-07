@@ -27,6 +27,9 @@ nonisolated enum AppSettings {
         /// The PushKit VoIP token the server has confirmed, beside the
         /// APNs pair above — an incoming call is delivered to this one.
         static let voipToken = "v1.push.voipToken"
+        /// The language POST /devices last told the server this device's
+        /// pushes are written in (docs/protocol.md, "The words of a push").
+        static let pushLanguage = "v1.push.language"
         /// Stores the DISABLED flag, so a missing key reads as "on".
         static let linkPreviewsDisabled = "v1.linkPreviewsDisabled"
         /// Stored INVERTED, exactly like the link-preview key above and for
@@ -305,6 +308,20 @@ nonisolated enum AppSettings {
                 defaults.set(newValue, forKey: Key.pushToken)
             } else {
                 defaults.removeObject(forKey: Key.pushToken)
+            }
+        }
+    }
+
+    /// The language POST /devices most recently confirmed — what the
+    /// server writes this device's pushes in (#82). Beside the token for the
+    /// same reason: "differs from what was sent" is a re-POST condition.
+    static var pushLanguage: String? {
+        get { defaults.string(forKey: Key.pushLanguage) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.pushLanguage)
+            } else {
+                defaults.removeObject(forKey: Key.pushLanguage)
             }
         }
     }

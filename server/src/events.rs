@@ -583,7 +583,7 @@ struct DeviceTarget {
 /// has not changed for it.
 async fn devices_for_users(pool: &PgPool, user_ids: &[i64]) -> Result<Vec<DeviceTarget>, ApiError> {
     let rows = sqlx::query(
-        "SELECT d.id, d.user_id, d.platform, d.push_token, d.session_id
+        "SELECT d.id, d.user_id, d.platform, d.push_token, d.session_id, d.language
          FROM devices d
          LEFT JOIN sessions s ON s.id = d.session_id
          WHERE d.user_id = ANY($1)
@@ -601,6 +601,7 @@ async fn devices_for_users(pool: &PgPool, user_ids: &[i64]) -> Result<Vec<Device
                 user_id: row.get("user_id"),
                 platform: row.get("platform"),
                 push_token: row.get("push_token"),
+                language: row.get("language"),
             },
             session_id: row.get("session_id"),
         })
@@ -740,7 +741,7 @@ pub async fn has_wakeable_device(pool: &PgPool, user_id: i64) -> Result<bool, Ap
 /// `DevicePush.push_token`; an Android row uses its ordinary push token.
 async fn wakeable_call_devices(pool: &PgPool, user_id: i64) -> Result<Vec<DeviceTarget>, ApiError> {
     let rows = sqlx::query(
-        "SELECT d.id, d.user_id, d.platform, d.session_id,
+        "SELECT d.id, d.user_id, d.platform, d.session_id, d.language,
                 CASE WHEN d.platform = 'android' THEN d.push_token ELSE d.voip_token END AS token
          FROM devices d
          LEFT JOIN sessions s ON s.id = d.session_id
@@ -760,6 +761,7 @@ async fn wakeable_call_devices(pool: &PgPool, user_id: i64) -> Result<Vec<Device
                 user_id: row.get("user_id"),
                 platform: row.get("platform"),
                 push_token: row.get("token"),
+                language: row.get("language"),
             },
             session_id: row.get("session_id"),
         })
@@ -1079,6 +1081,7 @@ mod tests {
                 user_id,
                 platform: "ios".to_string(),
                 push_token: format!("token-{device_id}"),
+                language: None,
             },
             session_id: session,
         }

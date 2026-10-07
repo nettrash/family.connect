@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- ru. Informal register — see values/strings.xml. -->
 <resources>
+    <!-- Not a sentence: the language POST /devices sends, so the server writes this device's pushes in the
+         language the app is SHOWN in (docs/protocol.md, "The words of a push"; issue #82). One per locale folder. -->
+    <string name="push_language">ru</string>
     <string name="s_add_a_note_everyone_in_the_family_sees_it">Добавь заметку — её увидит вся семья.</string>
     <string name="s_add_note">Добавить заметку</string>
     <string name="s_approval">Одобрение</string>

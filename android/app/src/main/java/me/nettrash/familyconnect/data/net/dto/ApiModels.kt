@@ -1342,6 +1342,9 @@ data class DeviceRequest(
     // config (no google-services.json) — the device row still registers,
     // it just can't be pushed to.
     @SerialName("push_token") val pushToken: String?,
+    // The language this device's pushes are written in (docs/protocol.md,
+    // "Devices"); left out when null, which leaves the server's copy alone.
+    @SerialName("language") val language: String? = null,
 )
 
 // -- Response envelopes -------------------------------------------------------
