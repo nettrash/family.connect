@@ -21,10 +21,11 @@ object PictureDescriptionHint {
      * Does the COMPOSER show the hint?
      *
      * @param draft the composer's text as typed.
-     * @param picturesOffered whether this composer offers `/draw` at all —
-     *   the same answer that shows the "ask for a picture" button, so on a
-     *   server with no images deployment, or in a chat the assistant is
-     *   not in, `/draw` is just text and there is nothing to warn about.
+     * @param picturesOffered whether `/draw` is understood in this chat at
+     *   all (typed, or put there by the assistant chat's "ask for a
+     *   picture" button), so on a server with no images deployment, or in
+     *   a chat the assistant is not in, `/draw` is just text and there is
+     *   nothing to warn about.
      * @param inFamilyChat whether this is the family chat, where the
      *   server only reads a picture request off a message that also
      *   mentions the assistant: `/draw a cat` with no `@ai` in it is an

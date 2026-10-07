@@ -1124,6 +1124,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
             offers_video={offers_video}
             video_dimmed={video_dimmed}
             on_video={open_recorder.clone()}
+            assistant_chat={is_ai}
             offers_pictures={assistant_pictures::offers_picture_attach(is_ai, server_can_see, family_allows)}
             on_pictures={ingest.clone()}
             offers_poll={is_family}

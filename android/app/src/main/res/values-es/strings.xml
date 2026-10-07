@@ -163,6 +163,7 @@
     <string name="s_request_declined_explanation">El propietario rechazó tu solicitud. Puedes probar con otro código de invitación o crear tu propia familia.</string>
     <string name="s_waiting_explanation">No hay nada que cancelar desde aquí: el propietario te deja entrar o rechaza la solicitud.</string>
     <string name="s_take_photo">Hacer foto</string>
+    <string name="s_camera">Cámara</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Añade un mensaje, o envíalo tal cual.</string>
     <string name="s_remove_attachment">Quitar adjunto</string>
     <string name="s_audio">Audio</string>
@@ -422,7 +423,6 @@
     <string name="s_safety_for">Opciones de seguridad para %1$s</string>
     <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
     <string name="s_show_the_assistant_a_picture">Mostrar una foto al asistente</string>
-    <string name="s_show_the_assistant_a_picture_note">Sale de este servidor hacia el modelo con el que habla</string>
     <string name="s_ask_for_a_picture">Pedir una imagen</string>
     <string name="s_assistant_sees_this_picture">Al asistente se le mostrará esta foto. Sale de este servidor hacia el modelo con el que habla.</string>
     <string name="s_assistant_sees_these_pictures">Al asistente se le mostrarán estas fotos. Salen de este servidor hacia el modelo con el que habla.</string>

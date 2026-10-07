@@ -30,6 +30,7 @@ import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModel
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import androidx.compose.runtime.snapshots.Snapshot
 import kotlinx.coroutines.CoroutineScope
@@ -2077,6 +2078,23 @@ class ChatViewModelTest {
         picturesConfigured(images = false)
         runCurrent()
         assertThat(viewModel.canAskForPicture.value).isFalse()
+        assertThat(viewModel.offersDrawButton.value).isFalse()
+    }
+
+    /**
+     * The paintbrush BUTTON is the assistant chat's alone (#78, the owner's
+     * choice, as on iOS and the Mac): the family chat still understands a
+     * typed `@ai /draw …` — so [ChatViewModel.canAskForPicture], which the
+     * description hint follows, stays true there — but has no button.
+     */
+    @Test
+    fun theDrawButtonIsOnlyInTheAssistantsChat() = runTest(dispatcher) {
+        for (kind in listOf("ai", "family", "direct")) {
+            val viewModel = newViewModel(kind = kind)
+            picturesConfigured()
+            runCurrent()
+            assertWithMessage(kind).that(viewModel.offersDrawButton.value).isEqualTo(kind == "ai")
+        }
     }
 
     /**

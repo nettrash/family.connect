@@ -148,10 +148,11 @@
                     <ScrollViewer x:Name="SuggestionScroller" Grid.Row="1" Grid.ColumnSpan="3" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" Visibility="Collapsed">
                         <StackPanel x:Name="SuggestionStrip" Orientation="Horizontal" Spacing="6" />
                     </ScrollViewer>
-                    <!-- One door for everything a message can carry: its menu is built from what this chat allows. -->
+                    <!-- One door for everything a message can carry: its menu is built from what this chat allows. A paperclip, -->
+                    <!-- Segoe Fluent's Attach glyph, as on every client (docs/attachment-menu-2026-10-07.md). -->
                     <StackPanel x:Name="ComposerTools" Grid.Row="2" Orientation="Horizontal" VerticalAlignment="Bottom">
                         <Button x:Name="AttachButton" Background="Transparent" BorderThickness="0" Padding="8">
-                            <SymbolIcon Symbol="Add" />
+                            <FontIcon Glyph="&#xE723;" FontSize="16" />
                         </Button>
                         <!-- The family's stickers: a panel over the composer, where one click sends. Drawn only on a server -->
                         <!-- that has packs, in every chat a message can be sent in, and never while a message is being -->

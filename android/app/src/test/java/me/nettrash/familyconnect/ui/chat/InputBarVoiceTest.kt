@@ -75,6 +75,10 @@ class InputBarVoiceTest {
         assistantChat: Boolean = false,
         announcement: ChatViewModel.VoiceAnnouncement? = null,
         recorderOpen: () -> Boolean = { false },
+        hasCamera: Boolean = true,
+        assistantPictures: Boolean = false,
+        showsDraw: Boolean = false,
+        showsPoll: Boolean = false,
     ) {
         compose.setContent {
             val state = hold()
@@ -90,15 +94,17 @@ class InputBarVoiceTest {
                 onCancelEdit = {},
                 mediaState = ChatViewModel.MediaSendState.Idle,
                 staged = emptyList(),
-                onPickMedia = {},
                 onPickFile = {},
                 onPasteFromClipboard = {},
                 onPasteContent = { ChatViewModel.PasteResult.TEXT },
                 onPasteTruncated = {},
-                onTakePhoto = {},
+                onPickMedia = { calls += "photo or video" },
+                onTakePhoto = { calls += "take photo" },
                 onTakeVideo = { calls += "take video" },
                 onRecordAudio = { calls += "record voice message" },
                 showsRecordVoice = !assistantChat,
+                assistantChat = assistantChat,
+                hasCamera = hasCamera,
                 slotInputs = inputs(assistantChat = assistantChat, recording = state.recording),
                 hold = state,
                 announcement = announcement,
@@ -109,16 +115,16 @@ class InputBarVoiceTest {
                 // The slot's activation is recorded too: a touch that reached
                 // the microphone must show up here.
                 onActivateSlot = { calls += "activate" },
-                showsPoll = false,
-                onStartPoll = {},
+                showsPoll = showsPoll,
+                onStartPoll = { calls += "poll" },
                 onDiscardStaged = {},
                 onDismissMediaError = {},
                 onShareLocation = {},
                 showsAssistantMention = false,
-                showsAssistantPicture = false,
-                onShowAssistantPicture = {},
-                showsDraw = false,
-                onAskForPicture = {},
+                showsAssistantPicture = assistantPictures,
+                onShowAssistantPicture = { calls += "show the assistant" },
+                showsDraw = showsDraw,
+                onAskForPicture = { calls += "draw" },
                 pictureNotice = null,
                 mentionPictureNotice = null,
                 showsPictureDescriptionHint = false,
@@ -148,7 +154,10 @@ class InputBarVoiceTest {
         compose.onNodeWithContentDescription("Record voice message").assertIsDisplayed()
     }
 
-    /** The paperclip's renames (S1.5): the pair reads as a pair. */
+    /**
+     * The paperclip's renames (S1.5): "Record voice message", and "Take
+     * video" — now on the Camera page beside "Take photo" (#78).
+     */
     @Test
     fun thePaperclipSaysRecordVoiceMessageAndTakeVideo() {
         show()
@@ -156,10 +165,98 @@ class InputBarVoiceTest {
 
         compose.onNodeWithText("Record audio").assertDoesNotExist()
         compose.onNodeWithText("Record video").assertDoesNotExist()
-        compose.onNodeWithText("Take video").assertIsDisplayed()
         compose.onNodeWithText("Record voice message").performClick()
 
         assertThat(calls).containsExactly("other action", "record voice message").inOrder()
+    }
+
+    /**
+     * #78: "Camera" swaps the menu for "Take photo" and "Take video" in
+     * place, a back row returns, and the next opening starts at the top.
+     */
+    @Test
+    fun cameraOpensItsTwoChoicesInPlaceAndTheMenuComesBackToTheTop() {
+        show()
+        paperclip().performClick()
+        compose.onNodeWithText("Photo or video").assertIsDisplayed()
+        compose.onNodeWithText("Take photo").assertDoesNotExist()
+        compose.onNodeWithText("Take video").assertDoesNotExist()
+
+        compose.onNodeWithText("Camera").performClick()
+        compose.onNodeWithText("Take photo").assertIsDisplayed()
+        compose.onNodeWithText("Take video").assertIsDisplayed()
+        compose.onNodeWithText("Photo or video").assertDoesNotExist()
+        compose.onNodeWithText("File").assertDoesNotExist()
+
+        // The back row ("Back" on its arrow, "Camera" in words) returns.
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithText("Photo or video").assertIsDisplayed()
+        compose.onNodeWithText("Take video").assertDoesNotExist()
+
+        compose.onNodeWithText("Camera").performClick()
+        compose.onNodeWithText("Take video").performClick()
+        compose.onAllNodes(isPopup()).assertCountEquals(0)
+
+        // Reopened: the top level again, not the Camera page.
+        paperclip().performClick()
+        compose.onNodeWithText("Photo or video").assertIsDisplayed()
+        compose.onNodeWithText("Take video").assertDoesNotExist()
+        compose.onNodeWithText("Camera").performClick()
+        compose.onNodeWithText("Take photo").performClick()
+
+        assertThat(calls).containsExactly("other action", "take video", "other action", "take photo").inOrder()
+    }
+
+    /** No camera on the device, no "Camera" in the menu (#78). */
+    @Test
+    fun withoutACameraTheMenuHasNoCamera() {
+        show(hasCamera = false)
+        paperclip().performClick()
+        compose.onNodeWithText("Photo or video").assertIsDisplayed()
+        compose.onNodeWithText("Camera").assertDoesNotExist()
+        compose.onNodeWithText("Take photo").assertDoesNotExist()
+    }
+
+    /** "Ask for a picture" is never in the menu any more (#78); a poll still is. */
+    @Test
+    fun theMenuHasNoAskForAPictureButKeepsThePoll() {
+        show(showsDraw = true, showsPoll = true)
+        paperclip().performClick()
+        compose.onNodeWithText("Ask for a picture").assertDoesNotExist()
+        compose.onNodeWithText("Poll").performClick()
+        assertThat(calls).containsExactly("other action", "poll").inOrder()
+    }
+
+    /** The paintbrush is its own button now, and types the request (#78). */
+    @Test
+    fun askForAPictureIsItsOwnButton() {
+        show(assistantChat = true, showsDraw = true)
+        compose.onNodeWithContentDescription("Ask for a picture").assertIsEnabled().performClick()
+        assertThat(calls).containsExactly("other action", "draw").inOrder()
+    }
+
+    @Test
+    fun noPaintbrushWhereItIsNotOffered() {
+        show(showsDraw = false)
+        compose.onNodeWithContentDescription("Ask for a picture").assertDoesNotExist()
+    }
+
+    /**
+     * The assistant chat that accepts pictures: "Show the assistant a
+     * picture" INSTEAD of "Photo or video", one line, and its camera is a
+     * direct "Take photo" — images only there (#78).
+     */
+    @Test
+    fun theAssistantsChatShowsTheAssistantAPictureInsteadOfPhotoOrVideo() {
+        show(assistantChat = true, assistantPictures = true)
+        paperclip().performClick()
+        compose.onNodeWithText("Show the assistant a picture").assertIsDisplayed()
+        compose.onNodeWithText("It leaves this server for the model your server talks to").assertDoesNotExist()
+        compose.onNodeWithText("Photo or video").assertDoesNotExist()
+        compose.onNodeWithText("Camera").assertDoesNotExist()
+        compose.onNodeWithText("Take video").assertDoesNotExist()
+        compose.onNodeWithText("Take photo").performClick()
+        assertThat(calls).containsExactly("other action", "take photo").inOrder()
     }
 
     /** The assistant's chat: today's disabled Send, and no "Record voice message" (S1.5, Decision 24). */
@@ -171,7 +268,12 @@ class InputBarVoiceTest {
 
         paperclip().performClick()
         compose.onNodeWithText("Record voice message").assertDoesNotExist()
-        compose.onNodeWithText("Take video").assertIsDisplayed()
+        // Without pictures allowed: no picture door and no camera at all (#78).
+        compose.onNodeWithText("Photo or video").assertDoesNotExist()
+        compose.onNodeWithText("Show the assistant a picture").assertDoesNotExist()
+        compose.onNodeWithText("Camera").assertDoesNotExist()
+        compose.onNodeWithText("Take photo").assertDoesNotExist()
+        compose.onNodeWithText("File").assertIsDisplayed()
     }
 
     /** Hands-free: Delete, Stop, and the slot sends (S2.4). */

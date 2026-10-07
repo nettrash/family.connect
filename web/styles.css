@@ -1111,6 +1111,11 @@ button.pack-cell:disabled { cursor: default; }
 
 .attach { position: relative; flex: none; }
 .attach .attach-menu { top: auto; bottom: 100%; left: 0; right: auto; margin-bottom: 6px; }
+/* The paperclip's menu (#78): every line an icon in a fixed-width column,
+ * so the labels align, and its three groups parted by a hairline. */
+.attach-menu > button.menu-icon-row { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.attach-menu .menu-icon { flex: none; width: 1.5em; text-align: center; line-height: 1; }
+.attach-menu > hr.menu-separator { width: auto; height: 0; margin: 3px 4px; border: 0; border-top: 1px solid var(--line); }
 .menu-backdrop { position: fixed; inset: 0; z-index: 4; }
 .hidden-picker { display: none; }
 

@@ -10,6 +10,7 @@
 //! animated-GIF rule, and none can differ from the others in ways nobody
 //! notices until a send fails.
 
+use fc_text::attach_menu::{attach_menu as menu_groups, AttachItem, AttachOffers};
 use fc_text::i18n::{t, t1};
 use fc_text::{media, record};
 use wasm_bindgen::JsCast;
@@ -90,6 +91,11 @@ pub struct MenuProps {
     pub video_dimmed: Option<String>,
     #[prop_or_default]
     pub on_video: Callback<()>,
+    /// The assistant's own chat: "Photo or Video" is never offered there —
+    /// "Show the Assistant a Photo…" takes its place when `offers_pictures`,
+    /// and nothing does otherwise (issue #78).
+    #[prop_or_default]
+    pub assistant_chat: bool,
     /// "Show the Assistant a Photo…" is offered — the assistant's chat, on
     /// a server that can see, in a family that allows it; ABSENT otherwise,
     /// never a door that lies (docs/protocol.md, "Pictures").
@@ -105,6 +111,7 @@ pub fn attach_menu(props: &MenuProps) -> Html {
     let open = use_state(|| false);
     let picker = use_node_ref();
     let pictures = use_node_ref();
+    let media_picker = use_node_ref();
     let toggle = {
         let open = open.clone();
         let busy = props.busy.clone();
@@ -118,69 +125,50 @@ pub fn attach_menu(props: &MenuProps) -> Html {
             open.set(!*open);
         })
     };
-    let item = |label: &'static str, action: Callback<()>| {
+    // One line of the menu: its icon in a fixed-width column, decoration
+    // only, then its label — the button's whole accessible name. DIMMED
+    // where it cannot act, which it still says when chosen, through the
+    // same door: the action is what refuses ("Record Voice Message" — the
+    // recorder's start), and the menu only shows that it will.
+    let row = |item: AttachItem, action: Callback<()>, dimmed: Option<(String, String)>| {
         let open = open.clone();
         let onclick = Callback::from(move |_: MouseEvent| {
             open.set(false);
             action.emit(());
         });
-        html! { <button role="menuitem" {onclick}>{ label }</button> }
+        let icon = html! { <span class="menu-icon" aria-hidden="true">{ item.icon() }</span> };
+        match dimmed {
+            None => html! {
+                <button role="menuitem" class="menu-icon-row" {onclick}>
+                    { icon }<span class="menu-label">{ item.label() }</span>
+                </button>
+            },
+            Some((reason, id)) => html! {
+                <>
+                    <button role="menuitem" class="menu-icon-row is-dimmed" aria-disabled="true"
+                            aria-describedby={id.clone()} title={reason.clone()} {onclick}>
+                        { icon }<span class="menu-label">{ item.label() }</span>
+                    </button>
+                    <span {id} hidden=true>{ reason }</span>
+                </>
+            },
+        }
     };
-    // "Record Voice Message", DIMMED where it cannot record — which it still
-    // says when chosen, through the same door: the recorder's start is what
-    // refuses, and the menu only shows that it will.
     let dimmed_reason_id = use_memo((), |_| crate::views::dialog::fresh_id("dimmed-reason"));
-    let record = {
-        let open = open.clone();
-        let on_record = props.on_record.clone();
-        let onclick = Callback::from(move |_: MouseEvent| {
-            open.set(false);
-            on_record.emit(());
-        });
-        match props.record_dimmed.clone() {
-            _ if !props.offers_record => Html::default(),
-            None => {
-                html! { <button role="menuitem" {onclick}>{ t("Record Voice Message") }</button> }
-            }
-            Some(reason) => html! {
-                <>
-                    <button role="menuitem" class="is-dimmed" aria-disabled="true"
-                            aria-describedby={(*dimmed_reason_id).clone()} title={reason.clone()} {onclick}>
-                        { t("Record Voice Message") }
-                    </button>
-                    <span id={(*dimmed_reason_id).clone()} hidden=true>{ reason }</span>
-                </>
-            },
-        }
-    };
     let video_reason_id = use_memo((), |_| crate::views::dialog::fresh_id("video-reason"));
-    let video = {
-        let open = open.clone();
-        let on_video = props.on_video.clone();
-        let onclick = Callback::from(move |_: MouseEvent| {
-            open.set(false);
-            on_video.emit(());
-        });
-        match props.video_dimmed.clone() {
-            _ if !props.offers_video => Html::default(),
-            None => {
-                html! { <button role="menuitem" {onclick}>{ t("Record Video Message") }</button> }
-            }
-            Some(reason) => html! {
-                <>
-                    <button role="menuitem" class="is-dimmed" aria-disabled="true"
-                            aria-describedby={(*video_reason_id).clone()} title={reason.clone()} {onclick}>
-                        { t("Record Video Message") }
-                    </button>
-                    <span id={(*video_reason_id).clone()} hidden=true>{ reason }</span>
-                </>
-            },
-        }
-    };
     let pick = {
         let picker = picker.clone();
         Callback::from(move |_: ()| {
             if let Some(input) = picker.cast::<HtmlInputElement>() {
+                input.set_value("");
+                input.click();
+            }
+        })
+    };
+    let pick_media = {
+        let media_picker = media_picker.clone();
+        Callback::from(move |_: ()| {
+            if let Some(input) = media_picker.cast::<HtmlInputElement>() {
                 input.set_value("");
                 input.click();
             }
@@ -265,14 +253,49 @@ pub fn attach_menu(props: &MenuProps) -> Html {
             }
         });
     }
+    // Which lines, in which groups (fc_text::attach_menu — the same menu on
+    // every client, docs/attachment-menu-2026-10-07.md).
+    let groups = menu_groups(AttachOffers {
+        assistant_chat: props.assistant_chat,
+        assistant_pictures: props.offers_pictures,
+        record_voice: props.offers_record,
+        record_video: props.offers_video,
+        poll: props.offers_poll,
+    });
+    let line = |item: AttachItem| match item {
+        AttachItem::PhotoOrVideo => row(item, pick_media.clone(), None),
+        AttachItem::AssistantPhoto => row(item, pick_pictures.clone(), None),
+        AttachItem::File => row(item, pick.clone(), None),
+        AttachItem::Paste => row(item, props.on_paste.clone(), None),
+        AttachItem::RecordVoice => row(
+            item,
+            props.on_record.clone(),
+            props
+                .record_dimmed
+                .clone()
+                .map(|reason| (reason, (*dimmed_reason_id).clone())),
+        ),
+        AttachItem::RecordVideo => row(
+            item,
+            props.on_video.clone(),
+            props
+                .video_dimmed
+                .clone()
+                .map(|reason| (reason, (*video_reason_id).clone())),
+        ),
+        AttachItem::Location => row(item, props.on_location.clone(), None),
+        AttachItem::Poll => row(item, props.on_poll.clone(), None),
+    };
     html! {
         <div class="attach">
             <button class="tool" title={t("Attach a photo, video or file")} aria-label={t("Attach")}
                     aria-haspopup="menu" aria-expanded={(*open).to_string()} onclick={toggle}>
                 { "📎" }
             </button>
-            <input ref={picker} type="file" multiple=true class="hidden-picker" onchange={picked}
+            <input ref={picker} type="file" multiple=true class="hidden-picker" onchange={picked.clone()}
                    aria-hidden="true" tabindex="-1" />
+            <input ref={media_picker} type="file" multiple=true accept="image/*,video/*" class="hidden-picker"
+                   onchange={picked.clone()} aria-hidden="true" tabindex="-1" />
             <input ref={pictures} type="file" multiple=true accept="image/*" class="hidden-picker"
                    onchange={picked_pictures} aria-hidden="true" tabindex="-1" />
             if *open {
@@ -280,17 +303,14 @@ pub fn attach_menu(props: &MenuProps) -> Html {
                 // is no mouse to leave.
                 <div class="menu-backdrop" onclick={close.clone()} aria-hidden="true"></div>
                 <div class="menu attach-menu" role="menu" onmouseleave={close} onkeydown={on_menu_key}>
-                    if props.offers_pictures {
-                        { item(t("Show the Assistant a Photo…"), pick_pictures) }
-                    }
-                    { item(t("Attach a File…"), pick) }
-                    { item(t("Paste"), props.on_paste.clone()) }
-                    { record }
-                    { video }
-                    { item(t("Location"), props.on_location.clone()) }
-                    if props.offers_poll {
-                        { item(t("Poll"), props.on_poll.clone()) }
-                    }
+                    { for groups.iter().enumerate().map(|(index, group)| html! {
+                        <>
+                            if index > 0 {
+                                <hr role="separator" class="menu-separator" />
+                            }
+                            { for group.iter().map(|item| line(*item)) }
+                        </>
+                    }) }
                 </div>
             }
         </div>

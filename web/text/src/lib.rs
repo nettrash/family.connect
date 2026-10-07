@@ -16,6 +16,9 @@
 //! - [`assistant`] — `@ai` and `/draw`, by the server's own grammar.
 //! - [`assistant_pictures`] — what a composer says before a photograph goes
 //!   to the assistant, and the four-photo, 5 MiB, JPEG-or-PNG bounds.
+//! - [`attach_menu`] — the paperclip's menu (#78): which items, in which
+//!   order and groups, and the label and icon of each — the same menu on
+//!   every client.
 //! - [`composer`] — the 4,000-character body limit and where a cut may land.
 //! - [`call_record`] — how a call record reads.
 //! - [`excerpt`] — the server's 120-character quote cut.
@@ -71,6 +74,7 @@ pub mod account;
 pub mod assistant;
 pub mod assistant_consent;
 pub mod assistant_pictures;
+pub mod attach_menu;
 pub mod avatar;
 pub mod board;
 pub mod calendar;
