@@ -626,6 +626,110 @@ async fn a_join_request_pushes_the_offline_family_owner() {
     );
 }
 
+/// Each device is told in ITS language (docs/protocol.md, "The words of a push"; issue #82): the
+/// owner's Russian iPhone, German iPad and an iPhone from an app that never said a language get one
+/// join request in three — the server's own sentence translated, the requester's name as written.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_push_is_written_in_the_language_each_device_registered() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (_family_id, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    for (push_token, language) in [("owner-ru", json!("ru")), ("owner-de", json!("de-AT"))] {
+        let response = ts
+            .post(
+                &owner,
+                "/devices",
+                json!({"platform": "ios", "push_token": push_token, "language": language}),
+            )
+            .await;
+        assert_eq!(response.status(), 201);
+    }
+    register_device(&ts, &owner, "ios", "owner-none").await;
+
+    let (requester, _) = ts.register("junior", "Junior").await;
+    ts.join(&requester, &invite_code, "pending").await;
+
+    let requests = mock
+        .wait_for(3, |path| path.starts_with("/3/device/"))
+        .await;
+    let body_of = |token: &str| {
+        requests
+            .iter()
+            .find(|request| request.path == format!("/3/device/{token}"))
+            .map(|request| request.body["aps"]["alert"].clone())
+            .unwrap_or_else(|| panic!("nothing reached {token}"))
+    };
+    assert_eq!(
+        body_of("owner-ru"),
+        json!({"title": "The Smiths", "body": "Junior просит вступить в семью"})
+    );
+    // `de-AT` is German: a region does not lose the language.
+    assert_eq!(
+        body_of("owner-de"),
+        json!({"title": "The Smiths", "body": "Junior möchte beitreten"})
+    );
+    assert_eq!(
+        body_of("owner-none"),
+        json!({"title": "The Smiths", "body": "Junior asked to join"})
+    );
+}
+
+/// `language` follows the same absent-is-not-null rule as `voip_token` (docs/protocol.md,
+/// "Devices"), and the server never refuses a registration over it: a malformed tag is stored as no
+/// language, so the device still gets its pushes — in English.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_devices_language_is_kept_cleared_and_never_refused() {
+    let ts = spawn_server().await;
+    let (token, user_id) = ts.register("owner", "Olive").await;
+    let language = || async {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT language FROM devices WHERE user_id = $1 AND push_token = 'tok'",
+        )
+        .bind(user_id)
+        .fetch_one(&ts.state.pool)
+        .await
+        .expect("the device row")
+    };
+    let register = |body: Value| {
+        let ts = &ts;
+        let token = token.clone();
+        async move {
+            let response = ts.post(&token, "/devices", body).await;
+            assert_eq!(
+                response.status(),
+                201,
+                "registration is never refused over a language"
+            );
+        }
+    };
+
+    register(json!({"platform": "ios", "push_token": "tok", "language": "sr-Latn"})).await;
+    assert_eq!(language().await.as_deref(), Some("sr-Latn"));
+    // Absent: the launch that does not say leaves it alone.
+    register(json!({"platform": "ios", "push_token": "tok"})).await;
+    assert_eq!(language().await.as_deref(), Some("sr-Latn"));
+    // A tag the server has no words for is kept, and spoken in English.
+    register(json!({"platform": "ios", "push_token": "tok", "language": "pt-BR"})).await;
+    assert_eq!(language().await.as_deref(), Some("pt-BR"));
+    // Malformed: stored as no language, not refused.
+    register(json!({"platform": "ios", "push_token": "tok", "language": "ru; DROP TABLE"})).await;
+    assert_eq!(language().await, None);
+    register(json!({"platform": "ios", "push_token": "tok", "language": "ja"})).await;
+    assert_eq!(language().await.as_deref(), Some("ja"));
+    // Null and "" clear it.
+    register(json!({"platform": "ios", "push_token": "tok", "language": null})).await;
+    assert_eq!(language().await, None);
+    register(json!({"platform": "ios", "push_token": "tok", "language": "de"})).await;
+    register(json!({"platform": "ios", "push_token": "tok", "language": ""})).await;
+    assert_eq!(language().await, None);
+}
+
 /// A note pinned to the wall reaches the family, and the author is not told
 /// about their own note (protocol.md, "Board").
 #[tokio::test]

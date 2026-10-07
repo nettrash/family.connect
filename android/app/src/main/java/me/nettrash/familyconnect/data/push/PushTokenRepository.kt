@@ -5,14 +5,17 @@
  * Owns the device-registration half of the protocol's push lifecycle
  * (docs/protocol.md, "Push notifications"):
  *
- *   POST /devices {platform: "android", push_token} → {device_id}
+ *   POST /devices {platform: "android", push_token, language} → {device_id}
  *
  * Rules encoded here:
  *   - register only while a session exists (token + server URL) — when
  *     logged out the FCM token is just cached so the next login can
  *     register immediately;
- *   - re-POST only on change: same token + a stored device_id = no-op
- *     (the server upserts by token, but there's no point chattering);
+ *   - re-POST only on change: same token + same language + a stored
+ *     device_id = no-op (the server upserts by token, but there's no point
+ *     chattering) — and a new language IS a change, so somebody who
+ *     switches the app to Russian gets Russian pushes from the next
+ *     resync on (docs/protocol.md, "The words of a push"; issue #82);
  *   - a failed POST caches the token WITHOUT a device_id, so the next
  *     login/resync retries instead of short-circuiting;
  *   - DELETE /devices/{id} on logout lives in SessionRepository (it owns
@@ -42,6 +45,7 @@ class PushTokenRepository @Inject constructor(
     private val settings: SettingsRepository,
     private val tokenStore: TokenStore,
     private val pushTokenProvider: PushTokenProvider,
+    private val pushLanguage: PushLanguageProvider,
 ) {
 
     /** FCM delivered a fresh (possibly rotated) token — FcPushService.onNewToken. */
@@ -72,11 +76,13 @@ class PushTokenRepository @Inject constructor(
         // Re-POST only on change: an existing registration for this exact
         // token needs no refresh. A missing device_id means the last POST
         // failed (or never happened) — always retry then.
-        if (state.pushDeviceId != null && state.pushToken == token) return
-        when (val result = authApi.registerDevice(token)) {
+        val language = pushLanguage.shownLanguage()
+        if (state.pushDeviceId != null && state.pushToken == token && state.pushLanguage == language) return
+        when (val result = authApi.registerDevice(token, language)) {
             is ApiResult.Ok -> {
                 settings.setPushToken(token)
                 settings.setPushDeviceId(result.value.deviceId)
+                settings.setPushLanguage(language)
             }
             is ApiResult.HttpError, is ApiResult.NetworkError -> {
                 // Best-effort by design: cache the token, leave device_id

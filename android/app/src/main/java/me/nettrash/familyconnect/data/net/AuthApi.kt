@@ -102,12 +102,12 @@ interface AuthApi {
     suspend fun probe(candidateServerUrl: String): ApiResult<MeResponse>
 
     /**
-     * POST /devices {platform: "android", push_token} → {device_id}.
+     * POST /devices {platform: "android", push_token, language} → {device_id}.
      * Upserts by token when non-null; a null token still creates the
      * device row (the push hook without delivery — e.g. builds without
      * a google-services.json). PushTokenRepository owns when to call this.
      */
-    suspend fun registerDevice(pushToken: String?): ApiResult<DeviceResponse>
+    suspend fun registerDevice(pushToken: String?, language: String? = null): ApiResult<DeviceResponse>
 
     /** DELETE /devices/{id} — best-effort on logout so a logged-out phone
      *  stops receiving this account's pushes. */
@@ -164,8 +164,8 @@ class DefaultAuthApi @Inject constructor(
             overrideBase = ServerUrlNormalizer.apiBase(candidateServerUrl),
         )
 
-    override suspend fun registerDevice(pushToken: String?): ApiResult<DeviceResponse> =
-        client.post("/devices", DeviceRequest(platform = "android", pushToken = pushToken))
+    override suspend fun registerDevice(pushToken: String?, language: String?): ApiResult<DeviceResponse> =
+        client.post("/devices", DeviceRequest(platform = "android", pushToken = pushToken, language = language))
 
     override suspend fun deleteDevice(deviceId: Long): ApiResult<Unit> =
         client.delete("/devices/$deviceId")

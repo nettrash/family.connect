@@ -39,6 +39,8 @@ pub mod migrate;
 pub mod models;
 pub mod push;
 pub mod push_payload;
+pub mod push_text;
+pub mod push_words;
 pub mod registry;
 pub mod state;
 pub mod storage;

@@ -47,6 +47,7 @@ import me.nettrash.familyconnect.data.db.LocalDataWiper
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AuthApi
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
+import me.nettrash.familyconnect.data.push.PushLanguageProvider
 import me.nettrash.familyconnect.data.push.PushTokenProvider
 import me.nettrash.familyconnect.data.push.PushTokenRepository
 import me.nettrash.familyconnect.data.settings.DefaultServerUrl
@@ -124,7 +125,7 @@ class SessionRepository @Inject constructor(
     // unchanged. Production always injects the Hilt singleton (whose
     // provider actually asks Firebase — see AppModule).
     private val pushTokenRepository: PushTokenRepository =
-        PushTokenRepository(authApi, settings, tokenStore, PushTokenProvider { null }),
+        PushTokenRepository(authApi, settings, tokenStore, PushTokenProvider { null }, PushLanguageProvider { "en" }),
     // Same trick again: tests that never race a late write against a wipe
     // get a private epoch; production shares the singleton with the
     // repositories whose writes it guards (TranscriptRepository).

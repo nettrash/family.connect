@@ -288,6 +288,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "audio_waveform",
         sql: include_str!("../migrations/0053_audio_waveform.sql"),
     },
+    Migration {
+        version: 54,
+        name: "device_language",
+        sql: include_str!("../migrations/0054_device_language.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

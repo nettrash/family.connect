@@ -11,6 +11,9 @@
   consistent with that.
 -->
 <resources>
+    <!-- Not a sentence: the language POST /devices sends, so the server writes this device's pushes in the
+         language the app is SHOWN in (docs/protocol.md, "The words of a push"; issue #82). One per locale folder. -->
+    <string name="push_language">en</string>
     <!-- The app name is a name, not a word: it reads the same in every language. -->
     <string name="app_name" translatable="false">Family</string>
     <string name="s_add_a_note_everyone_in_the_family_sees_it">Add a note — everyone in the family sees it.</string>

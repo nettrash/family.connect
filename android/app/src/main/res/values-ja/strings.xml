@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- ja. Informal register — see values/strings.xml. -->
 <resources>
+    <!-- Not a sentence: the language POST /devices sends, so the server writes this device's pushes in the
+         language the app is SHOWN in (docs/protocol.md, "The words of a push"; issue #82). One per locale folder. -->
+    <string name="push_language">ja</string>
     <string name="s_add_a_note_everyone_in_the_family_sees_it">メモを追加すると、家族全員が見られます。</string>
     <string name="s_add_note">メモを追加</string>
     <string name="s_approval">承認</string>

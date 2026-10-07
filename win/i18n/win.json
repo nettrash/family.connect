@@ -7,19 +7,82 @@
     "five it is waiting on."
   ],
   "strings": {
-    "%@ GB": {},
-    "%@ KB": {},
-    "%@ MB": {},
-    "%@ — %@": {},
-    "%@ — %@ mentioned you": {},
+    "%@ GB": {
+      "de": "%@ GB",
+      "es": "%@ GB",
+      "fr": "%@ Go",
+      "ja": "%@ GB",
+      "ru": "%@ ГБ",
+      "sr": "%@ GB",
+      "sr-Latn": "%@ GB",
+      "zh-Hans": "%@ GB"
+    },
+    "%@ KB": {
+      "de": "%@ KB",
+      "es": "%@ KB",
+      "fr": "%@ Ko",
+      "ja": "%@ KB",
+      "ru": "%@ КБ",
+      "sr": "%@ KB",
+      "sr-Latn": "%@ KB",
+      "zh-Hans": "%@ KB"
+    },
+    "%@ MB": {
+      "de": "%@ MB",
+      "es": "%@ MB",
+      "fr": "%@ Mo",
+      "ja": "%@ MB",
+      "ru": "%@ МБ",
+      "sr": "%@ MB",
+      "sr-Latn": "%@ MB",
+      "zh-Hans": "%@ MB"
+    },
+    "%@ — %@": {
+      "de": "%@ — %@",
+      "es": "%@ — %@",
+      "fr": "%@ — %@",
+      "ja": "%@ — %@",
+      "ru": "%@ — %@",
+      "sr": "%@ — %@",
+      "sr-Latn": "%@ — %@",
+      "zh-Hans": "%@ — %@"
+    },
+    "%@ — %@ mentioned you": {
+      "de": "%@ — %@ hat dich erwähnt",
+      "es": "%@ — %@ te mencionó",
+      "fr": "%@ — %@ vous a mentionné",
+      "ja": "%@ — %@があなたをメンションしました",
+      "ru": "%@ — %@ упоминает тебя",
+      "sr": "%@ — %@ те је поменуо/ла",
+      "sr-Latn": "%@ — %@ te je pomenuo/la",
+      "zh-Hans": "%@ — %@ 提到了你"
+    },
     "%lld attachments, %@": {
       "en": {
         "one": "%lld attachment, %@",
         "other": "%lld attachments, %@"
       }
     },
-    "%lld byte": {},
-    "%lld bytes": {},
+    "%lld byte": {
+      "de": "%lld Byte",
+      "es": "%lld byte",
+      "fr": "%lld octet",
+      "ja": "%lld バイト",
+      "ru": "%lld байт",
+      "sr": "%lld бајт",
+      "sr-Latn": "%lld bajt",
+      "zh-Hans": "%lld 字节"
+    },
+    "%lld bytes": {
+      "de": "%lld Bytes",
+      "es": "%lld bytes",
+      "fr": "%lld octets",
+      "ja": "%lld バイト",
+      "ru": "%lld байт",
+      "sr": "%lld бајтова",
+      "sr-Latn": "%lld bajtova",
+      "zh-Hans": "%lld 字节"
+    },
     "%lld members now. Nobody new can join until somebody leaves; no one is removed.": {
       "en": {
         "one": "%lld member now. Nobody new can join until somebody leaves; no one is removed.",
@@ -44,7 +107,16 @@
         "other": "%lld recordings as text"
       }
     },
-    "+%lld": {},
+    "+%lld": {
+      "de": "+%lld",
+      "es": "+%lld",
+      "fr": "+%lld",
+      "ja": "+%lld",
+      "ru": "+%lld",
+      "sr": "+%lld",
+      "sr-Latn": "+%lld",
+      "zh-Hans": "+%lld"
+    },
     "A few words for a screen reader. They are never drawn over the picture.": {
       "de": "Ein paar Worte für einen Screenreader. Sie werden nie über das Bild gezeichnet.",
       "es": "Unas palabras para un lector de pantalla. Nunca se dibujan sobre la imagen.",
@@ -55,7 +127,16 @@
       "sr-Latn": "Nekoliko reči za čitač ekrana. Nikada se ne ispisuju preko slike.",
       "zh-Hans": "给屏幕阅读器用的几个字，不会显示在图片上。"
     },
-    "A photo is still being pinned. Add the next one when it is on the board.": {},
+    "A photo is still being pinned. Add the next one when it is on the board.": {
+      "de": "Ein Foto wird noch angeheftet. Füge das nächste hinzu, wenn es an der Pinnwand ist.",
+      "es": "Todavía se está fijando una foto. Añade la siguiente cuando ya esté en el tablón.",
+      "fr": "Une photo est encore en cours d’épinglage. Ajoutez la suivante quand elle sera sur le tableau.",
+      "ja": "写真をまだ貼っています。ボードに表示されてから次を追加してください。",
+      "ru": "Фото ещё прикрепляется. Добавь следующее, когда оно появится на доске.",
+      "sr": "Фотографија се још качи. Додај следећу када се појави на табли.",
+      "sr-Latn": "Fotografija se još kači. Dodaj sledeću kada se pojavi na tabli.",
+      "zh-Hans": "一张照片还在钉上。等它出现在留言板上再添加下一张。"
+    },
     "A sticker's label can be at most %lld characters.": {
       "de": "Die Beschreibung eines Stickers darf höchstens %lld Zeichen lang sein.",
       "es": "La descripción de un sticker puede tener como máximo %lld caracteres.",
@@ -66,7 +147,16 @@
       "sr-Latn": "Opis stikera može da ima najviše %lld znaka.",
       "zh-Hans": "贴纸的说明最多 %lld 个字符。"
     },
-    "Add Event": {},
+    "Add Event": {
+      "de": "Termin hinzufügen",
+      "es": "Añadir evento",
+      "fr": "Ajouter un évènement",
+      "ja": "イベントを追加",
+      "ru": "Добавить событие",
+      "sr": "Додај догађај",
+      "sr-Latn": "Dodaj događaj",
+      "zh-Hans": "添加活动"
+    },
     "Animated stickers must be WebP.": {
       "de": "Animierte Sticker müssen WebP sein.",
       "es": "Los stickers animados tienen que ser WebP.",
@@ -87,11 +177,56 @@
       "sr-Latn": "Dovodi Family Connect u prvi plan iz bilo koje aplikacije. Pritisni ponovo da ga vratiš u polje za obaveštenja.",
       "zh-Hans": "从任何应用将 Family Connect 调到前面。再按一次可将其放回通知区域。"
     },
-    "Call with %@": {},
-    "Caption": {},
-    "Chat": {},
-    "Couldn't move the note.": {},
-    "Couldn't send your answer.": {},
+    "Call with %@": {
+      "de": "Anruf mit %@",
+      "es": "Llamada con %@",
+      "fr": "Appel avec %@",
+      "ja": "%@との通話",
+      "ru": "Звонок с %@",
+      "sr": "Позив са %@",
+      "sr-Latn": "Poziv sa %@",
+      "zh-Hans": "与 %@ 通话"
+    },
+    "Caption": {
+      "de": "Bildunterschrift",
+      "es": "Pie de foto",
+      "fr": "Légende",
+      "ja": "キャプション",
+      "ru": "Подпись",
+      "sr": "Опис",
+      "sr-Latn": "Opis",
+      "zh-Hans": "说明"
+    },
+    "Chat": {
+      "de": "Chat",
+      "es": "Chat",
+      "fr": "Discussion",
+      "ja": "チャット",
+      "ru": "Чат",
+      "sr": "Ћаскање",
+      "sr-Latn": "Ćaskanje",
+      "zh-Hans": "对话"
+    },
+    "Couldn't move the note.": {
+      "de": "Die Notiz konnte nicht verschoben werden.",
+      "es": "No se pudo mover la nota.",
+      "fr": "Impossible de déplacer la note.",
+      "ja": "メモを移動できませんでした。",
+      "ru": "Не удалось переместить заметку.",
+      "sr": "Белешка није могла да се помери.",
+      "sr-Latn": "Beleška nije mogla da se pomeri.",
+      "zh-Hans": "无法移动便签。"
+    },
+    "Couldn't send your answer.": {
+      "de": "Deine Antwort konnte nicht gesendet werden.",
+      "es": "No se pudo enviar tu respuesta.",
+      "fr": "Impossible d’envoyer votre réponse.",
+      "ja": "回答を送信できませんでした。",
+      "ru": "Не удалось отправить твой ответ.",
+      "sr": "Твој одговор није могао да се пошаље.",
+      "sr-Latn": "Tvoj odgovor nije mogao da se pošalje.",
+      "zh-Hans": "无法发送你的选择。"
+    },
     "Ctrl+Alt+Shift+F": {
       "de": "Strg+Alt+Umschalt+F",
       "es": "Ctrl+Alt+Mayús+F",
@@ -102,9 +237,36 @@
       "sr-Latn": "Ctrl+Alt+Shift+F",
       "zh-Hans": "Ctrl+Alt+Shift+F"
     },
-    "Delete the family?": {},
-    "Event": {},
-    "Family Connect for Windows %@": {},
+    "Delete the family?": {
+      "de": "Familie löschen?",
+      "es": "¿Eliminar la familia?",
+      "fr": "Supprimer la famille ?",
+      "ja": "ファミリーを削除しますか？",
+      "ru": "Удалить семью?",
+      "sr": "Обрисати породицу?",
+      "sr-Latn": "Obrisati porodicu?",
+      "zh-Hans": "删除这个家庭？"
+    },
+    "Event": {
+      "de": "Termin",
+      "es": "Evento",
+      "fr": "Évènement",
+      "ja": "イベント",
+      "ru": "Событие",
+      "sr": "Догађај",
+      "sr-Latn": "Događaj",
+      "zh-Hans": "活动"
+    },
+    "Family Connect for Windows %@": {
+      "de": "Family Connect für Windows %@",
+      "es": "Family Connect para Windows %@",
+      "fr": "Family Connect pour Windows %@",
+      "ja": "Family Connect for Windows %@",
+      "ru": "Family Connect для Windows %@",
+      "sr": "Family Connect за Windows %@",
+      "sr-Latn": "Family Connect za Windows %@",
+      "zh-Hans": "Family Connect Windows 版 %@"
+    },
     "Family Connect opens in the notification area when you sign in to Windows, so a message or a call reaches you without opening it first.": {
       "de": "Family Connect öffnet sich beim Anmelden bei Windows im Infobereich, damit dich eine Nachricht oder ein Anruf erreicht, ohne dass du es erst öffnen musst.",
       "es": "Family Connect se abre en el área de notificación cuando inicias sesión en Windows, para que un mensaje o una llamada te lleguen sin tener que abrirlo antes.",
@@ -125,8 +287,26 @@
       "sr-Latn": "Family Connect ostaje u polju za obaveštenja, pa ti poruke i pozivi i dalje stižu. Možeš da ga zatvoriš preko njegove ikone tamo.",
       "zh-Hans": "Family Connect 会留在通知区域，让你继续收到消息和来电。可以通过那里的图标退出。"
     },
-    "Finding your location…": {},
-    "Jump to the newest message": {},
+    "Finding your location…": {
+      "de": "Standort wird ermittelt …",
+      "es": "Buscando tu ubicación…",
+      "fr": "Recherche de votre position…",
+      "ja": "現在地を取得しています…",
+      "ru": "Определяем местоположение…",
+      "sr": "Тражи се твоја локација…",
+      "sr-Latn": "Traži se tvoja lokacija…",
+      "zh-Hans": "正在获取你的位置…"
+    },
+    "Jump to the newest message": {
+      "de": "Zur neuesten Nachricht springen",
+      "es": "Ir al mensaje más reciente",
+      "fr": "Aller au message le plus récent",
+      "ja": "最新のメッセージへ移動",
+      "ru": "К последнему сообщению",
+      "sr": "Иди на најновију поруку",
+      "sr-Latn": "Idi na najnoviju poruku",
+      "zh-Hans": "跳到最新消息"
+    },
     "Keep running when the window is closed": {
       "de": "Nach dem Schließen des Fensters weiterlaufen",
       "es": "Seguir en ejecución al cerrar la ventana",
@@ -147,13 +327,76 @@
       "sr-Latn": "Opis (neobavezno)",
       "zh-Hans": "说明（可选）"
     },
-    "Leave and Delete": {},
-    "Locations": {},
-    "Message %@": {},
-    "More for %@": {},
-    "New note": {},
-    "Notifications": {},
-    "Only the person who wrote a note can change it.": {},
+    "Leave and Delete": {
+      "de": "Verlassen und löschen",
+      "es": "Salir y eliminar",
+      "fr": "Quitter et supprimer",
+      "ja": "離れて削除",
+      "ru": "Покинуть и удалить",
+      "sr": "Напусти и обриши",
+      "sr-Latn": "Napusti i obriši",
+      "zh-Hans": "退出并删除"
+    },
+    "Locations": {
+      "de": "Standorte",
+      "es": "Ubicaciones",
+      "fr": "Positions",
+      "ja": "位置情報",
+      "ru": "Местоположения",
+      "sr": "Локације",
+      "sr-Latn": "Lokacije",
+      "zh-Hans": "位置"
+    },
+    "Message %@": {
+      "de": "Nachricht an %@",
+      "es": "Mensaje a %@",
+      "fr": "Message à %@",
+      "ja": "%@にメッセージ",
+      "ru": "Написать %@",
+      "sr": "Порука за %@",
+      "sr-Latn": "Poruka za %@",
+      "zh-Hans": "给 %@ 发消息"
+    },
+    "More for %@": {
+      "de": "Mehr für %@",
+      "es": "Más para %@",
+      "fr": "Plus pour %@",
+      "ja": "%@のその他",
+      "ru": "Ещё для %@",
+      "sr": "Још за %@",
+      "sr-Latn": "Još za %@",
+      "zh-Hans": "%@ 的更多操作"
+    },
+    "New note": {
+      "de": "Neue Notiz",
+      "es": "Nueva nota",
+      "fr": "Nouvelle note",
+      "ja": "新しいメモ",
+      "ru": "Новая заметка",
+      "sr": "Нова белешка",
+      "sr-Latn": "Nova beleška",
+      "zh-Hans": "新便签"
+    },
+    "Notifications": {
+      "de": "Mitteilungen",
+      "es": "Notificaciones",
+      "fr": "Notifications",
+      "ja": "通知",
+      "ru": "Уведомления",
+      "sr": "Обавештења",
+      "sr-Latn": "Obaveštenja",
+      "zh-Hans": "通知"
+    },
+    "Only the person who wrote a note can change it.": {
+      "de": "Nur wer eine Notiz geschrieben hat, kann sie ändern.",
+      "es": "Solo quien escribió una nota puede cambiarla.",
+      "fr": "Seule la personne qui a écrit une note peut la modifier.",
+      "ja": "メモを変更できるのは書いた本人だけです。",
+      "ru": "Изменить заметку может только её автор.",
+      "sr": "Само особа која је написала белешку може да је промени.",
+      "sr-Latn": "Samo osoba koja je napisala belešku može da je promeni.",
+      "zh-Hans": "只有写便签的人才能修改它。"
+    },
     "Open Family Connect": {
       "de": "Family Connect öffnen",
       "es": "Abrir Family Connect",
@@ -174,10 +417,46 @@
       "sr-Latn": "Otvara poruku na koju je odgovoreno",
       "zh-Hans": "打开被回复的那条消息"
     },
-    "Pick when it ends, or turn the end off.": {},
-    "Pick when it starts.": {},
-    "Pinning…": {},
-    "Position": {},
+    "Pick when it ends, or turn the end off.": {
+      "de": "Wähle, wann er endet, oder schalte das Ende aus.",
+      "es": "Elige cuándo termina o desactiva el final.",
+      "fr": "Choisissez quand il se termine, ou désactivez la fin.",
+      "ja": "終了日時を選ぶか、終了をオフにしてください。",
+      "ru": "Выбери, когда оно заканчивается, или выключи окончание.",
+      "sr": "Изабери када се завршава или искључи крај.",
+      "sr-Latn": "Izaberi kada se završava ili isključi kraj.",
+      "zh-Hans": "选择结束时间，或关闭结束时间。"
+    },
+    "Pick when it starts.": {
+      "de": "Wähle, wann er beginnt.",
+      "es": "Elige cuándo empieza.",
+      "fr": "Choisissez quand il commence.",
+      "ja": "開始日時を選んでください。",
+      "ru": "Выбери, когда оно начинается.",
+      "sr": "Изабери када почиње.",
+      "sr-Latn": "Izaberi kada počinje.",
+      "zh-Hans": "选择开始时间。"
+    },
+    "Pinning…": {
+      "de": "Wird angeheftet …",
+      "es": "Fijando…",
+      "fr": "Épinglage…",
+      "ja": "貼っています…",
+      "ru": "Прикрепляем…",
+      "sr": "Качи се…",
+      "sr-Latn": "Kači se…",
+      "zh-Hans": "正在钉上…"
+    },
+    "Position": {
+      "de": "Position",
+      "es": "Posición",
+      "fr": "Position",
+      "ja": "位置",
+      "ru": "Положение",
+      "sr": "Положај",
+      "sr-Latn": "Položaj",
+      "zh-Hans": "位置"
+    },
     "Quit Family Connect": {
       "de": "Family Connect beenden",
       "es": "Salir de Family Connect",
@@ -188,8 +467,26 @@
       "sr-Latn": "Zatvori Family Connect",
       "zh-Hans": "退出 Family Connect"
     },
-    "Report sent.": {},
-    "Safety for %@": {},
+    "Report sent.": {
+      "de": "Meldung gesendet.",
+      "es": "Denuncia enviada.",
+      "fr": "Signalement envoyé.",
+      "ja": "報告を送信しました。",
+      "ru": "Жалоба отправлена.",
+      "sr": "Пријава је послата.",
+      "sr-Latn": "Prijava je poslata.",
+      "zh-Hans": "举报已发送。"
+    },
+    "Safety for %@": {
+      "de": "Sicherheit für %@",
+      "es": "Seguridad para %@",
+      "fr": "Sécurité pour %@",
+      "ja": "%@の安全",
+      "ru": "Безопасность для %@",
+      "sr": "Безбедност за %@",
+      "sr-Latn": "Bezbednost za %@",
+      "zh-Hans": "%@ 的安全"
+    },
     "Shows a map on a shared location. Drawing one asks OpenStreetMap for the map around that place, so OpenStreetMap sees a request from this device. With maps off, a shared location still shows its pin and opens in a map when you click it.": {
       "de": "Zeigt bei einem geteilten Standort eine Karte. Dafür wird OpenStreetMap nach der Karte rund um diesen Ort gefragt, daher sieht OpenStreetMap eine Anfrage von diesem Gerät. Ohne Karten zeigt ein geteilter Standort weiterhin seine Markierung und öffnet sich beim Klicken in einer Karte.",
       "es": "Muestra un mapa en una ubicación compartida. Para dibujarlo se pide a OpenStreetMap el mapa alrededor de ese lugar, así que OpenStreetMap ve una solicitud desde este dispositivo. Sin mapas, una ubicación compartida sigue mostrando su marcador y se abre en un mapa al hacer clic.",
@@ -210,7 +507,16 @@
       "sr-Latn": "Pokreni pri prijavljivanju",
       "zh-Hans": "登录时启动"
     },
-    "Tell me when a message arrives": {},
+    "Tell me when a message arrives": {
+      "de": "Benachrichtigen, wenn eine Nachricht kommt",
+      "es": "Avisarme cuando llegue un mensaje",
+      "fr": "Me prévenir quand un message arrive",
+      "ja": "メッセージが届いたら知らせる",
+      "ru": "Сообщать о новых сообщениях",
+      "sr": "Обавести ме када стигне порука",
+      "sr-Latn": "Obavesti me kada stigne poruka",
+      "zh-Hans": "收到消息时通知我"
+    },
     "That message is not here any more.": {
       "de": "Diese Nachricht ist nicht mehr da.",
       "es": "Ese mensaje ya no está aquí.",
@@ -231,17 +537,116 @@
       "sr-Latn": "Ta poruka još nije učitana. Skroluj nagore da pročitaš starije poruke.",
       "zh-Hans": "那条消息还没加载。向上滚动可以往前看。"
     },
-    "That note has been taken down.": {},
-    "That's more things than one list holds.": {},
-    "The assistant is answering": {},
-    "The board pins one photo at a time — the first is on its way.": {},
-    "The end can't be before the start.": {},
-    "The photo took too long to pin. Try again.": {},
-    "The server is busy. Try again in a moment.": {},
-    "Title": {},
-    "View the photo": {},
-    "What hasn't been sent yet is lost.": {},
-    "While this window is not in front, a notification says who wrote — never what they wrote.": {},
+    "That note has been taken down.": {
+      "de": "Diese Notiz wurde entfernt.",
+      "es": "Esa nota se ha retirado.",
+      "fr": "Cette note a été retirée.",
+      "ja": "そのメモは外されました。",
+      "ru": "Эту заметку сняли.",
+      "sr": "Та белешка је скинута.",
+      "sr-Latn": "Ta beleška je skinuta.",
+      "zh-Hans": "那张便签已被取下。"
+    },
+    "That's more things than one list holds.": {
+      "de": "Das sind mehr Punkte, als eine Liste fassen kann.",
+      "es": "Son más elementos de los que caben en una lista.",
+      "fr": "C’est plus d’éléments qu’une liste ne peut en contenir.",
+      "ja": "1つのリストに入る数を超えています。",
+      "ru": "Это больше пунктов, чем вмещает один список.",
+      "sr": "То је више ставки него што једна листа може да прими.",
+      "sr-Latn": "To je više stavki nego što jedna lista može da primi.",
+      "zh-Hans": "超出了一个清单能容纳的条数。"
+    },
+    "The assistant is answering": {
+      "de": "Der Assistent antwortet",
+      "es": "El asistente está respondiendo",
+      "fr": "L’assistant répond",
+      "ja": "アシスタントが回答しています",
+      "ru": "Ассистент отвечает",
+      "sr": "Асистент одговара",
+      "sr-Latn": "Asistent odgovara",
+      "zh-Hans": "助手正在回答"
+    },
+    "The board pins one photo at a time — the first is on its way.": {
+      "de": "Die Pinnwand heftet immer nur ein Foto an – das erste ist unterwegs.",
+      "es": "El tablón fija una foto cada vez: la primera ya está en camino.",
+      "fr": "Le tableau épingle une photo à la fois — la première est en route.",
+      "ja": "ボードに貼れる写真は一度に1枚です — 最初の写真を送信中です。",
+      "ru": "Доска прикрепляет по одному фото — первое уже в пути.",
+      "sr": "Табла качи једну по једну фотографију — прва је на путу.",
+      "sr-Latn": "Tabla kači jednu po jednu fotografiju — prva je na putu.",
+      "zh-Hans": "留言板一次只能钉一张照片——第一张正在上传。"
+    },
+    "The end can't be before the start.": {
+      "de": "Das Ende kann nicht vor dem Beginn liegen.",
+      "es": "El final no puede ser anterior al inicio.",
+      "fr": "La fin ne peut pas précéder le début.",
+      "ja": "終了を開始より前にはできません。",
+      "ru": "Окончание не может быть раньше начала.",
+      "sr": "Крај не може бити пре почетка.",
+      "sr-Latn": "Kraj ne može biti pre početka.",
+      "zh-Hans": "结束时间不能早于开始时间。"
+    },
+    "The photo took too long to pin. Try again.": {
+      "de": "Das Anheften des Fotos hat zu lange gedauert. Versuch es noch einmal.",
+      "es": "Fijar la foto tardó demasiado. Inténtalo de nuevo.",
+      "fr": "L’épinglage de la photo a pris trop de temps. Réessayez.",
+      "ja": "写真を貼るのに時間がかかりすぎました。もう一度お試しください。",
+      "ru": "Фото прикреплялось слишком долго. Попробуй ещё раз.",
+      "sr": "Качење фотографије је трајало предуго. Покушај поново.",
+      "sr-Latn": "Kačenje fotografije je trajalo predugo. Pokušaj ponovo.",
+      "zh-Hans": "钉照片用时过长。请重试。"
+    },
+    "The server is busy. Try again in a moment.": {
+      "de": "Der Server ist ausgelastet. Versuch es gleich noch einmal.",
+      "es": "El servidor está ocupado. Inténtalo de nuevo en un momento.",
+      "fr": "Le serveur est occupé. Réessayez dans un instant.",
+      "ja": "サーバが混み合っています。少し待ってからもう一度お試しください。",
+      "ru": "Сервер занят. Попробуй ещё раз чуть позже.",
+      "sr": "Сервер је заузет. Покушај поново за тренутак.",
+      "sr-Latn": "Server je zauzet. Pokušaj ponovo za trenutak.",
+      "zh-Hans": "服务器繁忙。请稍后重试。"
+    },
+    "Title": {
+      "de": "Titel",
+      "es": "Título",
+      "fr": "Titre",
+      "ja": "タイトル",
+      "ru": "Название",
+      "sr": "Наслов",
+      "sr-Latn": "Naslov",
+      "zh-Hans": "标题"
+    },
+    "View the photo": {
+      "de": "Foto ansehen",
+      "es": "Ver la foto",
+      "fr": "Voir la photo",
+      "ja": "写真を表示",
+      "ru": "Посмотреть фото",
+      "sr": "Погледај фотографију",
+      "sr-Latn": "Pogledaj fotografiju",
+      "zh-Hans": "查看照片"
+    },
+    "What hasn't been sent yet is lost.": {
+      "de": "Was noch nicht gesendet wurde, geht verloren.",
+      "es": "Lo que aún no se ha enviado se perderá.",
+      "fr": "Ce qui n’a pas encore été envoyé sera perdu.",
+      "ja": "まだ送信されていないものは失われます。",
+      "ru": "Всё, что ещё не отправлено, будет потеряно.",
+      "sr": "Оно што још није послато биће изгубљено.",
+      "sr-Latn": "Ono što još nije poslato biće izgubljeno.",
+      "zh-Hans": "尚未发送的内容将会丢失。"
+    },
+    "While this window is not in front, a notification says who wrote — never what they wrote.": {
+      "de": "Solange dieses Fenster nicht vorne ist, sagt eine Mitteilung, wer geschrieben hat – nie, was.",
+      "es": "Mientras esta ventana no esté delante, una notificación dice quién escribió, nunca qué escribió.",
+      "fr": "Tant que cette fenêtre n’est pas au premier plan, une notification indique qui a écrit — jamais ce qui a été écrit.",
+      "ja": "このウインドウが前面にないとき、通知には誰が書いたかだけが表示され、内容は表示されません。",
+      "ru": "Пока это окно не на переднем плане, уведомление сообщает, кто написал, — но никогда не что.",
+      "sr": "Док овај прозор није у првом плану, обавештење каже ко је писао — никад шта је написао.",
+      "sr-Latn": "Dok ovaj prozor nije u prvom planu, obaveštenje kaže ko je pisao — nikad šta je napisao.",
+      "zh-Hans": "当此窗口不在最前面时，通知只会显示谁发来了消息，绝不显示内容。"
+    },
     "Windows is keeping this off. Turn it back on in Task Manager, under Startup apps.": {
       "de": "Windows lässt das derzeit nicht zu. Schalte es im Task-Manager unter „Autostart-Apps“ wieder ein.",
       "es": "Windows lo mantiene desactivado. Vuelve a activarlo en el Administrador de tareas, en «Aplicaciones de inicio».",
@@ -252,9 +657,36 @@
       "sr-Latn": "Windows ovo drži isključeno. Uključi ga ponovo u Upravljaču zadataka, u odeljku „Aplikacije pri pokretanju“.",
       "zh-Hans": "Windows 让它保持关闭。可以在任务管理器的“启动应用”中重新开启。"
     },
-    "Windows is not showing notifications for Family Connect. Allow them in Windows Settings, under Notifications.": {},
-    "You're not in a family, so there is no board.": {},
-    "You've blocked them.": {},
+    "Windows is not showing notifications for Family Connect. Allow them in Windows Settings, under Notifications.": {
+      "de": "Windows zeigt keine Mitteilungen für Family Connect an. Erlaube sie in den Windows-Einstellungen unter „Benachrichtigungen“.",
+      "es": "Windows no muestra notificaciones de Family Connect. Permítelas en Configuración de Windows, en Notificaciones.",
+      "fr": "Windows n’affiche pas les notifications de Family Connect. Autorisez-les dans les Paramètres Windows, sous Notifications.",
+      "ja": "Windows で Family Connect の通知が表示されない設定になっています。Windows の設定の「通知」で許可してください。",
+      "ru": "Windows не показывает уведомления Family Connect. Разреши их в параметрах Windows, в разделе «Уведомления».",
+      "sr": "Windows не приказује обавештења за Family Connect. Дозволи их у подешавањима система Windows, под Обавештења.",
+      "sr-Latn": "Windows ne prikazuje obaveštenja za Family Connect. Dozvoli ih u podešavanjima sistema Windows, pod Obaveštenja.",
+      "zh-Hans": "Windows 未显示 Family Connect 的通知。请在 Windows 设置的“通知”中允许。"
+    },
+    "You're not in a family, so there is no board.": {
+      "de": "Du bist in keiner Familie, also gibt es keine Pinnwand.",
+      "es": "No estás en ninguna familia, así que no hay tablón.",
+      "fr": "Vous n’êtes dans aucune famille, il n’y a donc pas de tableau.",
+      "ja": "ファミリーに参加していないため、ボードはありません。",
+      "ru": "Ты не состоишь в семье, поэтому доски нет.",
+      "sr": "Ниси у породици, па нема табле.",
+      "sr-Latn": "Nisi u porodici, pa nema table.",
+      "zh-Hans": "你不在任何家庭中，所以没有留言板。"
+    },
+    "You've blocked them.": {
+      "de": "Du hast diese Person blockiert.",
+      "es": "Has bloqueado a esta persona.",
+      "fr": "Vous avez bloqué cette personne.",
+      "ja": "この人をブロックしています。",
+      "ru": "Ты заблокировал(а) этого человека.",
+      "sr": "Блокирао/ла си ову особу.",
+      "sr-Latn": "Blokirao/la si ovu osobu.",
+      "zh-Hans": "你已屏蔽对方。"
+    },
     "Your organisation decides whether Family Connect starts when you sign in.": {
       "de": "Deine Organisation entscheidet, ob Family Connect beim Anmelden startet.",
       "es": "Tu organización decide si Family Connect se inicia al entrar en tu cuenta.",
@@ -265,9 +697,45 @@
       "sr-Latn": "Tvoja organizacija odlučuje da li se Family Connect pokreće pri prijavljivanju.",
       "zh-Hans": "是否在登录时启动 Family Connect，由你的组织决定。"
     },
-    "Zero KB": {},
-    "Zoom in": {},
-    "Zoom out": {},
-    "a photo": {}
+    "Zero KB": {
+      "de": "Null KB",
+      "es": "Cero KB",
+      "fr": "Zéro Ko",
+      "ja": "0 KB",
+      "ru": "0 КБ",
+      "sr": "Нула KB",
+      "sr-Latn": "Nula KB",
+      "zh-Hans": "0 KB"
+    },
+    "Zoom in": {
+      "de": "Vergrößern",
+      "es": "Ampliar",
+      "fr": "Zoom avant",
+      "ja": "拡大",
+      "ru": "Увеличить",
+      "sr": "Увећај",
+      "sr-Latn": "Uvećaj",
+      "zh-Hans": "放大"
+    },
+    "Zoom out": {
+      "de": "Verkleinern",
+      "es": "Reducir",
+      "fr": "Zoom arrière",
+      "ja": "縮小",
+      "ru": "Уменьшить",
+      "sr": "Умањи",
+      "sr-Latn": "Umanji",
+      "zh-Hans": "缩小"
+    },
+    "a photo": {
+      "de": "ein Foto",
+      "es": "una foto",
+      "fr": "une photo",
+      "ja": "写真",
+      "ru": "фото",
+      "sr": "фотографија",
+      "sr-Latn": "fotografija",
+      "zh-Hans": "一张照片"
+    }
   }
 }
