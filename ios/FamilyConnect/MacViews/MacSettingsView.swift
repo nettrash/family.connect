@@ -56,6 +56,11 @@ struct MacSettingsView: View {
     @State private var opensWithHotKey = AppSettings.opensWithHotKey
     @State private var hotKeyTaken = MacHotKey.shared.isTaken
     @State private var loginItem = MacLoginItem.state
+    /// The Mac's own notifications (#84): the switch, and what macOS itself
+    /// allows — read again whenever the app comes back to the front, since
+    /// the place it is changed is System Settings.
+    @State private var desktopNotifications = AppSettings.desktopNotificationsEnabled
+    @State private var notificationAccess = MacNotificationAccess.unknown
     /// The assistant question, and what went wrong answering it — the
     /// phone's two fields (protocol.md, "Consenting to the assistant").
     @State private var reviewingAssistant = false
@@ -144,6 +149,44 @@ struct MacSettingsView: View {
     /// isn't one.
     private var birthdayText: String {
         session.currentUser?.birthday?.formatted() ?? String(localized: "Not set")
+    }
+
+    /// "Tell me when a message arrives" (#84) — Windows' switch — and, under
+    /// it, what macOS is doing with them: a Mac where the app was never
+    /// allowed, or where its banners were turned to None, shows nothing at
+    /// all and says nothing about why, which is how this issue was found.
+    private var notificationsSection: some View {
+        Section {
+            Toggle("Tell me when a message arrives", isOn: $desktopNotifications)
+                .onChange(of: desktopNotifications) { _, newValue in
+                    AppSettings.desktopNotificationsEnabled = newValue
+                    // Off is off for the server's pushes too: this Mac's
+                    // device is withdrawn, and switching on registers it
+                    // again — asking macOS first if it never has (PR #86).
+                    Task {
+                        await MacAppDelegate.registrar?.ensureRegistered()
+                        notificationAccess = await MacNotificationAccess.current()
+                    }
+                }
+            if desktopNotifications, notificationAccess.needsSystemSettings {
+                Button("Open Notification Settings…") { MacNotificationAccess.openSystemSettings() }
+            }
+        } header: {
+            Text("Notifications")
+        } footer: {
+            switch notificationAccess {
+            case .denied:
+                Text("macOS is not showing notifications for Family Connect. Allow them in System Settings, under Notifications.")
+            case .noBanners:
+                Text("macOS keeps Family Connect's notifications out of sight. Choose Banners or Alerts in System Settings, under Notifications.")
+            case .unknown, .allowed:
+                Text("When a message arrives in a chat you are not reading, a notification says who wrote — never what they wrote.")
+            }
+        }
+        .task { notificationAccess = await MacNotificationAccess.current() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { notificationAccess = await MacNotificationAccess.current() }
+        }
     }
 
     /// Keep running in the menu bar, open at login, and the shortcut that
@@ -264,6 +307,7 @@ struct MacSettingsView: View {
                     Text("Shows a preview under links in messages, and a map on a shared location. Building either asks somebody else for it — the linked website for its title and image, Apple for the map — so they see a request from this Mac. With maps off, a shared location still shows its pin and opens in Maps when you click it.")
                 }
 
+                notificationsSection
                 menuBarSection
 
                 Section("Server") {

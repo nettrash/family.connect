@@ -42,6 +42,9 @@ nonisolated enum AppSettings {
         /// neither is wiped with the session.
         static let menuBarDisabled = "v1.mac.menuBarDisabled"
         static let hotKeyDisabled = "v1.mac.hotKeyDisabled"
+        /// The Mac's own message notifications (#84): this Mac's, on by
+        /// default, so the DISABLED flag — and not wiped with the session.
+        static let notificationsDisabled = "v1.mac.notificationsDisabled"
         /// The board catch-up cursor: the highest board_seq this device
         /// has APPLIED. Local-only and account-scoped, so it is wiped with
         /// the session — a different family's board must never be caught
@@ -211,6 +214,13 @@ nonisolated enum AppSettings {
     static var keepsRunningInMenuBar: Bool {
         get { !defaults.bool(forKey: Key.menuBarDisabled) }
         set { defaults.set(!newValue, forKey: Key.menuBarDisabled) }
+    }
+
+    /// Whether the Mac raises its own notification for a message or a board
+    /// note (#84) — Windows' "Tell me when a message arrives". On by default.
+    static var desktopNotificationsEnabled: Bool {
+        get { !defaults.bool(forKey: Key.notificationsDisabled) }
+        set { defaults.set(!newValue, forKey: Key.notificationsDisabled) }
     }
 
     /// Whether ⌃⌥⌘F brings the Mac's window forward from any app (#80).

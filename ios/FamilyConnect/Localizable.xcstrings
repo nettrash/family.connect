@@ -45300,6 +45300,430 @@
           }
         }
       }
+    },
+    "Tell me when a message arrives" : {
+      "comment" : "The Mac's Settings switch for its own message notifications (#84).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Benachrichtigen, wenn eine Nachricht kommt"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avisarme cuando llegue un mensaje"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Me prévenir quand un message arrive"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージが届いたら知らせる"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщать о новых сообщениях"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обавести ме када стигне порука"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obavesti me kada stigne poruka"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "收到消息时通知我"
+          }
+        }
+      }
+    },
+    "Notifications" : {
+      "comment" : "A Settings section header on the Mac.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mitteilungen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notificaciones"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notifications"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通知"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Уведомления"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обавештења"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obaveštenja"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通知"
+          }
+        }
+      }
+    },
+    "New note" : {
+      "comment" : "A Mac notification's body for a new board note — never the note's words.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Neue Notiz"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nueva nota"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nouvelle note"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新しいメモ"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новая заметка"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нова белешка"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nova beleška"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新便签"
+          }
+        }
+      }
+    },
+    "%@ — %@ mentioned you" : {
+      "comment" : "A Mac notification's title when a family-chat message names the reader: family name, sender.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ — %@ hat dich erwähnt"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ — %@ te mencionó"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ — %@ vous a mentionné"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ — %@があなたをメンションしました"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ — %@ упоминает тебя"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ — %@ те је поменуо/ла"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ — %@ te je pomenuo/la"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ — %@ 提到了你"
+          }
+        }
+      }
+    },
+    "When a message arrives in a chat you are not reading, a notification says who wrote — never what they wrote." : {
+      "comment" : "The footer under the Mac's notification switch.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn eine Nachricht in einem Chat ankommt, den du gerade nicht liest, sagt eine Mitteilung, wer geschrieben hat – nie, was."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cuando llega un mensaje a un chat que no estás leyendo, una notificación dice quién escribió, nunca qué escribió."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quand un message arrive dans une discussion que vous ne lisez pas, une notification indique qui a écrit — jamais ce qui a été écrit."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "読んでいないチャットにメッセージが届くと、通知には誰が書いたかだけが表示され、内容は表示されません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда в чат, который ты сейчас не читаешь, приходит сообщение, уведомление говорит, кто написал, — но никогда не что."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Када порука стигне у ћаскање које не читаш, обавештење каже ко је писао — никад шта је написао."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kada poruka stigne u ćaskanje koje ne čitaš, obaveštenje kaže ko je pisao — nikad šta je napisao."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当你没有在看的对话收到消息时，通知只会显示谁发来了消息，绝不显示内容。"
+          }
+        }
+      }
+    },
+    "macOS is not showing notifications for Family Connect. Allow them in System Settings, under Notifications." : {
+      "comment" : "Under the Mac's notification switch, when macOS has notifications turned off for the app.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS zeigt keine Mitteilungen für Family Connect an. Erlaube sie in den Systemeinstellungen unter „Mitteilungen“."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS no muestra notificaciones de Family Connect. Permítelas en Ajustes del Sistema, en Notificaciones."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS n’affiche pas les notifications de Family Connect. Autorisez-les dans Réglages Système, sous Notifications."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS で Family Connect の通知がオフになっています。システム設定の「通知」で許可してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS не показывает уведомления Family Connect. Разреши их в Системных настройках, в разделе «Уведомления»."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS не приказује обавештења за Family Connect. Дозволи их у Подешавањима система, под Обавештења."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS ne prikazuje obaveštenja za Family Connect. Dozvoli ih u Podešavanjima sistema, pod Obaveštenja."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS 未显示 Family Connect 的通知。请在“系统设置”的“通知”中允许。"
+          }
+        }
+      }
+    },
+    "macOS keeps Family Connect's notifications out of sight. Choose Banners or Alerts in System Settings, under Notifications." : {
+      "comment" : "Under the Mac's notification switch, when the app's alert style is None.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS zeigt die Mitteilungen von Family Connect nicht sichtbar an. Wähle in den Systemeinstellungen unter „Mitteilungen“ „Banner“ oder „Hinweise“."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS no deja ver las notificaciones de Family Connect. Elige Tiras o Alertas en Ajustes del Sistema, en Notificaciones."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS garde les notifications de Family Connect hors de vue. Choisissez Bannières ou Alertes dans Réglages Système, sous Notifications."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS は Family Connect の通知を表示しない設定になっています。システム設定の「通知」で「バナー」または「通知パネル」を選んでください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS не показывает уведомления Family Connect на экране. Выбери «Баннеры» или «Предупреждения» в Системных настройках, в разделе «Уведомления»."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS држи обавештења за Family Connect ван видокруга. Изабери Банере или Упозорења у Подешавањима система, под Обавештења."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS drži obaveštenja za Family Connect van vidokruga. Izaberi Banere ili Upozorenja u Podešavanjima sistema, pod Obaveštenja."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS 没有显示 Family Connect 的通知。请在“系统设置”的“通知”中选择“横幅”或“提醒”。"
+          }
+        }
+      }
+    },
+    "Open Notification Settings…" : {
+      "comment" : "A button under the Mac's notification switch: opens System Settings at the app's notifications.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mitteilungseinstellungen öffnen …"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abrir ajustes de notificaciones…"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvrir les réglages des notifications…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通知設定を開く…"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть настройки уведомлений…"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отвори подешавања обавештења…"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otvori podešavanja obaveštenja…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开通知设置…"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"
