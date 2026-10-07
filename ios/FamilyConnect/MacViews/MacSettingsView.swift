@@ -49,6 +49,13 @@ struct MacSettingsView: View {
     /// holds its own copy and writes through on change.
     @State private var mapPreviewsEnabled = AppSettings.mapPreviewsEnabled
     @State private var linkPreviewsEnabled = AppSettings.linkPreviewsEnabled
+    /// The menu bar (#80): this Mac's, mirrored the same way — and Open at
+    /// Login read back from SMAppService after every change, because macOS
+    /// can refuse it or have it switched off in System Settings.
+    @State private var keepsRunningInMenuBar = AppSettings.keepsRunningInMenuBar
+    @State private var opensWithHotKey = AppSettings.opensWithHotKey
+    @State private var hotKeyTaken = MacHotKey.shared.isTaken
+    @State private var loginItem = MacLoginItem.state
     /// The assistant question, and what went wrong answering it — the
     /// phone's two fields (protocol.md, "Consenting to the assistant").
     @State private var reviewingAssistant = false
@@ -139,6 +146,54 @@ struct MacSettingsView: View {
         session.currentUser?.birthday?.formatted() ?? String(localized: "Not set")
     }
 
+    /// Keep running in the menu bar, open at login, and the shortcut that
+    /// brings the window forward from any app (#80,
+    /// docs/mac-menu-bar-2026-10-07.md) — Windows' two switches, plus the key.
+    private var menuBarSection: some View {
+        Section {
+            Toggle("Keep Running in the Menu Bar", isOn: $keepsRunningInMenuBar)
+                .onChange(of: keepsRunningInMenuBar) { _, newValue in
+                    AppSettings.keepsRunningInMenuBar = newValue
+                    MacMenuBar.shared.apply()
+                }
+            Toggle(
+                "Open at Login",
+                isOn: Binding(
+                    get: { MenuBarRules.loginSwitchOn(loginItem) },
+                    set: { on in
+                        MacLoginItem.set(on)
+                        loginItem = MacLoginItem.state
+                    })
+            )
+            .disabled(!MenuBarRules.loginSwitchEnabled(loginItem))
+            if loginItem == .needsApproval {
+                Text("macOS is keeping this off. Turn it back on in System Settings, under Login Items.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Button("Open Login Items…") { MacLoginItem.openSystemSettings() }
+            }
+            Toggle("Open with \(MacHotKey.shortcut)", isOn: $opensWithHotKey)
+                .onChange(of: opensWithHotKey) { _, newValue in
+                    AppSettings.opensWithHotKey = newValue
+                    MacMenuBar.shared.apply()
+                    hotKeyTaken = MacHotKey.shared.isTaken
+                }
+            if opensWithHotKey, hotKeyTaken {
+                Label("Another app is using \(MacHotKey.shortcut).", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
+        } header: {
+            Text("Menu Bar")
+        } footer: {
+            Text("When you close the window, Family Connect stays in the menu bar, so messages and calls still reach you. Quit it from its icon there. At login it opens in the menu bar, and the shortcut brings it forward from any app.")
+        }
+        .onAppear {
+            // Changed in System Settings while this window was closed.
+            loginItem = MacLoginItem.state
+            hotKeyTaken = MacHotKey.shared.isTaken
+        }
+    }
+
     /// The panel itself: who you are, then everything you can do.
     private var panel: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -208,6 +263,8 @@ struct MacSettingsView: View {
                 } footer: {
                     Text("Shows a preview under links in messages, and a map on a shared location. Building either asks somebody else for it — the linked website for its title and image, Apple for the map — so they see a request from this Mac. With maps off, a shared location still shows its pin and opens in Maps when you click it.")
                 }
+
+                menuBarSection
 
                 Section("Server") {
                     LabeledContent(

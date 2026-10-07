@@ -130,6 +130,9 @@ enum UnreadBadge {
         // exists (see the header), dockTile is honest and instant. The
         // setBadgeCount below is the documented, permission-gated path.
         NSApp?.dockTile.badgeLabel = count > 0 ? String(count) : nil
+        // And beside the menu bar icon, which is the app while no window is
+        // open — and the Dock icon with it is gone (#80).
+        MacMenuBar.shared.setUnread(count)
         #endif
         desired = count
         guard applyTask == nil else { return }

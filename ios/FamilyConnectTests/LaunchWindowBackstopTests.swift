@@ -116,6 +116,21 @@ struct LaunchWindowBackstopTests {
         #expect(LaunchWindowBackstop.newWindowMenuItem(in: root)?.title == "Neues Fenster")
     }
 
+    @Test("the menu bar icon finds Settings… by ⌘, the same way, and not ⌘N for it")
+    func findsSettingsItem() {
+        // #80: SwiftUI's Settings scene has no public opener from AppKit, so
+        // the icon's Settings… presses the app menu's own item.
+        let app = NSMenuItem(title: "Family Connect", action: nil, keyEquivalent: "")
+        app.submenu = menu([item("Einstellungen …", key: ","), item("Family Connect beenden", key: "q")])
+        let file = NSMenuItem(title: "Datei", action: nil, keyEquivalent: "")
+        file.submenu = menu([item("Neues Fenster", key: "n")])
+        let root = menu([app, file])
+
+        #expect(LaunchWindowBackstop.commandItem(key: ",", in: root)?.title == "Einstellungen …")
+        #expect(LaunchWindowBackstop.commandItem(key: "n", in: root)?.title == "Neues Fenster")
+        #expect(LaunchWindowBackstop.commandItem(key: ",", in: nil) == nil)
+    }
+
     @Test("a shortcut with extra modifiers is a different command")
     func ignoresOtherModifiers() {
         let root = menu([item("New Window in Tab", key: "n", modifiers: [.command, .shift])])

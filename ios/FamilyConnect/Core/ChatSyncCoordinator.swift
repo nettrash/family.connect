@@ -403,7 +403,11 @@ final class ChatSyncCoordinator {
     /// The call ended: if the scene is in the background, do now what
     /// `enterBackground` deliberately did not — suspend the socket.
     func callDidEnd() {
-        guard isInBackground, socketTask != nil else { return }
+        guard isInBackground, socketTask != nil,
+            SocketHold.decide(
+                isInBackground: true, isCallInProgress: false,
+                listensInBackground: Self.listensInBackground) == .suspend
+        else { return }
         connectionState = .offline
         let socket = self.socket
         Task { await socket.suspend() }
@@ -472,6 +476,16 @@ final class ChatSyncCoordinator {
         Task { await socket.stop() }
     }
 
+    /// A Mac kept running in the menu bar listens with no window on the
+    /// screen (#80); every other background drops the socket.
+    private static var listensInBackground: Bool {
+        #if os(macOS)
+        AppSettings.keepsRunningInMenuBar
+        #else
+        false
+        #endif
+    }
+
     /// Scene went to background: drop the socket (iOS would kill it
     /// anyway); the stream and consumer task survive for `resume`.
     func enterBackground() {
@@ -496,7 +510,10 @@ final class ChatSyncCoordinator {
         // an ICE restart all arrive over it, and the audio session (or the
         // VoIP background mode) is what lets it stay up. `callDidEnd`
         // suspends it afterwards if the scene is still in the background.
-        guard SocketHold.decide(isInBackground: true, isCallInProgress: isCallInProgress) == .suspend else {
+        guard SocketHold.decide(
+            isInBackground: true, isCallInProgress: isCallInProgress,
+            listensInBackground: Self.listensInBackground) == .suspend
+        else {
             return
         }
         connectionState = .offline

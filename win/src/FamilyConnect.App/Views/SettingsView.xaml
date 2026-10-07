@@ -243,6 +243,22 @@
                         <ToggleSwitch x:Name="StartupSwitch" Grid.Column="2" MinWidth="0" VerticalAlignment="Center" />
                     </Grid>
                 </Border>
+                <!-- And the shortcut that brings the window forward from any app (#80) - the Mac's Control-Option-Command-F. -->
+                <Border Style="{StaticResource Card}" Margin="0,4,0,0">
+                    <Grid Style="{StaticResource Row}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Style="{StaticResource RowIcon}" Glyph="&#xE765;" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                            <TextBlock x:Name="HotKeyTitle" TextWrapping="Wrap" />
+                            <TextBlock x:Name="HotKeyFootnote" Style="{StaticResource Footnote}" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="HotKeySwitch" Grid.Column="2" MinWidth="0" VerticalAlignment="Center" />
+                    </Grid>
+                </Border>
 
                 <!-- The assistant question: who the words go to, whether this member has agreed, and the -->
                 <!-- way back out of it (docs/protocol.md, "Consenting to the assistant"). The whole group -->
