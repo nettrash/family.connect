@@ -1089,6 +1089,11 @@ is design and which half is not.
 - **While the app is running, the Mac notifies.** The app holds its socket open and raises the
   banner itself, including when it is frontmost with a different conversation selected. Clicking
   a banner routes to the chat, the board or the join requests, as on the phone.
+  *(2026-10-07, issue #84: the banner now follows the Windows client's rules — it says WHO wrote,
+  "<Family> — <Sender>" over "New message" (or "New note" for a board note, now announced too),
+  never the words; never for a blocked member or the assistant's answer to one; and Settings ▸
+  Notifications has "Tell me when a message arrives", which also says when macOS has the app's
+  notifications turned off or set to None — the silent Mac #84 was filed for.)*
 - **A quit Mac receives nothing.** `FamilyConnect-macOS.entitlements:25` declares the iOS key
   spelling `aps-environment`; macOS wants `com.apple.developer.aps-environment`. The wrong key is
   **stripped at signing rather than rejected**, so the shipped Mac app carries no push entitlement
