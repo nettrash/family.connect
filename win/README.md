@@ -59,7 +59,8 @@ win/
   src/FamilyConnect.App/               the WinUI 3 window: structure + code-behind, no decisions
                 Services/ Connection (one server, wired), LockerTokenStore (the credential
                           locker), AppServices, AppFolders, the settings files, Toasts and
-                          Attention, TrayIcon, StartupLaunch (the manifest's startup task),
+                          Attention, TrayIcon, GlobalHotKey + HotKeySetting (Ctrl+Alt+Shift+F),
+                          StartupLaunch (the manifest's startup task),
                           ShareInbox, WindowPlacement, WebViewCallMedia, VoiceRecorder,
                           MediaPreparing, LocationFinder, StickerImaging, KeepAwake (the
                           screen on while recording), SessionWatch (lock, screen saver, sleep),
@@ -266,6 +267,14 @@ stays in the Dock — and an icon in the notification area opens it again or qui
 hidden window of its own rather than WinUI's, re-added when Explorer restarts). "Keep running when the
 window is closed" in Settings turns that off, and without an icon to come back from a close is always
 a quit.
+
+**AND ONE CHORD BRINGS IT BACK** (#80, the Mac's ⌃⌥⌘F): **Ctrl+Alt+Shift+F** from any app brings the
+window forward — out of the notification area, up from the taskbar — and pressed while it is in front puts
+it back (`GlobalHotKey`, `RegisterHotKey` on a message-only window of its own, for `TrayIcon`'s reason;
+the rule is `GlobalHotKeyRules`, tested). Three modifiers, never Ctrl+Alt alone: Windows reads Ctrl+Alt as
+AltGr, and on a Hungarian or Czech keyboard AltGr+F types "[" — a system-wide shortcut would take it from
+every app. "Open with Ctrl+Alt+Shift+F" in Settings switches it (on by default, `hot-key.txt` beside
+`keep-running.txt`); a combination another app already holds is said there, and the icon still works.
 
 **AND IT CAN START BEFORE ITS WINDOW DOES.** The manifest declares a `windows.startupTask`
 (`uap5:Extension`, TaskId `FamilyConnectStartup`, `Enabled="false"`), and "Start when I sign in" in

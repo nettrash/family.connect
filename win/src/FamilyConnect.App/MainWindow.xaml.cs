@@ -22,6 +22,9 @@ public sealed partial class MainWindow : Window
     private readonly TrayIcon? tray;
     private bool quitting;
 
+    /// <summary>Ctrl+Alt+Shift+F from any app (#80): the window forward, and back into the notification area.</summary>
+    private readonly GlobalHotKey? hotKey;
+
     /// <summary>
     /// What a desktop has instead of "the app went to the background" — the session locking, the screen saver, sleep — and
     /// the window minimised: each stops a recording and keeps it as "not sent" (docs/audio-video-messages-2026-10-04.md, S4).
@@ -86,6 +89,17 @@ public sealed partial class MainWindow : Window
         catch (Exception e)
         {
             Diagnostics.Write($"the notification area icon: {e.GetType().Name}");
+        }
+        // The Mac's ⌃⌥⌘F, here (#80): the window from any app, one chord away as well as one click. Never fatal — a
+        // shortcut another app holds is said in Settings, and the icon still opens the window.
+        try
+        {
+            hotKey = new GlobalHotKey(HotKeyPressed);
+            hotKey.Apply(HotKeySetting.Enabled);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"the global shortcut: {e.GetType().Name}");
         }
         AppWindow.Closing += OnClosing;
         AppWindow.Changed += OnWindowChanged;
@@ -533,6 +547,38 @@ public sealed partial class MainWindow : Window
     /// <summary>Whether there is an icon in the notification area to reach this window from.</summary>
     internal bool HasNotificationAreaIcon => tray is { Shown: true };
 
+    /// <summary>Whether a close — or the shortcut — may leave the window in the notification area rather than quit.</summary>
+    private bool CanHideToTray => tray is { Shown: true } && KeepRunningSetting.Enabled;
+
+    /// <summary>
+    /// Into the notification area: the window hidden while the app goes on listening, and a recording stopped and kept as
+    /// "not sent", as a hidden window records nobody (S4).
+    /// </summary>
+    private void HideToTray()
+    {
+        services.WindowAway = true;
+        _ = chats?.Interrupt(RecordingEnd.WindowHidden);
+        placement.Save();
+        AppWindow.Hide();
+    }
+
+    /// <summary>
+    /// The shortcut (<see cref="GlobalHotKeyRules.Action"/>): from anywhere — the notification area, behind other apps,
+    /// minimised — the window in front; pressed while it is already in front, back into the notification area.
+    /// </summary>
+    private void HotKeyPressed()
+    {
+        var inFront = AppWindow.IsVisible && !minimised && GlobalHotKey.IsForeground(services.WindowHandle);
+        if (GlobalHotKeyRules.Action(inFront, CanHideToTray) == HotKeyAction.Hide)
+        {
+            HideToTray();
+        }
+        else
+        {
+            ShowForQuestion();
+        }
+    }
+
     /// <summary>To the front — out of the notification area first, when that is where the window went.</summary>
     internal void BringForward()
     {
@@ -654,13 +700,10 @@ public sealed partial class MainWindow : Window
     /// </remarks>
     private void OnClosing(Microsoft.UI.Windowing.AppWindow sender, Microsoft.UI.Windowing.AppWindowClosingEventArgs args)
     {
-        if (!quitting && tray is { Shown: true } && KeepRunningSetting.Enabled)
+        if (!quitting && CanHideToTray)
         {
             args.Cancel = true;
-            services.WindowAway = true;
-            _ = chats?.Interrupt(RecordingEnd.WindowHidden);
-            placement.Save();
-            sender.Hide();
+            HideToTray();
             return;
         }
         if (keepingForClose)
@@ -824,6 +867,7 @@ public sealed partial class MainWindow : Window
     {
         placement.Save();
         tray?.Dispose();
+        hotKey?.Dispose();
         sessionWatch?.Dispose();
         flushTimer.Stop();
         Detach();

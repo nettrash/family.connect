@@ -96,11 +96,19 @@ enum LaunchWindowBackstop {
     /// part of it this app is entitled to recognise. Returns nil rather
     /// than guessing if the app ever grows a second ⌘N.
     static func newWindowMenuItem(in menu: NSMenu?) -> NSMenuItem? {
+        commandItem(key: "n", in: menu)
+    }
+
+    /// The one ⌘-`key` item in `menu` with an action, or nil when there is
+    /// none or more than one — the same rule for File ▸ New Window (⌘N)
+    /// and for the app menu's Settings… (⌘,), which the menu bar icon opens
+    /// (#80): SwiftUI's Settings scene has no public opener from AppKit.
+    static func commandItem(key: String, in menu: NSMenu?) -> NSMenuItem? {
         guard let menu else { return nil }
         var found: NSMenuItem?
         func walk(_ menu: NSMenu) {
             for item in menu.items {
-                if item.keyEquivalent == "n",
+                if item.keyEquivalent == key,
                     item.keyEquivalentModifierMask == [.command],
                     item.action != nil
                 {
@@ -140,13 +148,15 @@ enum LaunchWindowBackstop {
     }
 
     /// Wire the check to the live app. Call once, from
-    /// applicationDidFinishLaunching.
-    static func start() {
+    /// applicationDidFinishLaunching. `startedInMenuBar` is a launch at
+    /// login that keeps its window hidden on purpose (#80) — as deliberate
+    /// as `open -j`, and as wrong to drag in front.
+    static func start(startedInMenuBar: Bool = false) {
         DispatchQueue.main.asyncAfter(deadline: .now() + grace) {
             MainActor.assumeIsolated {
                 let outcome = recover(
                     windows: NSApp.windows,
-                    hidden: NSApp.isHidden,
+                    hidden: NSApp.isHidden || startedInMenuBar,
                     menuItem: newWindowMenuItem(in: NSApp.mainMenu),
                     perform: { item in
                         // sendAction returns false when nothing in the
