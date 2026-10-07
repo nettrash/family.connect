@@ -38,20 +38,25 @@ internal sealed class Connection : IAsyncDisposable
         Router = new FrameRouter(Chats, Board, Pack);
         Attachments = new AttachmentCache(Api, new FileBlobStore(AppFolders.BlobsPath));
         // A sticker on its way out is bytes this device already holds: kept under the id the server just gave them, so
-        // the message it becomes is drawn at once rather than downloaded back.
+        // the message it becomes is drawn at once rather than downloaded back. A video message too — its square video
+        // and the poster this device made, so the reader's own circle is drawn and opened without asking (S5.6).
         Media.Landed += (row, attachment, staged) =>
         {
-            if (!row.Sticker)
+            if (!row.Sticker && !row.Round)
             {
                 return;
             }
             try
             {
                 Attachments.Remember(attachment, staged.Bytes);
+                if (row.Round && staged.Preview is { IsEmpty: false } poster)
+                {
+                    Attachments.RememberPreview(attachment, poster);
+                }
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
-                Diagnostics.Write($"keeping a sent sticker's bytes: {e.GetType().Name}");
+                Diagnostics.Write($"keeping a sent {(row.Round ? "video message" : "sticker")}'s bytes: {e.GetType().Name}");
             }
         };
         Avatars = new AvatarCache(Api, new FileBlobStore(AppFolders.BlobsPath));
@@ -75,6 +80,9 @@ internal sealed class Connection : IAsyncDisposable
             PeerReads.Clear();
             Answers.Clear();
             Transcripts.Clear();
+            // Everything recorded and not sent goes with the session, as the outbox goes with the cache
+            // (docs/audio-video-messages-2026-10-04.md, S4's sign-out row): a recording belongs to whoever made it.
+            ParkedRecordings.WipeAll(AppFolders.ParkedPath);
         };
     }
 

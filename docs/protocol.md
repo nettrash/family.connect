@@ -109,9 +109,17 @@ The consequences worth stating rather than discovering:
 - **A browser records voice notes into MP4 (AAC) where it can, and into WAV where it cannot —
   never WebM.** WebM is what most browsers' recorders produce by default, `kind=audio` does not
   accept it, and a family's phones could not play it if it did. WAV is large, and it plays
-  everywhere. Everything else about a voice note — five minutes at most, staged so a caption can
-  be added — is the apps' rule. A browser's location comes from its own geolocation, under the
-  same freshness bar the apps apply (see "Locations"): never a fix older than two minutes.
+  everywhere. Everything else about a voice note is the apps' rule: five minutes at most, sent
+  from the recorder by its Send, or staged when the member stops it to listen or add words — never
+  sent by an interruption, by the length limit or by a shortcut. (*Amended 2026-10-05, #79:* it
+  read "staged so a caption can be added" while stopping was the only way a recording ended; a note
+  sent from the recorder is a media send like any other — see "Sending on an unreliable network".
+  *Amended 2026-10-06, #79:* the 2026-10-05 text also let a released hold of the microphone send
+  after a five-second Undo window, and let an interruption inside that window end it early and
+  send. The hold and its window were removed after device testing: the recorder's Send is the only
+  thing that sends a voice note, and an interruption never does — it keeps the recording as not
+  sent. Nothing on the wire changes.) A browser's location comes from its own geolocation, under the same freshness bar
+  the apps apply (see "Locations"): never a fix older than two minutes.
 - **A browser notifies ITSELF, and names who rather than what.** It registers no device and takes
   no push, so what it has instead is the tab it is already in: the number of unread messages in the
   page's TITLE — derived from its own store, exactly as a running app derives the badge it puts on
@@ -427,6 +435,17 @@ Attachment {"id": 34, "kind": "photo|video|audio|file|location", "mime": "image/
              a bubble by a client that knows the flag and as a photo by one that does
              not. Set by the send and never changed; never on a pack item's or a note's
              picture — see "Sticker pack"
+           — plus "round": true when (and only when) the message that carries it was
+             sent as a VIDEO MESSAGE (2026-10-05): still a kind=video in every other
+             respect — a square H.264/AAC MP4 — drawn as a circle by a client that
+             knows the flag and as a video by one that does not. Set by the send and
+             never changed; never beside "sticker" — see "Video messages"
+           — plus "waveform": "02469bdfeca8…" (48 lowercase hex digits) on a piece of
+             AUDIO whose uploader sent one (2026-10-06): the shape of the recording, so a
+             voice note draws before a byte of it is downloaded. Absent on every other
+             kind, and on audio uploaded without one — a picked sound file usually, or
+             anything from a client that predates it. Set by the upload and never
+             changed — see "A voice note's waveform"
 Poll      {"poll_seq": 88, "closed": false,
            "options": [{"id": 5, "text": "Pizza", "votes": [7, 9]},
                        {"id": 6, "text": "Pasta", "votes": []}]}
@@ -681,6 +700,13 @@ after `not_message_author` — so it is only ever the message's own author, with
 otherwise have been accepted, who is told so; an empty body is `message_empty` on a sticker as on
 anything else. A client states the rule rather than waiting for the answer: it offers no "Edit" on
 a message it draws as a sticker.
+
+**Nor can a VIDEO MESSAGE** (*added 2026-10-05, #79*), for the same reason: it is drawn as a circle
+with no balloon to hold words (see "Video messages"). `PATCH` on a message whose attachment carries
+`round: true` is `validation` (400) under exactly the sticker's rule — asked last, changing
+nothing, taking no `edit_seq`, fanning out nothing — and a client offers no "Edit" on a message it
+draws as a circle. The call record's refusal is not the model: it is answered before
+`message_not_found` and is not scoped to the chat.
 
 Editing has the same catch-up problem reactions have, and takes the same shape. `after_id` is
 `WHERE id > cursor`, so it can never see a change to an OLDER row — a client that was offline
@@ -1653,6 +1679,174 @@ is frozen until items are removed, the way a member cap below the family's size 
 What DOES take the pack: deleting the family takes its items and their files with it, like its
 board.
 
+### Video messages
+
+*Decided 2026-10-05 (#79). The plan — the facts that were checked, the recorder, the interruptions,
+the accessibility and the forty decisions — is in `docs/audio-video-messages-2026-10-04.md`; this
+section is the part the server and every client have to agree on.*
+
+A VIDEO MESSAGE is a short square video recorded to be drawn as a circle, the way a messenger's
+round videos are. On the wire it is an ordinary `kind=video` attachment with one extra field,
+`round: true` — the sticker's pattern exactly: the flag says how one attachment is DRAWN, and a
+client that has never heard of it plays the video it still is. The field is `round` and not
+`video_note`, because in this document a note is a thing on the board (see "Board"), and the
+sticker section already had to untangle one such word. The apps say "Video message" to people.
+
+#### Sending one
+
+```
+POST /attachments?kind=video&width=480&height=480&duration_ms=23400   (Content-Type: video/mp4)
+  → 201 {attachment: {id: 91, …}}
+PUT  /attachments/91/preview                                           (the square JPEG poster)
+  → 204
+POST /chats/42/messages  {client_msg_id, body: "", attachment_ids: [91], round: true,
+                          reply_to_message_id?: 41}
+  → 201 {message: {…, attachments: [{id: 91, kind: "video", mime: "video/mp4", size: 1649700,
+                                     width: 480, height: 480, duration_ms: 23400,
+                                     has_preview: true, round: true}]}}
+```
+
+or, over the socket:
+
+```json
+{"type": "send", "chat_id": 42, "client_msg_id": "4f9e21c0-…", "body": "",
+                 "attachment_ids": [91], "round": true}
+```
+
+`round: true` on the send — REST or the `send` frame — is what makes it one; absent, or `false`,
+the message is an ordinary video. The server stores it on the ATTACHMENT, and every read of that
+attachment carries `"round": true` from then on: a page of history, a thread, the legacy
+`attachment`, the `message` frame, the `ack`, a `last_message` preview, the edits feed, and the
+message a push is built from. It is absent otherwise — never `false` — and it never changes.
+
+The file is recorded to a fixed profile (see "Preparing media before upload"): an MP4 with `moov`
+before `mdat`, a square **480 × 480** picture, upright and not mirrored, H.264 at 500 000 bit/s and
+mono AAC-LC at 64 000 bit/s, from 1.0 s to `max_round_video_ms` − 500 ms long — and it is uploaded
+AS RECORDED, never re-planned: the planner's rules were made for a picked file, and at a front
+camera's low-light frame rate they would re-encode a clip that is exactly what was meant. Its
+poster is a square JPEG from the clip at 0.5 s (else 0 s, else 2 s), sent with
+`PUT /attachments/{id}/preview` as any video's is, and kept and re-sent under the same rule.
+
+#### What the server checks
+
+In the one function REST and the socket share, in the sticker's places and order:
+
+1. `round` beside a `poll` is `invalid_poll` (400), as any attachment is.
+2. `round` beside `sticker` is `validation` (400): a message is a sticker or a video message, not
+   both. Asked before any id is read.
+3. `round` with anything but exactly ONE attachment is `invalid_attachment` (400). A video message
+   is its own message.
+4. `round` beside a body that is not empty after trimming is `validation` (400): a circle has no
+   balloon to hold words, so a video message has no caption.
+5. **After the claim**, which is the first place the upload's facts are known, `invalid_attachment`
+   (400) when the attachment is not a `kind=video`; when its type is not `video/mp4`
+   (`video/quicktime` is never within the profile, even holding H.264); when `width` or `height`
+   is missing, below 1 or above 720, or the two differ; when `duration_ms` is missing, below 1 or
+   above `max_round_video_ms`; or when it is larger than `max_round_video_bytes`. The refusal takes
+   the whole send with it, so the upload stays UNCLAIMED and unflagged and is still good for what
+   it is — sent again without the flag, as the ordinary message it is.
+
+**Every refusal is a 400** — each of the three codes is in the outbox's terminal list ("Sending
+on an unreliable network") — and never a 500, which an outbox would retry for ever instead of
+telling the person. That is why the claim writes the flag only onto a video, in the same statement
+(`round = requested AND kind = 'video'`): the database refuses `round` on anything that is not a
+video and `round` together with `sticker`, and a constraint that fired inside the claim would be a
+500. No request can reach either constraint; a wrong-kind send is answered by check 5 instead.
+
+**The server still decodes nothing** (see "Photos, videos, audio, files and locations"). The
+square, the pixel size and the length are the SENDER's declaration, checked as declared — the
+sticker's split between what the server checks and what the client is trusted with.
+
+**Everywhere a message may go.** A video message may be a reply (`reply_to_message_id`), may be
+posted into a thread, and is accepted in every chat — the assistant's too, where it is a message
+like any other and meets the same consent question a sticker does: a member who has not agreed is
+answered `assistant_consent_required` (see "Consenting to the assistant"). The server has no reason
+to refuse any of them. The apps offer recording only in the main composer of a family chat or a
+one-to-one chat; that is what has been BUILT, never a different protocol.
+
+**And it cannot be edited** (see "Editing"): `PATCH /chats/{id}/messages/{mid}` on a message whose
+attachment carries `round: true` is `validation` (400), changes nothing, takes no `edit_seq` and
+fans out nothing. The server asks LAST — after the body's own rules, after `message_not_found` and
+after `not_message_author` — exactly as for a sticker. A client offers no "Edit" on a message it
+draws as a circle.
+
+#### How it is drawn
+
+A drawing rule and not a wire one, written down because every client must agree. WHICH message is
+drawn as a circle is one test, mirroring the sticker's: the message has exactly ONE attachment,
+that attachment's `kind` is `video`, and it carries `round: true`. Anything else — two attachments,
+the flag on something that is not a video, a body (which the server refuses anyway) — is drawn as
+the ordinary message it otherwise is.
+
+A video message is drawn with NO BUBBLE: a circle on the chat background, with the sender's name,
+the time, a reply's quote and the reactions where that client puts them for a sticker. Its diameter
+is **200** in a compact width — a compact horizontal size class on Apple, an Android window under
+600 dp, a browser under 720 CSS pixels — and **240** otherwise, in the platform's own unit: a
+RECOMMENDATION each client applies, which nothing on the wire carries and the server does not know.
+The square poster fills the circle, and a neutral disc of the same size stands in until it lands,
+so the row never changes height. Only the poster is fetched to draw it — a tile never downloads a
+VIDEO to draw itself (see "A browser is a client too") — and it NEVER plays by itself, muted or
+otherwise: a tap plays it in place, at the same size, with sound. A chat-list row and a reply's
+quote say "Video message", in the reader's language, where a video's say "Video".
+
+Whether THIS device has played one is the device's own knowledge, kept per account and wiped at
+sign-out. Nothing is sent when somebody watches a video message: there is no played or watched
+receipt on this wire.
+
+#### What old clients and old servers do
+
+A client that has never heard of `round` ignores the field, as it ignores every unknown one, and
+draws what the attachment otherwise is: a square video tile with a square poster, which plays in
+its viewer. Offered "Edit" on its own video message, it is answered `validation` — the sticker's
+case again. It shows the new push word at once, because the server writes it.
+
+A SERVER that predates video messages answers `GET /families/mine` without `max_round_video_ms`,
+and that absence is how a client knows: it offers no way to record one there at all. Such a server
+would IGNORE `round` on a send — it refuses no unknown field — and deliver an ordinary square
+video, which is exactly why a client must not send the flag without the discovery keys. Voice notes
+work on every server.
+
+#### Limits
+
+| Limit | Default | Config key |
+|---|---|---|
+| Length | 60 000 ms | none — fixed, sent as `max_round_video_ms` |
+| Bytes | 12 MiB (12 582 912), or `limits.max_attachment_bytes` when that is lower | `limits.max_round_video_bytes` |
+| Picture | a square, at most 720 on a side | none — checked as declared, never measured |
+| Attachments | exactly one | fixed |
+
+A client reads the first two from `GET /families/mine` — `max_round_video_ms` and
+`max_round_video_bytes`, ALWAYS present on a server that has video messages, the byte key reporting
+the ceiling in force — stops recording at `max_round_video_ms` − 500 ms and warns at
+`max_round_video_ms` − 10 000 ms. A clip it cannot make round, or one that came out too big, it
+sends as an ordinary video after saying why: an optimisation may never turn a send that would have
+worked into one that does not (Rule C, "Preparing media before upload").
+
+The byte ceiling is held to the attachment ceiling only when an operator WRITES it: then it must be
+between 1 and `max_attachment_bytes`, and the server refuses to start with anything else — a video
+message goes up as an attachment, and an operator who wrote a ceiling above that one believes
+something about their server that is not true. When it is NOT written, the default is CLAMPED to
+the attachment ceiling rather than refused, so a server whose `max_attachment_bytes` is below
+12 MiB starts exactly as it did before: an operator who never wrote the key believes nothing about
+it. 12 MiB is room for a later client recording at the profile's 720 for a full minute, so raising
+the picture later needs no server change.
+
+#### What does not change
+
+- **The push** for a video message says `"Video message"` where a video's says `"Video"` (see
+  "Push notifications"). A voice note still says `"Audio"`: `kind=audio` is also a sound file
+  picked from disk, and the server keeps nothing that tells the two apart.
+- **The assistant** is still shown `[video]` (see "Mentioning the assistant in the family chat"):
+  its placeholder is the kind, and the kind is still `video`.
+- **Transcripts** (see "Transcripts on request"): a video message is a video — the sound the asking
+  device supplies or the stored file, the answer never kept, one provider call per member who asks.
+- **Reports** carry kind and name only, so a reported video message is a `video` in the owner's
+  inbox; **statistics** count it as one `video`; **retention** sweeps it like any message;
+  **blocking** hides it like any message; the **unclaimed sweep** takes a refused one's upload after
+  the same grace as any other.
+- **The send path**: the outbox, `client_msg_id` dedup, background uploads and "Sending on an
+  unreliable network" apply unchanged, because nothing on it is new.
+
 ### Starting a family
 
 Family Connect is one family on a server of its own: the point of the product is that a family
@@ -2321,7 +2515,8 @@ with a caption is `[photo] look at this`; without one it is `[photo]`. The five 
 `[photo]`, `[video]`, `[voice note]`, `[file] receipts.pdf` and `[location] Grandma's house` — a
 file by its name, which is its whole identity, and a location by its label. A kind added later that
 this list has not been extended for renders as the bare word `[attachment]`, never as anything about
-itself.
+itself. (*Unchanged 2026-10-05, #79:* a video message is `[video]`, as any video is — the
+placeholder names the kind, and its kind is `video`; see "Video messages".)
 
 Several attachments contribute one placeholder each, space-separated and in the sender's order —
 `[photo] [photo] [video] beach day` — each under the same rules as if it were alone.
@@ -3724,7 +3919,14 @@ words are cleaned and bounded on their way in, as a lookup's are.
 **A failure costs the weather, never the greeting.** The places are fetched at the same time, under
 **one deadline of 8 seconds** for all of them together (each request also keeps its own
 `timeout_secs`). A place whose geocoding or forecast fails, times out, finds nothing or has no entry
-for its date is left out, and the others are still used. If none is left, the request to the model
+for its date is left out, and the others are still used. *Amended 2026-10-06:* before a request
+counts as failed, one that failed FAST — an answer in under 2 seconds with a `5xx` or a `429`, or a
+connection that broke — is asked once more after 750 ms, inside the same deadline. Open-Meteo's
+free API answers `503` "The service is overloaded" in short bursts, and on the first morning of
+greetings one of two places was lost to exactly that while the other, asked in the same second, came
+back. A slow failure is never repeated (it has spent its time), and nothing is asked a third time. A
+lookup's weather — the geocoding and the forecast of "Asking for the weather" — retries the same way,
+within its own timeout. If none is left, the request to the model
 is **byte for byte** the request with no places at all — the server's tests pin that, the way they
 pin the request without lookups — and the greeting is the usual one.
 
@@ -4070,7 +4272,9 @@ only. Retention and account deletion need nothing new: the stored answer belongs
 row and goes when it goes, by cascade — with the message past `retention_days`, with a departing
 member's direct chats, with a family that is deleted. **The assistant is still shown `[voice note]`
 and `[video]`**, never a transcript: showing it the text would widen what a mention sends, and every
-such widening has been written down here and switched on its own first.
+such widening has been written down here and switched on its own first. (*Unchanged 2026-10-05,
+#79:* a video message is a video here — its text is asked for, supplied and answered exactly as a
+video's, and the assistant is shown `[video]`; see "Video messages".)
 
 **What old clients and old servers do.** A client that predates this ignores `transcribe`,
 `transcribe_max_bytes` and `ai_transcripts` and draws exactly what it drew before. A server that
@@ -4479,8 +4683,10 @@ deliberately not its job, for the same reason avatars are downscaled client-side
 **Clients prepare media before they upload it.** The server stores what it is given and never
 transcodes, so the size of a family's history is decided on the sending device. A client SHOULD bring
 a video to the profile below before uploading it, and audio where the rules below say so. The profile
-is a target for SENDERS only: the server accepts every listed type at any resolution, and every client
-MUST still play anything it receives, including uploads from clients that predate this section.
+is a target for SENDERS only: the server accepts every listed type at any resolution — save that a
+video SENT AS A VIDEO MESSAGE is held, when the message claims it, to the square it declared (see
+"Video messages") — and every client MUST still play anything it receives, including uploads from
+clients that predate this section.
 
 **A sticker is never prepared.** Nothing in this section, and nothing else a client does to a
 photograph before it uploads one — scaling it down, re-encoding it as JPEG, stripping its metadata
@@ -4504,6 +4710,7 @@ cheaper codec that one member cannot play is not a saving.
 | Audio in a video | AAC-LC, **128 000 bit/s stereo, 64 000 mono**; never above the source's |
 | Audio alone | M4A (`audio/mp4`), AAC-LC, the same two bitrates — only when the audio rules below say to re-encode |
 | Voice note | M4A (`audio/mp4`), AAC-LC, mono, 44.1 or 48 kHz, **64 000 bit/s** |
+| Video message | MP4 (`video/mp4`), `moov` first, a square **480 × 480**, upright, not mirrored; H.264 at **500 000 bit/s** (step 3 below at 480 × 480 and 30 fps), at most 30 fps; AAC-LC mono, **64 000 bit/s** — recorded to this directly and NEVER re-planned, whatever rate the camera delivers: below 24 fps the rules below would re-encode it (see "Video messages", 2026-10-05) |
 
 The rules are exact, because four codebases have to reach the same answer for the same file. All
 arithmetic is on integers except where a frame rate enters it; a bitrate is rounded to the nearest
@@ -4559,6 +4766,10 @@ It carries `duration_ms` like a video, and **no preview**: `has_preview` is alwa
 `PUT /attachments/{id}/preview` on one is `invalid_attachment`. There is nothing to look at. A
 client draws a play control, the duration, and a scrubber — deliberately not a waveform, which
 would be a second artefact to generate, upload and version for something the ear does not need.
+(*Amended 2026-10-06, #79:* a voice note now carries a waveform after all — not an artefact
+uploaded beside it, but 48 characters in the upload's query string, which the server stores and
+echoes and never computes. See "A voice note's waveform" below. Everything else in this paragraph
+stands: still no preview, still `invalid_attachment` for one.)
 
 The accepted types for `kind=audio` are `audio/mp4`, `audio/m4a`, `audio/mpeg`, `audio/wav` and
 `audio/ogg`, and the magic-number check applies, as it does to photos and video: the declared type must
@@ -4569,6 +4780,88 @@ play — AVFoundation has no Ogg reader, so an Ogg recording does not play on iO
 
 `name` is optional for audio, unlike a file: a voice note has no name worth showing (its duration
 is its identity), but a track picked from disk does, and a client that has one may send it.
+
+##### A voice note's waveform
+
+*Added 2026-10-06 (#79).* A voice bubble that is a play button and a grey bar until its bytes arrive
+does not look like a voice message. Every member's device meters the recording's level while it
+records anyway — that is how it notices a muted microphone (`docs/audio-video-messages-2026-10-04.md`,
+and `fc_text::record`'s −60 dBFS silence floor) — so the sender keeps those peaks, reduces them to 48
+small numbers and sends them with the upload. The reader draws the shape at once, from the message
+itself, before anything is downloaded and whether or not it ever is.
+
+```
+POST /attachments?kind=audio&duration_ms=14200&waveform=0124689abcddeeedcba987654321001245678aabbba98642   (Content-Type: audio/mp4)
+  → 201 {attachment: {id: 77, kind: "audio", mime: "audio/mp4", size: 113402, duration_ms: 14200,
+                      has_preview: false,
+                      waveform: "0124689abcddeeedcba987654321001245678aabbba98642"}}
+```
+
+**The format is exact.** `waveform` is EXACTLY 48 characters, each a LOWERCASE hexadecimal digit
+(`0`–`9`, `a`–`f`). Character `i` (from 0) is the LEVEL of the `i`-th of 48 equal slices of the
+recording, in time order, on a scale of 4 dB per step from −60 dBFS (`0`, the floor that counts as
+digital silence) to full scale, 0 dBFS (`f`, 15) — rounded, so `0` is anything below −58 dBFS and `f`
+anything from −2 dBFS up. Nothing else is accepted: no uppercase, no
+separator, no other length, no other count of levels. One character per level keeps it legible in a
+log and copyable into a test, and 48 is enough for the widest bubble any client draws (a client
+drawing fewer bars reduces them — below — rather than the wire carrying a width).
+
+**How the sender computes it** — once, in double precision, from the PEAK levels it metered while
+recording, sampled at a fixed interval (whatever interval that platform's meter runs at; a peak per
+interval, not an average):
+
+1. Each peak `p`, in dBFS, becomes a level: `x = (min(max(p, −60), 0) + 60) ÷ 4`, then
+   `level = ⌊x⌋ + 1` when `x − ⌊x⌋ ≥ 0.5` and `⌊x⌋` otherwise (round half UP). A peak that is
+   not a number is silence (level 0); `+∞` is 15 and `−∞` is 0. This uses one addition and an exact
+   division by 4 and nothing else, so every platform reaches the same integer — no logarithm is
+   taken here. (A platform whose meter reports linear amplitude converts it to dBFS first, with its
+   own logarithm; that conversion is the meter's, not this rule's.)
+2. With `n` peaks, slice `i` covers peaks `s = ⌊i × n ÷ 48⌋` up to (not including)
+   `max(s + 1, ⌊(i + 1) × n ÷ 48⌋)`, in integer arithmetic. Its level is the HIGHEST level among
+   them. Fewer than 48 peaks is allowed — a peak then covers several slices — and no peaks at all
+   is 48 zeros.
+3. Each level is written as one lowercase hex digit, slice 0 first.
+
+`fc_text::waveform` in `web/text` is the reference (`from_peaks`, `parse`, and what the reader does
+with the result), and `waveform-vectors.json` — printed from it by the oracle and copied beside the
+Apple, Android and Windows tests — holds every port to the same bytes.
+
+**What the server does** — checks and stores; it decodes nothing and measures nothing:
+
+- `waveform` is accepted only when the upload IS audio — `kind=audio` by its media type, the kind
+  the server itself derives. On a photo, a video (a video message included), a file or a location it
+  is `validation` (400), and nothing is stored: a waveform on anything else would be drawn by nobody
+  and believed by nothing.
+- On audio, anything but 48 lowercase hex digits — empty, 47 or 49, `F`, a space, a comma — is
+  `validation` (400), before a byte of the body is written. A sender that has a broken waveform has
+  a bug, and silently dropping it would hide the bug behind a placeholder on every member's screen.
+- It is stored (migration 0053, a nullable column with a `CHECK` that says the same two things) and
+  carried as `"waveform"` on the Attachment on every read that carries the attachment whole: the
+  upload's answer, the send, the `message` frame, history, threads, the edits feed. The chat list's
+  `last_message` preview carries it no more than it carries `duration_ms` — a row draws no bubble.
+- Absent — the key, not an empty string — whenever it was not given. It is never added later: there
+  is no request that sets one, and a re-upload is a new attachment.
+
+**What a reader does.** It draws the 48 levels as bars, reduced to as many bars as fit (slice `j` of
+`b` bars takes the highest of the levels `⌊j × 48 ÷ b⌋` up to `max(that + 1, ⌊(j + 1) × 48 ÷ b⌋)`,
+the same rule as step 2), each bar `(2 + level) ÷ 17` of the waveform's height, so silence is still
+a visible stub. While it plays, the first `⌊position_ms × b ÷ duration_ms⌋` bars are drawn as played
+(the accent colour) and the rest as unplayed. A piece of audio WITHOUT a waveform — a picked file, an
+old message, an old client's — is drawn with a neutral placeholder, every bar at level 4: a flat row
+that claims no shape rather than an invented one. A value a reader cannot parse (it never should
+see one) is the placeholder too, never an error. A screen reader is told nothing about the bars —
+the play control's label and the duration already say what there is.
+
+**A picked sound file may carry none.** Computing one means decoding the file, which a client may do
+but need not; the placeholder is a complete answer. A video message carries none either: it is a
+video, and draws its own picture.
+
+**What old clients and old servers do.** A client that has never heard of `waveform` ignores the key,
+as it ignores every unknown one, and draws its play control and scrubber as before. A SERVER that
+predates it ignores the unknown query parameter — `POST /attachments` refuses none — and answers
+without the key: the upload succeeds and the note simply has no waveform for anyone but its sender,
+whose own device may keep drawing the levels it computed. So a client may send `waveform` to any
+server, and must never treat its absence on the answer as a failure.
 
 #### Files
 
@@ -5431,7 +5724,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 |---|---|
 | `POST /families` | `{name}` (1–64 chars) → `201 {family: Family}`. Caller becomes owner; the family chat is created automatically. Errors: `already_in_family`; `family_registration_disabled` (403) when the operator has closed this server to new families — see "Starting a family". |
 | `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). A family whose policy is `closed` admits nobody: the invite code answers `invalid_invite_code` (404), byte-identical to a code that never existed, so a shut door tells a stranger nothing — the same non-enumeration reasoning the avatar and password-reset endpoints follow. A family that is full answers `family_full` (409) — full meaning at its own `max_members`, or at the operator's ceiling when it has set none, because a valve that limited only what an owner may TYPE would hold nothing shut. The checks run in order — closed, then already in a family, then a pending request, then full — so a closed family answers `invalid_invite_code` whatever else is true of it, and under policy `approval` this door is where the REQUEST is created and the cap is read there too, then read again at approval. `family_full` does admit that the code is real, and that is the one thing this endpoint tells a stranger: the alternative is telling an invited member their code is invalid on the day the family filled up, which costs a real person a real join, where a closed family's code may be years old and in anybody's hands. Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`, `family_full` (409). |
-| `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, max_pack_seq: 14, max_pack_items: 200, max_pack_item_bytes: 524288, assistant: {user_id, display_name, mention, draw, vision, images, transcribe, transcribe_max_bytes?, lookups?, greeting_weather}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `max_pack_seq` is the same mark for the family's sticker pack, omitted while the pack is empty and untouched; `max_pack_items` and `max_pack_item_bytes` are the pack's two ceilings, ALWAYS present on a server that has packs — so their absence is how a client knows this server predates them and offers no stickers (see "Sticker pack"). `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. Its `vision` and `images` booleans say whether this SERVER can look at a picture and make one — a client offers to attach a picture in an `ai` chat only when `vision` and the family's own `ai_vision` are both true, and offers `draw` (the `/draw` token) only when `images` is true (see "Pictures"). Its `transcribe` boolean says whether this SERVER can turn a recording into text, and `transcribe_max_bytes` — present only when `transcribe` is true — is the most bytes of sound one transcript request may send; a client offers "Show text" on a voice note, audio file or video only when `transcribe` is true (see "Transcripts on request"). Its `lookups` array (2026-10-03) names the providers the assistant may look things up in — `"Brave Search"` or `"SearXNG"`, `"Open-Meteo"`, `"Wikipedia"`, each only when configured — and is ABSENT, never `[]`, when the server has none; a client names them on the consent screen and beside the owner's `ai_lookups` switch, and offers that switch only when the array is present (see "Looking things up"). Its `greeting_weather` boolean (2026-10-03), ALWAYS present whenever the object is, says whether the daily greeting can carry today's forecast for the family's `greeting_places`: true exactly when this server posts greetings (`greetings_enabled` on `GET /me`) and has `[ai.lookups] weather` on; a client offers the places field beside the greeting switch only when it is true (see "Today's weather, for places the owner chose"). `family.invite_code` present for the owner only. Plus `blocked_user_ids: [11, 14]` as on `GET /me`, always present and `[]` when empty, and a complete state-set there too. Plus `next_owner_user_id: 11`, present for the OWNER only, naming the member who would inherit the family if the owner left right now — the same rule as "Deleting an account", computed once server-side so the leave dialog can say who it is instead of two clients computing it and eventually disagreeing (the roster does not carry join times, so no client could compute it anyway); omitted when the owner is the sole member. It is a PREDICTION and takes no frame of its own: any `member_joined` or `member_left` can change the answer, so a client re-reads `GET /families/mine` immediately before it shows the leave dialog and never names a successor from a cached value. Absence on that fresh read means the owner is the last member and leaving DELETES the family, which is a different dialog and a different confirmation. Error: `not_in_family`. |
+| `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, max_pack_seq: 14, max_pack_items: 200, max_pack_item_bytes: 524288, max_round_video_ms: 60000, max_round_video_bytes: 12582912, assistant: {user_id, display_name, mention, draw, vision, images, transcribe, transcribe_max_bytes?, lookups?, greeting_weather}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `max_pack_seq` is the same mark for the family's sticker pack, omitted while the pack is empty and untouched; `max_pack_items` and `max_pack_item_bytes` are the pack's two ceilings, ALWAYS present on a server that has packs — so their absence is how a client knows this server predates them and offers no stickers (see "Sticker pack"). `max_round_video_ms` (fixed at 60 000) and `max_round_video_bytes` (12 MiB, or `max_attachment_bytes` when that is lower, unless the operator set it — always the ceiling in force) are the two limits of a video message, ALWAYS present on a server that has them — so their absence is how a client knows to offer no way of recording one (see "Video messages", 2026-10-05). `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. Its `vision` and `images` booleans say whether this SERVER can look at a picture and make one — a client offers to attach a picture in an `ai` chat only when `vision` and the family's own `ai_vision` are both true, and offers `draw` (the `/draw` token) only when `images` is true (see "Pictures"). Its `transcribe` boolean says whether this SERVER can turn a recording into text, and `transcribe_max_bytes` — present only when `transcribe` is true — is the most bytes of sound one transcript request may send; a client offers "Show text" on a voice note, audio file or video only when `transcribe` is true (see "Transcripts on request"). Its `lookups` array (2026-10-03) names the providers the assistant may look things up in — `"Brave Search"` or `"SearXNG"`, `"Open-Meteo"`, `"Wikipedia"`, each only when configured — and is ABSENT, never `[]`, when the server has none; a client names them on the consent screen and beside the owner's `ai_lookups` switch, and offers that switch only when the array is present (see "Looking things up"). Its `greeting_weather` boolean (2026-10-03), ALWAYS present whenever the object is, says whether the daily greeting can carry today's forecast for the family's `greeting_places`: true exactly when this server posts greetings (`greetings_enabled` on `GET /me`) and has `[ai.lookups] weather` on; a client offers the places field beside the greeting switch only when it is true (see "Today's weather, for places the owner chose"). `family.invite_code` present for the owner only. Plus `blocked_user_ids: [11, 14]` as on `GET /me`, always present and `[]` when empty, and a complete state-set there too. Plus `next_owner_user_id: 11`, present for the OWNER only, naming the member who would inherit the family if the owner left right now — the same rule as "Deleting an account", computed once server-side so the leave dialog can say who it is instead of two clients computing it and eventually disagreeing (the roster does not carry join times, so no client could compute it anyway); omitted when the owner is the sole member. It is a PREDICTION and takes no frame of its own: any `member_joined` or `member_left` can change the answer, so a client re-reads `GET /families/mine` immediately before it shows the leave dialog and never names a successor from a cached value. Absence on that fresh read means the owner is the last member and leaving DELETES the family, which is a different dialog and a different confirmation. Error: `not_in_family`. |
 | `POST /families/invite-code/rotate` | (owner) → `200 {invite_code}`. Old code stops working; pending requests survive. |
 | `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval"\|"closed", max_members?: int\|null, language?: "ru"\|null, ai_history?: true\|false, ai_vision?: true\|false, ai_history_photos?: true\|false, ai_greeting?: true\|false, ai_faces?: true\|false, ai_transcripts?: true\|false, ai_lookups?: true\|false, greeting_places?: ["Moscow", "Belgrade"]}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language and `"max_members": null` CLEARS the cap, while leaving either key out entirely leaves it alone — these are **the two places** in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"); `ai_vision` is a second boolean of exactly that shape, differing only in defaulting to FALSE (see "Pictures"); `ai_history_photos` is a third, defaulting to FALSE, and the one with a rule between it and its neighbour: it may only be `true` while `ai_vision` is — sending `true` for it while `ai_vision` is off, or would be off after this same request, is `validation`, and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Recent photos from the family chat"). A cap must be between 1 and the operator's ceiling (`limits.max_family_members`). A cap BELOW the family's current size is ACCEPTED and acts as a freeze — nobody new until people leave — rather than being refused: an owner who inherits a large family must still be able to shut the door, and the cap is read at the door and never enforced over the room. `ai_greeting` is a FOURTH boolean of the same shape, defaulting to FALSE, and it is the one with no rule between it and any neighbour: it is about whether the assistant speaks unprompted, not about what it may be shown, so it may be set true or false regardless of the other three and it is never cleared by any of them (see "The daily greeting"). `ai_faces` is a FIFTH, defaulting to FALSE, under exactly `ai_history_photos`'s rule: it may only be `true` while `ai_vision` is — `true` while `ai_vision` is off, or would be off after this same request, is `validation` — and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Profile pictures of members"). `ai_transcripts` is a SIXTH, defaulting to FALSE, and like `ai_greeting` bound to none of the others: it decides whether a member may ask for the text of ANOTHER member's recording in the family chat, so it may be set true or false regardless of the other five and is never cleared by any of them (see "Transcripts on request"). `ai_lookups` is a SEVENTH, defaulting to FALSE, and bound to none of the others either: it decides whether the assistant may look things up for this family, sending a query it wrote to the providers `assistant.lookups` names, so it may be set regardless of the other six — and on a server with no lookup source, where it does nothing — and is never cleared by any of them (see "Looking things up"). `greeting_places` (2026-10-03) is not a switch but a list, and it REPLACES the stored one: at most 3 names, each trimmed with inner whitespace folded, non-empty, without control characters and at most 80 characters; a name equal to an earlier one once both are lower-cased is dropped silently, and the three are counted after that; `[]` clears it, absent leaves it alone, and `null` is `validation`. The answer carries the list as kept (see "Today's weather, for places the owner chose"). Errors: `not_family_owner` (403), `validation` (a `join_policy` that is none of the three, a `max_members` outside 1..ceiling, `ai_history_photos: true` or `ai_faces: true` without `ai_vision`, or a `greeting_places` that is `null`, not an array of strings, longer than 3 after duplicates are dropped, or holds a name that is empty, too long or has a control character), `invalid_language`. |
 | `GET /families/join-requests` | (owner) → `200 {requests: [JoinRequest]}` (pending only). |
@@ -5454,7 +5747,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Query: `kind` (`photo`\|`video`\|`audio`\|`file`\|`location`), `width`, `height`, `duration_ms`, `name`, `latitude`, `longitude`, `accuracy_m`. `name` is REQUIRED for `kind=file` (1–255 characters) and optional on audio and a location; `latitude` and `longitude` are REQUIRED for `kind=location` and refused on anything else. A location sends **no body** — it is metadata only. → `201 {attachment: Attachment}`. A sticker or a pack item is uploaded here as `kind=photo`, its bytes unprepared (see "Sticker pack"). Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a media type not accepted on a photo/video/audio, 400 when the bytes do not match the declared type, a file has no name, or a location has no or out-of-range coordinates), `not_in_family`. |
+| `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Query: `kind` (`photo`\|`video`\|`audio`\|`file`\|`location`), `width`, `height`, `duration_ms`, `name`, `latitude`, `longitude`, `accuracy_m`, `waveform`. `name` is REQUIRED for `kind=file` (1–255 characters) and optional on audio and a location; `latitude` and `longitude` are REQUIRED for `kind=location` and refused on anything else. `waveform` (2026-10-06) is optional on audio and refused on anything else: exactly 48 lowercase hex digits, echoed on the Attachment (see "A voice note's waveform"); malformed, or on a kind that is not audio, it is `validation` (400). A location sends **no body** — it is metadata only. → `201 {attachment: Attachment}`. A sticker or a pack item is uploaded here as `kind=photo`, its bytes unprepared (see "Sticker pack"). A video message is uploaded here as `kind=video` with its square `width`, `height` and its `duration_ms`, which are what the send checks it by (see "Video messages"). Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a media type not accepted on a photo/video/audio, 400 when the bytes do not match the declared type, a file has no name, or a location has no or out-of-range coordinates), `validation` (400, a `waveform` that is malformed or not on audio), `not_in_family`. |
 | `PUT /attachments/{id}/preview` | Raw JPEG bytes of the downscaled photo or poster frame → `204`. Uploader only, and never on a `file`, `audio` or `location` (`invalid_attachment`). IDEMPOTENT and not closed by the message that claims the attachment: a repeat overwrites the stored preview and sets `has_preview` to true, which is what lets a client finish a poster upload that failed (see "Photos, videos, audio, files and locations"). Errors: `attachment_not_found`, `attachment_too_large`, `invalid_attachment`. |
 | `GET /attachments/{id}` | → `200` with the stored bytes and their `Content-Type`. A location has none and answers `invalid_attachment` (400). A `file` additionally gets `Content-Disposition: attachment; filename=…` (sanitised) and `X-Content-Type-Options: nosniff`, so an uploaded document can never render or execute from the server's own origin. Readable by the uploader always, by every member of the chat once a message claims it, and by every member of the family once a board note or the family's pack does; anyone else gets `404 attachment_not_found`. Sends `ETag` and `Cache-Control: private, max-age=31536000, immutable`, and honours `If-None-Match` with `304`. Honours a single-byte-range `Range` request with `206` + `Content-Range` (`416` for a range past the end) — that is how a video player seeks, and without it scrubbing a 90 MB clip re-downloads it from the start. A multi-range or unrecognised `Range` is ignored and the whole body sent, per RFC 9110. |
 | `GET /attachments/{id}/preview` | → `200` with the preview JPEG, same access rules. `404` when there is no preview yet. |
@@ -5490,8 +5783,8 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self` (400), `not_in_family` (409, the caller belongs to no family), `not_same_family` (409), `user_not_found` (404). Plus `blocked` (409) when the CALLER has blocked this member. Only that direction refuses: somebody who has been blocked may go on opening and sending into the chat exactly as before, and it is the blocker who no longer sees it (see "Blocking a member"). |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `GET /chats/{id}/messages/{message_id}/thread` | Query: `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}` — the chain `message_id` belongs to, resolved to its ROOT whether the id named is the root or any reply in it: the root first — the oldest in its chain, so any `after_id` at or past it leaves it off — then every message whose `thread_root_id` is that root, ordered by id ASCENDING, oldest first; `after_id` is strictly newer, looped until a short page. A message that is neither a reply nor answered comes back as a chain of one. Not a cursor and no part of catch-up. Errors: `chat_not_found`, `not_chat_member`, `message_not_found` (no such message in THIS chat), `invalid_pagination`. See "Threads". |
-| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?, mentions?, sticker?}` → `201 {message: Message}`. `sticker: true` sends the message's one attachment as a STICKER (see "Sticker pack"): exactly one attachment, a `kind=photo` of `image/webp` or `image/png` no larger than `max_pack_item_bytes` (`invalid_attachment` otherwise), and no body (`validation`); the attachment then carries `sticker: true` on every read. Absent or `false` is an ordinary message. `mentions: [{user_id, name}]` names members, family chat only — see "Mentioning a member" for what is checked (`validation` otherwise). In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"), and a body that begins `/draw ` — after one leading `@ai` there, or at the very start in an `ai` chat — asks it for a picture instead of an answer (see "Pictures"). In an `ai` chat `attachment_ids` naming photos is how a member shows the assistant a picture; whether the pixels leave the server depends on `ai_vision` and on the server having a vision deployment, and nothing about that is refused here. In the family chat, photos on an `@ai` message — or on the message it replies to through `reply_to_message_id` — reach it the same way, under the same two locks (see "Showing the assistant a picture from the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_ids: [34, 61]` claims 1–10 attachments this caller uploaded, in the order given; `attachment_id` (one id) is the legacy spelling of a one-element array, still accepted — sending BOTH is `validation`. A message carrying any may have an empty body. A location id must be the array's only element, and one id may not appear twice (`invalid_attachment`). `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. `assistant_consent_required` (403) when the chat is the caller's `ai` chat, or the body mentions the assistant, and they have not agreed that their words may go to the model — the message is REFUSED and not silently dropped, so the client can show the consent screen and offer to send it again ("Consenting to the assistant"). Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
-| `PATCH /chats/{id}/messages/{mid}` | `{body}` → `200 {message: Message}`. Author only. Replaces the body, stamps `edited_at` and the next `edit_seq`, and fans out `message_edited`. Body rules are the send rules: trimmed, non-empty, ≤ 4000 chars. Re-sending the body it already has is a no-op: no new seq, no fan-out. A STICKER message — one whose attachment carries `sticker: true` — is never edited: its author is answered `validation` (400) whatever the body says, and nothing changes (see "Editing" and "Sticker pack"). Errors: `message_empty`, `message_too_long`, `not_message_author` (403), `message_not_found` (404 — no such message *in this chat*), `validation` (400 — the message is a sticker), `not_chat_member`, `chat_not_found`. |
+| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?, mentions?, sticker?, round?}` → `201 {message: Message}`. `sticker: true` sends the message's one attachment as a STICKER (see "Sticker pack"): exactly one attachment, a `kind=photo` of `image/webp` or `image/png` no larger than `max_pack_item_bytes` (`invalid_attachment` otherwise), and no body (`validation`); the attachment then carries `sticker: true` on every read. Absent or `false` is an ordinary message. `round: true` sends it as a VIDEO MESSAGE (see "Video messages", 2026-10-05): exactly one attachment (`invalid_attachment`), no body (`validation`), never beside `sticker` (`validation`) or a `poll` (`invalid_poll`); and, checked at the claim, a `kind=video` of `video/mp4` whose declared `width` and `height` are equal and 1–720, whose `duration_ms` is 1 to `max_round_video_ms` and whose size is at most `max_round_video_bytes` (`invalid_attachment` otherwise, the upload left unclaimed); the attachment then carries `round: true` on every read. Absent or `false` is an ordinary message. `mentions: [{user_id, name}]` names members, family chat only — see "Mentioning a member" for what is checked (`validation` otherwise). In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"), and a body that begins `/draw ` — after one leading `@ai` there, or at the very start in an `ai` chat — asks it for a picture instead of an answer (see "Pictures"). In an `ai` chat `attachment_ids` naming photos is how a member shows the assistant a picture; whether the pixels leave the server depends on `ai_vision` and on the server having a vision deployment, and nothing about that is refused here. In the family chat, photos on an `@ai` message — or on the message it replies to through `reply_to_message_id` — reach it the same way, under the same two locks (see "Showing the assistant a picture from the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_ids: [34, 61]` claims 1–10 attachments this caller uploaded, in the order given; `attachment_id` (one id) is the legacy spelling of a one-element array, still accepted — sending BOTH is `validation`. A message carrying any may have an empty body. A location id must be the array's only element, and one id may not appear twice (`invalid_attachment`). `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. `assistant_consent_required` (403) when the chat is the caller's `ai` chat, or the body mentions the assistant, and they have not agreed that their words may go to the model — the message is REFUSED and not silently dropped, so the client can show the consent screen and offer to send it again ("Consenting to the assistant"). Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
+| `PATCH /chats/{id}/messages/{mid}` | `{body}` → `200 {message: Message}`. Author only. Replaces the body, stamps `edited_at` and the next `edit_seq`, and fans out `message_edited`. Body rules are the send rules: trimmed, non-empty, ≤ 4000 chars. Re-sending the body it already has is a no-op: no new seq, no fan-out. A STICKER message — one whose attachment carries `sticker: true` — is never edited: its author is answered `validation` (400) whatever the body says, and nothing changes (see "Editing" and "Sticker pack"). A VIDEO MESSAGE — one whose attachment carries `round: true` — is never edited either, under the same rule (see "Video messages", 2026-10-05). Errors: `message_empty`, `message_too_long`, `not_message_author` (403), `message_not_found` (404 — no such message *in this chat*), `validation` (400 — the message is a sticker or a video message), `not_chat_member`, `chat_not_found`. |
 | `GET /chats/{id}/edits` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {messages: [Message]}` ordered by `edit_seq` ascending — the edit catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `PUT /chats/{id}/messages/{mid}/vote` | `{option_id: 5}` → `200 {message_id, poll: {Poll}}`. Sets the caller's choice on a poll — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or clear). One choice per member; there is no multiple choice. Re-PUT of the option already held is a no-op: no seq bump, no fan-out. Errors: `invalid_poll` (400 — no such option on this poll), `poll_closed` (409), `message_not_found` (404 — no such poll *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `DELETE /chats/{id}/messages/{mid}/vote` | → `200 {message_id, poll: {Poll}}`. Retracts the caller's vote; idempotent (retracting nothing returns the current state unchanged and burns no seq). Errors: `poll_closed` (409), `message_not_found`, `not_chat_member`, `chat_not_found`. |
@@ -5542,6 +5835,8 @@ Frames are JSON text messages tagged by `"type"`.
                    "attachment_ids": [34, 35, 36]}
 {"type": "send",   "chat_id": 42, "client_msg_id": "c81d4e2a-…", "body": "",
                    "attachment_ids": [90], "sticker": true}
+{"type": "send",   "chat_id": 42, "client_msg_id": "4f9e21c0-…", "body": "",
+                   "attachment_ids": [91], "round": true}
 {"type": "send",   "chat_id": 42, "client_msg_id": "5b2e0c14-…", "body": "Pizza or pasta?",
                    "poll": {"options": ["Pizza", "Pasta"]}}
 {"type": "send",   "chat_id": 42, "client_msg_id": "e7a1d9c3-…", "body": "@Anna are you in?",
@@ -5861,7 +6156,11 @@ client keeps trying.
   nothing at all. Until every upload has landed that row must never be posted: a message claiming
   no attachments is a text message, and for a photo with a caption the server would accept it
   happily, leaving a delivered bubble with the pictures gone. Ids that DID land are kept and reused
-  within the grace, so a retry pushes only the remainder.
+  within the grace, so a retry pushes only the remainder. A voice note sent straight from the
+  recorder by its Send is such a send like any other (*added 2026-10-05, #79*): its row is written
+  before its first byte and its bytes are kept until the ack. (*Amended 2026-10-06, #79:* it also
+  named the end of a five-second Undo window after a released hold, during which the note was not
+  yet in the outbox; the hold and the window were removed, so there is no such wait.)
 - **Keep the source bytes until the message is acked.** An attachment id is only valid while the
   server still holds the upload it names — unclaimed uploads are swept after
   `limits.attachment_grace_hours` — so a client that has thrown its copy away has no way to
@@ -5998,7 +6297,8 @@ pushes to nobody (see "Reporting a member").
 A message carrying attachments MAY have an empty body — which is how photos are normally sent —
 and an alert showing a name above a blank line says nothing arrived. Such a message pushes what
 arrived instead: for ONE attachment, `"Photo"` — or `"Sticker"` when it was sent as one (see
-"Sticker pack") — `"Video"`, `"Audio"`, the file's name, or a
+"Sticker pack") — `"Video"` — or `"Video message"` when it was sent as one (see "Video messages",
+2026-10-05) — `"Audio"`, the file's name, or a
 location's label falling back to `"Location"`; for several of one kind, a count — `"3 Photos"`,
 `"2 Videos"`, `"2 Audio"`, `"4 Files"` (names give way to the count); for a mixed set,
 `"N attachments"`. A caption, when there is one, still wins. A location's COORDINATES are never
@@ -6145,6 +6445,8 @@ unregistered deletes the row, as an ordinary push would.
 | Items in one family's sticker pack | 200 (`limits.max_pack_items`) |
 | One sticker — a pack item, or a sticker message's picture | 512 KiB (`limits.max_pack_item_bytes`); 512 × 512 pixels is a CLIENT rule, the server never decodes |
 | Sticker label | 64 chars (fixed) |
+| A video message's length | 60 000 ms (fixed, sent as `max_round_video_ms`); clients stop 500 ms short |
+| A video message's bytes | 12 MiB, or `limits.max_attachment_bytes` when that is lower (`limits.max_round_video_bytes`; when set, 1 to `max_attachment_bytes`); a square of at most 720 on a side is a DECLARED check, never a measured one |
 | Call ring timeout | 45 s |
 | Buffered caller candidates while ringing | 64 (fixed) |
 | Offer / answer SDP | 64 KiB (fixed) |

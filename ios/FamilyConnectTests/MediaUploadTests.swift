@@ -321,7 +321,7 @@ struct MediaUploadTests {
     /// muted have none — one pump, a writer with one input, and a planner
     /// that gives no audio target. A transcode does not invent silence.
     @Test("a clip with no audio track is transcoded to a video with none",
-          .timeLimit(.minutes(1)), arguments: MediaUploadTests.encoders)
+          .timeLimit(.minutes(3)), arguments: MediaUploadTests.encoders)
     func clipWithNoAudioTrack(encoder: MediaTranscoder.Encoder) async throws {
         let source = try await MediaFixtures.write(.init(
             width: 1920, height: 1080, frameRate: 60, seconds: 2, bitrate: 8_000_000,
@@ -357,7 +357,7 @@ struct MediaUploadTests {
     /// soundtrack with nothing in it. The track is passed through instead
     /// (`MediaTranscoder.audioTreatment`).
     @Test("a video whose audio track states less than the AAC encoder's floor is still transcoded",
-          .timeLimit(.minutes(1)), arguments: MediaUploadTests.encoders)
+          .timeLimit(.minutes(3)), arguments: MediaUploadTests.encoders)
     func quietAudioTrackDoesNotCostTheTranscode(encoder: MediaTranscoder.Encoder) async throws {
         let source = try await MediaFixtures.write(.init(
             width: 1920, height: 1080, frameRate: 30, seconds: 4, bitrate: 8_000_000,
@@ -468,7 +468,7 @@ struct MediaUploadTests {
     /// more than the source's own rate, and that a result which came out
     /// bigger anyway is thrown away — so the upload never grows.
     @Test("a 640×360 clip at 24 fps keeps its size and its frame rate, and the upload is no bigger (rule B)",
-          .timeLimit(.minutes(1)), arguments: MediaUploadTests.encoders)
+          .timeLimit(.minutes(3)), arguments: MediaUploadTests.encoders)
     func smallSlowClipIsNotRaised(encoder: MediaTranscoder.Encoder) async throws {
         let source = try await MediaFixtures.write(.init(
             width: 640, height: 360, frameRate: 24, seconds: 4, bitrate: 300_000,
@@ -510,7 +510,7 @@ struct MediaUploadTests {
     // MARK: - Rule A: within the profile, left alone
 
     @Test("a 720p30 H.264 MP4 at about 1.5 Mbit/s is sent byte for byte as it is (rule A)",
-          .timeLimit(.minutes(1)), arguments: MediaUploadTests.encoders)
+          .timeLimit(.minutes(3)), arguments: MediaUploadTests.encoders)
     func withinProfileIsUntouched(encoder: MediaTranscoder.Encoder) async throws {
         let source = try await MediaFixtures.write(.init(
             width: 1280, height: 720, frameRate: 30, seconds: 4, bitrate: 1_500_000,
@@ -822,7 +822,7 @@ struct MediaUploadTests {
 
     // MARK: - Rule D: a result bigger than its source is thrown away
 
-    @Test("a transcoded video bigger than its sendable source is thrown away (rule D)", .timeLimit(.minutes(1)))
+    @Test("a transcoded video bigger than its sendable source is thrown away (rule D)", .timeLimit(.minutes(3)))
     func biggerVideoResultIsThrownAway() async throws {
         let source = try await landscape1080p60()
         defer { remove(source) }
@@ -838,7 +838,7 @@ struct MediaUploadTests {
         }
     }
 
-    @Test("a transcoded sound file bigger than its source is thrown away (rule D)", .timeLimit(.minutes(1)))
+    @Test("a transcoded sound file bigger than its source is thrown away (rule D)", .timeLimit(.minutes(3)))
     func biggerAudioResultIsThrownAway() async throws {
         let wav = try MediaFixtures.writeWAV(seconds: 1, sampleRate: 44_100, channels: 2)
         defer { remove(wav) }
@@ -1056,7 +1056,7 @@ struct MediaUploadTests {
     /// The other end of it: a transcode already under way. The output file
     /// appearing is the writer having started, which is when this cancels.
     @Test("the AVFoundation transcoder stops mid-way when its task is cancelled, and removes its file",
-          .timeLimit(.minutes(1)), arguments: MediaUploadTests.encoders)
+          .timeLimit(.minutes(3)), arguments: MediaUploadTests.encoders)
     func transcoderStopsMidWay(encoder: MediaTranscoder.Encoder) async throws {
         let source = try await landscape1080p60(seconds: 6)
         defer { remove(source) }

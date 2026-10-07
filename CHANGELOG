@@ -57,6 +57,66 @@
                     original. Stickers and voice notes are never
                     re-encoded, and the 100 MB ceiling is unchanged.
 
+                    VOICE MESSAGES FROM THE SEND BUTTON. With nothing
+                    typed, the Send button is a microphone. A tap — or a
+                    click, Enter, a screen reader's activation, ⌥⌘R on
+                    the Mac and an iPad keyboard, Ctrl+Shift+R on
+                    Windows and Android — starts a hands-free recording;
+                    the same button, now an arrow, sends it; Stop keeps
+                    it to listen to and add words before sending; Delete
+                    discards it, asking first from ten seconds on.
+                    Holding the microphone does nothing special, on any
+                    platform. Nothing under a second is ever sent, a
+                    double tap cannot start or send one, and five
+                    minutes stops the recording for review instead of
+                    sending it. The paperclip's Record Audio is now
+                    Record Voice Message, and the assistant's chat no
+                    longer offers it. The right-click menu on the
+                    microphone offers both kinds of message on the Mac,
+                    Windows and the web.
+
+                    NOTHING RECORDED IS LOST OR SENT BY ACCIDENT. There
+                    is no recording during a call. A call, the app going
+                    to the background, the screen locking or leaving the
+                    chat stops a recording and keeps it as a "Voice
+                    message not sent" row, kept with its reply and
+                    caption until it is sent or deleted — it never rides
+                    along with the next text. This fixes Android leaving
+                    the microphone on after Back, and iOS switching off
+                    a call's audio when a recording stopped.
+
+                    VOICE MESSAGES LOOK FINISHED. A voice message draws
+                    its waveform from the recording itself, sent with it
+                    by the recording device, so it shows before anything
+                    is downloaded; the bars fill in as it plays, and a
+                    tap or drag on them jumps. While it plays it shows
+                    the time played and a 1×, 1.5× and 2× speed chip
+                    each device remembers. A dot marks one this device
+                    has not played yet. Its long-press menu now offers
+                    only what fits a recording: reactions, Reply, Show
+                    text, Playback speed, Save and Report — no Copy or
+                    Edit.
+
+                    VIDEO MESSAGES. A round video, recorded in the app:
+                    a square 480×480 clip of at most a minute, drawn as
+                    a circle. The video button in an empty message box,
+                    Record Video Message in the paperclip, or the
+                    microphone's right-click menu opens the camera;
+                    nothing is recorded until Record, Record turns into
+                    Stop and Stop into Send, the camera goes off at
+                    Stop, and nothing is sent unseen. A received circle
+                    has no bubble, plays in place with sound on a tap
+                    and never by itself, and carries Show text under it.
+                    The chat list and notifications say "Video message".
+                    It is recorded on iPhone, iPad, Mac and Android —
+                    where it needs CameraX 1.5.1, the version
+                    Scan.Android uses — and in Chrome and Edge. Safari
+                    and Firefox say they cannot record one yet; Safari
+                    waits for a trial on a real device. Windows plays
+                    circles in its viewer, and its recorder is built but
+                    switched off until it has been tried on a Windows
+                    machine (win/README.md).
+
                     VOICE NOTES. The web client records AAC where the
                     browser can encode it, then with the browser's own
                     MP4 recorder, and only then as the mono 16 kHz
@@ -102,6 +162,59 @@
                     backdrop, and the server stops drawing when the
                     connection closes.
 
+                    TEXT OF VOICE AND VIDEO, ON REQUEST. A Show text
+                    button under a voice note, an audio file or a video
+                    asks the server for its text, which appears under
+                    the player for the member who asked and is kept on
+                    that device. A member may always get the text of
+                    their own messages, in any chat. Another member's
+                    message needs the family owner's new switch, Voice
+                    and video as text (off by default), and that
+                    member's consent to the assistant, and only in the
+                    family chat and its threads — never somebody else's
+                    message in a direct chat. The asker needs the
+                    assistant consent too. Text made from the server's
+                    own copy of a recording is kept and handed to later
+                    askers without a second charge; a video, an Ogg file
+                    or a recording over 25 MB is sent as a sound track
+                    the asking device takes out of it, and that text is
+                    never kept or shared. Family Statistics shows
+                    recordings turned into text and their length.
+
+                    THE ASSISTANT CAN LOOK THINGS UP. Where the server
+                    is set up for it, the assistant can search the web
+                    or the news (Brave Search or a SearXNG of the
+                    operator's own), check the weather (Open-Meteo, for
+                    a place named in the question — never the device's
+                    location) and read Wikipedia, when a question needs
+                    it. It needs the owner's switch, Can look things up
+                    (off by default), and each member's own agreement,
+                    given separately from the assistant consent and
+                    withdrawn with it. Only the short query or place
+                    name the model writes leaves the server — never the
+                    conversation, names or photos — and a family-chat
+                    answer that may look things up leaves out the words
+                    of members who have not agreed. An answer ends with
+                    up to three source links and the providers' credits
+                    (Powered by Brave, the Wikipedia licence,
+                    Open-Meteo); a link the model wrote itself that is
+                    not a returned source is taken apart, in the
+                    finished answer and while it streams, so no device
+                    can be made to fetch it. At most three lookups and
+                    two rounds an answer, ten seconds a lookup and 100
+                    web searches a family a day by default. Family
+                    Statistics counts the web searches.
+
+                    WEATHER IN THE MORNING GREETING. The owner can name
+                    up to three places, next to the greeting's time, and
+                    the daily greeting then mentions today's forecast
+                    for each, for that place's own date, with Open-Meteo
+                    credited. Only the place names are sent. A forecast
+                    that fails or takes longer than eight seconds is
+                    left out and the greeting goes out as usual; a
+                    request that fails fast — Open-Meteo answers 503
+                    when it is overloaded — is asked once more first.
+
                     FIXED. On Android, a redraw that failed, was
                     refused or was declined no longer blanks the
                     backdrop already showing in the event; only a
@@ -123,12 +236,53 @@
                     refuses to start until this is lowered too. [ai]
                     timeout_secs = 180, at least 10, which was
                     hard-coded before and bounds every assistant call;
-                    it is not in config.example.toml yet. WebP is now
+                    config.example.toml documents it. WebP is now
                     accepted for any photo, and push notifications say
                     "Sticker" where a photo says "Photo". Provider
                     errors are logged on one line with
                     identifier-shaped fields only — never the
                     provider's message, never the member's words.
+
+                    TRANSCRIPTS AND LOOKUPS ON THE SERVER. Three more
+                    migrations, 0049 (transcripts), 0050 (lookups) and
+                    0051 (greeting_places). Two new optional config
+                    tables. [ai.transcribe] names a speech-to-text
+                    deployment: the Azure OpenAI audio/transcriptions
+                    request by default (gpt-4o-transcribe or
+                    gpt-4o-mini-transcribe), or api = "speech" for Azure
+                    Speech's MAI-Transcribe models, with max_bytes up to
+                    25 MiB and an optional language hint. [ai.lookups]
+                    sets search = "brave" with its key, or "searxng"
+                    with its URL, weather and wikipedia, a contact URL
+                    for the User-Agent (an email address is refused),
+                    and the limits above. Neither is on unless
+                    configured, and a server without them sends the
+                    assistant exactly the requests it did before. The
+                    reference nginx configuration has a new location for
+                    transcript requests — a 26 MB body and a 300-second
+                    read — that an existing server needs copied in. The
+                    refusal codes of Azure's gpt-image models
+                    (contentFilter) are now read as refusals, so a
+                    refused picture is reworded as any other.
+
+                    VIDEO MESSAGES ON THE SERVER. Two more migrations,
+                    0052 (round_video) and 0053 (audio_waveform). A
+                    video message is an ordinary H.264/AAC MP4
+                    attachment sent with round: true; the server refuses
+                    the flag, with a 400 and the upload left unclaimed,
+                    unless the message is exactly one square video/mp4
+                    of 720 or less a side and a minute or less, with no
+                    words, and it cannot be edited. GET /families/mine
+                    advertises max_round_video_ms and
+                    max_round_video_bytes, which is how a client knows
+                    the server has video messages. One more key,
+                    [limits] max_round_video_bytes: by default 12 MiB,
+                    or max_attachment_bytes where that is lower, and
+                    when set it must be from 1 to max_attachment_bytes —
+                    no existing configuration is refused. A voice note
+                    may carry a 48-level waveform, given on its upload
+                    and refused when malformed. Push notifications say
+                    "Video message" for one.
 
                     OLD CLIENTS KEEP WORKING. A 1.1 client against
                     this server draws a sticker as an ordinary photo
@@ -141,6 +295,20 @@
                     no stickers — the missing pack limits are the
                     feature check — and everything else, preparing
                     media included, works unchanged.
+
+                    An app from before these features asks for no text,
+                    is never offered lookups (the server needs the
+                    member's agreement, which only a new app can give)
+                    and shows a greeting's weather and an answer's
+                    sources as the ordinary text they are.
+
+                    An app from before video messages — 1.1, or a 1.2
+                    build that predates them — draws a video message as
+                    an ordinary square video and plays it in its viewer,
+                    ignores a voice note's waveform, and is told 400 if
+                    it offers Edit on one. An app with video messages
+                    against an older server offers none and records
+                    voice as before.
 
                     The server and web crates are 1.2.0, the Windows
                     package 1.2.0.0, and the Apple and Android apps

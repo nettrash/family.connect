@@ -3727,6 +3727,271 @@
         }
       }
     },
+    "1.5×" : {
+      "comment" : "Playback speed of a voice message: one and a half times as fast. Write the number with your language's decimal separator (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1,5×"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1,5×"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1,5×"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1.5×"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1,5×"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1,5×"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1,5×"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1.5×"
+          }
+        }
+      }
+    },
+    "1×" : {
+      "comment" : "Playback speed of a voice message: normal speed. Shown on the speed chip beside a playing voice message and in its long-press menu; tapping the chip goes 1× → 1.5× → 2× and back (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1×"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1×"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1×"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1×"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1×"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1×"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1×"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1×"
+          }
+        }
+      }
+    },
+    "2×" : {
+      "comment" : "Playback speed of a voice message: twice as fast (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2×"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2×"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2×"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2×"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2×"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2×"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2×"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2×"
+          }
+        }
+      }
+    },
+    "10 seconds left" : {
+      "comment" : "Shown in the video message recorder's status line, where the ring turns orange at 0:50, and announced: a video message stops at one minute (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noch 10 Sekunden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quedan 10 segundos"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Encore 10 secondes"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "残り10秒"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Осталось 10 секунд"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Још 10 секунди"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Još 10 sekundi"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还剩10秒"
+          }
+        }
+      }
+    },
+    "30 seconds left" : {
+      "comment" : "Shown beside the recording timer, which turns orange at 4:30, and announced: a voice recording stops at five minutes (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noch 30 Sekunden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quedan 30 segundos"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Encore 30 secondes"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "残り30秒"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Осталось 30 секунд"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Још 30 секунди"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Još 30 sekundi"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还剩30秒"
+          }
+        }
+      }
+    },
     "A day and a month, with no year — so being wished a happy birthday never means publishing your age." : {
       "localizations" : {
         "de" : {
@@ -5110,6 +5375,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "添加照片"
+          }
+        }
+      }
+    },
+    "Add place" : {
+      "comment" : "Button in Weather in the greeting that adds one more place field, while there are fewer than 3.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ort hinzufügen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Añadir lugar"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ajouter un lieu"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "場所を追加"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить место"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Додај место"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj mesto"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加地点"
           }
         }
       }
@@ -8344,6 +8662,166 @@
         }
       }
     },
+    "Camera and microphone on · Not recording" : {
+      "comment" : "Status line of the video message recorder before recording, on a platform that has to keep the microphone open while it shows the camera: both are on, and nothing is being recorded or sent (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kamera und Mikrofon an · Keine Aufnahme"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cámara y micrófono activados · No se está grabando"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Caméra et micro activés · Pas d’enregistrement en cours"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "カメラとマイクはオン · 録画していません"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Камера и микрофон включены · Запись не идёт"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Камера и микрофон су укључени · Снимање није у току"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kamera i mikrofon su uključeni · Snimanje nije u toku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相机和麦克风已开启 · 未在录制"
+          }
+        }
+      }
+    },
+    "Camera ready" : {
+      "comment" : "Announced to screen readers when the video message recorder's camera shows its first picture and Record can be used (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kamera bereit"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cámara lista"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Caméra prête"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "カメラの準備ができました"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Камера готова"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Камера је спремна"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kamera je spremna"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相机已就绪"
+          }
+        }
+      }
+    },
+    "Camera turned off" : {
+      "comment" : "Announced when the video message recorder closes by itself after 60 seconds with nothing recorded and no control used. Nothing is lost (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kamera ausgeschaltet"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cámara apagada"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Caméra éteinte"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "カメラをオフにしました"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Камера выключена"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Камера искључена"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kamera isključena"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相机已关闭"
+          }
+        }
+      }
+    },
     "Can be shown photos" : {
       "localizations" : {
         "de" : {
@@ -9313,6 +9791,112 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "检查中…"
+          }
+        }
+      }
+    },
+    "Choose camera" : {
+      "comment" : "Button in the video message recorder on a Mac, a Windows PC or a desktop browser with more than one camera: it opens a menu of the cameras by their system names. The choice is remembered on the device (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kamera auswählen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elegir cámara"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choisir la caméra"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "カメラを選択"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выбрать камеру"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Изабери камеру"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Izaberi kameru"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择相机"
+          }
+        }
+      }
+    },
+    "City or town" : {
+      "comment" : "Placeholder of one place field in Weather in the greeting: the name of a place whose weather the daily greeting mentions, for example Moscow or Belgrade.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stadt oder Ort"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ciudad o pueblo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ville ou village"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "市や町の名前"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Город или посёлок"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Град или место"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grad ili mesto"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "城市或城镇"
           }
         }
       }
@@ -10920,6 +11504,59 @@
         }
       }
     },
+    "Couldn't load the video. Tap to try again." : {
+      "comment" : "Shown on a video message (a round video) in a chat when its video could not be fetched or played; tapping it tries again (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das Video konnte nicht geladen werden. Zum Wiederholen tippen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo cargar el vídeo. Toca para reintentar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible de charger la vidéo. Touche pour réessayer."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオを読み込めませんでした。タップして再試行。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось загрузить видео. Нажми, чтобы повторить."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видео није учитан. Додирни да покушаш поново."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video nije učitan. Dodirni da pokušaš ponovo."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载视频。轻点以重试。"
+          }
+        }
+      }
+    },
     "Couldn't load the whole thread." : {
       "comment" : "Footnote under a thread drawn from the cache when the server read failed: some replies may be missing.",
       "localizations" : {
@@ -10975,6 +11612,60 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法加载完整话题。"
+          }
+        }
+      }
+    },
+    "Couldn't make it round. It will be sent as a regular video." : {
+      "comment" : "Shown with a recorded video message when it could not be turned into the square clip a round video needs: Send sends it as an ordinary video instead. Android and Windows (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das Video konnte nicht rund gemacht werden. Es wird als normales Video gesendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo hacer redondo el vídeo. Se enviará como un vídeo normal."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible de rendre la vidéo ronde. Elle sera envoyée comme une vidéo ordinaire."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "円形にできませんでした。通常のビデオとして送信されます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сделать видео круглым. Оно будет отправлено как обычное видео."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видео није могао да постане округао. Биће послат као обичан видео."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video nije mogao da postane okrugao. Biće poslat kao običan video."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法做成圆形视频。将作为普通视频发送。"
           }
         }
       }
@@ -13452,6 +14143,59 @@
         }
       }
     },
+    "Delete recording" : {
+      "comment" : "Accessibility label of the trash button in the recording row, of ✕ on a staged voice message and of ✕ in the \"Voice message not sent\" row; also a screen-reader action while recording. A recording of 10 seconds or more asks first (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufnahme löschen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eliminar la grabación"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Supprimer l’enregistrement"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音を削除"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить запись"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обриши снимак"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obriši snimak"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除录音"
+          }
+        }
+      }
+    },
     "Delete this note?" : {
       "comment" : "A confirmation dialog asking whether to delete a note.",
       "isCommentAutoGenerated" : true,
@@ -13502,6 +14246,112 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "要删除这条便签吗？"
+          }
+        }
+      }
+    },
+    "Delete this recording?" : {
+      "comment" : "Asked before deleting a voice recording of 10 seconds or more, from the recording row, a staged voice message or the \"Voice message not sent\" row. Answers: \"Delete\", \"Keep\" (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diese Aufnahme löschen?"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "¿Eliminar esta grabación?"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Supprimer cet enregistrement ?"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この録音を削除しますか？"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить эту запись?"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обрисати овај снимак?"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obrisati ovaj snimak?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要删除这段录音吗？"
+          }
+        }
+      }
+    },
+    "Delete video message?" : {
+      "comment" : "Asked before deleting a recorded video message of 10 seconds or more (Delete or Retake in the recorder), and always on Esc, Back or closing the window while a recorded clip waits to be sent. Answers: \"Delete\", \"Keep\" (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Videonachricht löschen?"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "¿Eliminar el mensaje de vídeo?"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Supprimer le message vidéo ?"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオメッセージを削除しますか？"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить видеосообщение?"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обрисати видео-поруку?"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obrisati video-poruku?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要删除视频消息吗？"
           }
         }
       }
@@ -13608,6 +14458,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已删除的账户"
+          }
+        }
+      }
+    },
+    "Describe people and things in general words — real names and brands are often refused." : {
+      "comment" : "Shown while the member is asking the assistant for a picture (a draft beginning /draw, or an event backdrop), because the picture provider's content filter refuses most real people's names and brands.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Beschreibe Menschen und Dinge allgemein — echte Namen und Marken werden oft abgelehnt."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Describe a las personas y las cosas con palabras generales: los nombres reales y las marcas se suelen rechazar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Décris les personnes et les choses en termes généraux — les vrais noms et les marques sont souvent refusés."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "人や物は一般的な言葉で説明してください。実在の人物名やブランド名は断られることがよくあります。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Описывай людей и предметы общими словами — настоящие имена и бренды часто отклоняются."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Опиши људе и ствари општим речима — права имена и брендови се често одбијају."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opiši ljude i stvari opštim rečima — prava imena i brendovi se često odbijaju."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请用笼统的词语描述人和事物——真实姓名和品牌常常会被拒绝。"
           }
         }
       }
@@ -15103,6 +16006,220 @@
         }
       }
     },
+    "Family needs permission to use your camera and microphone. Allow them in your browser's settings for this site." : {
+      "comment" : "Web: shown in the video message recorder when the browser refused the camera and microphone request but cannot say which of the two was refused (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family braucht die Berechtigung für deine Kamera und dein Mikrofon. Erlaube beides in den Einstellungen deines Browsers für diese Website."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family necesita permiso para usar tu cámara y tu micrófono. Permítelos en los ajustes de tu navegador para este sitio."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family a besoin de l’autorisation d’utiliser ta caméra et ton micro. Autorise-les dans les réglages de ton navigateur pour ce site."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family がカメラとマイクを使う許可が必要です。ブラウザでこのサイトの設定を開き、許可してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family нужно разрешение на доступ к камере и микрофону. Разреши его в настройках браузера для этого сайта."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family треба дозволу за приступ твојој камери и микрофону. Дозволи је у подешавањима прегледача за овај сајт."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family treba dozvolu za pristup tvojoj kameri i mikrofonu. Dozvoli je u podešavanjima pregledača za ovaj sajt."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family 需要使用你的相机和麦克风的权限。请在浏览器中为此网站允许这些权限。"
+          }
+        }
+      }
+    },
+    "Family needs permission to use your camera. Allow it in your browser's settings for this site." : {
+      "comment" : "Web: shown in the video message recorder when the browser says the camera was refused for this site, with \"Record a voice message instead\" (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family braucht die Berechtigung für deine Kamera. Erlaube sie in den Einstellungen deines Browsers für diese Website."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family necesita permiso para usar tu cámara. Permítelo en los ajustes de tu navegador para este sitio."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family a besoin de l’autorisation d’utiliser ta caméra. Autorise-la dans les réglages de ton navigateur pour ce site."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family がカメラを使う許可が必要です。ブラウザでこのサイトの設定を開き、許可してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family нужно разрешение на доступ к камере. Разреши его в настройках браузера для этого сайта."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family треба дозволу за приступ твојој камери. Дозволи је у подешавањима прегледача за овај сајт."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family treba dozvolu za pristup tvojoj kameri. Dozvoli je u podešavanjima pregledača za ovaj sajt."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family 需要使用你的相机的权限。请在浏览器中为此网站允许该权限。"
+          }
+        }
+      }
+    },
+    "Family needs permission to use your camera. Turn it on in Settings." : {
+      "comment" : "Shown in the video message recorder when camera permission has been refused, with \"Open Settings\" and \"Record a voice message instead\". iPhone, iPad, Android and Windows (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family braucht die Berechtigung für deine Kamera. Schalte sie in den Einstellungen ein."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family necesita permiso para usar tu cámara. Actívalo en Ajustes."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family a besoin de l’autorisation d’utiliser ta caméra. Active-la dans Réglages."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family がカメラを使う許可が必要です。「設定」でオンにしてください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family нужно разрешение на доступ к камере. Включи его в Настройках."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family треба дозволу за приступ твојој камери. Укључи је у Подешавањима."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family treba dozvolu za pristup tvojoj kameri. Uključi je u Podešavanjima."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family 需要使用你的相机的权限。请在“设置”中开启。"
+          }
+        }
+      }
+    },
+    "Family needs permission to use your camera. Turn it on in System Settings › Privacy & Security › Camera." : {
+      "comment" : "Mac: shown in the video message recorder when camera permission has been refused, with \"Open System Settings\" and \"Record a voice message instead\" (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family braucht die Berechtigung für deine Kamera. Schalte sie in den Systemeinstellungen › Datenschutz & Sicherheit › Kamera ein."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family necesita permiso para usar tu cámara. Actívalo en Ajustes del Sistema › Privacidad y seguridad › Cámara."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family a besoin de l’autorisation d’utiliser ta caméra. Active-la dans Réglages Système › Confidentialité et sécurité › Caméra."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family がカメラを使う許可が必要です。「システム設定」›「プライバシーとセキュリティ」›「カメラ」でオンにしてください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family нужно разрешение на доступ к камере. Включи его в Системных настройках › Конфиденциальность и безопасность › Камера."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family треба дозволу за приступ твојој камери. Укључи је у Системским подешавањима › Приватност и безбедност › Камера."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family treba dozvolu za pristup tvojoj kameri. Uključi je u Sistemskim podešavanjima › Privatnost i bezbednost › Kamera."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family 需要使用你的相机的权限。请在“系统设置”›“隐私与安全性”›“相机”中开启。"
+          }
+        }
+      }
+    },
     "Family needs permission to use your location. Turn it on in Settings." : {
       "comment" : "Shown on iOS when location permission has been refused.",
       "localizations" : {
@@ -15205,6 +16322,60 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Family 需要使用你的位置的权限。请在“系统设置”中开启。"
+          }
+        }
+      }
+    },
+    "Family needs permission to use your microphone. Allow it in your browser's settings for this site." : {
+      "comment" : "Web: shown when the browser says the microphone was refused for this site — starting a voice recording, or in the video message recorder (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family braucht die Berechtigung für dein Mikrofon. Erlaube sie in den Einstellungen deines Browsers für diese Website."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family necesita permiso para usar tu micrófono. Permítelo en los ajustes de tu navegador para este sitio."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family a besoin de l’autorisation d’utiliser ton micro. Autorise-la dans les réglages de ton navigateur pour ce site."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family がマイクを使う許可が必要です。ブラウザでこのサイトの設定を開き、許可してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family нужно разрешение на доступ к микрофону. Разреши его в настройках браузера для этого сайта."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family треба дозволу за приступ твом микрофону. Дозволи је у подешавањима прегледача за овај сајт."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family treba dozvolu za pristup tvom mikrofonu. Dozvoli je u podešavanjima pregledača za ovaj sajt."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family 需要使用你的麦克风的权限。请在浏览器中为此网站允许该权限。"
           }
         }
       }
@@ -17626,6 +18797,59 @@
         }
       }
     },
+    "Keep" : {
+      "comment" : "Answer to \"Delete this recording?\" that keeps the recording, ready to listen to, instead of deleting it. Windows and the web also use it in \"Delete this note?\" on the board (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Behalten"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conservar"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Garder"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "残す"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Оставить"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Задржи"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zadrži"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保留"
+          }
+        }
+      }
+    },
     "Large" : {
       "comment" : "The largest of a note's three sizes.",
       "localizations" : {
@@ -19413,6 +20637,59 @@
         }
       }
     },
+    "Microphone" : {
+      "comment" : "Voice Control input label: a word a person can say to press the microphone in the composer's Send slot (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mikrofon"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Micrófono"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Micro"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "マイク"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Микрофон"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Микрофон"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mikrofon"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麦克风"
+          }
+        }
+      }
+    },
     "Microphone access is needed for calls." : {
       "localizations" : {
         "de" : {
@@ -20594,6 +21871,60 @@
         }
       }
     },
+    "Next time, letting go will send it." : {
+      "comment" : "Shown once, the first time on a device a held microphone is let go: the recording is kept to listen to this time, and from then on letting go sends it after a 5-second Undo (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Beim nächsten Mal wird beim Loslassen gesendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La próxima vez, al soltar se enviará."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La prochaine fois, relâcher l’enverra."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "次からは、指を離すと送信されます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В следующий раз сообщение отправится, как только отпустишь."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Следећи пут ће се послати чим пустиш."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sledeći put će se poslati čim pustiš."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下次一松开就会发送。"
+          }
+        }
+      }
+    },
     "No answer" : {
       "localizations" : {
         "de" : {
@@ -21560,6 +22891,165 @@
         }
       }
     },
+    "Not played" : {
+      "comment" : "Accessibility value of a received video message (a round video) that this device has not played yet; it goes away once it has (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nicht abgespielt"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sin reproducir"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non lu"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未再生"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не просмотрено"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Није пуштено"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nije pušteno"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未播放"
+          }
+        }
+      }
+    },
+    "Not recording" : {
+      "comment" : "Status line of the video message recorder while it shows the camera before recording: only the person sees the picture, and the microphone is off until Record (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keine Aufnahme"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se está grabando"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pas d’enregistrement en cours"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録画していません"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запись не идёт"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Снимање није у току"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimanje nije u toku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未在录制"
+          }
+        }
+      }
+    },
+    "Not sent" : {
+      "comment" : "Short label at the start of a voice recording that was kept but has not been sent yet, in the row above the composer field; Send and a delete button sit at its end (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nicht gesendet"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No enviado"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non envoyé"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未送信"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не отправлено"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Није послато"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nije poslato"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未发送"
+          }
+        }
+      }
+    },
     "Not set" : {
       "localizations" : {
         "de" : {
@@ -22317,6 +23807,59 @@
         }
       }
     },
+    "Only you can see this until you start recording." : {
+      "comment" : "Shown below \"Not recording\" the first time the video message recorder opens on this device: the camera picture is not shared with anyone until Record (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nur du siehst das, bis du die Aufnahme startest."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Solo tú lo ves hasta que empieces a grabar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Personne d’autre ne le voit tant que tu n’as pas commencé à enregistrer."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録画を始めるまで、これはあなたにしか見えません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пока ты не начнёшь запись, это видишь только ты."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Док не почнеш снимање, ово видиш само ти."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dok ne počneš snimanje, ovo vidiš samo ti."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始录制前，只有你能看到这个画面。"
+          }
+        }
+      }
+    },
     "Open" : {
       "comment" : "The join policy as Settings shows it: anyone with the invite code joins at once. An adjective, not the verb.",
       "localizations" : {
@@ -22366,6 +23909,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "开放"
+          }
+        }
+      }
+    },
+    "Open Full Screen" : {
+      "comment" : "Item in the menu of a received video message (a round video), and the label of the expand control on it while it plays: it opens the video in the full-screen viewer, where it can be scrubbed. Android writes it in sentence case, \"Open full screen\" (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Im Vollbild öffnen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abrir a pantalla completa"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvrir en plein écran"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "フルスクリーンで開く"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть на весь экран"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отвори преко целог екрана"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otvori preko celog ekrana"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全屏打开"
           }
         }
       }
@@ -22522,6 +24118,112 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "进行中的投票会留在这里，直到被关闭。目前一个也没有。"
+          }
+        }
+      }
+    },
+    "Open Settings" : {
+      "comment" : "Button under \"Family needs permission to use your microphone. Turn it on in Settings.\": opens this app's page in the system Settings. iPhone, iPad, Android and Windows (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Einstellungen öffnen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abrir Ajustes"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvrir Réglages"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "設定を開く"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть Настройки"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отвори Подешавања"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otvori Podešavanja"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开设置"
+          }
+        }
+      }
+    },
+    "Open System Settings" : {
+      "comment" : "Mac: button under the microphone permission sentence that opens System Settings › Privacy & Security › Microphone (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Systemeinstellungen öffnen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abrir Ajustes del Sistema"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvrir Réglages Système"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "システム設定を開く"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть Системные настройки"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отвори Системска подешавања"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otvori Sistemska podešavanja"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开系统设置"
           }
         }
       }
@@ -23945,6 +25647,165 @@
         }
       }
     },
+    "Playback speed" : {
+      "comment" : "Long-press menu item on a voice message or video message: shows the speed it plays at (1×, 1.5× or 2×) and changes it (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wiedergabegeschwindigkeit"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Velocidad de reproducción"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vitesse de lecture"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "再生速度"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Скорость воспроизведения"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Брзина репродукције"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brzina reprodukcije"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "播放速度"
+          }
+        }
+      }
+    },
+    "Playback speed, %@" : {
+      "comment" : "Accessibility label of the speed chip beside a playing voice message. %@ is the speed, for example 1.5× (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wiedergabegeschwindigkeit, %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Velocidad de reproducción, %@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vitesse de lecture, %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "再生速度、%@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Скорость воспроизведения, %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Брзина репродукције, %@"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brzina reprodukcije, %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "播放速度，%@"
+          }
+        }
+      }
+    },
+    "Played" : {
+      "comment" : "Accessibility value of a voice message or video message in a chat that this device has already played; the opposite of Not played (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abgespielt"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reproducido"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lu"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "再生済み"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Воспроизведено"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пуштено"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pušteno"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已播放"
+          }
+        }
+      }
+    },
     "Poll" : {
       "comment" : "A composer attach-menu item that starts a poll, in the family chat only.",
       "localizations" : {
@@ -24101,6 +25962,60 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "准备中…"
+          }
+        }
+      }
+    },
+    "Press Shift+F10 for a video message." : {
+      "comment" : "Windows only: Narrator's help text on the microphone in the composer's Send slot, when video messages can be recorded. Shift+F10 opens the microphone's menu, whose second item is \"Record Video Message\". Keep the key names as a keyboard in this language prints them (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drücke Umschalt+F10 für eine Videonachricht."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pulsa Mayús+F10 para grabar un mensaje de vídeo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Appuie sur Maj+F10 pour un message vidéo."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオメッセージを録画するには Shift+F10 を押してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нажми Shift+F10, чтобы записать видеосообщение."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Притисни Shift+F10 за видео-поруку."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pritisni Shift+F10 za video-poruku."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按 Shift+F10 录制视频消息。"
           }
         }
       }
@@ -24699,6 +26614,59 @@
         }
       }
     },
+    "Ready to review, %@" : {
+      "comment" : "Announced when a voice recording stops and is kept to listen to and add words to before sending. %@ is its length, for example 0:42 (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bereit zum Prüfen, %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listo para revisar, %@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prêt à vérifier, %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "確認できます、%@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Готово к проверке, %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Спремно за проверу, %@"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spremno za proveru, %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可以检查了，%@"
+          }
+        }
+      }
+    },
     "Reason" : {
       "comment" : "Report sheet: the picker's label",
       "localizations" : {
@@ -24863,8 +26831,274 @@
         }
       }
     },
+    "Record" : {
+      "comment" : "Voice Control input label: a word a person can say to press the microphone in the composer's Send slot, which starts a voice recording (beside \"Microphone\" and \"Voice message\") (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufnehmen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabar"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Записать"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сними"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimi"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录制"
+          }
+        }
+      }
+    },
+    "Record a video message" : {
+      "comment" : "Tooltip of the video button inside the empty message field on desktops and with an iPad pointer: it opens the video message recorder. No keyboard shortcut opens the camera (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Videonachricht aufnehmen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabar un mensaje de vídeo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer un message vidéo"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオメッセージを録画"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Записать видеосообщение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сними видео-поруку"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimi video-poruku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录制视频消息"
+          }
+        }
+      }
+    },
+    "Record a voice message" : {
+      "comment" : "Tooltip of the microphone in the composer's Send slot on the web and with an iPad pointer, where it has no keyboard shortcut (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachricht aufnehmen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabar un mensaje de voz"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer un message vocal"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ボイスメッセージを録音"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Записать голосовое сообщение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сними гласовну поруку"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimi glasovnu poruku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录制语音消息"
+          }
+        }
+      }
+    },
+    "Record a voice message (%@)" : {
+      "comment" : "Tooltip of the microphone in the composer's Send slot on the Mac and on Windows. %@ is its keyboard shortcut: ⌥⌘R or Ctrl+Shift+R (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachricht aufnehmen (%@)"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabar un mensaje de voz (%@)"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer un message vocal (%@)"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ボイスメッセージを録音（%@）"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Записать голосовое сообщение (%@)"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сними гласовну поруку (%@)"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimi glasovnu poruku (%@)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录制语音消息（%@）"
+          }
+        }
+      }
+    },
+    "Record a voice message instead" : {
+      "comment" : "Button in the video message recorder before recording starts, and beside the camera sentences when the camera is refused or busy: it turns the camera off and starts a hands-free voice recording instead (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stattdessen eine Sprachnachricht aufnehmen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabar un mensaje de voz en su lugar"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer plutôt un message vocal"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "代わりにボイスメッセージを録音"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Записать голосовое сообщение вместо видео"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сними гласовну поруку уместо тога"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimi glasovnu poruku umesto toga"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "改为录制语音消息"
+          }
+        }
+      }
+    },
     "Record Audio" : {
       "comment" : "A button that starts recording a voice note.",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -24912,6 +27146,537 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "录制音频"
+          }
+        }
+      }
+    },
+    "Record video message" : {
+      "comment" : "Accessibility label of the video button inside the empty message field, and an accessibility action on the microphone in the composer's Send slot: it opens the video message recorder. Android also uses it as the menu item (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Videonachricht aufnehmen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabar mensaje de vídeo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer un message vidéo"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオメッセージを録画"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Записать видеосообщение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сними видео-поруку"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimi video-poruku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录制视频消息"
+          }
+        }
+      }
+    },
+    "Record Video Message" : {
+      "comment" : "Menu item that opens the video message recorder: in the paperclip menu of family and direct chats, right below \"Record Voice Message\", in the microphone's secondary-click menu, and in the Mac's File menu (no shortcut). Offered only where the server and the device can make video messages; a browser that cannot record them shows it and says why instead. Android writes it in sentence case, \"Record video message\" (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Videonachricht aufnehmen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabar mensaje de vídeo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer un message vidéo"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオメッセージを録画"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Записать видеосообщение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сними видео-поруку"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimi video-poruku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录制视频消息"
+          }
+        }
+      }
+    },
+    "Record voice message" : {
+      "comment" : "Accessibility label of the microphone in the composer's Send slot, shown when nothing is typed or staged: activating it starts a hands-free voice recording, and on a touch screen holding it records while held. Android also uses it as the menu item (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachricht aufnehmen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabar mensaje de voz"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer un message vocal"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ボイスメッセージを録音"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Записать голосовое сообщение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сними гласовну поруку"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimi glasovnu poruku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录制语音消息"
+          }
+        }
+      }
+    },
+    "Record Voice Message" : {
+      "comment" : "Menu item that starts a hands-free voice recording: in the paperclip menu of family and direct chats (it replaces \"Record Audio\" and is not offered in the assistant chat), in the microphone's secondary-click menu, in the Mac's File menu with ⌥⌘R, and in the iPad's keyboard-shortcut list. Android writes it in sentence case, \"Record voice message\" (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachricht aufnehmen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabar mensaje de voz"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer un message vocal"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ボイスメッセージを録音"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Записать голосовое сообщение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сними гласовну поруку"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimi glasovnu poruku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录制语音消息"
+          }
+        }
+      }
+    },
+    "Recording" : {
+      "comment" : "Announced to screen readers when a voice recording starts. With a screen reader running the microphone opens only after this has been spoken, so it stays short (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufnahme läuft"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabando"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrement en cours"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音中"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Идёт запись"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Снимање у току"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimanje u toku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在录音"
+          }
+        }
+      }
+    },
+    "Recording a voice message" : {
+      "comment" : "Web: the accessible name of the recording row while a voice message is being recorded. It replaces \"Recording a voice note\" (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachricht wird aufgenommen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabando un mensaje de voz"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrement d’un message vocal"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ボイスメッセージを録音中"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запись голосового сообщения"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Снимање гласовне поруке"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimanje glasovne poruke"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在录制语音消息"
+          }
+        }
+      }
+    },
+    "Recording deleted" : {
+      "comment" : "Announced when a voice recording is deleted (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufnahme gelöscht"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabación eliminada"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrement supprimé"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音を削除しました"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запись удалена"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Снимак обрисан"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimak obrisan"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音已删除"
+          }
+        }
+      }
+    },
+    "Recording locked" : {
+      "comment" : "Announced when a held voice recording is locked by sliding up: it carries on hands-free, and letting go does nothing (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufnahme fixiert"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabación fijada"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrement verrouillé"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音をロックしました"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запись закреплена"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Снимање закључано"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimanje zaključano"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音已锁定"
+          }
+        }
+      }
+    },
+    "Recording stopped at five minutes." : {
+      "comment" : "Shown, and announced, when a voice recording reaches the five-minute limit: it stops and is kept to listen to; the limit never sends it (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Aufnahme wurde nach fünf Minuten beendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La grabación se detuvo a los cinco minutos."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L’enregistrement s’est arrêté au bout de cinq minutes."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "5分に達したため録音を停止しました。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запись остановлена: прошло пять минут."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Снимање је заустављено после пет минута."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimanje je zaustavljeno posle pet minuta."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音已满五分钟，已停止。"
+          }
+        }
+      }
+    },
+    "Recording stopped at one minute." : {
+      "comment" : "Shown, and announced, when a video message reaches the one-minute limit: it stops and is kept to check; the limit never sends it (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Aufnahme wurde nach einer Minute beendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La grabación se detuvo al minuto."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L’enregistrement s’est arrêté au bout d’une minute."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1分に達したため録画を停止しました。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запись остановлена: прошла минута."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Снимање је заустављено после једног минута."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimanje je zaustavljeno posle jednog minuta."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录制已满一分钟，已停止。"
           }
         }
       }
@@ -24965,6 +27730,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "录音时长"
+          }
+        }
+      }
+    },
+    "Recording video" : {
+      "comment" : "Announced to screen readers when a video message starts recording (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Videoaufnahme läuft"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grabando vídeo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrement vidéo en cours"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録画中"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Идёт видеозапись"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Снимање видеа у току"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimanje videa u toku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在录制视频"
           }
         }
       }
@@ -25176,6 +27994,60 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "拒绝 %@"
+          }
+        }
+      }
+    },
+    "Release to cancel" : {
+      "comment" : "The held-microphone row once the finger has slid far enough to cancel (the row turns red): lifting the finger now deletes the recording (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zum Abbrechen loslassen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Suelta para cancelar"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Relâche pour annuler"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "指を離すとキャンセル"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отпусти для отмены"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пусти за отказивање"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pusti za otkazivanje"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "松开取消"
           }
         }
       }
@@ -25545,6 +28417,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "移除照片"
+          }
+        }
+      }
+    },
+    "Remove place" : {
+      "comment" : "Accessibility label of the button that removes one place from Weather in the greeting.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ort entfernen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quitar lugar"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Retirer le lieu"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "場所を削除"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убрать место"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Уклони место"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ukloni mesto"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除地点"
           }
         }
       }
@@ -26472,6 +29397,59 @@
         }
       }
     },
+    "Retake" : {
+      "comment" : "Button in the video message recorder once a clip is recorded: it deletes the clip and turns the camera back on to record again. A clip of 10 seconds or more asks \"Delete video message?\" first (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Neu aufnehmen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Repetir"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Refaire"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "撮り直す"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Переснять"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сними поново"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimi ponovo"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重拍"
+          }
+        }
+      }
+    },
     "Retry" : {
       "comment" : "A button that retries connecting to the family server.",
       "isCommentAutoGenerated" : true,
@@ -26734,6 +29712,60 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "查看并允许查资料…"
+          }
+        }
+      }
+    },
+    "Review Before Sending" : {
+      "comment" : "Settings switch under \"Voice Messages\", off by default and for this device only: letting go of a held microphone keeps the recording to listen to instead of sending it after 5 seconds. Android writes it \"Review before sending\" (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vor dem Senden prüfen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Revisar antes de enviar"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vérifier avant d’envoyer"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "送信前に確認"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Проверка перед отправкой"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Провера пре слања"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Provera pre slanja"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送前检查"
           }
         }
       }
@@ -27218,6 +30250,59 @@
         }
       }
     },
+    "Save to Files" : {
+      "comment" : "iPhone and iPad: long-press menu item on a voice message or video message that saves the recording with the Files app. Use the name of the Files app in your language, as the system's own Save to Files does; the Mac says Save… instead (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In Dateien sichern"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Guardar en Archivos"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer dans Fichiers"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“ファイル”に保存"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сохранить в Файлах"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сачувај у Датотеке"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sačuvaj u Datoteke"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存到“文件”"
+          }
+        }
+      }
+    },
     "Save…" : {
       "localizations" : {
         "de" : {
@@ -27643,6 +30728,59 @@
         }
       }
     },
+    "Send or delete the voice message that wasn't sent first." : {
+      "comment" : "Said when the dimmed microphone, or \"Record Voice Message\", is used while the chat holds a \"Voice message not sent\" row: that recording is sent or deleted before another one starts (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sende oder lösche zuerst die nicht gesendete Sprachnachricht."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Primero envía o elimina el mensaje de voz que no se envió."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoie ou supprime d’abord le message vocal qui n’a pas été envoyé."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "先に未送信のボイスメッセージを送信するか削除してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сначала отправь или удали неотправленное голосовое сообщение."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прво пошаљи или обриши гласовну поруку која није послата."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prvo pošalji ili obriši glasovnu poruku koja nije poslata."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先发送或删除未发送的语音消息。"
+          }
+        }
+      }
+    },
     "Send to" : {
       "localizations" : {
         "de" : {
@@ -27691,6 +30829,112 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "发送到"
+          }
+        }
+      }
+    },
+    "Send video message" : {
+      "comment" : "Accessibility label and desktop tooltip of the Send button in the video message recorder, once a clip is recorded and ready to check: it sends the clip (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Videonachricht senden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enviar mensaje de vídeo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoyer le message vidéo"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオメッセージを送信"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправить видеосообщение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пошаљи видео-поруку"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pošalji video-poruku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送视频消息"
+          }
+        }
+      }
+    },
+    "Send voice message" : {
+      "comment" : "Accessibility label and desktop tooltip of the Send slot while a voice recording runs that started with nothing typed: it stops the recording and sends it. Also the label of Send in the \"Voice message not sent\" row (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachricht senden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enviar mensaje de voz"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoyer le message vocal"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ボイスメッセージを送信"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправить голосовое сообщение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пошаљи гласовну поруку"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pošalji glasovnu poruku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送语音消息"
           }
         }
       }
@@ -27745,6 +30989,114 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "发送中"
+          }
+        }
+      }
+    },
+    "Sending in %lld" : {
+      "comment" : "With Reduce Motion on, replaces the emptying line in the Undo row: counts down the seconds until the voice message is sent (5, 4, 3, 2, 1). Not announced (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Senden in %lld"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se envía en %lld"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoi dans %lld"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld秒後に送信"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправка через %lld"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Слање за %lld"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slanje za %lld"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld秒后发送"
+          }
+        }
+      }
+    },
+    "Sending voice message · %@" : {
+      "comment" : "Takes the field's place for 5 seconds after a held microphone is let go, beside Undo, with a line emptying along its bottom edge; the recording is sent when the 5 seconds pass. %@ is its length, for example 0:12. iPhone, iPad and Android (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachricht wird gesendet · %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enviando mensaje de voz · %@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoi du message vocal · %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ボイスメッセージを送信中 · %@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправка голосового сообщения · %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Слање гласовне поруке · %@"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slanje glasovne poruke · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在发送语音消息 · %@"
           }
         }
       }
@@ -28778,6 +32130,60 @@
         }
       }
     },
+    "Slide to cancel" : {
+      "comment" : "In the row shown while the microphone is held: sliding the finger toward the text field cancels the recording. Drawn after a ‹ chevron that points that way. iPhone, iPad and Android (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zum Abbrechen wischen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Desliza para cancelar"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glisse pour annuler"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "スライドしてキャンセル"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сдвинь для отмены"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Превуци за отказивање"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prevuci za otkazivanje"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "滑动取消"
+          }
+        }
+      }
+    },
     "Small" : {
       "comment" : "The smallest of a note's three sizes.",
       "localizations" : {
@@ -29202,6 +32608,113 @@
         }
       }
     },
+    "start recording" : {
+      "comment" : "Android only: TalkBack's click label for the microphone in the composer, read after \"Double-tap to\". Lower case on purpose (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufnahme starten"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "empezar a grabar"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "démarrer l’enregistrement"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音を開始"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "начать запись"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "започни снимање"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "započni snimanje"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始录音"
+          }
+        }
+      }
+    },
+    "Starting camera…" : {
+      "comment" : "Status line of the video message recorder until the camera delivers its first picture; Record waits for it (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kamera wird gestartet…"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Iniciando la cámara…"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Démarrage de la caméra…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "カメラを起動中…"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Камера включается…"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Камера се покреће…"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kamera se pokreće…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在启动相机…"
+          }
+        }
+      }
+    },
     "Starts" : {
       "comment" : "Label of the date picker for when a family event on the board starts.",
       "localizations" : {
@@ -29257,6 +32770,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "开始"
+          }
+        }
+      }
+    },
+    "Starts recording." : {
+      "comment" : "VoiceOver hint of the microphone in the composer's Send slot (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Startet die Aufnahme."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Empieza a grabar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Démarre l’enregistrement."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音を開始します。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Начинает запись."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Покреће снимање."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokreće snimanje."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始录音。"
           }
         }
       }
@@ -29544,6 +33110,60 @@
         }
       }
     },
+    "Still recording. Tap Send when you're done." : {
+      "comment" : "Shown for 3 seconds when a held microphone is let go after less than a second: the recording carries on hands-free. Send is the arrow in the Send slot (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Aufnahme läuft weiter. Tippe auf „Senden“, wenn du fertig bist."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sigue grabando. Toca «Enviar» cuando termines."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L’enregistrement continue. Touche « Envoyer » quand tu as fini."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音を続けています。終わったら「送信」をタップしてください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запись продолжается. Нажми «Отправить», когда закончишь."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Снимање се наставља. Додирни „Пошаљи“ кад завршиш."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimanje se nastavlja. Dodirni „Pošalji“ kad završiš."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仍在录音。说完后轻点“发送”。"
+          }
+        }
+      }
+    },
     "Still too large after compressing — try a shorter clip." : {
       "comment" : "A composer notice when a video is over the size limit even compressed.",
       "localizations" : {
@@ -29650,6 +33270,59 @@
         }
       }
     },
+    "Stop and listen first" : {
+      "comment" : "Screen-reader action on the Send slot while a voice recording runs: it stops the recording and keeps it to listen to and add words to, instead of sending it (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stoppen und zuerst anhören"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Detener y escuchar primero"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrêter et écouter d’abord"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止して先に聞く"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Остановить и сначала прослушать"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заустави и прво преслушај"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zaustavi i prvo preslušaj"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止并先试听"
+          }
+        }
+      }
+    },
     "Stop Lookups" : {
       "comment" : "Settings: withdraws the lookup agreement (the assistant agreement stays).",
       "localizations" : {
@@ -29699,6 +33372,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "停止查资料"
+          }
+        }
+      }
+    },
+    "Stop recording" : {
+      "comment" : "Accessibility label of the stop button in the recording row, and of the Send slot while a recording runs that started with words typed or items staged: it stops the recording and keeps it beside them. Nothing is sent (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufnahme stoppen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Detener la grabación"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrêter l’enregistrement"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音を停止"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Остановить запись"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заустави снимање"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zaustavi snimanje"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止录音"
           }
         }
       }
@@ -29809,6 +33535,59 @@
         }
       }
     },
+    "Switch" : {
+      "comment" : "Short caption under the switch-camera button in the video message recorder; the button's accessibility label is Switch camera. Keep it to one short word (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wechseln"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cambiar"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Changer"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切り替え"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сменить"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Промени"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Promeni"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换"
+          }
+        }
+      }
+    },
     "Switch camera" : {
       "localizations" : {
         "de" : {
@@ -29857,6 +33636,60 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "切换相机"
+          }
+        }
+      }
+    },
+    "Take video" : {
+      "comment" : "Android only: the paperclip menu item that opens the system camera to film an ordinary video, beside \"Take photo\". It was \"Record video\", renamed so it cannot be mistaken for recording a voice or video message (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video drehen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hacer vídeo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Filmer une vidéo"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオを撮る"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Снять видео"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Направи видео"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Napravi video"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拍视频"
           }
         }
       }
@@ -30826,6 +34659,59 @@
         }
       }
     },
+    "That video was too short." : {
+      "comment" : "Shown, and announced, when a video message is stopped in under a second: nothing was kept, and the recorder goes back to the camera (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieses Video war zu kurz."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ese vídeo es demasiado corto."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cette vidéo est trop courte."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオが短すぎます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видео слишком короткое."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видео је прекратак."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video je prekratak."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这段视频太短了。"
+          }
+        }
+      }
+    },
     "The answer comes back as a message in that chat, where everyone in the chat can read it." : {
       "comment" : "Assistant consent screen: where the reply lands.",
       "localizations" : {
@@ -31033,6 +34919,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "这台服务器上的助手看不了图片。它会被告知这里有一张照片，但不会看到它。"
+          }
+        }
+      }
+    },
+    "The assistant's provider refused that. Try putting it another way." : {
+      "comment" : "Shown in place of an assistant's reply when the AI provider's own content filter refused the question, the answer or a picture description (ai_error reason \"refused\"). Asking again unchanged would be refused again, so it asks for different words.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Anbieter des Assistenten hat das abgelehnt. Versuch es anders zu formulieren."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El proveedor del asistente lo rechazó. Prueba a decirlo de otra manera."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le fournisseur de l'assistant a refusé. Essaie de le formuler autrement."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アシスタントの提供元に断られました。別の言い方で試してみてください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сервис ассистента отказался это выполнить. Попробуй сформулировать иначе."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добављач асистента је то одбио. Покушај да то кажеш другачије."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dobavljač asistenta je to odbio. Pokušaj da to kažeš drugačije."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "助手的服务提供方拒绝了这个请求。换个说法试试。"
           }
         }
       }
@@ -31262,6 +35201,112 @@
         }
       }
     },
+    "The camera is being used by another app." : {
+      "comment" : "Shown in the video message recorder in place of the camera picture when another app holds the camera; Record is dimmed and \"Record a voice message instead\" is offered. A recording in progress stops and is kept to check (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Kamera wird gerade von einer anderen App verwendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otra app está usando la cámara."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La caméra est utilisée par une autre app."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "カメラはほかのアプリで使用中です。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Камера занята другим приложением."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Камеру користи друга апликација."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kameru koristi druga aplikacija."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相机正被其他应用使用。"
+          }
+        }
+      }
+    },
+    "The camera isn't available while other apps are on screen." : {
+      "comment" : "iPad: shown in the video message recorder when the app shares the screen with other apps (Split View, Slide Over, Stage Manager) on an iPad that cannot use the camera then (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Kamera ist nicht verfügbar, solange andere Apps auf dem Bildschirm sind."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La cámara no está disponible mientras haya otras apps en pantalla."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La caméra n’est pas disponible quand d’autres apps sont à l’écran."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ほかのアプリが画面に表示されている間はカメラを使用できません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Камера недоступна, пока на экране другие приложения."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Камера није доступна док су друге апликације на екрану."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kamera nije dostupna dok su druge aplikacije na ekranu."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "其他应用显示在屏幕上时，无法使用相机。"
+          }
+        }
+      }
+    },
     "The current code stops working immediately. Pending requests survive." : {
       "comment" : "A message displayed in a confirmation dialog.",
       "isCommentAutoGenerated" : true,
@@ -31312,6 +35357,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "当前代码会立即失效。待处理的申请仍然保留。"
+          }
+        }
+      }
+    },
+    "The daily greeting will also mention today's weather in these places. Only the place names are sent to Open-Meteo to fetch the forecast. Nothing else is sent." : {
+      "comment" : "Footer under the place fields in Weather in the greeting. Open-Meteo is the weather service's name; keep it as is.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der tägliche Gruß nennt dann auch das heutige Wetter an diesen Orten. Nur die Ortsnamen werden an Open-Meteo gesendet, um die Vorhersage abzurufen. Sonst wird nichts gesendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El saludo diario mencionará también el tiempo de hoy en estos lugares. Solo se envían los nombres de los lugares a Open-Meteo para obtener el pronóstico. No se envía nada más."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La salutation quotidienne mentionnera aussi la météo du jour dans ces lieux. Seuls les noms des lieux sont envoyés à Open-Meteo pour obtenir les prévisions. Rien d’autre n’est envoyé."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "毎日のあいさつで、これらの場所の今日の天気にも触れます。予報を取得するため、地名だけが Open-Meteo に送られます。それ以外は何も送られません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ежедневное приветствие будет упоминать и сегодняшнюю погоду в этих местах. В Open-Meteo отправляются только названия мест, чтобы получить прогноз. Больше ничего не отправляется."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Дневни поздрав ће поменути и данашњу временску прогнозу за ова места. Сервису Open-Meteo шаљу се само називи места да би се преузела прогноза. Ништа друго се не шаље."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dnevni pozdrav će pomenuti i današnju vremensku prognozu za ova mesta. Servisu Open-Meteo šalju se samo nazivi mesta da bi se preuzela prognoza. Ništa drugo se ne šalje."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每日问候还会提到这些地点今天的天气。为获取天气预报，只会把地名发送给 Open-Meteo，不会发送其他任何内容。"
           }
         }
       }
@@ -32177,6 +36275,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "问题就是大家看到的那条消息。"
+          }
+        }
+      }
+    },
+    "The recording stopped unexpectedly." : {
+      "comment" : "Shown with the \"Voice message not sent\" row when the recorder failed or the disk filled; what could be read was kept (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Aufnahme wurde unerwartet beendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La grabación se detuvo de forma inesperada."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L’enregistrement s’est arrêté de façon inattendue."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音が予期せず停止しました。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запись неожиданно прервалась."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Снимање је неочекивано прекинуто."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snimanje je neočekivano prekinuto."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音意外停止了。"
           }
         }
       }
@@ -33320,6 +37471,60 @@
         }
       }
     },
+    "This browser can't record video messages. Voice messages work." : {
+      "comment" : "Web: said instead of opening the video message recorder, from \"Record Video Message\", in a browser that cannot record them (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieser Browser kann keine Videonachrichten aufnehmen. Sprachnachrichten funktionieren."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este navegador no puede grabar mensajes de vídeo. Los mensajes de voz sí funcionan."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ce navigateur ne peut pas enregistrer de messages vidéo. Les messages vocaux fonctionnent."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このブラウザではビデオメッセージを録画できません。ボイスメッセージは使えます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот браузер не умеет записывать видеосообщения. Голосовые работают."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Овај прегледач не може да снима видео-поруке. Гласовне поруке раде."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovaj pregledač ne može da snima video-poruke. Glasovne poruke rade."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此浏览器无法录制视频消息。语音消息可以正常使用。"
+          }
+        }
+      }
+    },
     "This goes to %@. You haven't agreed to that yet." : {
       "comment" : "Composer bar above a message that would reach the assistant; %@ is who receives it.",
       "localizations" : {
@@ -34173,6 +38378,59 @@
         }
       }
     },
+    "Too big for a video message. It will be sent as a regular video." : {
+      "comment" : "Shown with a recorded video message that is larger than this family's server takes for one: Send sends it as an ordinary video instead (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zu groß für eine Videonachricht. Es wird als normales Video gesendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Demasiado grande para un mensaje de vídeo. Se enviará como un vídeo normal."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trop lourde pour un message vidéo. Elle sera envoyée comme une vidéo ordinaire."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオメッセージには大きすぎます。通常のビデオとして送信されます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Слишком большое для видеосообщения. Будет отправлено как обычное видео."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Превелик за видео-поруку. Биће послат као обичан видео."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prevelik za video-poruku. Biće poslat kao običan video."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "太大，无法作为视频消息发送。将作为普通视频发送。"
+          }
+        }
+      }
+    },
     "Travel & Places" : {
       "comment" : "A section header in the full emoji picker.",
       "localizations" : {
@@ -34699,6 +38957,60 @@
         }
       }
     },
+    "Undo" : {
+      "comment" : "Button at the start of the row shown for 5 seconds after a held microphone is let go (\"Sending voice message · 0:12\"): it keeps the recording to listen to instead of sending it. Nothing has left the device yet. iPhone, iPad and Android (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rückgängig"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deshacer"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Annuler"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取り消す"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отменить"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Опозови"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opozovi"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "撤销"
+          }
+        }
+      }
+    },
     "Unknown caller" : {
       "localizations" : {
         "de" : {
@@ -35062,6 +39374,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "这个聊天里最近的照片仍可能发送，最多 %lld 张。"
+          }
+        }
+      }
+    },
+    "Up to 3 places." : {
+      "comment" : "Shown in Weather in the greeting once 3 places are listed, in place of the Add place button: the server keeps at most 3.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bis zu 3 Orte."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hasta 3 lugares."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jusqu’à 3 lieux."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "場所は3つまでです。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не больше 3 мест."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Највише 3 места."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najviše 3 mesta."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最多 3 个地点。"
           }
         }
       }
@@ -35699,6 +40064,325 @@
         }
       }
     },
+    "Video message" : {
+      "comment" : "What a video message (a round video) is called: the chat list's last-message line, a reply quoting one, and the name screen readers give the video message recorder (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Videonachricht"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mensaje de vídeo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message vidéo"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオメッセージ"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видеосообщение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видео-порука"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video-poruka"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频消息"
+          }
+        }
+      }
+    },
+    "Video message · %@" : {
+      "comment" : "Status line of the video message recorder once a clip is recorded and ready to check before sending. %@ is its length, for example 0:23 (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Videonachricht · %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mensaje de vídeo · %@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message vidéo · %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオメッセージ · %@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видеосообщение · %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видео-порука · %@"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video-poruka · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频消息 · %@"
+          }
+        }
+      }
+    },
+    "Video message sent" : {
+      "comment" : "Announced when a recorded video message is handed over to be sent from the recorder's Send (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Videonachricht gesendet"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mensaje de vídeo enviado"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message vidéo envoyé"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオメッセージを送信しました"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видеосообщение отправлено"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видео-порука послата"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video-poruka poslata"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频消息已发送"
+          }
+        }
+      }
+    },
+    "Video message, %@" : {
+      "comment" : "Accessibility label of a video message (a round video) in a chat. %@ is its length, for example 0:23 (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Videonachricht, %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mensaje de vídeo, %@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message vidéo, %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオメッセージ、%@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видеосообщение, %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видео-порука, %@"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video-poruka, %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频消息，%@"
+          }
+        }
+      }
+    },
+    "Video messages can't be recorded with this camera." : {
+      "comment" : "Windows only: shown in the video message recorder when this camera's picture cannot be shown while recording, so nothing is recorded with it (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mit dieser Kamera können keine Videonachrichten aufgenommen werden."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Con esta cámara no se pueden grabar mensajes de vídeo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible d’enregistrer des messages vidéo avec cette caméra."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このカメラではビデオメッセージを録画できません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "С этой камеры нельзя записывать видеосообщения."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Овом камером не могу да се снимају видео-поруке."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovom kamerom ne mogu da se snimaju video-poruke."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法用这个相机录制视频消息。"
+          }
+        }
+      }
+    },
+    "Video messages need the camera and the microphone." : {
+      "comment" : "Shown in the video message recorder the first time it opens, while the system asks for the camera and the microphone. Nothing records until Record (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Videonachrichten brauchen die Kamera und das Mikrofon."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Los mensajes de vídeo necesitan la cámara y el micrófono."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Les messages vidéo ont besoin de la caméra et du micro."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオメッセージにはカメラとマイクが必要です。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для видеосообщений нужны камера и микрофон."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "За видео-поруке су потребни камера и микрофон."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Za video-poruke su potrebni kamera i mikrofon."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频消息需要使用相机和麦克风。"
+          }
+        }
+      }
+    },
     "Videos" : {
       "comment" : "How many videos the family has sent.",
       "localizations" : {
@@ -36020,6 +40704,325 @@
         }
       }
     },
+    "Voice message" : {
+      "comment" : "Voice Control input label of the microphone in the composer's Send slot. Windows and the web use the same words for a voice note in the chat list and for a staged one (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachricht"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mensaje de voz"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message vocal"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ボイスメッセージ"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Голосовое сообщение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Гласовна порука"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glasovna poruka"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音消息"
+          }
+        }
+      }
+    },
+    "Voice message · %@" : {
+      "comment" : "A voice recording kept to listen to, above the composer field, waiting for optional words and Send. %@ is its length, for example 0:42 (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachricht · %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mensaje de voz · %@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message vocal · %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ボイスメッセージ · %@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Голосовое сообщение · %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Гласовна порука · %@"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glasovna poruka · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音消息 · %@"
+          }
+        }
+      }
+    },
+    "Voice message not sent · %@" : {
+      "comment" : "Row above the composer field holding a voice recording that something other than the person stopped: a call, the app leaving the screen, leaving the chat, the recorder failing. It has its own play, Send and ✕, and is never sent with anything else. %@ is its length, for example 0:42 (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachricht nicht gesendet · %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mensaje de voz no enviado · %@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message vocal non envoyé · %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未送信のボイスメッセージ · %@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Голосовое сообщение не отправлено · %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Гласовна порука није послата · %@"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glasovna poruka nije poslata · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音消息未发送 · %@"
+          }
+        }
+      }
+    },
+    "Voice message sent" : {
+      "comment" : "Announced when a voice message is handed over to be sent: from the Send slot, or when the 5-second Undo ends (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachricht gesendet"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mensaje de voz enviado"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message vocal envoyé"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ボイスメッセージを送信しました"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Голосовое сообщение отправлено"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Гласовна порука послата"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glasovna poruka poslata"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音消息已发送"
+          }
+        }
+      }
+    },
+    "Voice message, %@" : {
+      "comment" : "Accessibility label of a voice message in a chat. %@ is its length, for example 0:42. Its value is Not played until this device has played it (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachricht, %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mensaje de voz, %@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message vocal, %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ボイスメッセージ、%@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Голосовое сообщение, %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Гласовна порука, %@"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glasovna poruka, %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音消息，%@"
+          }
+        }
+      }
+    },
+    "Voice Messages" : {
+      "comment" : "Header of the Settings section holding \"Review Before Sending\". iPhone, iPad and Android; Android writes it \"Voice messages\" (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachnachrichten"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mensajes de voz"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Messages vocaux"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ボイスメッセージ"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Голосовые сообщения"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Гласовне поруке"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glasovne poruke"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音消息"
+          }
+        }
+      }
+    },
     "Wait until the current attachment is done." : {
       "comment" : "Shown when someone pastes an attachment while another one is still being prepared or sent.",
       "localizations" : {
@@ -36121,6 +41124,219 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "等待批准"
+          }
+        }
+      }
+    },
+    "We can't hear anything. Is the microphone muted?" : {
+      "comment" : "Shown in the recording row, and announced, when 3 seconds into a recording the microphone has delivered nothing but silence, as a muted microphone does. The recording carries on, and the line goes when sound arrives (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Es ist nichts zu hören. Ist das Mikrofon stummgeschaltet?"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se oye nada. ¿Está silenciado el micrófono?"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On n’entend rien. Le micro est-il coupé ?"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "何も聞こえません。マイクがミュートになっていませんか？"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ничего не слышно. Может, микрофон выключен?"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ништа се не чује. Да ли је микрофон искључен?"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ništa se ne čuje. Da li je mikrofon isključen?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "什么也听不到。麦克风是不是静音了？"
+          }
+        }
+      }
+    },
+    "We can't see anything. Is the camera turned off or covered?" : {
+      "comment" : "Added to the video message recorder's status line when its first 2 seconds of picture are nearly black, as a camera switched off in the system or a covered lens gives. Record stays usable: a dark room is not an error (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Es ist nichts zu sehen. Ist die Kamera ausgeschaltet oder abgedeckt?"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se ve nada. ¿Está la cámara apagada o tapada?"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On ne voit rien. La caméra est-elle désactivée ou masquée ?"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "何も映っていません。カメラがオフになっているか、ふさがれていませんか？"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ничего не видно. Может, камера выключена или закрыта?"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ништа се не види. Да ли је камера искључена или прекривена?"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ništa se ne vidi. Da li je kamera isključena ili prekrivena?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "什么也看不到。相机是不是关了或被遮住了？"
+          }
+        }
+      }
+    },
+    "We didn't hear anything." : {
+      "comment" : "Shown when a held microphone is let go after a recording in which nothing rose above silence: it is kept to listen to rather than sent (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Es war nichts zu hören."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se oyó nada."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On n’a rien entendu."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "何も聞こえませんでした。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ничего не было слышно."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ништа се није чуло."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ništa se nije čulo."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "什么也没听到。"
+          }
+        }
+      }
+    },
+    "Weather in the greeting" : {
+      "comment" : "Header of the section under Daily greeting where the family's owner names up to 3 places whose weather today the greeting mentions. Shown only when the server has greeting weather (assistant.greeting_weather).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wetter im Gruß"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El tiempo en el saludo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Météo dans la salutation"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "あいさつの天気予報"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Погода в приветствии"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Временска прогноза у поздраву"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vremenska prognoza u pozdravu"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "问候中的天气"
           }
         }
       }
@@ -36558,6 +41774,60 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "时间"
+          }
+        }
+      }
+    },
+    "When you hold the microphone to talk, letting go keeps the message for you to check instead of sending it." : {
+      "comment" : "Footer under \"Review Before Sending\" in Settings (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn du das Mikrofon zum Sprechen gedrückt hältst, wird die Nachricht beim Loslassen nicht gesendet, sondern zum Prüfen aufbewahrt."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cuando mantienes pulsado el micrófono para hablar, al soltarlo el mensaje no se envía: se guarda para que lo revises."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quand tu maintiens le micro appuyé pour parler, le relâcher garde le message pour que tu le vérifies, au lieu de l’envoyer."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "マイクを押したまま話したとき、指を離してもメッセージはすぐに送信されず、確認できるように残ります。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда ты говоришь, удерживая микрофон, сообщение после отпускания не отправляется, а остаётся, чтобы его можно было проверить."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Кад држиш микрофон док говориш, порука се после пуштања не шаље, већ остаје да је провериш."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kad držiš mikrofon dok govoriš, poruka se posle puštanja ne šalje, već ostaje da je proveriš."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按住麦克风说话时，松开后消息不会直接发送，而是先留着供你检查。"
           }
         }
       }
@@ -37888,6 +43158,60 @@
         }
       }
     },
+    "You can also hold the microphone while you talk." : {
+      "comment" : "One-time tip above the microphone on iPhone, iPad and Android, after the first voice message sent with a tap: holding the microphone records while held, like a walkie-talkie (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Du kannst das Mikrofon auch gedrückt halten, während du sprichst."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "También puedes mantener pulsado el micrófono mientras hablas."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tu peux aussi maintenir le micro appuyé pendant que tu parles."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "マイクを押したまま話すこともできます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Можно также удерживать микрофон, пока говоришь."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Можеш и да држиш микрофон док говориш."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Možeš i da držiš mikrofon dok govoriš."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你也可以按住麦克风说话。"
+          }
+        }
+      }
+    },
     "You can attach up to %lld items." : {
       "localizations" : {
         "de" : {
@@ -37936,6 +43260,166 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "最多只能附加%lld个项目。"
+          }
+        }
+      }
+    },
+    "You can play this after recording." : {
+      "comment" : "Said when a play button is used while a recording runs: nothing plays during a recording, so play buttons are dimmed (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das kannst du nach der Aufnahme abspielen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podrás reproducirlo cuando termines de grabar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tu pourras le lire après l’enregistrement."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音が終わったら再生できます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Это можно будет воспроизвести после записи."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ово можеш да пустиш после снимања."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovo možeš da pustiš posle snimanja."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音结束后才能播放。"
+          }
+        }
+      }
+    },
+    "You can record a message after the call." : {
+      "comment" : "Said when the dimmed microphone, or \"Record Voice Message\", is used during a call: nothing records during a call (#79).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nach dem Anruf kannst du eine Nachricht aufnehmen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podrás grabar un mensaje después de la llamada."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tu pourras enregistrer un message après l’appel."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通話が終わったらメッセージを録音できます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Записать сообщение можно будет после звонка."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Поруку можеш да снимиш после позива."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poruku možeš da snimiš posle poziva."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通话结束后就可以录制消息了。"
+          }
+        }
+      }
+    },
+    "You can record now." : {
+      "comment" : "Shown after the microphone permission is allowed from the prompt a held microphone raised: that hold recorded nothing, and the next tap or hold records (#79).",
+      "extractionState" : "stale",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jetzt kannst du aufnehmen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ya puedes grabar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tu peux enregistrer maintenant."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "録音できるようになりました。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Теперь можно записывать."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сада можеш да снимаш."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sada možeš da snimaš."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现在可以录音了。"
           }
         }
       }
@@ -39177,430 +44661,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "你的加入申请被拒绝了。你可以索取新的邀请码再试一次。"
-          }
-        }
-      }
-    },
-    "The assistant's provider refused that. Try putting it another way." : {
-      "comment" : "Shown in place of an assistant's reply when the AI provider's own content filter refused the question, the answer or a picture description (ai_error reason \"refused\"). Asking again unchanged would be refused again, so it asks for different words.",
-      "localizations" : {
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Der Anbieter des Assistenten hat das abgelehnt. Versuch es anders zu formulieren."
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "El proveedor del asistente lo rechazó. Prueba a decirlo de otra manera."
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Le fournisseur de l'assistant a refusé. Essaie de le formuler autrement."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "アシスタントの提供元に断られました。別の言い方で試してみてください。"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Сервис ассистента отказался это выполнить. Попробуй сформулировать иначе."
-          }
-        },
-        "sr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Добављач асистента је то одбио. Покушај да то кажеш другачије."
-          }
-        },
-        "sr-Latn" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dobavljač asistenta je to odbio. Pokušaj da to kažeš drugačije."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "助手的服务提供方拒绝了这个请求。换个说法试试。"
-          }
-        }
-      }
-    },
-    "Describe people and things in general words — real names and brands are often refused." : {
-      "comment" : "Shown while the member is asking the assistant for a picture (a draft beginning /draw, or an event backdrop), because the picture provider's content filter refuses most real people's names and brands.",
-      "localizations" : {
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Beschreibe Menschen und Dinge allgemein — echte Namen und Marken werden oft abgelehnt."
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Describe a las personas y las cosas con palabras generales: los nombres reales y las marcas se suelen rechazar."
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Décris les personnes et les choses en termes généraux — les vrais noms et les marques sont souvent refusés."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "人や物は一般的な言葉で説明してください。実在の人物名やブランド名は断られることがよくあります。"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Описывай людей и предметы общими словами — настоящие имена и бренды часто отклоняются."
-          }
-        },
-        "sr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Опиши људе и ствари општим речима — права имена и брендови се често одбијају."
-          }
-        },
-        "sr-Latn" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Opiši ljude i stvari opštim rečima — prava imena i brendovi se često odbijaju."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "请用笼统的词语描述人和事物——真实姓名和品牌常常会被拒绝。"
-          }
-        }
-      }
-    },
-    "Weather in the greeting" : {
-      "comment" : "Header of the section under Daily greeting where the family's owner names up to 3 places whose weather today the greeting mentions. Shown only when the server has greeting weather (assistant.greeting_weather).",
-      "localizations" : {
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wetter im Gruß"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "El tiempo en el saludo"
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Météo dans la salutation"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "あいさつの天気予報"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Погода в приветствии"
-          }
-        },
-        "sr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Временска прогноза у поздраву"
-          }
-        },
-        "sr-Latn" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Vremenska prognoza u pozdravu"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "问候中的天气"
-          }
-        }
-      }
-    },
-    "City or town" : {
-      "comment" : "Placeholder of one place field in Weather in the greeting: the name of a place whose weather the daily greeting mentions, for example Moscow or Belgrade.",
-      "localizations" : {
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stadt oder Ort"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ciudad o pueblo"
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ville ou village"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "市や町の名前"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Город или посёлок"
-          }
-        },
-        "sr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Град или место"
-          }
-        },
-        "sr-Latn" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Grad ili mesto"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "城市或城镇"
-          }
-        }
-      }
-    },
-    "Add place" : {
-      "comment" : "Button in Weather in the greeting that adds one more place field, while there are fewer than 3.",
-      "localizations" : {
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ort hinzufügen"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Añadir lugar"
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ajouter un lieu"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "場所を追加"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Добавить место"
-          }
-        },
-        "sr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Додај место"
-          }
-        },
-        "sr-Latn" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dodaj mesto"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "添加地点"
-          }
-        }
-      }
-    },
-    "Remove place" : {
-      "comment" : "Accessibility label of the button that removes one place from Weather in the greeting.",
-      "localizations" : {
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ort entfernen"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Quitar lugar"
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Retirer le lieu"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "場所を削除"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Убрать место"
-          }
-        },
-        "sr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Уклони место"
-          }
-        },
-        "sr-Latn" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ukloni mesto"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "移除地点"
-          }
-        }
-      }
-    },
-    "Up to 3 places." : {
-      "comment" : "Shown in Weather in the greeting once 3 places are listed, in place of the Add place button: the server keeps at most 3.",
-      "localizations" : {
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bis zu 3 Orte."
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Hasta 3 lugares."
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Jusqu’à 3 lieux."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "場所は3つまでです。"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Не больше 3 мест."
-          }
-        },
-        "sr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Највише 3 места."
-          }
-        },
-        "sr-Latn" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Najviše 3 mesta."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "最多 3 个地点。"
-          }
-        }
-      }
-    },
-    "The daily greeting will also mention today's weather in these places. Only the place names are sent to Open-Meteo to fetch the forecast. Nothing else is sent." : {
-      "comment" : "Footer under the place fields in Weather in the greeting. Open-Meteo is the weather service's name; keep it as is.",
-      "localizations" : {
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Der tägliche Gruß nennt dann auch das heutige Wetter an diesen Orten. Nur die Ortsnamen werden an Open-Meteo gesendet, um die Vorhersage abzurufen. Sonst wird nichts gesendet."
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "El saludo diario mencionará también el tiempo de hoy en estos lugares. Solo se envían los nombres de los lugares a Open-Meteo para obtener el pronóstico. No se envía nada más."
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La salutation quotidienne mentionnera aussi la météo du jour dans ces lieux. Seuls les noms des lieux sont envoyés à Open-Meteo pour obtenir les prévisions. Rien d’autre n’est envoyé."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "毎日のあいさつで、これらの場所の今日の天気にも触れます。予報を取得するため、地名だけが Open-Meteo に送られます。それ以外は何も送られません。"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ежедневное приветствие будет упоминать и сегодняшнюю погоду в этих местах. В Open-Meteo отправляются только названия мест, чтобы получить прогноз. Больше ничего не отправляется."
-          }
-        },
-        "sr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Дневни поздрав ће поменути и данашњу временску прогнозу за ова места. Сервису Open-Meteo шаљу се само називи места да би се преузела прогноза. Ништа друго се не шаље."
-          }
-        },
-        "sr-Latn" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dnevni pozdrav će pomenuti i današnju vremensku prognozu za ova mesta. Servisu Open-Meteo šalju se samo nazivi mesta da bi se preuzela prognoza. Ništa drugo se ne šalje."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "每日问候还会提到这些地点今天的天气。为获取天气预报，只会把地名发送给 Open-Meteo，不会发送其他任何内容。"
           }
         }
       }

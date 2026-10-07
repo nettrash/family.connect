@@ -50,10 +50,45 @@ pub struct UploadParams {
     /// `kind=location` only, optional: the radius in metres the sending
     /// device believed its fix good to.
     pub accuracy_m: Option<i32>,
+    /// Audio only, optional: the recording's shape, 48 lowercase hex digits
+    /// the SENDER computed from the peaks it metered (protocol.md, "A voice
+    /// note's waveform"). Checked for its form and stored; never computed
+    /// here, because this server decodes nothing.
+    pub waveform: Option<String>,
 }
 
 const ATTACHMENT_COLS: &str = "id, kind, mime, size_bytes, width, height, duration_ms, \
-                               has_preview, name, latitude, longitude, accuracy_m";
+                               has_preview, name, latitude, longitude, accuracy_m, waveform";
+
+/// The waveform an upload of `kind` may carry, or the `validation` 400 it
+/// earns (protocol.md, "A voice note's waveform"). Asked before a byte of
+/// the body is written and before the row exists — 0053's CHECK says the
+/// same two things, and a constraint that fired on the insert would be a
+/// 500 an outbox retries for ever.
+///
+/// Refused rather than dropped, both ways: a waveform on a photo or a
+/// malformed one on a voice note is a sender's bug, and silently storing
+/// nothing would hide it behind a placeholder on every member's screen.
+fn checked_waveform<'a>(
+    kind: &str,
+    waveform: Option<&'a str>,
+) -> Result<Option<&'a str>, ApiError> {
+    let Some(waveform) = waveform else {
+        return Ok(None);
+    };
+    if kind != Attachment::KIND_AUDIO {
+        return Err(ApiError::validation(format!(
+            "a waveform is for audio only, not a {kind}"
+        )));
+    }
+    if !Attachment::is_waveform(waveform) {
+        return Err(ApiError::validation(format!(
+            "a waveform is exactly {} lowercase hex digits",
+            Attachment::WAVEFORM_LEVELS
+        )));
+    }
+    Ok(Some(waveform))
+}
 
 /// The declared type must match the bytes. Same rule as avatars: a magic
 /// number is the whole check, because deciding otherwise would mean an
@@ -124,6 +159,7 @@ async fn upload_location(
     user_id: i64,
     params: &UploadParams,
 ) -> Result<Response, ApiError> {
+    checked_waveform(Attachment::KIND_LOCATION, params.waveform.as_deref())?;
     let (Some(latitude), Some(longitude)) = (params.latitude, params.longitude) else {
         return Err(ApiError::bad_request(
             codes::INVALID_ATTACHMENT,
@@ -289,6 +325,7 @@ pub async fn upload_attachment(
         }
         (kind, mime, None)
     };
+    let waveform = checked_waveform(kind, params.waveform.as_deref())?;
 
     // Which family the bytes are being uploaded INTO — the dedup scope.
     // Read now rather than derived later: the uploader can leave or move
@@ -301,8 +338,8 @@ pub async fn upload_attachment(
     let row = sqlx::query(&format!(
         "INSERT INTO attachments
             (uploader_id, kind, mime, size_bytes, width, height, duration_ms, storage_key, name,
-             family_id)
-         VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9)
+             family_id, waveform)
+         VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9, $10)
          RETURNING {ATTACHMENT_COLS}"
     ))
     .bind(auth.user_id)
@@ -314,6 +351,7 @@ pub async fn upload_attachment(
     .bind(&storage_key)
     .bind(name.as_deref())
     .bind(family_id)
+    .bind(waveform)
     .fetch_one(&state.pool)
     .await?;
     let id: i64 = row.get("id");
@@ -477,7 +515,8 @@ pub async fn upload_preview(
         // Nothing draws a file, a piece of audio or a location as a
         // picture, so a preview on one is a client bug worth reporting
         // rather than silently storing. Audio gets a play control and a
-        // duration; a waveform is deliberately not part of the wire. A
+        // duration, and its waveform rides the upload's query string as
+        // 48 hex digits (0053) — never a picture uploaded here. A
         // location is drawn from its coordinates by each device, which is
         // what makes a stored map image the wrong artefact — it would be
         // one sender's idea of zoom, frozen (protocol.md).

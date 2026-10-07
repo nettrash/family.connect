@@ -33,6 +33,7 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import java.io.File
+import me.nettrash.familyconnect.ui.chat.RoundRecorderRules
 
 object MediaProbe {
 
@@ -96,6 +97,28 @@ object MediaProbe {
             sizeBytes = sizeBytes,
             durationMs = facts.long(MediaMetadataRetriever.METADATA_KEY_DURATION)
                 ?: audio?.longOrNull(MediaFormat.KEY_DURATION)?.let { it / 1000 },
+        )
+    }
+
+    /**
+     * What the video message recorder checks of the file CameraX wrote (#79,
+     * S8.4): the STORED size — before any rotation, which a square would
+     * otherwise hide — the rotation from `METADATA_KEY_VIDEO_ROTATION`, and
+     * the two tracks' types. Unreadable is all nulls, never a throw.
+     */
+    fun roundClip(file: File): RoundRecorderRules.ClipFacts {
+        val tracks = tracks { setDataSource(file.absolutePath) }
+        val facts = retrieved { setDataSource(file.absolutePath) }
+        return RoundRecorderRules.ClipFacts(
+            storedWidth = facts.int(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                ?: tracks.video?.intOrNull(MediaFormat.KEY_WIDTH),
+            storedHeight = facts.int(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                ?: tracks.video?.intOrNull(MediaFormat.KEY_HEIGHT),
+            rotation = facts.int(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                ?: tracks.video?.intOrNull(MediaFormat.KEY_ROTATION)
+                ?: 0,
+            videoMime = tracks.video?.stringOrNull(MediaFormat.KEY_MIME),
+            audioMime = tracks.audio?.stringOrNull(MediaFormat.KEY_MIME),
         )
     }
 

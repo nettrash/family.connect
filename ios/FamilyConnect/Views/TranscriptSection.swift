@@ -63,6 +63,16 @@ struct TranscriptSection: View {
     /// so the retry after a yes on the consent sheet sees the consent the
     /// yes just gave.
     private var door: TranscriptDoor {
+        Self.door(
+            attachment: attachment, subject: subject, session: session, coordinator: coordinator)
+    }
+
+    /// The door for one recording — the section's own, and what a message's
+    /// menu asks before it offers "Show text" (#79).
+    static func door(
+        attachment: AttachmentDTO, subject: TranscriptSubject?, session: AppSession,
+        coordinator: ChatSyncCoordinator
+    ) -> TranscriptDoor {
         guard let subject else { return .absent }
         return TranscriptDoor.of(
             serverTranscribes: AppSettings.assistantTranscribe,
@@ -140,6 +150,9 @@ struct TranscriptSection: View {
                 }
             }
         }
+        // "Show text" from the message's menu: asked here, where the consent
+        // sheet lives (#79).
+        .onChange(of: store.showRequests[attachment.id] ?? 0) { _, _ in ask() }
         .sheet(isPresented: $showAssistantConsent) {
             AssistantConsentSheet(
                 processor: AppSettings.assistantProcessor ?? "",

@@ -201,6 +201,15 @@ android {
             // (Room DAO tests and Keystore-free settings tests run on it).
             isIncludeAndroidResources = true
             isReturnDefaultValues = true
+            // The default test JVM heap is 512 MB. With #79's Robolectric
+            // screen and pixel tests the suite outgrew it on CI
+            // (OutOfMemoryError in ChatViewModelTest, run 37441628640), and
+            // Robolectric holds on to each class's environment. A larger
+            // heap, and a fresh JVM every 150 classes, keep it bounded.
+            all {
+                it.maxHeapSize = "3g"
+                it.forkEvery = 150
+            }
         }
     }
     packaging {
@@ -292,6 +301,15 @@ dependencies {
     // platform's VideoView, so no ExoPlayer/media3-ui here.
     implementation(libs.androidx.media3.transformer)
     implementation(libs.androidx.media3.effect)
+
+    // CameraX — recording a video message in the app (#79): the preview,
+    // the recording, and a lifecycle of the recorder's own so a rebuilt
+    // activity does not end a take. See the catalog's header note.
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.androidx.camera.video)
 
     // Firebase Cloud Messaging — push notifications (docs/protocol.md,
     // "Push notifications"). Messaging is the ONLY Firebase artifact: no

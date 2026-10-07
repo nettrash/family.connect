@@ -214,4 +214,33 @@ public class OutboxStoreTests : IDisposable
         Assert.Equal([90L], landed.AttachmentIds!);
         Assert.False(landed.OwesUploads);
     }
+
+    /// <summary>
+    /// A CIRCLE RECORDED OFFLINE IS STILL A CIRCLE TOMORROW — the sticker's rule, one column over (docs/protocol.md,
+    /// "Video messages"): the flag is written down with the row and survives what the row goes through on its way out.
+    /// </summary>
+    [Fact]
+    public void AQueuedVideoMessageStaysRoundAcrossARelaunch()
+    {
+        Store().Queue(new OutboxRow(
+            "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a02", 42, string.Empty,
+            PendingFiles: ["0123456789abcdef0123456789abcdef"], QueuedAt: Now, Round: true));
+        Store().Queue(new OutboxRow("plain", 42, "Dinner at 7?", QueuedAt: Now.AddSeconds(1)));
+        Store().Queue(new OutboxRow("sticker", 42, string.Empty, QueuedAt: Now.AddSeconds(2), Sticker: true));
+
+        var rows = Store().All();
+        Assert.True(rows[0].Round);
+        Assert.False(rows[0].Sticker);
+        Assert.False(rows[1].Round);
+        // The two flags are two columns: a sticker is not a circle.
+        Assert.True(rows[2].Sticker);
+        Assert.False(rows[2].Round);
+
+        Store().Uploaded(rows[0].ClientMsgId, 91, "0123456789abcdef0123456789abcdef");
+        Store().Failed(rows[0].ClientMsgId, ApiError.Transport("down"), Now, Ceilings());
+        Store().Retry(rows[0].ClientMsgId);
+        var landed = Store().Find(rows[0].ClientMsgId)!;
+        Assert.True(landed.Round);
+        Assert.Equal([91L], landed.AttachmentIds!);
+    }
 }

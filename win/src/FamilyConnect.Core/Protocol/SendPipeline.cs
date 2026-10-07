@@ -91,7 +91,7 @@ public sealed class SendPipeline
             socket, outbox, chats,
             (row, ct) => api.SendMessage(
                 row.ChatId, row.ClientMsgId, row.Body, row.ReplyToMessageId,
-                row.AttachmentIds, row.PollOptions, row.Mentions, row.Sticker, ct),
+                row.AttachmentIds, row.PollOptions, row.Mentions, row.Sticker, row.Round, ct),
             backoff, now, nextId, wait, uploads)
     {
     }
@@ -111,7 +111,8 @@ public sealed class SendPipeline
         IReadOnlyList<string>? pendingFiles = null,
         IReadOnlyList<string>? pollOptions = null,
         IReadOnlyList<MentionDto>? mentions = null,
-        bool sticker = false)
+        bool sticker = false,
+        bool round = false)
     {
         var row = new OutboxRow(
             ClientMsgId: nextId(),
@@ -125,7 +126,9 @@ public sealed class SendPipeline
             QueuedAt: now(),
             // NOTHING ELSE ABOUT THE SEND PATH IS NEW for a sticker: the row, the dedup key, the
             // uploads it owes and the retry rules are a message's. This bit is the whole of it.
-            Sticker: sticker);
+            Sticker: sticker,
+            // And for a video message the same: one more bit on the row, and the send is a message's.
+            Round: round);
         outbox.Queue(row);
         return row;
     }
@@ -222,7 +225,7 @@ public sealed class SendPipeline
         {
             var frame = ClientFrames.Send(
                 row.ChatId, row.ClientMsgId, row.Body, row.ReplyToMessageId,
-                row.AttachmentIds, row.PollOptions, row.Mentions, row.Sticker);
+                row.AttachmentIds, row.PollOptions, row.Mentions, row.Sticker, row.Round);
             if (!await socket.TrySend(frame, ct).ConfigureAwait(false))
             {
                 // The write itself did not go — a socket whose connection is dead absorbs one, so

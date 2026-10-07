@@ -23,6 +23,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -30,6 +31,8 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import me.nettrash.familyconnect.data.repo.FamilyStatus
+import me.nettrash.familyconnect.data.repo.ParkedRecording
+import me.nettrash.familyconnect.data.repo.RoundVideoLimits
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -129,6 +132,17 @@ data class SettingsState(
      */
     val packMaxItems: Int = 0,
     val packMaxItemBytes: Long = 0,
+    /**
+     * Video messages' limits from `GET /families/mine` (#79): the longest a
+     * clip may be and the most bytes it may take. **0 means the server has
+     * no video messages** (or has not said yet) — the keys are always
+     * present on a server that has them, so their absence is the whole
+     * capability check: no video button, no menu item, never `round`.
+     * Stored for the same reason as the pack's: the door is there on a
+     * launch with no network.
+     */
+    val roundVideoMaxMs: Long = 0,
+    val roundVideoMaxBytes: Long = 0,
     /**
      * The pack items this DEVICE sent most recently, newest first — what
      * the sticker panel puts at the top. Never on the wire and never
@@ -311,6 +325,22 @@ data class SettingsState(
      * family"). The family gate says so under its two doors.
      */
     val familylessAccountTtlDays: Int = 0,
+    /**
+     * The voice messages that were not sent, waiting in their chats' "Voice
+     * message not sent" rows (#79, docs/audio-video-messages-2026-10-04.md,
+     * S2.8). The INDEX only — the bytes live in `filesDir`, and
+     * ParkedRecordings is the one thing that reads or writes either. Kept here
+     * so it survives the app being closed, and account-scoped, so it goes at
+     * sign-out with everything else: nothing one account recorded may
+     * surface in the next.
+     */
+    val parkedRecordings: List<ParkedRecording> = emptyList(),
+    /**
+     * The video recorder's PREVIEW has said "Only you can see this until you
+     * start recording." on this device (#79, S3.4, S7.5): once per DEVICE,
+     * so it survives a sign-out like the preview switches.
+     */
+    val roundPreviewTaught: Boolean = false,
 )
 
 interface SettingsRepository {
@@ -368,6 +398,13 @@ interface SettingsRepository {
      * the sticker button away again.
      */
     suspend fun setPackLimits(maxItems: Int?, maxItemBytes: Long?)
+
+    /**
+     * Record what `GET /families/mine` said video messages' limits are. Null
+     * for either means the server predates them, stored as 0 — a complete
+     * state-set, so a server rolled back takes the video entry away again.
+     */
+    suspend fun setRoundVideoLimits(maxMs: Long?, maxBytes: Long?)
 
     /** REPLACE the recently-sent list (newest first). Device-local. */
     suspend fun setPackRecents(itemIds: List<Long>)
@@ -489,8 +526,27 @@ interface SettingsRepository {
     /** Record the operator's published support contact, or clear it. */
     suspend fun setSupportContact(contact: String?)
 
+    /**
+     * Rewrite the not-sent voice messages' index in ONE transaction: [transform]
+     * gets what is stored and returns what to store. A transform rather than a
+     * setter because a park and a removal can land together, and a
+     * read-then-write from either would lose the other's entry.
+     */
+    suspend fun updateParkedRecordings(transform: (List<ParkedRecording>) -> List<ParkedRecording>)
+
+    /** The recorder's first-time PREVIEW line has been shown on this device (#79, S3.4). */
+    suspend fun setRoundPreviewTaught()
+
     suspend fun resetKeepingServerUrl()
 }
+
+/**
+ * How fast voice messages play on this device (#79) — 1, 1.5 or 2. Read and
+ * written by the now-playing owner (ui/chat/NowPlaying.kt, StoredVoiceSpeed)
+ * outside SettingsState, so a change never re-emits the app's settings; named
+ * here so a sign-out keeps it with the other voice-message choices.
+ */
+val VOICE_PLAYBACK_SPEED_KEY = floatPreferencesKey("voice_playback_speed")
 
 @Singleton
 class DataStoreSettingsRepository @Inject constructor(
@@ -527,6 +583,8 @@ class DataStoreSettingsRepository @Inject constructor(
         val PACK_CURSOR = longPreferencesKey("pack_cursor")
         val PACK_MAX_ITEMS = intPreferencesKey("pack_max_items")
         val PACK_MAX_ITEM_BYTES = longPreferencesKey("pack_max_item_bytes")
+        val ROUND_VIDEO_MAX_MS = longPreferencesKey("round_video_max_ms")
+        val ROUND_VIDEO_MAX_BYTES = longPreferencesKey("round_video_max_bytes")
         // One joined string rather than a string SET: the order is the
         // whole meaning of "recent", and a set has none.
         val PACK_RECENTS = stringPreferencesKey("pack_recents")
@@ -570,6 +628,17 @@ class DataStoreSettingsRepository @Inject constructor(
         val VIDEO_CALLS_ENABLED = booleanPreferencesKey("video_calls_enabled")
         val FAMILY_REGISTRATION_ENABLED = booleanPreferencesKey("family_registration_enabled")
         val FAMILYLESS_ACCOUNT_TTL_DAYS = intPreferencesKey("familyless_account_ttl_days")
+        // JSON, through ParkedRecording's own codec: a list of small records,
+        // which no Preferences key type can hold. Account-scoped: NOT among
+        // the keys resetKeepingServerUrl keeps.
+        val PARKED_RECORDINGS = stringPreferencesKey("parked_recordings")
+        // Device-scoped (#79): kept by resetKeepingServerUrl, like the
+        // preview switches — it is about this phone, not about the account.
+        // (The hold's three device keys — review_before_sending,
+        // held_release_taught, voice_coach_mark_shown — went with the hold
+        // on 2026-10-06; a value a test build stored is never read, and the
+        // next sign-out clears it.)
+        val ROUND_PREVIEW_TAUGHT = booleanPreferencesKey("round_preview_taught")
     }
 
     override val state: Flow<SettingsState> = dataStore.data.map { prefs ->
@@ -600,6 +669,8 @@ class DataStoreSettingsRepository @Inject constructor(
             packCursor = prefs[Keys.PACK_CURSOR] ?: 0L,
             packMaxItems = prefs[Keys.PACK_MAX_ITEMS] ?: 0,
             packMaxItemBytes = prefs[Keys.PACK_MAX_ITEM_BYTES] ?: 0L,
+            roundVideoMaxMs = prefs[Keys.ROUND_VIDEO_MAX_MS] ?: 0L,
+            roundVideoMaxBytes = prefs[Keys.ROUND_VIDEO_MAX_BYTES] ?: 0L,
             // `toLongOrNull`, for the block list's reason: a corrupt entry
             // must not throw inside the map every screen collects.
             packRecents = prefs[Keys.PACK_RECENTS]
@@ -631,6 +702,10 @@ class DataStoreSettingsRepository @Inject constructor(
             videoCallsEnabled = prefs[Keys.VIDEO_CALLS_ENABLED] == true,
             familyRegistrationEnabled = prefs[Keys.FAMILY_REGISTRATION_ENABLED] != false,
             familylessAccountTtlDays = prefs[Keys.FAMILYLESS_ACCOUNT_TTL_DAYS] ?: 0,
+            // Never throws: a corrupt index reads as empty, like the block
+            // list's `toLongOrNull`, and the sweep reclaims the files.
+            parkedRecordings = ParkedRecording.decode(prefs[Keys.PARKED_RECORDINGS]),
+            roundPreviewTaught = prefs[Keys.ROUND_PREVIEW_TAUGHT] == true,
         )
     }
 
@@ -710,6 +785,15 @@ class DataStoreSettingsRepository @Inject constructor(
         dataStore.edit {
             it[Keys.PACK_MAX_ITEMS] = maxItems ?: 0
             it[Keys.PACK_MAX_ITEM_BYTES] = maxItemBytes ?: 0L
+        }
+    }
+
+    override suspend fun setRoundVideoLimits(maxMs: Long?, maxBytes: Long?) {
+        dataStore.edit {
+            // Both or neither: one without the other is not a server that has them.
+            val limits = RoundVideoLimits.of(maxMs, maxBytes)
+            it[Keys.ROUND_VIDEO_MAX_MS] = limits?.maxMs ?: 0L
+            it[Keys.ROUND_VIDEO_MAX_BYTES] = limits?.maxBytes ?: 0L
         }
     }
 
@@ -864,6 +948,23 @@ class DataStoreSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun updateParkedRecordings(
+        transform: (List<ParkedRecording>) -> List<ParkedRecording>,
+    ) {
+        dataStore.edit { prefs ->
+            val next = transform(ParkedRecording.decode(prefs[Keys.PARKED_RECORDINGS]))
+            if (next.isEmpty()) {
+                prefs.remove(Keys.PARKED_RECORDINGS)
+            } else {
+                prefs[Keys.PARKED_RECORDINGS] = ParkedRecording.encode(next)
+            }
+        }
+    }
+
+    override suspend fun setRoundPreviewTaught() {
+        dataStore.edit { it[Keys.ROUND_PREVIEW_TAUGHT] = true }
+    }
+
     override suspend fun resetKeepingServerUrl() {
         dataStore.edit { prefs ->
             val keepUrl = prefs[Keys.SERVER_URL]
@@ -878,11 +979,18 @@ class DataStoreSettingsRepository @Inject constructor(
             // previews back on would resume asking Google for tiles that
             // this person opted out of.
             val keepMapPreviews = prefs[Keys.MAP_PREVIEWS_DISABLED]
+            // The recorder's first-time line is this DEVICE's (#79): a
+            // sign-out must not teach the same hand twice.
+            val keepRoundPreviewTaught = prefs[Keys.ROUND_PREVIEW_TAUGHT]
+            // The voice-message speed is this device's too (#79).
+            val keepVoiceSpeed = prefs[VOICE_PLAYBACK_SPEED_KEY]
             prefs.clear()
             keepUrl?.let { prefs[Keys.SERVER_URL] = it }
             keepPushToken?.let { prefs[Keys.PUSH_TOKEN] = it }
             keepLinkPreviews?.let { prefs[Keys.LINK_PREVIEWS_DISABLED] = it }
             keepMapPreviews?.let { prefs[Keys.MAP_PREVIEWS_DISABLED] = it }
+            keepRoundPreviewTaught?.let { prefs[Keys.ROUND_PREVIEW_TAUGHT] = it }
+            keepVoiceSpeed?.let { prefs[VOICE_PLAYBACK_SPEED_KEY] = it }
         }
     }
 }

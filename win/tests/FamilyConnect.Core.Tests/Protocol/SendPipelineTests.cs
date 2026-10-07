@@ -403,4 +403,70 @@ public class SendPipelineTests : IDisposable
         Assert.True(Assert.Single(harness.Outbox.All()).Failed);
         Assert.Empty(harness.Posted);
     }
+
+    // ---- a video message is a message (docs/protocol.md, "Video messages") ------------------------
+
+    /// <summary>The flag rides the frame, and an ordinary send carries no <c>round</c> at all.</summary>
+    [Fact]
+    public async Task AVideoMessageGoesOverTheSocketWithItsFlag()
+    {
+        var harness = Build();
+        harness.Socket.Answers = frame => new ServerFrame.Ack(IdOf(frame), Delivered(IdOf(frame)));
+        var row = harness.Pipeline.Enqueue(42, string.Empty, attachmentIds: [91], round: true);
+        Assert.True(row.Round);
+        Assert.False(row.Sticker);
+        Assert.Equal(1, await harness.Pipeline.FlushAsync());
+        harness.Pipeline.Enqueue(42, "Dinner at 7?");
+        Assert.Equal(1, await harness.Pipeline.FlushAsync());
+
+        var frames = harness.Socket.Sent.Select(sent => System.Text.Json.JsonDocument.Parse(sent).RootElement).ToList();
+        Assert.True(frames[0].GetProperty("round").GetBoolean());
+        Assert.False(frames[0].TryGetProperty("sticker", out _));
+        Assert.Equal(91, frames[0].GetProperty("attachment_ids")[0].GetInt64());
+        Assert.False(frames[1].TryGetProperty("round", out _));
+        Assert.Empty(harness.Outbox.All());
+    }
+
+    /// <summary>
+    /// Unanswered, it falls back to REST still round — and one that owes its upload is never posted: it would land as
+    /// an empty message.
+    /// </summary>
+    [Fact]
+    public async Task AVideoMessageFallsBackToRestStillRound()
+    {
+        var harness = Build(row => ApiResult<MessageResponse>.Success(
+            new MessageResponse(Delivered(row.ClientMsgId))));
+        harness.Socket.IsConnected = false;
+        var owing = harness.Pipeline.Enqueue(
+            42, string.Empty, replyToMessageId: 41, pendingFiles: ["0123456789abcdef0123456789abcdef"], round: true);
+
+        Assert.Equal(0, await harness.Pipeline.FlushAsync());
+        Assert.Empty(harness.Posted);
+
+        harness.Outbox.Uploaded(owing.ClientMsgId, 91, "0123456789abcdef0123456789abcdef");
+        Assert.Equal(1, await harness.Pipeline.FlushAsync());
+
+        var posted = Assert.Single(harness.Posted);
+        Assert.True(posted.Round);
+        Assert.False(posted.Sticker);
+        Assert.Equal(41, posted.ReplyToMessageId);
+        Assert.Equal([91L], posted.AttachmentIds!);
+    }
+
+    /// <summary>A refusal is terminal and shown, the flag kept, so Try Again sends a circle again.</summary>
+    [Fact]
+    public async Task ARefusedVideoMessageIsShownFailedLikeAnyRefusedMessage()
+    {
+        var harness = Build();
+        harness.Socket.Answers = frame =>
+            new ServerFrame.Error(ErrorCodes.InvalidAttachment, "not a video message", IdOf(frame), null);
+        harness.Pipeline.Enqueue(42, string.Empty, attachmentIds: [91], round: true);
+
+        Assert.Equal(0, await harness.Pipeline.FlushAsync());
+
+        var (row, error) = Assert.Single(harness.Refusals);
+        Assert.True(row.Round);
+        Assert.Equal(ErrorCodes.InvalidAttachment, error.Code);
+        Assert.True(Assert.Single(harness.Outbox.All()).Failed);
+    }
 }

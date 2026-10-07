@@ -26,6 +26,10 @@ public readonly record struct AacEncoding(uint SampleRate, uint Channels, uint B
 /// Whether the audio asked for is the SOURCE'S OWN TRACK, handed back exactly as it was read so the transcoder passes it
 /// through rather than encoding it again. <paramref name="Audio"/> then holds that track's own numbers.
 /// </param>
+/// <param name="KeyframeSpacing">
+/// The most frames from one keyframe to the next, asked for as <c>MF_MT_MAX_KEYFRAME_SPACING</c> — or null to leave it to
+/// the encoder, as every planned video does. Only a video message asks (its profile: "keyframes at most every 2 s").
+/// </param>
 public sealed record VideoEncoding(
     uint Width,
     uint Height,
@@ -36,7 +40,8 @@ public sealed record VideoEncoding(
     H264Profile Profile,
     AacEncoding? Audio,
     bool ToSdr,
-    bool KeepAudio = false);
+    bool KeepAudio = false,
+    uint? KeyframeSpacing = null);
 
 /// <summary>What is sent once a transcode has run: rule D, and what faststart could not do.</summary>
 public enum Chosen

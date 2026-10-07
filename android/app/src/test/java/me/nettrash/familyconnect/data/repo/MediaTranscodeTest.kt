@@ -434,4 +434,57 @@ class MediaTranscodeTest {
 
         override fun audioNeedsEncoding() = audioNeeds
     }
+
+    // -- Video messages (#79, S8.4) ------------------------------------------------
+
+    /**
+     * A video message that came out of the camera not exactly as the profile
+     * asks is CROPPED to the centre square — a 640 × 480 frame comes out
+     * 480 × 480, never stretched into it — at the profile's rates.
+     */
+    @Test
+    fun `a video message's pass crops the centre square at the profile's rates`() {
+        val settings = TranscodeSettings.forRoundVideo(edge = 480, videoBitrate = 500_000, audioBitrate = 64_000, frameRate = 30)
+        assertThat(settings.width).isEqualTo(480)
+        assertThat(settings.height).isEqualTo(480)
+        assertThat(settings.cropToFill).isTrue()
+        assertThat(settings.videoBitrate).isEqualTo(500_000)
+        assertThat(settings.audioBitrate).isEqualTo(64_000)
+        assertThat(settings.encoderFrameRate).isEqualTo(30f)
+        assertThat(settings.toneMapToSdr).isTrue()
+        assertThat(settings.audioOnly).isFalse()
+
+        // AAC MONO, as iOS, the web and Windows write it: a stereo (or any)
+        // CameraX track the pass re-encodes comes out as ONE channel.
+        assertThat(settings.maxAudioChannels).isEqualTo(1)
+        val mixer = TranscodeRecipe.editedMediaItem(Uri.parse("file:///round.mp4"), settings)
+            .effects.audioProcessors.single()
+        fun mixed(channels: Int): AudioProcessor.AudioFormat? {
+            val out = mixer.configure(AudioProcessor.AudioFormat(48_000, channels, C.ENCODING_PCM_16BIT))
+            mixer.flush(AudioProcessor.StreamMetadata.DEFAULT)
+            return out.takeIf { mixer.isActive }
+        }
+        for (channels in 2..6) assertThat(mixed(channels)?.channelCount).isEqualTo(1)
+        assertThat(mixed(1)).isNull()
+
+        val square = TranscodeRecipe.videoEffects(settings).last() as Presentation
+        assertThat(square.configure(640, 480)).isEqualTo(Size(480, 480))
+        // CROPPED, not stretched: the 4:3 frame is scaled past the square's
+        // sides by its own aspect, and what spills over is cut — a stretch
+        // would leave the matrix at 1 and squash every face.
+        val crop = FloatArray(9).also { square.getMatrix(0).getValues(it) }
+        assertThat(crop[0]).isWithin(1e-4f).of(640f / 480f)
+        assertThat(crop[4]).isWithin(1e-4f).of(1f)
+        // Upright already (the decoder applied the rotation): a portrait frame crops the same way.
+        assertThat(square.configure(480, 640)).isEqualTo(Size(480, 480))
+        val portrait = FloatArray(9).also { square.getMatrix(0).getValues(it) }
+        assertThat(portrait[0]).isWithin(1e-4f).of(1f)
+        assertThat(portrait[4]).isWithin(1e-4f).of(640f / 480f)
+    }
+
+    /** Everything else keeps stretching to the planner's exact size, as before. */
+    @Test
+    fun `only a video message crops`() {
+        assertThat(planned(phone).cropToFill).isFalse()
+    }
 }

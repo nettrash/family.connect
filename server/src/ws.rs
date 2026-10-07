@@ -71,6 +71,11 @@ pub enum ClientFrame {
         /// (protocol.md, "Sticker pack"). Absent and `false` are the same.
         #[serde(default)]
         sticker: Option<bool>,
+        /// Optional: `true` sends the one attachment as a VIDEO MESSAGE,
+        /// drawn as a circle (protocol.md, "Video messages"). Absent and
+        /// `false` are the same.
+        #[serde(default)]
+        round: Option<bool>,
     },
     Read {
         chat_id: i64,
@@ -614,6 +619,7 @@ async fn handle_client_text(
                 poll,
                 mentions,
                 sticker,
+                round,
             } = frame
             else {
                 unreachable!("type tag was \"send\"");
@@ -637,6 +643,7 @@ async fn handle_client_text(
                 poll.as_ref(),
                 mentions.as_deref().unwrap_or(&[]),
                 sticker.unwrap_or(false),
+                round.unwrap_or(false),
                 language,
             )
             .await
@@ -918,6 +925,7 @@ mod tests {
                 poll: None,
                 mentions: None,
                 sticker: None,
+                round: None,
             }
         );
     }
@@ -942,6 +950,7 @@ mod tests {
                 poll: None,
                 mentions: None,
                 sticker: None,
+                round: None,
             }
         );
     }
@@ -968,6 +977,7 @@ mod tests {
                 }),
                 mentions: None,
                 sticker: None,
+                round: None,
             }
         );
     }
@@ -993,6 +1003,7 @@ mod tests {
                 poll: None,
                 mentions: None,
                 sticker: None,
+                round: None,
             }
         );
     }
@@ -1019,6 +1030,8 @@ mod tests {
                 longitude: None,
                 accuracy_m: None,
                 sticker: false,
+                round: false,
+                waveform: None,
             }
         }
         let mut message = sample_message();
@@ -1099,6 +1112,7 @@ mod tests {
                     name: "Anna".to_string(),
                 }]),
                 sticker: None,
+                round: None,
             }
         );
     }
@@ -1850,8 +1864,43 @@ mod tests {
                 poll: None,
                 mentions: None,
                 sticker: Some(true),
+                round: None,
             }
         );
+    }
+
+    /// protocol.md's video-message `send` example ("Video messages"): the
+    /// flag rides the ordinary frame beside the one attachment it applies
+    /// to, exactly as `sticker` does, and a frame without it — every frame
+    /// a shipped client sends — still parses (the tests above), reading as
+    /// "not a video message".
+    #[test]
+    fn client_send_frame_carries_the_round_flag() {
+        let json = r#"{"type": "send", "chat_id": 42, "client_msg_id": "4f9e21c0-0000-4000-8000-000000000001", "body": "", "attachment_ids": [91], "round": true}"#;
+        let frame: ClientFrame = serde_json::from_str(json).expect("parses");
+        assert_eq!(
+            frame,
+            ClientFrame::Send {
+                chat_id: 42,
+                client_msg_id: Uuid::parse_str("4f9e21c0-0000-4000-8000-000000000001")
+                    .expect("valid uuid"),
+                body: String::new(),
+                reply_to_message_id: None,
+                attachment_id: None,
+                attachment_ids: Some(vec![91]),
+                poll: None,
+                mentions: None,
+                sticker: None,
+                round: Some(true),
+            }
+        );
+        // And `false` is a statement a client may make, parsed as made.
+        let json = r#"{"type": "send", "chat_id": 42, "client_msg_id": "4f9e21c0-0000-4000-8000-000000000001", "body": "", "attachment_ids": [91], "round": false}"#;
+        let frame: ClientFrame = serde_json::from_str(json).expect("parses");
+        let ClientFrame::Send { round, .. } = frame else {
+            panic!("a send frame");
+        };
+        assert_eq!(round, Some(false));
     }
 
     /// `pack_item` as protocol.md draws it: a live item whole, and a
@@ -1879,6 +1928,8 @@ mod tests {
                     longitude: None,
                     accuracy_m: None,
                     sticker: false,
+                    round: false,
+                    waveform: None,
                 }),
                 created_at: Some(time::macros::datetime!(2026-09-30 10:00 UTC)),
                 pack_seq: 12,

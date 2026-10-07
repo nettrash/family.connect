@@ -28,7 +28,14 @@ public sealed class MediaAlbum
     /// <summary>One step of the zoom buttons.</summary>
     public const double ZoomFactor = 1.25;
 
-    public MediaAlbum(IReadOnlyList<AttachmentDto> items, int index)
+    /// <param name="items">What the album pages through.</param>
+    /// <param name="index">Where it opens.</param>
+    /// <param name="round">
+    /// Opened onto a VIDEO MESSAGE — the attachment <see cref="MessageDto.RoundVideo"/> found, S5.1's one test, which only
+    /// the whole message can answer. Taken only for a lone video carrying the flag; an album opened from a message's tiles
+    /// is never one, whatever its attachments carry.
+    /// </param>
+    public MediaAlbum(IReadOnlyList<AttachmentDto> items, int index, bool round = false)
     {
         if (items.Count == 0)
         {
@@ -36,6 +43,7 @@ public sealed class MediaAlbum
         }
         Items = items;
         Index = Math.Clamp(index, 0, items.Count - 1);
+        IsRound = round && items is [{ Kind: "video", Round: true }];
     }
 
     /// <summary>The photos and videos a message carries, in the order they were sent — what its tiles open onto.</summary>
@@ -53,6 +61,9 @@ public sealed class MediaAlbum
     public AttachmentDto Current => Items[Index];
 
     public bool IsVideo => Current.Kind == "video";
+
+    /// <summary>A video message, shown in its circle and called one (S5.1); everything else is the ordinary item it is.</summary>
+    public bool IsRound { get; }
 
     public bool HasPrevious => Index > 0;
 
@@ -98,7 +109,11 @@ public sealed class MediaAlbum
     /// <summary>What the item is called — its name, or its kind when it has none.</summary>
     public string Title(IStringCatalog say) =>
         // A sticker is a photo on the wire and a sticker to the person looking at it.
-        Current.Sticker ? say.Get("Sticker") : AttachmentText.DisplayName(Current.Kind, Current.Name, say);
+        Current.Sticker ? say.Get("Sticker")
+        // And a circle is a video on the wire and a video message to the person watching it — only when S5.1's test said
+        // so of the whole message: a flagged photo, or a flagged video among several, is the ordinary item it otherwise is.
+        : IsRound ? say.Get("Video message")
+        : AttachmentText.DisplayName(Current.Kind, Current.Name, say);
 
     /// <summary>"2 of 5" while there is somewhere to page, and nothing when there is not.</summary>
     public string? Position(IStringCatalog say) => Count > 1 ? say.Format("%lld of %lld", Index + 1, Count) : null;

@@ -1185,4 +1185,58 @@ public class ResyncTests : IDisposable
         Assert.True(report.Complete);
         Assert.Equal(["/api/v1/me", "/api/v1/families/mine", "/api/v1/chats"], handler.Asked);
     }
+
+    // ---- video messages (docs/protocol.md, "Video messages", 2026-10-05) ---------------------------------
+
+    /// <summary>
+    /// The pass carries the video message's two limits OUT of the family's own document, as it carries the assistant — and
+    /// says that it read that document, so a pass that stopped before it is never taken for a server without them.
+    /// </summary>
+    [Fact]
+    public async Task APassCarriesTheVideoMessagesLimitsAndSaysItReadTheFamily()
+    {
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine", FamilyWall(""", "max_round_video_ms": 60000, "max_round_video_bytes": 12582912"""))
+            .Always("/chats", """{"chats": []}""");
+        var (resync, _, _, _) = Build(server);
+
+        var report = await resync.RunAsync();
+
+        Assert.True(report.Complete);
+        Assert.True(report.FamilyRead);
+        Assert.Equal(new RoundVideoLimits(60_000, 12_582_912), report.RoundVideo);
+    }
+
+    /// <summary>A server that predates video messages names neither: read, and nothing to record with.</summary>
+    [Fact]
+    public async Task AnOlderServerReadsAsNoVideoMessages()
+    {
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine", FamilyWithNoWall)
+            .Always("/chats", """{"chats": []}""");
+        var (resync, _, _, _) = Build(server);
+
+        var report = await resync.RunAsync();
+
+        Assert.True(report.FamilyRead);
+        Assert.Null(report.RoundVideo);
+    }
+
+    /// <summary>A pass that stopped at the family's document has not read it — which is not "no video messages".</summary>
+    [Fact]
+    public async Task APassThatStoppedAtTheFamilyDidNotReadIt()
+    {
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine", """{"error": {"code": "internal", "message": "no"}}""", HttpStatusCode.InternalServerError);
+        var (resync, _, _, _) = Build(server);
+
+        var report = await resync.RunAsync();
+
+        Assert.False(report.Complete);
+        Assert.False(report.FamilyRead);
+        Assert.Null(report.RoundVideo);
+    }
 }

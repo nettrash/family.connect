@@ -164,6 +164,7 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         IReadOnlyList<string>? pollOptions = null,
         IReadOnlyList<MentionDto>? mentions = null,
         bool sticker = false,
+        bool round = false,
         CancellationToken ct = default) =>
         Send<MessageResponse>(HttpMethod.Post, $"/chats/{chatId}/messages", new SendRequest(
             clientMsgId, body, replyToMessageId,
@@ -171,7 +172,9 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
             pollOptions is { Count: > 0 } ? new PollRequest([.. pollOptions]) : null,
             mentions is { Count: > 0 } ? [.. mentions] : null,
             // Present only when true: absent is an ordinary message, to every server there is.
-            sticker ? true : null), ct: ct);
+            sticker ? true : null,
+            // The same for a video message: absent unless it is one.
+            round ? true : null), ct: ct);
 
     /// <summary>
     /// The reconnect catch-up: strictly newer, OLDEST FIRST — the opposite direction to a history
@@ -719,7 +722,8 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         int? height = null,
         int? durationMs = null,
         string? name = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? waveform = null)
     {
         var query = new List<string> { $"kind={Uri.EscapeDataString(kind)}" };
         if (width is { } w)
@@ -737,6 +741,14 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         if (!string.IsNullOrEmpty(name))
         {
             query.Add($"name={Uri.EscapeDataString(name)}");
+        }
+        // A voice note's shape (docs/protocol.md, "A voice note's waveform"): only on audio, and only exactly the wire —
+        // the server refuses it anywhere else, and refuses a malformed one, with `validation`. A server from before
+        // waveforms ignores the parameter (its query struct does not deny unknown fields), so it is sent to every server,
+        // and an answer without it is no failure.
+        if (kind == "audio" && Waveform.Parse(waveform) is not null)
+        {
+            query.Add($"waveform={waveform}");
         }
         using var content = new ReadOnlyMemoryContent(bytes);
         content.Headers.ContentType = new MediaTypeHeaderValue(mime);

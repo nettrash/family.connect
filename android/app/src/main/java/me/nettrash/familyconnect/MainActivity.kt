@@ -62,6 +62,11 @@ import me.nettrash.familyconnect.data.repo.ShareIn
 import me.nettrash.familyconnect.navigation.startDestinationFor
 import me.nettrash.familyconnect.ui.components.LocalAttachments
 import me.nettrash.familyconnect.ui.components.LocalAvatars
+import me.nettrash.familyconnect.ui.chat.LocalPlaybackCoordinator
+import me.nettrash.familyconnect.ui.chat.NowPlaying
+import me.nettrash.familyconnect.ui.chat.AppVideoMessageRecorder
+import me.nettrash.familyconnect.ui.chat.LocalVideoMessageRecorder
+import me.nettrash.familyconnect.ui.chat.VideoRecorderHost
 import me.nettrash.familyconnect.ui.theme.FamilyConnectTheme
 import javax.inject.Inject
 
@@ -85,6 +90,22 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var callBacks: CallBackRegistry
 
+    /**
+     * The now-playing owner (#79, S4, S5.3): one thing of the app's plays at
+     * a time, with the audio focus while it does. App-scoped, so a circle
+     * playing when this activity is rebuilt plays on.
+     */
+    @Inject
+    lateinit var nowPlaying: NowPlaying
+
+    /**
+     * The video message recorder (#79, Phase 3, S8.4): app-scoped, with its
+     * camera bound to a lifecycle of its own, so a rebuilt activity finds
+     * the take still running and only re-attaches the preview.
+     */
+    @Inject
+    lateinit var videoRecorder: AppVideoMessageRecorder
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -101,6 +122,8 @@ class MainActivity : ComponentActivity() {
             CompositionLocalProvider(
                 LocalAvatars provides avatars,
                 LocalAttachments provides attachments,
+                LocalPlaybackCoordinator provides nowPlaying,
+                LocalVideoMessageRecorder provides videoRecorder,
             ) {
                 val boot by viewModel.bootState.collectAsStateWithLifecycle()
                 val pendingRoute by viewModel.pendingRoute.collectAsStateWithLifecycle()
@@ -148,22 +171,46 @@ class MainActivity : ComponentActivity() {
                         // destination even if recomposition delivers a newer
                         // snapshot; reroutes go through session events.
                         val start = remember { startDestinationFor(snapshot.status) }
-                        AppNavHost(
-                            startDestination = start,
-                            sessionEvents = viewModel.sessionEvents,
-                            pendingRoute = pendingRoute,
-                            onPendingRouteConsumed = viewModel::consumePendingRoute,
-                            isOwner = snapshot.isOwner,
-                            callState = viewModel.callState,
-                            shareFlow = viewModel.shareFlow,
-                            onShareChatChosen = viewModel::shareChatChosen,
-                            onCallBack = { route -> viewModel.callBack(route) },
-                            onShareCancelled = viewModel::cancelShare,
-                            sessionStatus = viewModel.sessionStatus,
-                        )
+                        // A notification tap or a shared item waits while
+                        // the video recorder is open: it covers the window,
+                        // and the chat under it must not change (#79, S4).
+                        val recorder by videoRecorder.state.collectAsStateWithLifecycle()
+                        // The recorder is a layer over everything this draws,
+                        // never a Dialog (S3.3, S8.4).
+                        VideoRecorderHost(videoRecorder) {
+                            AppNavHost(
+                                startDestination = start,
+                                sessionEvents = viewModel.sessionEvents,
+                                pendingRoute = pendingRoute.takeUnless { recorder.isOpen },
+                                onPendingRouteConsumed = viewModel::consumePendingRoute,
+                                isOwner = snapshot.isOwner,
+                                callState = viewModel.callState,
+                                shareFlow = viewModel.shareFlow,
+                                onShareChatChosen = viewModel::shareChatChosen,
+                                onCallBack = { route -> viewModel.callBack(route) },
+                                onShareCancelled = viewModel::cancelShare,
+                                sessionStatus = viewModel.sessionStatus,
+                                holdShare = recorder.isOpen,
+                            )
+                        }
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * The app to the background, the screen locked: what plays PAUSES (#79,
+     * S4). A configuration change also stops the activity, and is not
+     * leaving — a circle plays on through it.
+     */
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations) {
+            nowPlaying.pauseAll()
+            // The video recorder's PREVIEW closes, a take stops into REVIEW,
+            // a clip in REVIEW waits (#79, S4). A rebuild is none of these.
+            videoRecorder.backgrounded()
         }
     }
 

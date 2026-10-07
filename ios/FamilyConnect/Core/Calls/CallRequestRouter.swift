@@ -172,3 +172,31 @@ nonisolated enum CallRequestRouter {
             .contains { $0.hasPrefix(wanted) }
     }
 }
+
+extension CallRequestRouter {
+
+    /// What a call the system asked for (Siri, a Recents row, a contact
+    /// card) may do while the round-video recorder covers the window
+    /// (#79, docs/audio-video-messages-2026-10-04.md, S3.3, S4).
+    nonisolated enum UnderRecorder: Equatable, Sendable {
+        /// Nothing covers the window: as always.
+        case act
+        /// Ring now — a call stops a take into REVIEW and its screen rises
+        /// over the recorder, which is still there when it ends (S4) — but
+        /// the thread underneath stays the one the recorder was opened
+        /// over: "the conversation cannot change underneath it" (S3.3).
+        case ringInPlace
+        /// A question or a refusal the recorder would cover — the "who is
+        /// this?" sheet, an alert — waits until it closes, as a
+        /// notification tap or a shared item does (S4).
+        case waitForRecorder
+    }
+
+    static func underRecorder(_ resolution: Resolution, recorderOpen: Bool) -> UnderRecorder {
+        guard recorderOpen else { return .act }
+        switch resolution {
+        case .member: return .ringInPlace
+        case .needsChoice, .blocked, .unknown: return .waitForRecorder
+        }
+    }
+}

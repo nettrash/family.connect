@@ -338,6 +338,10 @@ class FamilyRepository @Inject constructor(
             // stops saying it must take the sticker button away again
             // (docs/protocol.md, "Sticker pack").
             settings.setPackLimits(result.value.maxPackItems, result.value.maxPackItemBytes)
+            // Video messages' limits, the same capability check by absence
+            // (#79): a server without them is offered no video entry, and
+            // one that stops saying them takes it away again.
+            settings.setRoundVideoLimits(result.value.maxRoundVideoMs, result.value.maxRoundVideoBytes)
             // The assistant is NOT upserted as a member — it belongs to no
             // family, so it appears in no roster. Kept aside purely so the
             // family chat can put a name on its messages and the composer

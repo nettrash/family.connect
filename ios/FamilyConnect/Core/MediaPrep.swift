@@ -117,6 +117,12 @@ nonisolated enum MediaPrep {
         let previewJPEG: Data?
         /// Files only: the name the sender picked it by.
         let name: String?
+        /// A voice note recorded here: its waveform, from the recorder's
+        /// meter (`AudioRecorder.Recording.waveform`), sent as `waveform=`
+        /// on the upload (#79). nil for anything picked or captured —
+        /// nobody metered those. A `var`, set after preparing, so the copy
+        /// `prepareAudio` makes keeps what the recording measured.
+        var waveform: String?
 
         init(
             fileURL: URL,
@@ -389,7 +395,10 @@ nonisolated enum MediaPrep {
 
     /// The upload for a video file that has been chosen: its TURNED size,
     /// its duration and a poster frame, read off the file that will go.
-    private static func preparedVideo(at uploadURL: URL) async -> Prepared {
+    /// Internal, not private: the round-video recorder (#79, Phase 3) makes
+    /// its clip's poster here too — at 0.5 s, else 0 s, else 2 s, at most
+    /// 600 px — rather than growing a second poster rule.
+    static func preparedVideo(at uploadURL: URL) async -> Prepared {
         let asset = AVURLAsset(url: uploadURL)
         let duration = (try? await asset.load(.duration)).map { CMTimeGetSeconds($0) } ?? 0
         let track = try? await asset.loadTracks(withMediaType: .video).first
@@ -447,7 +456,7 @@ nonisolated enum MediaPrep {
     /// log to tell them apart, and they need different fixes. Nothing
     /// retries this: three seek points have already been tried, and a
     /// fourth pass over the same file would fail the same way.
-    private static func posterFrame(of asset: AVURLAsset) async -> Data? {
+    static func posterFrame(of asset: AVURLAsset) async -> Data? {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: previewEdge, height: previewEdge)

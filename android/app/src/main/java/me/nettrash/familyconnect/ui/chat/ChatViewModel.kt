@@ -61,6 +61,8 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -87,6 +89,14 @@ import me.nettrash.familyconnect.util.resolvedDisplayName
 import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.calls.CallStarter
+import me.nettrash.familyconnect.calls.CallState
+import me.nettrash.familyconnect.calls.CallStateSource
+import me.nettrash.familyconnect.util.Uptime
+import android.os.SystemClock
+import kotlinx.coroutines.flow.drop
+import androidx.annotation.StringRes
+import me.nettrash.familyconnect.data.repo.ParkedRecording
+import me.nettrash.familyconnect.data.repo.ParkedRecordings
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.net.AttachmentApi
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
@@ -103,6 +113,7 @@ import me.nettrash.familyconnect.data.repo.AssistantFailure
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.repo.VoiceRecorder
+import me.nettrash.familyconnect.data.repo.Waveform
 import kotlinx.coroutines.Job
 import me.nettrash.familyconnect.data.repo.LocationProvider
 import me.nettrash.familyconnect.data.repo.MediaPrep
@@ -123,6 +134,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.repo.roundVideoLimits
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -150,6 +162,11 @@ class ChatViewModel @Inject constructor(
     private val linkPreviewRepository: LinkPreviewRepository,
     private val mediaPrep: MediaPrep,
     private val voiceRecorder: VoiceRecorder,
+    /**
+     * Where a recording somebody did not get to finish deciding about waits:
+     * the "Voice message not sent" rows (#79, S2.8).
+     */
+    private val parked: ParkedRecordings,
     private val attachmentApi: AttachmentApi,
     private val attachments: AttachmentRepository,
     private val gallerySaver: GallerySaver,
@@ -171,6 +188,26 @@ class ChatViewModel @Inject constructor(
      * app-wide singleton the share flow deposited into.
      */
     private val shareStash: ShareStash = ShareStash(),
+    /**
+     * Whether a call is on, in any phase (#79, S1.2's **call**): nothing
+     * records during one, and one starting stops and keeps a recording.
+     * Defaulted with [callStarter]'s trick: Dagger injects CallManager, and
+     * a test that never calls sees no call at all.
+     */
+    private val calls: CallStateSource = CallStateSource.NONE,
+    /**
+     * A clock that never jumps, for the voice reducer's activation guard
+     * (#79). Defaulted with [callStarter]'s trick; the tests hand in
+     * their scheduler's virtual time.
+     */
+    private val uptime: Uptime = Uptime { SystemClock.uptimeMillis() },
+    /**
+     * The chats whose own thread or polls screen is over them (#79, S4):
+     * not left, but left the moment another chat comes on. Defaulted with
+     * [callStarter]'s trick: Dagger injects the app-wide one; a test that
+     * needs two chats to share it hands one in.
+     */
+    private val covers: CoveredChats = CoveredChats(),
 ) : ViewModel() {
 
     val chatId: Long = checkNotNull(savedStateHandle["chatId"]) { "chatId nav arg missing" }
@@ -848,7 +885,21 @@ class ChatViewModel @Inject constructor(
          * this screen already says what it is busy with.
          */
         data class Working(val label: String) : MediaSendState
-        data class Failed(val reason: String) : MediaSendState
+
+        /**
+         * Something went wrong, in the strip until dismissed. [opensSettings]:
+         * the microphone was refused for good, and the strip offers Open
+         * Settings beside the sentence (#79, S2.2).
+         */
+        data class Failed(val reason: String, val opensSettings: Boolean = false) : MediaSendState
+
+        /**
+         * A sentence that is not an error — why a dimmed microphone did not
+         * record, what letting go will do next time, the five-minute stop
+         * (#79, S1.3: dimmed controls SAY why, in this line). Drawn without
+         * the error styling; like [Failed], not busy.
+         */
+        data class Notice(val text: String) : MediaSendState
 
         /**
          * Whether the composer is occupied with something a new
@@ -1120,6 +1171,11 @@ class ChatViewModel @Inject constructor(
     fun agreeToTheAssistant(withLookups: Boolean = false) {
         viewModelScope.launch {
             _assistantConsentAsked.value = false
+            // Asked for by a "Voice message not sent" row's Send rather than
+            // by the composer's: agreeing finishes THAT send, and the draft
+            // in the box — which nobody asked to send — stays there.
+            val notSentSend = notSentAwaitingConsent
+            notSentAwaitingConsent = null
             // "Agree With Lookups" records the lookup consent too, after the
             // first one (the server refuses it otherwise). If only that
             // second write fails the send still goes — answered as it would
@@ -1127,7 +1183,7 @@ class ChatViewModel @Inject constructor(
             if (familyRepository.agreeToAssistant(withLookups).assistant) {
                 // The draft never left the box, so this finishes the send
                 // the person already asked for.
-                send()
+                if (notSentSend != null) sendNotSent(notSentSend) else send()
             }
         }
     }
@@ -1135,6 +1191,7 @@ class ChatViewModel @Inject constructor(
     /** "Not Now": the screen closes and the draft stays where it is. */
     fun dismissAssistantConsent() {
         _assistantConsentAsked.value = false
+        notSentAwaitingConsent = null
     }
 
     /**
@@ -1202,6 +1259,15 @@ class ChatViewModel @Inject constructor(
     fun setResumed(isResumed: Boolean) {
         resumed.value = isResumed
         publishOpenChat()
+        // Resumed is BACK — not merely composed, which a cancelled predictive
+        // Back also does — so this is where a chat stops being covered by its
+        // own thread or polls, and where every other chat still covered is
+        // left: the person is here now (#79, S4; CoveredChats).
+        if (isResumed) {
+            coveredByOwnScreen = false
+            covers.uncover(coveredChat)
+            covers.leaveAllBut(coveredChat)
+        }
     }
 
     /**
@@ -1395,6 +1461,7 @@ class ChatViewModel @Inject constructor(
                 }
 
                 if (!stage(prepared)) return@launch
+                personChangedStrip()
                 // stage() reports Idle so each chip appears as it lands;
                 // the strip goes back to busy while more are still coming.
                 if (index < items.lastIndex) _mediaState.value = MediaSendState.Preparing
@@ -1524,10 +1591,15 @@ class ChatViewModel @Inject constructor(
      * Test seam: staging normally follows a real pick + prepare, which a
      * unit test cannot drive. The app never calls this.
      */
-    fun stagePrepared(prepared: MediaPrep.Prepared) = stage(prepared)
+    fun stagePrepared(prepared: MediaPrep.Prepared) = stage(prepared).also { if (it) personChangedStrip() }
 
-    /** True when the item was taken; false (file deleted, notice shown) at the cap. */
-    private fun stage(prepared: MediaPrep.Prepared): Boolean {
+    /**
+     * True when the item was taken; false (file deleted, notice shown) at the
+     * cap — or, with [keepRefused], false with the file left alone, for a
+     * caller that has somewhere else to keep it: a recording cannot be made
+     * again, and a full strip must not be what deletes one.
+     */
+    private fun stage(prepared: MediaPrep.Prepared, keepRefused: Boolean = false): Boolean {
         // CAS loop, not a plain read-modify-write: stage() runs on the
         // appScope prepare loops (a Default-pool thread each), the share
         // drain and the main thread at once, and two racing
@@ -1538,7 +1610,7 @@ class ChatViewModel @Inject constructor(
         while (true) {
             val current = _staged.value
             if (current.size >= AttachmentDto.MAX_PER_MESSAGE) {
-                prepared.file.delete()
+                if (!keepRefused) prepared.file.delete()
                 _mediaState.value = MediaSendState.Failed(
                     appContext.getString(
                         R.string.e_attachment_limit,
@@ -1578,16 +1650,31 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    /** Throw away ONE staged item and the temp file nothing else will clean up. */
+    /**
+     * Throw away ONE staged item and the temp file nothing else will clean
+     * up — except a voice note of ten seconds or more, whose ✕ asks "Delete
+     * this recording?" first (#79, S2.7): a recording cannot be made again.
+     */
     fun discardStaged(index: Int) {
+        val victim = _staged.value.getOrNull(index) ?: return
+        if (victim.voiceNote && VoiceNoteRules.deleteAsks(victim.durationMs?.toLong() ?: 0L)) {
+            _stagedDeleteAsk.value = victim.file
+            return
+        }
+        removeStaged(victim.file)
+        personChangedStrip()
+    }
+
+    /** Remove the staged item holding [file], and delete it. */
+    private fun removeStaged(file: File) {
         // CAS: a concurrent stage() append must not be clobbered by this
         // write (nor vice versa). The victim is resolved against the SAME
         // list the swap replaces, and its file is deleted only after the
         // swap took — never the file of an item that stays visible.
         while (true) {
             val current = _staged.value
-            val victim = current.getOrNull(index) ?: return
-            if (_staged.compareAndSet(current, current.filterIndexed { i, _ -> i != index })) {
+            val victim = current.firstOrNull { it.file == file } ?: return
+            if (_staged.compareAndSet(current, current.filterNot { it.file == file })) {
                 victim.file.delete()
                 return
             }
@@ -1601,73 +1688,1282 @@ class ChatViewModel @Inject constructor(
     suspend fun attachmentStreamUrl(attachmentId: Long): Pair<String, Map<String, String>>? =
         attachmentApi.streamUrl(attachmentId)
 
+    // -- Voice messages from the Send slot ------------------------------------
+    //
+    // #79, docs/audio-video-messages-2026-10-04.md.
+    //
+    // PHASE 0 made today's recorder safe. The recorder is one per process,
+    // and this ViewModel used to start it and then let it run whatever
+    // happened to the screen: Back mid-recording left the microphone open and
+    // every later voice note dead until the process died; a call rang over a
+    // recording; the five-minute cap stopped the hardware while the counter
+    // ran on. Now nothing records during a call; interruptions stop and KEEP,
+    // never send and never discard, and what they keep waits in its own
+    // "Voice message not sent" row ([notSent], S2.8) with the reply it was
+    // recorded under; leaving the chat does the same and turns a voice
+    // message in review into one too; onCleared is the last word.
+    //
+    // PHASE 1 put voice in the Send slot. Every decision about an
+    // activation, Stop, Delete, the cap and an interruption is the SHARED
+    // reducer's (RecordGesture, held to the reference's vectors): this
+    // ViewModel feeds it ([step]) and carries out what comes back
+    // ([perform]).
+    //
+    //  - A TAP — a click, Enter or Space, TalkBack — records hands-free; the
+    //    same slot, now an arrow, sends it; Stop keeps it for review; Delete
+    //    deletes it (asking from ten seconds).
+    //  - There is NO HOLD (revised 2026-10-06): a long press on the
+    //    microphone records nothing and opens nothing while the finger is
+    //    down, and is a tap when it lifts inside. With it went the Undo
+    //    window, its "sending" entry, the first-release lesson, the coach
+    //    mark and Review Before Sending.
+
     /**
-     * Prepare and send a picked document. Nothing is re-encoded — a file
-     * goes as it is (protocol.md, "Files").
-     */
-    /**
-     * Recording state for the composer's strip. Elapsed is polled rather
-     * than pushed: MediaRecorder has no progress callback, and a 200 ms
-     * tick is cheaper than the alternative of not showing one at all.
+     * The recording's own clock for the composer's timer, or null while
+     * nothing records. Polled: MediaRecorder has no progress callback.
      */
     private val _recordingMs = MutableStateFlow<Long?>(null)
     val recordingMs: StateFlow<Long?> = _recordingMs
 
-    @Suppress("unused")
+    /** Whether the composer is showing a recording of its own (the recording row). */
+    private var recordingHere = false
+
+    /** Whether the one recorder the app has is running for THIS composer. */
+    private var recorderOpen = false
+
     private var recordingTicker: Job? = null
 
-    /** Begin a voice note. The caller has already secured the permission. */
-    fun startRecording() {
-        if (voiceRecorder.isRecording) return
-        if (!voiceRecorder.start()) {
-            _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_record_failed))
-            return
+    /**
+     * Hears every way the recorder ends a recording on its own — the cap, a
+     * failure, another app, another chat starting one — always on the main
+     * thread, where the recorder is driven.
+     */
+    private val recorderOwner = VoiceRecorder.Listener { ending, kept -> onRecorderEnded(ending, kept) }
+
+    /** The session this chat opened in: a park that lands after a sign-out is dropped. */
+    private val session: Long = parked.session()
+
+    /** A call in any phase but idle or ended (S1.2's **call**). */
+    val callLive: StateFlow<Boolean> = calls.state
+        .map { it is CallState.Live }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, calls.state.value is CallState.Live)
+
+    /** This chat's voice messages that were not sent: the rows above the field (S2.8). */
+    val notSent: StateFlow<List<ParkedRecording>> = parked.forChat(chatId)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Not-sent messages whose send is under way, so a second tap does nothing. */
+    private val _notSentInFlight = MutableStateFlow<Set<String>>(emptySet())
+    val notSentInFlight: StateFlow<Set<String>> = _notSentInFlight
+
+    /** A not-sent message whose Send raised the assistant question, sent once it is answered yes. */
+    private var notSentAwaitingConsent: String? = null
+
+    /**
+     * The not-sent message "Delete this recording?" is about, or null while
+     * nothing is asked. Only at ten seconds or more: shorter ones go at once.
+     */
+    private val _deleteAsk = MutableStateFlow<String?>(null)
+    val deleteAsk: StateFlow<String?> = _deleteAsk
+
+    /**
+     * The staged voice note "Delete this recording?" is about (S2.7: its ✕
+     * asks at ten seconds or more), by its file, or null.
+     */
+    private val _stagedDeleteAsk = MutableStateFlow<File?>(null)
+    val stagedDeleteAsk: StateFlow<File?> = _stagedDeleteAsk
+
+    /** The screen's facts at an activation, which the reducer's [RecordGesture.Situation] reads. */
+    data class VoiceEnvironment(
+        val permission: RecordGesture.Permission = RecordGesture.Permission.GRANTED,
+        /**
+         * TalkBack's touch exploration runs (S6): the microphone opens only
+         * once "Recording" has been spoken.
+         */
+        val assistive: Boolean = false,
+    )
+
+    /** The slot's voice recording as the shared reducer has it. */
+    private val _hold = MutableStateFlow(RecordGesture.HoldState())
+    val hold: StateFlow<RecordGesture.HoldState> = _hold
+
+    /** S1.1's numbers. */
+    private val holdConstants = RecordGesture.HoldConstants()
+
+    /**
+     * The words the composer held when the slot's own activation last set
+     * the activation guard — which holds back a Send only while they are
+     * still the same: words typed since are never guarded (S1.1).
+     */
+    private var draftAtGuard = ""
+
+    /** The screen's facts at the last activation. */
+    private var voiceEnv = VoiceEnvironment()
+
+    /** With TalkBack, the microphone waits until "Recording" has been spoken. */
+    private var pendingStart: Job? = null
+
+    /** What the recorder kept when it ended a recording by itself, for the effects to take. */
+    private var endedRecording: VoiceRecorder.Recording? = null
+
+    /** A recording stopped to be asked about ("Delete this recording?"). */
+    private var askedRecording: VoiceRecorder.Recording? = null
+
+    /**
+     * Voice notes on their way into review — being prepared on the app's
+     * scope after a Stop or a Keep — and the lock that makes leaving and
+     * arriving one or the other: leaving either finds a note STAGED (and
+     * parks it with the words) or CLAIMS it on its way — never neither,
+     * which is how a quick second Back used to lose one (S2.8, S4).
+     */
+    private val reviewLock = Any()
+    private val reviewsInFlight = mutableListOf<ReviewInFlight>()
+
+    /**
+     * How many times leaving has turned review into "not sent" (S4) — and
+     * whether it is doing so now, under [reviewLock]: what tells a voice note
+     * Send could not prepare or hand off whether the review it lands in
+     * (S2.5) is still the composer somebody sees ([reviewTicket]).
+     */
+    private var leaves = 0
+    private var leaving = false
+
+    /** Some peak since the recording started rose above digital silence. */
+    private var heardSound = false
+
+    /** The last refusal is for good: the strip offers Open Settings. */
+    private var denialPermanent = false
+
+    /** The level meter: how many of its five bars the last peak lit (S2.9). */
+    private val _voiceLevel = MutableStateFlow(0)
+    val voiceLevel: StateFlow<Int> = _voiceLevel
+
+    /**
+     * The hands-free row's LIVE waveform (#79, the approved design): the
+     * newest [LIVE_LEVELS] peaks as waveform levels, 0–15, oldest first — the
+     * same measure the note's own waveform is made of, so what scrolls in
+     * while recording is what the reader will see.
+     */
+    private val _voiceLevels = MutableStateFlow<List<Int>>(emptyList())
+    val voiceLevels: StateFlow<List<Int>> = _voiceLevels
+
+    /** The recording row's line, shown in the level meter's place. */
+    enum class VoiceLine {
+        /** From 4:30: "30 seconds left", and the timer turns orange (S2.5). */
+        THIRTY_SECONDS_LEFT,
+
+        /** Three seconds in with nothing heard: "We can't hear anything. Is the microphone muted?" */
+        CANT_HEAR,
+    }
+
+    private val _voiceLine = MutableStateFlow<VoiceLine?>(null)
+    val voiceLine: StateFlow<VoiceLine?> = _voiceLine
+
+    /** What the composer's polite live region says next (S6) — state changes, never the clock. */
+    data class VoiceAnnouncement(val text: String, val serial: Long)
+
+    private val _announcement = MutableStateFlow<VoiceAnnouncement?>(null)
+    val announcement: StateFlow<VoiceAnnouncement?> = _announcement
+    private var announcementSerial = 0L
+
+    /** The one-off things only the screen can do. */
+    sealed interface VoiceEffect {
+        /** Raise the system's microphone prompt; the answer comes back as [permissionAnswered]. */
+        data object AskPermission : VoiceEffect
+
+        /** S2.9's haptics — the screen plays them on phones only. */
+        data class Haptic(val haptic: RecordGesture.Haptic) : VoiceEffect
+
+        /** Recording started: focus to the slot, the keyboard down (S2.4). */
+        data object FocusSlot : VoiceEffect
+
+        /** It ended by Send, Delete, "too short" or into review: focus back to the field (S2.4). */
+        data object Ended : VoiceEffect
+    }
+
+    private val _voiceEffects = MutableSharedFlow<VoiceEffect>(extraBufferCapacity = 16)
+    val voiceEffects: SharedFlow<VoiceEffect> = _voiceEffects
+
+    /**
+     * The server has video messages: it sent `max_round_video_ms` and
+     * `max_round_video_bytes` on `GET /families/mine` (#79). Without them no
+     * video entry is offered anywhere (S1.2's **round available**).
+     */
+    val roundVideoOffered: StateFlow<Boolean> = settings.state.map { it.roundVideoLimits != null }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    init {
+        // A call stops and keeps a recording the moment it rings or is
+        // placed — before the call screen has even come up (S4).
+        viewModelScope.launch {
+            callLive.collect { live -> if (live) interruptRecording() }
         }
-        _recordingMs.value = 0
-        recordingTicker = viewModelScope.launch {
-            while (voiceRecorder.isRecording) {
-                _recordingMs.value = voiceRecorder.elapsedMs
-                delay(200)
+        // A character typed, deleted, pasted or suggested is the person's own
+        // change (S1.1): it lifts the slot's activation guard. The field
+        // emptied by the slot's own Send is not a change of the person's: it
+        // arrives here (later) as the very words the guard was set over, and
+        // lifts nothing.
+        viewModelScope.launch {
+            draftText.drop(1).collect { text ->
+                if (text != draftAtGuard) otherAction()
             }
-            _recordingMs.value = null
         }
     }
 
-    /** Stop and STAGE it, so a caption can be added before sending. */
+    /**
+     * The slot was activated: the microphone, the Send arrow or the Stop
+     * square — by a completed tap however long it was held, a click, Enter,
+     * Space or TalkBack. Nothing is said to the reducer while a press is
+     * down: a long press is not a gesture (the reducer's contract).
+     */
+    fun activateSlot(env: VoiceEnvironment) {
+        voiceEnv = env
+        denialPermanent = false
+        step(RecordGesture.HoldEvent.Activate(uptime.now(), situation(), recordedNow()))
+    }
+
+    /**
+     * The slot's row-4 Save or row-5 Send. Asked of the guard first — a
+     * double tap on the Stop square must not send what it staged (S1.1) —
+     * and once it has emptied the composer, the microphone it turns into is
+     * guarded in turn: a double tap on Send cannot start a recording.
+     */
+    fun sendFromSlot() {
+        val at = uptime.now()
+        if (sendGuarded(at)) return
+        send()
+        step(RecordGesture.HoldEvent.Emptied(at))
+    }
+
+    /**
+     * Whether a press going down on the slot NOW is ignored whole — asked by
+     * RecordSendButton at the press's DOWN, for every press and every Enter
+     * or Space. S1.1: "A press that goes down while the guard runs
+     * is ignored whole" — so a slow second tap, whose lift comes after the
+     * 600 ms, still cannot send the recording the first tap started, nor send
+     * what a Stop has just staged. Send and Save ask [sendGuarded]: words
+     * typed since the guard began are never held back.
+     */
+    fun slotPressIgnored(slot: ComposerSlot.Slot): Boolean {
+        val at = uptime.now()
+        return when (slot) {
+            ComposerSlot.Slot.Send, is ComposerSlot.Slot.Save -> sendGuarded(at)
+            else -> _hold.value.guarded(at)
+        }
+    }
+
+    /**
+     * The guard as a row-4 or row-5 Send meets it: the slot's own last
+     * activation was under 600 ms ago AND the words are still what that
+     * activation left (S1.1, Decision 15). A change made by typing, pasting,
+     * a suggestion, deleting, staging or taking something off is never
+     * guarded — it lifts the guard ([otherAction]) — so "ok" or an emoji
+     * typed after a send and sent at once still goes. The words are compared
+     * as well because the field's change reaches [otherAction] through a
+     * snapshot flow, a frame later than the keystroke.
+     */
+    private fun sendGuarded(at: Long): Boolean =
+        _hold.value.guarded(at) && inputState.text.toString() == draftAtGuard
+
+    /**
+     * "Record voice message" — the paperclip, the microphone's menu, or
+     * Ctrl+Shift+R; during a recording (only the shortcut can be) it STOPS
+     * it into review: a shortcut never sends (S1.6). Not in the assistant's
+     * chat and not during an edit, where no recording is offered at all.
+     */
+    fun recordVoiceMessage(env: VoiceEnvironment = VoiceEnvironment()) {
+        if (chat.value?.kind == "ai" || _editTarget.value != null) return
+        voiceEnv = env
+        denialPermanent = false
+        val besideDraft = inputState.text.isNotBlank() || _staged.value.isNotEmpty()
+        step(RecordGesture.HoldEvent.Record(uptime.now(), besideDraft, situation(), recordedNow()))
+    }
+
+    /** The paperclip's "Record voice message", with a granted microphone. */
+    fun startRecording() = recordVoiceMessage()
+
+    /**
+     * Stop into review — the stop icon, Esc, Android's Back while recording,
+     * "Stop and listen first" (S2.5). Under a second it is too short.
+     */
     fun stopRecording() {
-        recordingTicker?.cancel()
-        recordingTicker = null
-        _recordingMs.value = null
-        val file = voiceRecorder.stop()
-        if (file == null) {
-            _mediaState.value =
-                MediaSendState.Failed(appContext.getString(R.string.e_recording_too_short))
+        step(RecordGesture.HoldEvent.Stop(uptime.now(), recordedNow()))
+    }
+
+    /** The recording row's Delete: at once under ten seconds, asked from ten (S2.5). */
+    fun deleteRecording() {
+        step(RecordGesture.HoldEvent.Delete(uptime.now(), recordedNow()))
+    }
+
+    /** "Delete this recording?" about the recording just stopped: Delete, or Keep (review). */
+    fun answerRecordingDelete(delete: Boolean) {
+        step(RecordGesture.HoldEvent.Answer(uptime.now(), delete))
+    }
+
+    /**
+     * Anything else the person does in the composer — the paperclip, a
+     * sticker, `@ai`, a character typed or deleted, something staged or taken
+     * off — which, outside a recording, lifts the slot's activation guard:
+     * the next press is a decision of its own (S1.1). The reducer decides.
+     */
+    fun otherAction() {
+        step(RecordGesture.HoldEvent.OtherAction(uptime.now()))
+    }
+
+    /**
+     * The person staged something, or took something off the strip: their
+     * own change, never guarded (S1.1) — said to the reducer on the main
+     * thread, since staging lands from the prepare loops' threads. A
+     * recording the slot's own Stop staged is not this.
+     */
+    private fun personChangedStrip() {
+        viewModelScope.launch { otherAction() }
+    }
+
+    /** The system's microphone prompt answered; [permanent]: it will not be asked again. */
+    fun permissionAnswered(granted: Boolean, permanent: Boolean) {
+        denialPermanent = !granted && permanent
+        step(RecordGesture.HoldEvent.PermissionAnswer(uptime.now(), granted))
+    }
+
+    /** A play control tapped while recording: what it says instead (S1.7). */
+    fun explainPlaybackWhileRecording() {
+        notice(R.string.s_play_after_recording)
+    }
+
+    // -- Video messages (#79, Phase 3) ----------------------------------------
+
+    /**
+     * Whether the video recorder may open from this composer now — asked by
+     * every way in (S3.1): the video button, the paperclip, the microphone's
+     * menu and its TalkBack action. Family and direct chats only, never
+     * mid-edit. During a call (row 7) or while an attachment is busy (row 8)
+     * it SAYS why instead, in the composer's notice line — dimmed is not
+     * disabled (S1.3, S1.4, S1.6). Row 9 (a voice message not sent) opens it:
+     * that rule is about voice. And one recording at a time (S1.7): a voice
+     * recording running here is stopped and kept as "not sent" first.
+     */
+    fun mayOpenVideoRecorder(): Boolean {
+        val kind = chat.value?.kind
+        if ((kind != "family" && kind != "direct") || _editTarget.value != null) return false
+        if (callLive.value) {
+            notice(R.string.e_record_after_the_call)
+            return false
+        }
+        if (_mediaState.value.isBusy) {
+            notice(R.string.e_wait_for_the_attachment)
+            return false
+        }
+        if (_hold.value.recording != ComposerSlot.Recording.NONE) interruptRecording()
+        return true
+    }
+
+    /**
+     * The recorder sent a video message carrying [replyId]: the composer's
+     * reply is spent — the sticker's rule (S1.5). A reply primed since, to
+     * another message, stays.
+     */
+    fun videoMessageSent(replyId: Long?) {
+        if (replyId != null && _replyDraft.value?.messageId == replyId) _replyDraft.value = null
+    }
+
+    /** What the recorder says once it has closed — "Video message sent", "Camera turned off" (S6). */
+    fun announceFromRecorder(@StringRes text: Int) {
+        say(appContext.getString(text))
+    }
+
+    /**
+     * Abandon whatever is recording here, at once and without a question.
+     * Never offered to the person — Delete asks at ten seconds — but the
+     * tests' teardown, and a last resort.
+     */
+    fun cancelRecording() {
+        discardRecording()
+        _hold.value = RecordGesture.HoldState(guardUntilMs = _hold.value.guardUntilMs)
+    }
+
+    /**
+     * The screen came on. Paired with [screenDetached]; the count is what
+     * tells a rotation, whose new screen arrives, from a screen that is gone.
+     */
+    fun screenAttached() {
+        screens++
+        orphanCheck?.cancel()
+        orphanCheck = null
+    }
+
+    /**
+     * The chat is about to open ITS OWN thread or polls screen over itself —
+     * which is not leaving it (S4 lists the back button, another chat, the
+     * rail and a notification tap; on the iPhone both are sheets over a
+     * conversation that stays). Its screen will leave composition, but this
+     * ViewModel stays and its composer comes back as it was: a voice message
+     * in review stays in review, with the photos, the words and the reply
+     * beside it. A recording still stops and is kept (ON_STOP), since nobody
+     * can see it.
+     */
+    fun coverWithOwnScreen() {
+        coveredByOwnScreen = true
+    }
+
+    /**
+     * The screen left composition. Not for a configuration change — a
+     * rotation, a fold, a theme change rebuild the activity and the
+     * recording carries on (S4) — but for anything else the composer is
+     * gone: the chat was left, or another chat opened over it. Under the
+     * chat's own thread or polls ([coverWithOwnScreen]) only a recording
+     * stops; the chat goes on the covered list, and is left the moment
+     * another chat comes on (CoveredChats).
+     */
+    fun screenDetached(changingConfigurations: Boolean) {
+        screens = (screens - 1).coerceAtLeast(0)
+        if (!changingConfigurations) {
+            if (coveredByOwnScreen) {
+                interruptRecording()
+                covers.cover(coveredChat)
+            } else {
+                leave(duringCall = calls.state.value is CallState.Live)
+            }
             return
         }
+        // A rebuilt activity brings its screen straight back. One that does
+        // not — a tablet window narrowed past the two-pane width, which
+        // leaves this chat out of the new layout — must not leave a
+        // recording running where nobody can see it.
+        if (screens == 0) {
+            orphanCheck?.cancel()
+            orphanCheck = viewModelScope.launch {
+                delay(ORPHAN_GRACE_MS)
+                if (screens == 0) leave(duringCall = calls.state.value is CallState.Live)
+            }
+        }
+    }
+
+    /**
+     * The screen stopped: the app went to the background, the screen locked,
+     * the call screen or another app came over it (ON_STOP). A recording stops
+     * and is kept; what is in review stays in review (S4).
+     */
+    fun screenStopped(changingConfigurations: Boolean) {
+        if (!changingConfigurations) interruptRecording()
+    }
+
+    private var screens = 0
+    private var orphanCheck: Job? = null
+
+    /** The chat's own thread or polls screen is over it ([coverWithOwnScreen]); cleared once it is back. */
+    private var coveredByOwnScreen = false
+
+    /** This chat on the covered list: leaving it is what leaving the chat does. */
+    private val coveredChat = CoveredChats.Covered {
+        coveredByOwnScreen = false
+        leave(duringCall = calls.state.value is CallState.Live)
+    }
+
+    override fun onCleared() {
+        // The last word, and the fix for the microphone left open after Back:
+        // nothing that cannot be made again dies with this ViewModel. Its own
+        // scope is already cancelled; the writes go out on the app's.
+        covers.uncover(coveredChat)
+        leave(duringCall = false)
+        super.onCleared()
+    }
+
+    /** Send a "Voice message not sent" — with ITS reply and caption, and nothing else (S2.8). */
+    fun sendNotSent(id: String) {
+        val entry = notSent.value.firstOrNull { it.id == id } ?: return
+        if (id in _notSentInFlight.value) return
+        // Not while the composer is busy with another attachment: its strip's
+        // words are that one's live progress, and its state the busy guard.
+        if (_mediaState.value.isBusy) return
+        viewModelScope.launch {
+            // The questions a typed message is asked, of THIS message's words:
+            // in the member's own `ai` chat a voice message reaches the model
+            // too, and a caption may say `@ai` in the family chat.
+            val settingsState = settings.state.first()
+            val kind = chat.value?.kind
+            if (AssistantConsent.isWithheldFromAnUnnamedAssistant(
+                    chatKind = kind,
+                    body = entry.caption,
+                    hasAssistant = settingsState.assistantUserId != null,
+                    processor = settingsState.assistantProcessor,
+                )
+            ) {
+                return@launch
+            }
+            if (AssistantConsent.isRequired(
+                    chatKind = kind,
+                    body = entry.caption,
+                    processor = settingsState.assistantProcessor,
+                    agreedAt = settingsState.assistantConsentAt,
+                )
+            ) {
+                notSentAwaitingConsent = id
+                _assistantConsentAsked.value = true
+                return@launch
+            }
+            dispatchNotSent(entry)
+        }
+    }
+
+    /**
+     * Its ✕. Ten seconds or more asks first (S2.8): a recording cannot be
+     * made again, and one tap must not be what loses a long one.
+     */
+    fun deleteNotSent(id: String) {
+        val entry = notSent.value.firstOrNull { it.id == id } ?: return
+        if (VoiceNoteRules.deleteAsks(entry.durationMs)) {
+            _deleteAsk.value = id
+            return
+        }
+        discardNotSent(entry)
+    }
+
+    /** "Delete this recording?" answered: Delete, or Keep — which leaves it where it is. */
+    fun answerDeleteAsk(delete: Boolean) {
+        val id = _deleteAsk.getAndUpdate { null } ?: return
+        if (!delete) return
+        notSent.value.firstOrNull { it.id == id }?.let(::discardNotSent)
+    }
+
+    /** Where a not-sent message's bytes are — what its ▶ plays (S2.8). */
+    fun notSentFile(entry: ParkedRecording): File = parked.file(entry)
+
+    /** "Delete this recording?" about a staged voice note answered: Delete, or Keep. */
+    fun answerStagedDelete(delete: Boolean) {
+        val file = _stagedDeleteAsk.getAndUpdate { null } ?: return
+        if (delete) {
+            removeStaged(file)
+            personChangedStrip()
+        }
+    }
+
+    private fun discardNotSent(entry: ParkedRecording) {
+        if (entry.id in _notSentInFlight.value) return
+        // Deleting a recording never deletes words somebody typed: a caption
+        // goes back to the field, and the reply with it when nothing else is
+        // primed there.
+        giveBack(entry.caption, entry.replyTo)
+        appScope.launch { parked.remove(entry.id) }
+    }
+
+    /** Words and a quote a not-sent message held, back into the composer without clobbering it. */
+    private fun giveBack(caption: String, quote: ReplyToDto?) {
+        if (_editTarget.value != null) return
+        if (caption.isNotBlank()) {
+            when (val outcome = MessageBody.appending(caption, inputState.text)) {
+                is MessageBody.Paste.Appended -> inputState.setTextAndPlaceCursorAtEnd(outcome.draft)
+                is MessageBody.Paste.Truncated -> inputState.setTextAndPlaceCursorAtEnd(outcome.draft)
+                MessageBody.Paste.Full -> Unit
+            }
+        }
+        if (quote != null && _replyDraft.value == null) _replyDraft.value = quote
+    }
+
+    private fun dispatchNotSent(entry: ParkedRecording) {
+        var claimed = false
+        _notSentInFlight.update { inFlight ->
+            claimed = entry.id !in inFlight
+            inFlight + entry.id
+        }
+        if (!claimed) return
         _mediaState.value = MediaSendState.Preparing
+        // App scope, like every media send here: leaving the chat must not
+        // take the hand-off with it.
+        appScope.launch {
+            try {
+                val prepared = try {
+                    mediaPrep.prepareAudio(Uri.fromFile(parked.file(entry)), voiceNote = true)
+                } catch (_: Exception) {
+                    _mediaState.value =
+                        MediaSendState.Failed(appContext.getString(R.string.e_prepare_failed))
+                    return@launch
+                }
+                val note = prepared.withRecordedLength(entry.durationMs).withWaveform(entry.waveform)
+                val queued = messageRepository.sendMedia(
+                    listOf(note),
+                    entry.caption,
+                    chatId,
+                    entry.replyTo,
+                    resolvedMentions(entry.caption),
+                )
+                if (queued == null) {
+                    note.file.delete()
+                    _mediaState.value =
+                        MediaSendState.Failed(appContext.getString(R.string.e_send_failed))
+                } else {
+                    // The outbox owns it from here — its row is written and its
+                    // bytes are in the outbox's directory — so the waiting copy
+                    // goes.
+                    parked.remove(entry.id)
+                    _mediaState.value = MediaSendState.Idle
+                }
+            } finally {
+                _notSentInFlight.update { it - entry.id }
+            }
+        }
+    }
+
+    // -- The reducer, fed and carried out --------------------------------------
+
+    /** One step of the shared reducer, and everything it says to do. */
+    private fun step(event: RecordGesture.HoldEvent) {
+        val before = _hold.value
+        val (next, effects) = RecordGesture.holdStep(before, event, holdConstants)
+        _hold.value = next
+        // The slot's own activation set the guard: what the field held then
+        // is what a Send must find for the guard to hold it (sendGuarded).
+        if (next.guardUntilMs != before.guardUntilMs) draftAtGuard = inputState.text.toString()
+        perform(effects)
+    }
+
+    /**
+     * The effects, in the reducer's order: the thing, then what is shown, said
+     * and felt — except that what the reducer says ABOUT a send or a review
+     * (S2.5, S6) waits for the thing to have happened. "Voice message sent" is
+     * said once the outbox has the note, never before a hand-off that may still
+     * fail and put it back in review; and a recording that turns out to have
+     * kept nothing says "too short" instead of "sent" or "Ready to review".
+     */
+    private fun perform(effects: List<RecordGesture.HoldEffect>) {
+        var index = 0
+        while (index < effects.size) {
+            when (val effect = effects[index]) {
+                RecordGesture.HoldEffect.Start -> startMicrophone()
+                RecordGesture.HoldEffect.Delete -> {
+                    discardRecording()
+                    _voiceEffects.tryEmit(VoiceEffect.Ended)
+                }
+                RecordGesture.HoldEffect.Send -> {
+                    val told = toldAbout(effects, index)
+                    index += told.size
+                    sendRecording(told)
+                    _voiceEffects.tryEmit(VoiceEffect.Ended)
+                }
+                RecordGesture.HoldEffect.Review -> {
+                    val told = toldAbout(effects, index)
+                    index += told.size
+                    // A line said with it lands once the note is staged: staging
+                    // writes the strip's state, and would wipe a line written now.
+                    val hint = (told.firstOrNull() as? RecordGesture.HoldEffect.Hint)?.hint
+                    val rest = if (hint != null) told.drop(1) else told
+                    reviewRecording(hint, rest)
+                    _voiceEffects.tryEmit(VoiceEffect.Ended)
+                }
+                RecordGesture.HoldEffect.Park -> park(takeRecording())
+                // The recording stops FIRST (S2.5): the question is about a finished one.
+                RecordGesture.HoldEffect.AskDelete -> askedRecording = takeRecording()
+                RecordGesture.HoldEffect.AskPermission -> _voiceEffects.tryEmit(VoiceEffect.AskPermission)
+                // Open Settings only where asking again cannot work (S2.2).
+                RecordGesture.HoldEffect.Denied -> failed(
+                    R.string.e_microphone_permission,
+                    opensSettings = denialPermanent || voiceEnv.permission == RecordGesture.Permission.DENIED,
+                )
+                is RecordGesture.HoldEffect.Explain -> notice(RecordStrings.of(effect.reason))
+                is RecordGesture.HoldEffect.Hint -> showHint(effect.hint)
+                is RecordGesture.HoldEffect.Announce -> announce(effect.announcement)
+                is RecordGesture.HoldEffect.Haptic -> _voiceEffects.tryEmit(VoiceEffect.Haptic(effect.haptic))
+            }
+            index++
+        }
+    }
+
+    /**
+     * What the reducer says about [effects]`[index]` — the announcement,
+     * haptic and hint it always places right after the thing they
+     * describe — for that thing to say once it has happened.
+     */
+    private fun toldAbout(effects: List<RecordGesture.HoldEffect>, index: Int): List<RecordGesture.HoldEffect> =
+        effects.drop(index + 1).takeWhile { it.describesTheEffectBefore() }
+
+    private fun RecordGesture.HoldEffect.describesTheEffectBefore(): Boolean = when (this) {
+        is RecordGesture.HoldEffect.Announce,
+        is RecordGesture.HoldEffect.Haptic,
+        is RecordGesture.HoldEffect.Hint,
+        -> true
+        else -> false
+    }
+
+    /** Whether there is a recording for an effect to take (see [takeRecording]). */
+    private fun hasRecording(): Boolean = endedRecording != null || askedRecording != null || recordingHere
+
+    /**
+     * An effect meant to send or review a recording found that it kept
+     * nothing — the recorder's floor, a recording that never got audio: what
+     * really happened is said, in the reducer's own words, instead of what
+     * was meant to. Nothing there at all (already gone) says nothing.
+     */
+    private fun keptNothing(wasThere: Boolean) {
+        if (!wasThere) return
+        perform(
+            listOf(
+                RecordGesture.HoldEffect.Hint(RecordGesture.Hint.TOO_SHORT),
+                RecordGesture.HoldEffect.Announce(RecordGesture.Announcement.TooShort),
+                RecordGesture.HoldEffect.Haptic(RecordGesture.Haptic.WARNING),
+            ),
+        )
+    }
+
+    /**
+     * The outbox did not take a voice note. It is in review with [error], or
+     * "not sent" — never lost — and that is what is said and felt, never
+     * "Voice message sent".
+     */
+    private fun notQueued(@StringRes error: Int) {
+        say(appContext.getString(error))
+        _voiceEffects.tryEmit(VoiceEffect.Haptic(RecordGesture.Haptic.WARNING))
+    }
+
+    /** The facts a decision reads at the moment it is made. */
+    private fun situation(): RecordGesture.Situation = RecordGesture.Situation(
+        permission = voiceEnv.permission,
+        blocked = blockedReason(),
+    )
+
+    /**
+     * S1.3's dimmed rows, in their order — asked of the sources, not of
+     * [callLive], which reaches this thread a dispatch later: a call placed a
+     * moment ago is a call.
+     */
+    private fun blockedReason(): ComposerSlot.Dimmed? = when {
+        calls.state.value is CallState.Live -> ComposerSlot.Dimmed.CALL
+        _mediaState.value.isBusy -> ComposerSlot.Dimmed.BUSY
+        notSent.value.isNotEmpty() -> ComposerSlot.Dimmed.NOT_SENT
+        else -> null
+    }
+
+    /** The recorder's own clock: what the person sees, and what a decision reads. */
+    private fun recordedNow(): Long =
+        endedRecording?.durationMs
+            ?: askedRecording?.durationMs
+            ?: if (recorderOpen) voiceRecorder.elapsedMs else 0L
+
+    /**
+     * Open the microphone: the recording row is already the reducer's. Starting a recording pauses what plays — the screen's
+     * players stop on [recordingMs], and the recorder's transient focus
+     * pauses everybody else's (S1.7).
+     */
+    private fun startMicrophone() {
+        heardSound = false
+        recordingHere = true
+        _recordingMs.value = 0
+        _voiceLine.value = null
+        _voiceLevel.value = 0
+        _voiceLevels.value = emptyList()
+        _voiceEffects.tryEmit(VoiceEffect.FocusSlot)
+        if (voiceEnv.assistive) {
+            // The app's own voice stays out of the note (S6): with TalkBack the
+            // microphone opens once "Recording" has been spoken — a fixed second,
+            // as Android cannot say when an announcement has finished — and the
+            // timer starts with it.
+            pendingStart = viewModelScope.launch {
+                delay(SPEECH_LEAD_MS)
+                pendingStart = null
+                openRecorder()
+            }
+        } else {
+            openRecorder()
+        }
+    }
+
+    private fun openRecorder() {
+        if (!voiceRecorder.start(recorderOwner)) {
+            endRecordingState()
+            // The reducer believed it started; nothing did.
+            _hold.value = _hold.value.copy(phase = RecordGesture.Phase.Idle)
+            failed(R.string.e_record_failed)
+            return
+        }
+        recorderOpen = true
+        recordingTicker?.cancel()
+        recordingTicker = viewModelScope.launch {
+            while (recordingHere) {
+                tick()
+                delay(VOICE_TICK_MS)
+            }
+        }
+    }
+
+    /** Every 200 ms: the timer, the level meter, and the row's line. */
+    private fun tick() {
+        val elapsed = voiceRecorder.elapsedMs
+        _recordingMs.value = elapsed
+        val amplitude = voiceRecorder.maxAmplitude()
+        if (VoiceNoteRules.isHeard(amplitude)) heardSound = true
+        _voiceLevel.value = VoiceNoteRules.levelBars(amplitude)
+        _voiceLevels.value = (_voiceLevels.value + Waveform.level(Waveform.dbfs(amplitude))).takeLast(LIVE_LEVELS)
+        refreshLine(elapsed)
+    }
+
+    /** The line in the level meter's place — each said once as it appears (S2.5, S2.9). */
+    private fun refreshLine(elapsed: Long) {
+        val line = when {
+            VoiceNoteRules.showsTimeWarning(elapsed) -> VoiceLine.THIRTY_SECONDS_LEFT
+            VoiceNoteRules.showsSilenceWarning(elapsed, heardSound) -> VoiceLine.CANT_HEAR
+            else -> null
+        }
+        val before = _voiceLine.value
+        _voiceLine.value = line
+        if (line != before) {
+            when (line) {
+                VoiceLine.THIRTY_SECONDS_LEFT -> say(appContext.getString(R.string.s_thirty_seconds_left))
+                VoiceLine.CANT_HEAR -> say(appContext.getString(R.string.s_cant_hear_microphone_muted))
+                null -> Unit
+            }
+        }
+    }
+
+    /**
+     * What a recording left, for the effect that ends it: what the recorder
+     * kept when it ended it by itself, the one stopped to be asked about, or
+     * this composer's running recording, stopped now.
+     */
+    private fun takeRecording(): VoiceRecorder.Recording? {
+        endedRecording?.let {
+            endedRecording = null
+            return it
+        }
+        askedRecording?.let {
+            askedRecording = null
+            return it
+        }
+        if (!recordingHere) return null
+        val kept = if (recorderOpen) voiceRecorder.stop() else null
+        endRecordingState()
+        return kept
+    }
+
+    /** Delete: stopped, then its file deleted — exactly the file it left. */
+    private fun discardRecording() {
+        takeRecording()?.file?.delete()
+    }
+
+    /**
+     * The Send arrow (S2.5): prepared without re-encoding and handed to the
+     * outbox, which writes its row before the first byte, with the primed
+     * reply.
+     */
+    private fun sendRecording(told: List<RecordGesture.HoldEffect>) {
+        val wasThere = hasRecording()
+        val kept = takeRecording()
+        if (kept == null) {
+            keptNothing(wasThere)
+            return
+        }
+        val quote = _replyDraft.getAndUpdate { null }
+        val ticket = reviewTicket()
+        appScope.launch {
+            when (val handOff = dispatchRecording(kept.file, kept.durationMs, kept.waveform, quote, ticket)) {
+                HandOff.Queued -> perform(told)
+                is HandOff.Failed -> notQueued(handOff.error)
+            }
+        }
+    }
+
+    /**
+     * Prepare a voice note and hand it to the outbox. If preparing fails, or
+     * the outbox will not take it, the note lands in review with the error —
+     * never lost (S2.5) — or, once the chat has been left, waits as "not sent".
+     * Queued once the outbox has it; otherwise Failed with the error shown.
+     */
+    private suspend fun dispatchRecording(
+        file: File,
+        durationMs: Long,
+        waveform: String?,
+        quote: ReplyToDto?,
+        ticket: Int?,
+    ): HandOff {
+        val prepared = try {
+            mediaPrep.prepareAudio(Uri.fromFile(file), voiceNote = true)
+        } catch (_: Exception) {
+            // The recording itself, as recorded: it is the voice-note profile
+            // already, which is all preparing would have checked.
+            if (file.exists() &&
+                backToReview(ticket, rawVoiceNote(file, durationMs, waveform), quote, R.string.e_prepare_failed)
+            ) {
+                return HandOff.Failed(R.string.e_prepare_failed)
+            }
+            failed(R.string.e_prepare_failed)
+            parked.park(chatId, file, durationMs, quote, caption = "", session = session, waveform = waveform)
+            return HandOff.Failed(R.string.e_prepare_failed)
+        }
+        file.delete()
+        val note = prepared.withRecordedLength(durationMs).withWaveform(waveform)
+        val queued = messageRepository.sendMedia(listOf(note), "", chatId, quote, null)
+        if (queued == null) {
+            if (note.file.exists() && backToReview(ticket, note, quote, R.string.e_send_failed)) {
+                return HandOff.Failed(R.string.e_send_failed)
+            }
+            failed(R.string.e_send_failed)
+            if (note.file.exists()) {
+                parked.park(chatId, note.file, durationMs, quote, caption = "", session = session, waveform = waveform)
+            }
+            return HandOff.Failed(R.string.e_send_failed)
+        }
+        return HandOff.Queued
+    }
+
+    /**
+     * Where a voice note Send could not get out may still land in review
+     * (S2.5): the [leaves] it was sent under, or null when leaving is what
+     * sent it — the review it would land in is then already "not sent".
+     */
+    private fun reviewTicket(): Int? = synchronized(reviewLock) { if (leaving) null else leaves }
+
+    /**
+     * S2.5's "lands in review with the error": [note] staged beside the
+     * field, its reply primed again, and [error] in the notice line — true
+     * when it is. False, with nothing done, when the chat has been left since
+     * [ticket] (leaving made review "not sent", so that is where it belongs)
+     * or the strip is full; the caller then keeps it as "not sent". Under
+     * [reviewLock], so leaving either finds it staged or has already counted.
+     */
+    private fun backToReview(ticket: Int?, note: MediaPrep.Prepared, quote: ReplyToDto?, @StringRes error: Int): Boolean {
+        val staged = synchronized(reviewLock) {
+            if (ticket == null || ticket != leaves) return false
+            stage(note, keepRefused = true).also { staged ->
+                if (staged && _editTarget.value == null) _replyDraft.compareAndSet(null, quote)
+            }
+        }
+        if (staged) failed(error)
+        return staged
+    }
+
+    /** A recording staged as it was recorded — what review holds when preparing it failed. */
+    private fun rawVoiceNote(file: File, durationMs: Long, waveform: String?): MediaPrep.Prepared = MediaPrep.Prepared(
+        file = file,
+        mime = "audio/mp4",
+        kind = AttachmentDto.KIND_AUDIO,
+        width = null,
+        height = null,
+        durationMs = durationMs.toInt(),
+        previewJpeg = null,
+        voiceNote = true,
+        waveform = waveform,
+    )
+
+    /**
+     * Stop, the Stop square, the cap, Keep: staged
+     * beside the field, and [told] said — unless the recording kept nothing,
+     * which is "too short", never "Ready to review".
+     */
+    private fun reviewRecording(hint: RecordGesture.Hint?, told: List<RecordGesture.HoldEffect>) {
+        val wasThere = hasRecording()
+        val kept = takeRecording()
+        if (kept == null) {
+            keptNothing(wasThere)
+            return
+        }
+        stageRecording(kept, notice = hint?.let(RecordStrings::of))
+        perform(told)
+    }
+
+    /** Where a voice note handed to the outbox went ([dispatchRecording]). */
+    private sealed interface HandOff {
+        /** The outbox has it. */
+        data object Queued : HandOff
+
+        /** In review with [error], or "not sent" — never lost. */
+        data class Failed(@param:StringRes val error: Int) : HandOff
+    }
+
+    /**
+     * Where a voice note on its way into review ended up. Stopping (S2.5)
+     * PREPARES the note on the app's scope before it can be staged, and leaving the chat in that window must still make it "not
+     * sent" (S2.8, S4) — so leaving claims it, and it is parked instead.
+     */
+    private sealed interface Arrival {
+        /** In the strip, for review. */
+        data object Staged : Arrival
+
+        /** The strip was full (ten attachments): kept as "not sent" instead. */
+        data object Refused : Arrival
+
+        /** The chat was left while it was on its way: "not sent", with these. */
+        data class Left(val caption: String, val quote: ReplyToDto?) : Arrival
+    }
+
+    /** A voice note being prepared for review. [left] is set, under [reviewLock], by leaving. */
+    private class ReviewInFlight {
+        var left: Arrival.Left? = null
+    }
+
+    private fun onItsWayToReview(): ReviewInFlight =
+        ReviewInFlight().also { flight -> synchronized(reviewLock) { reviewsInFlight += flight } }
+
+    /** It arrived: [stageIt] — unless the chat was left meanwhile, which says how to park it instead. */
+    private fun arrive(flight: ReviewInFlight, stageIt: () -> Boolean): Arrival = synchronized(reviewLock) {
+        reviewsInFlight -= flight
+        flight.left ?: if (stageIt()) Arrival.Staged else Arrival.Refused
+    }
+
+    /** It will not be staged after all (nothing came back, or it could not be prepared): what leaving left it. */
+    private fun arrivedNowhere(flight: ReviewInFlight): Arrival.Left? = synchronized(reviewLock) {
+        reviewsInFlight -= flight
+        flight.left
+    }
+
+    /** A line the reducer shows: in the row, or in the composer's notice line. */
+    private fun showHint(hint: RecordGesture.Hint) {
+        when (hint) {
+            RecordGesture.Hint.TOO_SHORT -> failed(RecordStrings.of(hint))
+            RecordGesture.Hint.STOPPED_AT_FIVE_MINUTES -> notice(RecordStrings.of(hint))
+        }
+    }
+
+    private fun announce(announcement: RecordGesture.Announcement) {
+        val text = when (announcement) {
+            is RecordGesture.Announcement.ReadyToReview -> appContext.getString(
+                R.string.s_announce_ready_to_review,
+                VoiceNoteRules.clock(announcement.recordedMs),
+            )
+            else -> appContext.getString(RecordStrings.of(announcement))
+        }
+        say(text)
+    }
+
+    private fun say(text: String) {
+        _announcement.value = VoiceAnnouncement(text, ++announcementSerial)
+    }
+
+    /** The recorder ended a recording on its own (see [VoiceRecorder.Ending]). */
+    private fun onRecorderEnded(ending: VoiceRecorder.Ending, kept: VoiceRecorder.Recording?) {
+        // It has stopped by itself: what it kept is what the effects take,
+        // rather than a stop() that would find nothing.
+        recorderOpen = false
+        endRecordingState()
+        endedRecording = kept
+        val at = uptime.now()
+        when (ending) {
+            // Into review with "Recording stopped at five minutes.", never sent
+            // (S2.5) — unless nothing came back, which is no cap at all.
+            VoiceRecorder.Ending.CAP ->
+                if (kept != null) {
+                    step(RecordGesture.HoldEvent.Cap(at))
+                } else {
+                    step(RecordGesture.HoldEvent.Interruption(at, recordedMs = 0))
+                    failed(R.string.e_recording_stopped_unexpectedly)
+                }
+            // What is readable becomes "not sent", with the sentence (S4).
+            VoiceRecorder.Ending.FAILED -> {
+                step(RecordGesture.HoldEvent.Interruption(at, kept?.durationMs ?: 0L))
+                failed(R.string.e_recording_stopped_unexpectedly)
+            }
+            // Another app has the audio, or another chat started a recording.
+            VoiceRecorder.Ending.INTERRUPTED,
+            VoiceRecorder.Ending.SUPERSEDED,
+            -> step(RecordGesture.HoldEvent.Interruption(at, kept?.durationMs ?: 0L))
+        }
+        // Whatever no effect took is kept: never lost.
+        endedRecording?.let { leftover ->
+            endedRecording = null
+            park(leftover)
+        }
+    }
+
+    /**
+     * Something other than the person stopped it (S4): a recording is kept
+     * as "not sent" (under a second, deleted) — never sent — and a pending
+     * prompt is let go.
+     */
+    private fun interruptRecording() {
+        step(RecordGesture.HoldEvent.Interruption(uptime.now(), recordedNow()))
+    }
+
+    /**
+     * The composer is going away — the chat left, another chat opened over
+     * it or come on while its own thread covered it, the screen gone for good
+     * (S4, "Leaving the chat"). A recording stops into "not sent"; and a voice
+     * message still in review — or on its way there — becomes one too, taking
+     * the words in the field as its caption (S2.8) — except while a call is
+     * live, which keeps what is in review where it is (S4's call column; the
+     * call screen coming over the chat is not leaving it). [onCleared] always
+     * parks: nothing would keep them after it.
+     */
+    private fun leave(duringCall: Boolean) {
+        if (duringCall) {
+            interruptRecording()
+            return
+        }
+        // Counted first: a note Send could not get out after this belongs
+        // with "not sent" now, not in a review nobody sees (backToReview).
+        synchronized(reviewLock) {
+            leaves++
+            leaving = true
+        }
+        try {
+            interruptRecording()
+        } finally {
+            synchronized(reviewLock) { leaving = false }
+        }
+        parkStagedVoiceNotes()
+    }
+
+    /** Park a recording as "not sent", with the reply it was recorded under. */
+    private fun park(kept: VoiceRecorder.Recording?) {
+        if (kept == null) return
+        // Under a second there is nothing worth keeping: deleted, silently.
+        if (!VoiceNoteRules.isWorthKeeping(kept.durationMs)) {
+            kept.file.delete()
+            return
+        }
+        // Whatever is recorded carries the primed reply (S1.2), and takes it:
+        // left primed, it would quote the next text as well.
+        val quote = _replyDraft.getAndUpdate { null }
+        appScope.launch {
+            parked.park(chatId, kept.file, kept.durationMs, quote, caption = "", session = session, waveform = kept.waveform)
+        }
+    }
+
+    /**
+     * Leaving: the voice messages in review become "not sent", the first
+     * taking the words and the primed reply — those already staged, and those
+     * still on their way into review (a Stop's or a Keep's preparation runs
+     * on the app's scope), which leaving claims so that they are parked when
+     * they arrive rather than staged into a composer nobody shows again.
+     */
+    private fun parkStagedVoiceNotes() {
+        val (notes, quote, caption) = synchronized(reviewLock) {
+            val notes = takeStaged { it.voiceNote }
+            val onTheirWay = reviewsInFlight.filter { it.left == null }
+            if (notes.isEmpty() && onTheirWay.isEmpty()) return
+            val quote = _replyDraft.getAndUpdate { null }
+            // Not while an edit has borrowed the field: those words are the
+            // message being rewritten, not a caption.
+            val words = if (_editTarget.value == null) inputState.text.toString() else ""
+            val caption = words.takeIf { it.isNotBlank() } ?: ""
+            if (caption.isNotEmpty()) inputState.clearText()
+            // The first one takes the words and the reply: a staged note if
+            // there is one, else the first still on its way.
+            onTheirWay.forEachIndexed { index, flight ->
+                val first = notes.isEmpty() && index == 0
+                flight.left = Arrival.Left(caption = if (first) caption else "", quote = if (first) quote else null)
+            }
+            Triple(notes, quote, caption)
+        }
+        if (notes.isEmpty()) return
+        appScope.launch {
+            notes.forEachIndexed { index, note ->
+                parked.park(
+                    chatId = chatId,
+                    source = note.file,
+                    durationMs = note.durationMs?.toLong() ?: 0L,
+                    replyTo = if (index == 0) quote else null,
+                    caption = if (index == 0) caption else "",
+                    session = session,
+                    waveform = note.waveform,
+                )
+            }
+        }
+    }
+
+    /** Take the staged items [predicate] picks out, atomically (see [stage]). */
+    private fun takeStaged(predicate: (MediaPrep.Prepared) -> Boolean): List<MediaPrep.Prepared> {
+        while (true) {
+            val current = _staged.value
+            val taken = current.filter(predicate)
+            if (taken.isEmpty()) return emptyList()
+            if (_staged.compareAndSet(current, current.filterNot(predicate))) return taken
+        }
+    }
+
+    /**
+     * Prepare a stopped recording without re-encoding it, and stage it beside
+     * the field — or, if the chat is left while it is being prepared, keep it
+     * as the "not sent" row leaving makes of a note in review (S2.8, S4).
+     */
+    private fun stageRecording(kept: VoiceRecorder.Recording, @StringRes notice: Int?) {
+        _mediaState.value = MediaSendState.Preparing
+        val flight = onItsWayToReview()
         appScope.launch {
             val prepared = try {
                 // A voice note is already the protocol's voice-note row; the
                 // audio rules that re-encode are for picked files only.
-                mediaPrep.prepareAudio(Uri.fromFile(file), voiceNote = true)
+                mediaPrep.prepareAudio(Uri.fromFile(kept.file), voiceNote = true)
             } catch (_: Exception) {
-                file.delete()
+                // Never lost: what could not be staged waits as "not sent".
+                val left = arrivedNowhere(flight)
                 _mediaState.value =
                     MediaSendState.Failed(appContext.getString(R.string.e_prepare_failed))
+                if (left == null) {
+                    park(kept)
+                } else {
+                    parked.park(
+                        chatId, kept.file, kept.durationMs, left.quote, left.caption, session = session,
+                        waveform = kept.waveform,
+                    )
+                }
                 return@launch
             }
-            file.delete()
-            stage(prepared)
+            kept.file.delete()
+            val note = prepared.withRecordedLength(kept.durationMs).withWaveform(kept.waveform)
+            when (val arrival = arrive(flight) { stage(note, keepRefused = true) }) {
+                Arrival.Staged -> if (notice != null) {
+                    _mediaState.value = MediaSendState.Notice(appContext.getString(notice))
+                }
+                // A full strip (ten attachments) does not get to delete it.
+                Arrival.Refused -> park(VoiceRecorder.Recording(note.file, kept.durationMs, kept.waveform))
+                is Arrival.Left -> {
+                    // The strip is not busy with it any more, whoever comes back.
+                    _mediaState.compareAndSet(MediaSendState.Preparing, MediaSendState.Idle)
+                    parked.park(
+                        chatId, note.file, kept.durationMs, arrival.quote, arrival.caption, session = session,
+                        waveform = kept.waveform,
+                    )
+                }
+            }
         }
     }
 
-    fun cancelRecording() {
+    private fun endRecordingState() {
+        recordingHere = false
+        recorderOpen = false
         recordingTicker?.cancel()
         recordingTicker = null
+        pendingStart?.cancel()
+        pendingStart = null
         _recordingMs.value = null
-        voiceRecorder.cancel()
+        _voiceLine.value = null
+        _voiceLevel.value = 0
+        _voiceLevels.value = emptyList()
     }
 
+    /**
+     * A sentence in the composer's notice line (S1.3's "says why") — or, while
+     * the strip is busy with an attachment's live progress, a toast, so the
+     * progress is not overwritten and the sentence is still said.
+     */
+    private fun notice(@StringRes message: Int) {
+        val text = appContext.getString(message)
+        if (_mediaState.value.isBusy) {
+            _transientMessages.tryEmit(text)
+            return
+        }
+        _mediaState.value = MediaSendState.Notice(text)
+    }
+
+    /** An error in the notice line, likewise; [opensSettings] adds Open Settings. */
+    private fun failed(@StringRes message: Int, opensSettings: Boolean = false) {
+        val text = appContext.getString(message)
+        if (_mediaState.value.isBusy) {
+            _transientMessages.tryEmit(text)
+            return
+        }
+        _mediaState.value = MediaSendState.Failed(text, opensSettings)
+    }
+
+    /** The recorder's own clock, where the file cannot say how long it is. */
+    private fun MediaPrep.Prepared.withRecordedLength(recordedMs: Long): MediaPrep.Prepared =
+        if (durationMs != null) this else copy(durationMs = recordedMs.toInt())
+
+    /** The recorder's waveform (#79), which preparing the file cannot know: it is the meter's. */
+    private fun MediaPrep.Prepared.withWaveform(waveform: String?): MediaPrep.Prepared =
+        if (waveform == null) this else copy(waveform = waveform)
+
+    /**
+     * Prepare and send a picked document. Nothing is re-encoded — a file
+     * goes as it is (protocol.md, "Files").
+     */
     fun stageFile(uri: Uri) = stageFiles(listOf(uri))
 
     /** The multi-document picker's entry: each Uri prepared and staged in order. */
@@ -1709,6 +3005,7 @@ class ChatViewModel @Inject constructor(
                 }
 
                 if (!stage(prepared)) return@launch
+                personChangedStrip()
                 if (index < uris.lastIndex) _mediaState.value = MediaSendState.Preparing
             }
         }
@@ -1888,6 +3185,7 @@ class ChatViewModel @Inject constructor(
                     }
 
                     if (!stage(prepared)) return@launch
+                    personChangedStrip()
                     if (index < targets.lastIndex) {
                         _mediaState.value = MediaSendState.Preparing
                     }
@@ -2118,6 +3416,55 @@ class ChatViewModel @Inject constructor(
         return result
     }
 
+    /**
+     * A voice message's Save (#79): download if needed, then copy into the
+     * document the person just created through the system's own save screen
+     * (ACTION_CREATE_DOCUMENT) — Android's "Save to Files". That screen is
+     * the confirmation; a failure says so in the strip. True when saved.
+     */
+    suspend fun saveToDocument(attachment: AttachmentDto, destination: Uri): Boolean {
+        _mediaState.value = MediaSendState.Working(appContext.getString(R.string.s_preparing))
+        val file = attachments.fileFor(attachment)
+        if (file == null) {
+            // The save screen has already made the document: an empty file
+            // with the recording's name must not be left where it was saved.
+            discardDocument(destination)
+            _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_download_to_save_failed))
+            return false
+        }
+        val copied = withContext(Dispatchers.IO) {
+            runCatching {
+                appContext.contentResolver.openOutputStream(destination, "w")?.use { output ->
+                    file.inputStream().use { input -> input.copyTo(output) }
+                } != null
+            }.getOrDefault(false)
+        }
+        if (!copied) discardDocument(destination)
+        _mediaState.value = if (copied) {
+            MediaSendState.Idle
+        } else {
+            MediaSendState.Failed(appContext.getString(R.string.e_save_failed))
+        }
+        return copied
+    }
+
+    /**
+     * Remove a document the system's save screen made but nothing was put
+     * in — a failed Save, or one whose recording was lost. Best effort: a
+     * provider that refuses keeps it, and there is nothing more to say.
+     */
+    suspend fun discardDocument(destination: Uri) {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                if (destination.scheme == android.content.ContentResolver.SCHEME_FILE) {
+                    destination.path?.let { File(it).delete() }
+                } else {
+                    android.provider.DocumentsContract.deleteDocument(appContext.contentResolver, destination)
+                }
+            }
+        }
+    }
+
     /** The user declined (or the system refused) the storage permission. */
     fun reportSaveNeedsPermission() {
         _mediaState.value = MediaSendState.Failed(
@@ -2215,6 +3562,25 @@ class ChatViewModel @Inject constructor(
          * chose to jump whenever there is ANYTHING unread.
          */
         const val ANCHOR_CAP = INITIAL_LIMIT + MAX_JUMP_PAGES * PAGE_SIZE
+
+        /**
+         * How long a screen rebuilt by a configuration change has to come
+         * back before this chat counts as left (see [screenDetached]).
+         */
+        const val ORPHAN_GRACE_MS = 5_000L
+
+        /**
+         * With TalkBack running, how long the microphone waits for "Recording"
+         * to be spoken (#79, S6: "a fixed 1 s" where the platform cannot say
+         * when an announcement has finished).
+         */
+        const val SPEECH_LEAD_MS = 1_000L
+
+        /** The recording's timer, level meter and line refresh this often (S2.9's 200 ms tick). */
+        const val VOICE_TICK_MS = 200L
+
+        /** How many of the newest peaks the live waveform keeps: more than the widest row draws. */
+        const val LIVE_LEVELS = 96
 
         const val READ_DEBOUNCE_MS = 500L
         const val TYPING_THROTTLE_MS = 3_000L

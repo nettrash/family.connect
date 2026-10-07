@@ -1513,6 +1513,47 @@ async fn get_json(
     serde_json::from_slice(&bytes).map_err(|_| Failure::Invalid)
 }
 
+/// How long to wait before asking Open-Meteo a second time.
+const OPEN_METEO_RETRY_DELAY: Duration = Duration::from_millis(750);
+
+/// Only a failure that came back within this long is asked again: one that
+/// took longer has spent its time, and a retry would only stretch the wait.
+const OPEN_METEO_RETRY_IF_FAILED_WITHIN: Duration = Duration::from_secs(2);
+
+/// The failures worth one more try: the server overloaded or erroring, too
+/// many requests, or a connection that broke. Never a timeout (its time is
+/// spent), a 4xx that says the request itself is wrong, or an answer that
+/// was not JSON.
+fn worth_asking_again(failure: Failure) -> bool {
+    matches!(
+        failure,
+        Failure::Network | Failure::Status(429) | Failure::Status(500..=599)
+    )
+}
+
+/// [`get_json`] for Open-Meteo, asked once more after a FAST transient
+/// failure (protocol.md, "Today's weather, for places the owner chose",
+/// amended 2026-10-06). Its free API answers `503` "The service is
+/// overloaded" in short bursts: the first morning of greeting weather lost
+/// Moscow to one while Belgrade, asked in the same second, came back.
+///
+/// Only Open-Meteo goes through this. A paid web search is never repeated
+/// on its own — a second request is a second bill and a second step of
+/// the family's daily cap.
+async fn get_weather_json(state: &AppState, url: reqwest::Url) -> Result<Value, Failure> {
+    let started = Instant::now();
+    match get_json(state, url.clone(), &[]).await {
+        Err(failure)
+            if worth_asking_again(failure)
+                && started.elapsed() < OPEN_METEO_RETRY_IF_FAILED_WITHIN =>
+        {
+            tokio::time::sleep(OPEN_METEO_RETRY_DELAY).await;
+            get_json(state, url, &[]).await
+        }
+        answer => answer,
+    }
+}
+
 /// The weather answers kept for half an hour, by rounded coordinates and
 /// days — never by place name, which is member words.
 /// Rounded latitude and longitude (hundredths of a degree), and days.
@@ -1977,7 +2018,7 @@ async fn geocode(
         });
     };
     let host = url_host(&url);
-    let matches = match get_json(state, url, &[]).await {
+    let matches = match get_weather_json(state, url).await {
         Ok(answer) => answer["results"].as_array().cloned().unwrap_or_default(),
         Err(failure) => {
             return Err(WeatherMiss {
@@ -2035,7 +2076,7 @@ async fn forecast_for(state: &AppState, found: &Value, days: u8) -> Result<Value
         });
     };
     let host = url_host(&url);
-    match get_json(state, url, &[]).await {
+    match get_weather_json(state, url).await {
         Ok(answer) => {
             state.lookup_cache.put(cache_key, answer.clone());
             Ok(answer)
@@ -2605,6 +2646,35 @@ impl StreamGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a transient failure earns Open-Meteo a second ask: overloaded or
+    /// erroring, too many requests, a broken connection. Never a timeout
+    /// (its time is spent), a 4xx about the request itself, or an answer
+    /// that was not JSON (protocol.md, amended 2026-10-06).
+    #[test]
+    fn only_a_transient_open_meteo_failure_is_asked_again() {
+        for again in [
+            Failure::Network,
+            Failure::Status(429),
+            Failure::Status(500),
+            Failure::Status(502),
+            Failure::Status(503),
+            Failure::Status(599),
+        ] {
+            assert!(worth_asking_again(again), "{again:?} should be asked again");
+        }
+        for not in [
+            Failure::Timeout,
+            Failure::Invalid,
+            Failure::Status(400),
+            Failure::Status(401),
+            Failure::Status(403),
+            Failure::Status(404),
+            Failure::Status(600),
+        ] {
+            assert!(!worth_asking_again(not), "{not:?} must not be asked again");
+        }
+    }
 
     fn ledger_with(urls: &[(&str, &str)]) -> Ledger {
         let mut ledger = Ledger::default();

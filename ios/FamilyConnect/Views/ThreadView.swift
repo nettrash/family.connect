@@ -194,7 +194,10 @@ struct ThreadView: View {
     // MARK: - Rows, drawn as the chat draws them
 
     private var snapshots: [MessageSnapshot] {
-        rows.map { MessageSnapshot($0) }
+        // A reply quoting a video message says "Video message" (#79, S5.7).
+        let plain = rows.map { MessageSnapshot($0) }
+        let roundIDs = MessagePresentation.roundMessageIDs(plain)
+        return plain.map { MessagePresentation.namingRoundQuotes($0, roundIDs: roundIDs) }
     }
 
     private var sections: [DaySection] {
@@ -328,6 +331,9 @@ struct ThreadView: View {
             return
         }
         guard !attachment.isFile else { return }
+        // A video message's "Open Full Screen" (#79, S5.4): whatever plays
+        // in place lets go before the viewer plays it.
+        if MessagePresentation.isRoundVideo(message) { NowPlaying.shared.pauseAll() }
         let media = AttachmentAlbum.media(of: message.attachments)
         guard !media.isEmpty else { return }
         let index = media.firstIndex { $0.id == attachment.id } ?? 0

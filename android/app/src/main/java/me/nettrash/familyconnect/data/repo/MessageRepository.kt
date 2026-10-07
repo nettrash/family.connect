@@ -448,6 +448,16 @@ class MessageRepository @Inject constructor(
          * no network: it is queued exactly as a photo is.
          */
         sticker: Boolean = false,
+        /**
+         * Send the ONE item as a VIDEO MESSAGE (docs/protocol.md, "Video
+         * messages"; #79): `round: true` on the send, the sticker's pattern
+         * exactly — the flag rides on the row's own attachment
+         * (`AttachmentDto.round`), so the bubble draws round from the first
+         * frame and a retry after a process death still sends a circle and
+         * not a square video. Unlike a sticker it KEEPS its poster: the
+         * square JPEG is what every reader's circle draws until it plays.
+         */
+        round: Boolean = false,
     ): String? {
         val named = mentions?.takeIf { it.isNotEmpty() }
         if (prepared.isEmpty()) return null
@@ -455,6 +465,11 @@ class MessageRepository @Inject constructor(
         // the server refuses (`invalid_attachment`, `validation`), so it is
         // refused here before a row could be written for it.
         if (sticker && (prepared.size != 1 || caption.isNotBlank())) return null
+        // A video message likewise: ONE `kind=video`, NO body, and never
+        // beside the sticker flag (`validation`, `invalid_attachment`).
+        if (round && !RoundSend.accepts(prepared, caption, sticker, settings.state.first().roundVideoLimits?.maxBytes)) {
+            return null
+        }
         val me = settings.state.first().myUserId ?: return null
         val clientMsgId = UUID.randomUUID().toString()
 
@@ -478,6 +493,9 @@ class MessageRepository @Inject constructor(
                 latitude = null,
                 longitude = null,
                 accuracyM = null,
+                // A voice note's shape goes up with its bytes (#79), and survives
+                // a process death with them; audio only.
+                waveform = item.waveform?.takeIf { item.kind == AttachmentDto.KIND_AUDIO },
             )
         }
         if (staged.isEmpty()) return null
@@ -488,7 +506,7 @@ class MessageRepository @Inject constructor(
         // poll plays with its option ids. Without it the sender watches an
         // empty bubble for the length of the upload.
         val items = pendingAttachmentDao.itemsFor(clientMsgId)
-        val placeholders = items.map { it.placeholderDto().asSticker(sticker) }
+        val placeholders = items.map { it.placeholderDto().asSticker(sticker).asRound(round) }
         val body = caption.trim()
         val now = clock.now()
         val first = placeholders.first()
@@ -576,6 +594,7 @@ class MessageRepository @Inject constructor(
             // item rows know nothing of stickers, and the row is what
             // survived the process death this whole path exists for.
             val sticker = row.isPendingSticker
+            val round = row.isPendingRound
 
             for (item in items.filter { it.attachmentId == null }) {
                 if (!uploadItem(clientMsgId, item, sticker)) return
@@ -586,7 +605,7 @@ class MessageRepository @Inject constructor(
             // this message from a text one.
             val done = pendingAttachmentDao.itemsFor(clientMsgId)
             if (done.any { it.attachmentId == null }) return
-            val attachments = done.mapNotNull { it.uploadedDto()?.asSticker(sticker) }
+            val attachments = done.mapNotNull { it.uploadedDto()?.asSticker(sticker)?.asRound(round) }
             messageDao.applyOwnAttachments(
                 clientMsgId,
                 attachments.first().id,
@@ -600,6 +619,8 @@ class MessageRepository @Inject constructor(
                 attachments.map { it.id },
                 mentions = pendingMentionsOf(row),
                 sticker = sticker,
+                // The flag on the wire only while the keys are still here (sendsRound).
+                round = round && settings.state.first().roundVideoLimits != null,
             )
         } finally {
             mediaUploads.remove(clientMsgId)
@@ -638,6 +659,7 @@ class MessageRepository @Inject constructor(
                 height = item.height,
                 durationMs = item.durationMs,
                 name = item.name,
+                waveform = item.waveform,
             )
         }
         val attachment = (uploaded as? ApiResult.Ok)?.value?.attachment ?: run {
@@ -782,6 +804,7 @@ class MessageRepository @Inject constructor(
             pendingPollOf(row),
             pendingMentionsOf(row),
             row.isPendingSticker,
+            row.sendsRound(),
         )
     }
 
@@ -809,6 +832,31 @@ class MessageRepository @Inject constructor(
     /** Stamp — or leave alone — the flag a sticker's attachment carries. */
     private fun AttachmentDto.asSticker(sticker: Boolean): AttachmentDto =
         if (sticker) copy(sticker = true) else this
+
+    /**
+     * Whether a not-yet-acked row is a video-message send (#79) — off the
+     * row, for the sticker's reason: a retry after a process death must
+     * still carry `round: true`, and the row's one attachment is where the
+     * server's own copy will put it.
+     */
+    private val MessageEntity.isPendingRound: Boolean
+        get() = serverId == null && attachmentList.singleOrNull()?.isRound == true
+
+    /**
+     * Whether a queued video message goes out WITH its flag now: only while
+     * this device still has the discovery keys. A row queued with them and
+     * retried after they went — a server rolled back — is already written,
+     * so it goes as the ordinary video such a server would make of it
+     * anyway; "a client must not send the flag without the discovery keys"
+     * (docs/protocol.md, "Video messages"). Asked at every dispatch, never
+     * remembered from the queueing.
+     */
+    private suspend fun MessageEntity.sendsRound(): Boolean =
+        isPendingRound && settings.state.first().roundVideoLimits != null
+
+    /** Stamp — or leave alone — the flag a video message's attachment carries. */
+    private fun AttachmentDto.asRound(round: Boolean): AttachmentDto =
+        if (round) copy(round = true) else this
 
     private fun pendingMentionsOf(row: MessageEntity): List<MentionDto>? {
         if (row.serverId != null) return null
@@ -876,6 +924,7 @@ class MessageRepository @Inject constructor(
                     pendingPollOf(row),
                     pendingMentionsOf(row),
                     row.isPendingSticker,
+                    row.sendsRound(),
                 )
             }
         }
@@ -902,16 +951,22 @@ class MessageRepository @Inject constructor(
          * `false`, so an ordinary send stays byte-identical to what it was.
          */
         sticker: Boolean = false,
+        /**
+         * The send is a VIDEO MESSAGE (#79). Becomes `round: true` on the
+         * frame or the request and is omitted otherwise, as [sticker] is.
+         */
+        round: Boolean = false,
     ) {
         if (attachmentIds?.any { it < 0 } == true) {
             scope.launch { uploadPending(clientMsgId) }
             return
         }
         val stickerFlag = if (sticker) true else null
+        val roundFlag = if (round) true else null
         val overSocket = socket.state.value == SocketState.Open &&
             socket.trySend(
                 ClientFrame.Send(
-                    chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag,
+                    chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag, roundFlag,
                 ),
             )
         if (overSocket) {
@@ -920,11 +975,15 @@ class MessageRepository @Inject constructor(
                 pendingAcks.remove(clientMsgId)
                 // No ack in time — the frame may or may not have landed.
                 // REST with the same client_msg_id is safe either way.
-                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag)
+                restFallback(
+                    clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag, roundFlag,
+                )
             }
         } else {
             scope.launch {
-                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag)
+                restFallback(
+                    clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag, roundFlag,
+                )
             }
         }
     }
@@ -938,11 +997,13 @@ class MessageRepository @Inject constructor(
         poll: NewPollDto? = null,
         mentions: List<MentionDto>? = null,
         sticker: Boolean? = null,
+        round: Boolean? = null,
     ) {
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // ack won the race
-        val result =
-            chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, sticker)
+        val result = chatApi.postMessage(
+            chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, sticker, round,
+        )
         when (result) {
             is ApiResult.Ok -> ackMessage(clientMsgId, result.value.message, chainLive = true)
             else -> recordSendFailure(clientMsgId, result)
@@ -986,12 +1047,14 @@ class MessageRepository @Inject constructor(
                 pendingAttachmentDao.forgetUploads(clientMsgId)
                 // The flag goes back onto the placeholders it is about to
                 // be read from: a sticker whose upload expired in the outbox
-                // must go up again as a sticker, not as a photo.
+                // must go up again as a sticker, not as a photo — and a video
+                // message as a circle, not as a square video.
                 val sticker = row.isPendingSticker
+                val round = row.isPendingRound
                 messageDao.applyOwnAttachments(
                     clientMsgId,
                     items.first().placeholderId,
-                    AttachmentsCodec.encode(items.map { it.placeholderDto().asSticker(sticker) }),
+                    AttachmentsCodec.encode(items.map { it.placeholderDto().asSticker(sticker).asRound(round) }),
                 )
                 scope.launch { uploadPending(clientMsgId) }
                 return
@@ -1827,6 +1890,105 @@ class MessageRepository @Inject constructor(
         }
     }
 
+    /**
+     * Read again, once, the cached messages that may be VIDEO MESSAGES but
+     * were stored by a build that did not know the flag (#79;
+     * docs/audio-video-messages-2026-10-04.md, S5.8).
+     *
+     * A build before #79 wrote a received circle back as a plain video —
+     * its encoder knew no `round` — and the catch-up only ever ADDS, so
+     * after the upgrade that message drew square for good. Every row such
+     * a build wrote is `attachmentsKnowRound = 0` (MIGRATION_30_31); the
+     * ones that could be circles — one video, no body, on the server — are
+     * read through the location repair's `before_id = id + 1, limit = 1`.
+     *
+     * The answer's set is written straight onto the row
+     * ([MessageDao.setAttachment], which marks it known) rather than
+     * through [applyServerMessage]: that path never rewrites a held row's
+     * attachments, and it would also attach a thread-read row to the
+     * contiguous window, which this one copy says nothing about — no
+     * cursor moves here. A message the server no longer has, or a row that
+     * is not a single video after all, is marked known so it is never
+     * asked about again.
+     *
+     * Newest first, at most [REPAIR_BATCH] per resync. One failed read is
+     * about ONE message, and the pass goes on past it — the rules are
+     * iOS's (`ChatSyncCoordinator.roundRepairOutcome`):
+     * - a refusal — 403 (a chat this device still caches but may no longer
+     *   read), 404 (a message the server has lost), 409, any other 4xx —
+     *   or a 2xx whose body will not decode is SETTLED like a message that
+     *   is gone: marked known, never asked again. Asking again would only
+     *   be refused again, and since the pass goes newest first, the same
+     *   unreadable message used to be asked FIRST on every resync and spent
+     *   the batch's place for good;
+     * - a 5xx says nothing yet: the row stays unknown, is asked again next
+     *   resync, and the pass goes on to the others;
+     * - a 401 (the session is gone), a 429 (the server asking us to slow
+     *   down) or a transport failure says nothing about the one message and
+     *   ENDS the pass: every further request would meet the same refusal
+     *   or the same dead network. The rest wait for the next resync. (A
+     *   429 ends the pass on iOS too, as `throttled`.)
+     */
+    suspend fun repairUnknownRoundFlags() {
+        val unknown = messageDao.roundFlagUnknown(REPAIR_BATCH)
+        for (row in unknown) {
+            val serverId = row.serverId
+            if (serverId == null || row.attachmentList.size != 1) {
+                messageDao.markRoundFlagKnown(row.clientMsgId)
+                continue
+            }
+            val page = when (val result = chatApi.messages(row.chatId, beforeId = serverId + 1, limit = 1)) {
+                is ApiResult.Ok -> result.value.messages
+                is ApiResult.NetworkError -> if (result.isUndecodable) {
+                    messageDao.markRoundFlagKnown(row.clientMsgId)
+                    continue
+                } else {
+                    return
+                }
+                is ApiResult.HttpError -> when (result.status) {
+                    HTTP_UNAUTHORIZED, HTTP_TOO_MANY_REQUESTS -> return
+                    in HTTP_CLIENT_ERRORS -> {
+                        messageDao.markRoundFlagKnown(row.clientMsgId)
+                        continue
+                    }
+                    else -> continue
+                }
+            }
+            val dto = page.firstOrNull { it.id == serverId }
+            val set = dto?.resolvedAttachments.orEmpty()
+            if (dto == null || set.isEmpty()) {
+                messageDao.markRoundFlagKnown(row.clientMsgId)
+                continue
+            }
+            val first = set.first()
+            messageDao.setAttachment(
+                row.clientMsgId,
+                first.id,
+                first.kind,
+                first.mime,
+                first.size,
+                first.width,
+                first.height,
+                first.durationMs,
+                first.hasPreview,
+                first.name,
+                first.latitude,
+                first.longitude,
+                first.accuracyM,
+                AttachmentsCodec.encode(set),
+            )
+            // The chat list's line, when this is its newest message: "Video
+            // message" rather than "Video". Guarded on time in SQL, so an
+            // older message never takes the line over.
+            chatDao.updateLastMessage(
+                row.chatId,
+                previewText(dto.body, set, dto.call, previewLabels),
+                row.createdAt,
+                row.senderId,
+            )
+        }
+    }
+
     suspend fun loadOlder(chatId: Long): Boolean {
         val oldest = messageDao.oldestServerId(chatId)
         val result = chatApi.messages(chatId, beforeId = oldest, limit = HISTORY_PAGE)
@@ -1862,6 +2024,8 @@ class MessageRepository @Inject constructor(
             val photo: String = "Photo",
             /** A message sent as a sticker (docs/protocol.md, "Sticker pack"). */
             val sticker: String = "Sticker",
+            /** A message sent as a video message (#79, S5.7). */
+            val videoMessage: String = "Video message",
             val videos: (Int) -> String = { "$it Videos" },
             val audios: (Int) -> String = { "$it Audio" },
             val files: (Int) -> String = { "$it Files" },
@@ -1884,6 +2048,7 @@ class MessageRepository @Inject constructor(
                         file = r.getString(R.string.s_file),
                         photo = r.getString(R.string.s_photo),
                         sticker = r.getString(R.string.s_sticker),
+                        videoMessage = r.getString(R.string.s_video_message),
                         videos = { r.getQuantityString(R.plurals.p_videos, it, it) },
                         audios = { r.getQuantityString(R.plurals.p_audio, it, it) },
                         files = { r.getQuantityString(R.plurals.p_files, it, it) },
@@ -1941,6 +2106,9 @@ class MessageRepository @Inject constructor(
                 }
             }
             return when {
+                // BEFORE "Video" (#79, S5.7): a video message is a video in
+                // every other respect, so the order is the rule.
+                attachment.isRound -> labels.videoMessage
                 attachment.isVideo -> labels.video
                 attachment.isAudio -> attachment.name?.takeIf { it.isNotEmpty() } ?: labels.audio
                 attachment.isLocation ->
@@ -1990,8 +2158,17 @@ class MessageRepository @Inject constructor(
 
         private const val TAG = "MessageRepository"
 
-        /** Most broken locations repaired per resync — see the note above. */
+        /** Most broken locations (or unknown video-message flags) repaired per resync — see the notes above. */
         private const val REPAIR_BATCH = 25
+
+        /** A rate limit: ends a repair pass rather than settling the row it was about. */
+        private const val HTTP_TOO_MANY_REQUESTS = 429
+
+        /** A lost session: ends a repair pass — every further read would be refused the same way. */
+        private const val HTTP_UNAUTHORIZED = 401
+
+        /** A refusal of THIS read (the two above aside): the repair settles the row. */
+        private val HTTP_CLIENT_ERRORS = 400..499
 
         /**
          * The ack deadline, and the same number iOS uses. The protocol

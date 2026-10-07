@@ -623,6 +623,24 @@ struct AppSessionTransitionTests {
         #expect(AppSettings.currentUserID == nil)
     }
 
+    /// #79, S2.8 and S4 "Sign-out": everything recorded and not sent goes
+    /// with the session — and with a family that went, whose chats it was
+    /// recorded in. Every purge wipes chat data, so every purge clears it.
+    @Test("every purge deletes the voice messages that were not sent", arguments: [
+        SessionLogic.PurgeReason.logout, .serverChange, .unauthorized, .accountDeleted, .kicked, .leftFamily,
+    ])
+    func purgeClearsParkedRecordings(reason: SessionLogic.PurgeReason) {
+        resetGlobals()
+        defer { resetGlobals() }
+        let (session, _) = makeSession()
+        var cleared = 0
+        session.clearParkedRecordings = { cleared += 1 }
+
+        session.purge(reason)
+
+        #expect(cleared == 1, "a not-sent recording outlived \(reason)")
+    }
+
     @Test("family_owner outside a family is ignored")
     func familyOwnerFrameWithoutFamilyIsIgnored() {
         resetGlobals()

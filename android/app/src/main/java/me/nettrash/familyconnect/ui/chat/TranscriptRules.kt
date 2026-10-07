@@ -17,6 +17,7 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import java.util.Locale
 
@@ -124,4 +125,29 @@ object TranscriptRules {
             messageServerId != null &&
             mayAsk(chatKind, senderId, myUserId, assistantUserId, familyAllowsOthers) &&
             askable(attachment.kind, attachment.size, maxBytes)
+
+    /**
+     * The long-press menu's transcript item (#79): the line's own decision,
+     * as one action. [held] is null with no text on this device, true while
+     * it shows, false while it is folded away.
+     */
+    fun menuAction(
+        held: Boolean?,
+        status: TranscriptRequests.Status?,
+        offered: Boolean,
+        canAsk: Boolean,
+        reveal: () -> Unit,
+        hide: () -> Unit,
+        ask: () -> Unit,
+    ): TranscriptMenuAction? = when {
+        // Being fetched: nothing to do until it lands.
+        status == TranscriptRequests.Status.LOADING -> null
+        held == true && status == null -> TranscriptMenuAction(R.string.s_transcript_hide, hide)
+        held != null -> TranscriptMenuAction(R.string.s_transcript_show, reveal)
+        // A refusal, or what this device could not do with the file, is said
+        // under the player; asking again from the menu would only earn it again.
+        status != null && status != TranscriptRequests.Status.FAILED -> null
+        offered && canAsk -> TranscriptMenuAction(R.string.s_transcript_show, ask)
+        else -> null
+    }
 }

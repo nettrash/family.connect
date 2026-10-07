@@ -397,6 +397,34 @@ public class ApiClientTests
     }
 
     /// <summary>
+    /// A voice note's waveform (docs/protocol.md, "A voice note's waveform") rides in the query on AUDIO only, and only
+    /// when it is exactly the wire; the answer's echo lands on the attachment, and an answer without one (a server from
+    /// before waveforms) is still a success.
+    /// </summary>
+    [Fact]
+    public async Task AVoiceNotesWaveformGoesInTheQueryOnAudioOnly()
+    {
+        const string wire = "0123456789abcdef0123456789abcdef0123456789abcdef";
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.Created, $$$"""{"attachment": {"id": 40, "kind": "audio", "mime": "audio/mp4", "duration_ms": 4200, "waveform": "{{{wire}}}"}}""")
+            .Then(HttpStatusCode.Created, """{"attachment": {"id": 41, "kind": "audio", "mime": "audio/mp4", "duration_ms": 4200}}""")
+            .Then(HttpStatusCode.Created, """{"attachment": {"id": 42, "kind": "audio", "mime": "audio/mp4"}}""")
+            .Then(HttpStatusCode.Created, """{"attachment": {"id": 43, "kind": "video", "mime": "video/mp4"}}"""));
+        var echoed = await client.Upload("audio", "audio/mp4", new byte[] { 1 }, durationMs: 4200, waveform: wire);
+        Assert.Equal(wire, echoed.Value!.Attachment.Waveform);
+        var old = await client.Upload("audio", "audio/mp4", new byte[] { 1 }, durationMs: 4200, waveform: wire);
+        Assert.True(old.Ok);
+        Assert.Null(old.Value!.Attachment.Waveform);
+        await client.Upload("audio", "audio/mp4", new byte[] { 1 }, waveform: wire.ToUpperInvariant());
+        await client.Upload("video", "video/mp4", new byte[] { 1 }, waveform: wire);
+        Assert.Equal(
+            $"https://chat.example.com/api/v1/attachments?kind=audio&duration_ms=4200&waveform={wire}",
+            handler.Sent[0].RequestUri?.ToString());
+        Assert.Equal("https://chat.example.com/api/v1/attachments?kind=audio", handler.Sent[2].RequestUri?.ToString());
+        Assert.Equal("https://chat.example.com/api/v1/attachments?kind=video", handler.Sent[3].RequestUri?.ToString());
+    }
+
+    /// <summary>
     /// A preview is PUT as raw JPEG to its attachment, and the server's 204 is success — the empty
     /// answer that a reader expecting JSON would call unreadable.
     /// </summary>
@@ -676,6 +704,33 @@ public class ApiClientTests
         Assert.DoesNotContain("sticker", handler.Bodies[1], StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ARestSendSaysRoundOnlyWhenItIsAVideoMessage()
+    {
+        const string Answer =
+            """
+            {"message": {"id": 1341, "chat_id": 42, "sender_id": 7, "client_msg_id": "k", "body": "",
+             "created_at": "2026-10-05T10:00:00Z",
+             "attachments": [{"id": 91, "kind": "video", "mime": "video/mp4", "size": 1649700, "width": 480,
+                              "height": 480, "duration_ms": 23400, "has_preview": true, "round": true}]}}
+            """;
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.Created, Answer)
+            .Then(HttpStatusCode.Created, Answer));
+
+        var sent = await client.SendMessage(42, "k", "", replyToMessageId: 41, attachmentIds: [91], round: true);
+        await client.SendMessage(42, "k2", "", attachmentIds: [91]);
+
+        Assert.True(sent.Value!.Message.Media[0].Round);
+        Assert.Equal(91, sent.Value.Message.RoundVideo!.Id);
+        Assert.Equal(
+            """{"client_msg_id":"k","body":"","reply_to_message_id":41,"attachment_ids":[91],"round":true}""",
+            handler.Bodies[0]);
+        // Absent otherwise — never false — so a server that predates video messages reads what it always read.
+        Assert.DoesNotContain("round", handler.Bodies[1], StringComparison.Ordinal);
+        Assert.DoesNotContain("sticker", handler.Bodies[0], StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// The family's own document: the pack's mark, omitted while the pack is untouched, and its
     /// two ceilings — whose ABSENCE is how a client knows the server predates packs.
@@ -705,6 +760,49 @@ public class ApiClientTests
         var older = (await client.Family()).Value!;
         Assert.Null(older.MaxPackItems);
         Assert.Null(older.MaxPackItemBytes);
+    }
+
+    /// <summary>
+    /// The video message's two limits on the family's document (docs/protocol.md, "Video messages"): read as numbers, and
+    /// their ABSENCE — an older server — read as nothing to record with.
+    /// </summary>
+    [Fact]
+    public async Task TheFamilysDocumentCarriesTheVideoMessagesLimitsOrNeither()
+    {
+        var (client, _) = Client(new Fake()
+            .Then(HttpStatusCode.OK,
+                """
+                {"family": {"id": 3, "name": "The Smiths"}, "members": [],
+                 "max_round_video_ms": 60000, "max_round_video_bytes": 4194304}
+                """)
+            .Then(HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths"}, "members": []}"""));
+
+        var current = (await client.Family()).Value!;
+        Assert.Equal(60_000, current.MaxRoundVideoMs);
+        Assert.Equal(4_194_304, current.MaxRoundVideoBytes);
+        Assert.Equal(new RoundVideoLimits(60_000, 4_194_304), RoundVideoLimits.Of(current));
+
+        var older = (await client.Family()).Value!;
+        Assert.Null(older.MaxRoundVideoMs);
+        Assert.Null(older.MaxRoundVideoBytes);
+        Assert.Null(RoundVideoLimits.Of(older));
+    }
+
+    /// <summary>
+    /// Both keys, or nothing: one alone — or a number no server sends — is a server this client cannot record for, and a
+    /// video entry that ends in a refusal is worse than none.
+    /// </summary>
+    [Theory]
+    [InlineData(60_000L, null)]
+    [InlineData(null, 12_582_912L)]
+    [InlineData(0L, 12_582_912L)]
+    [InlineData(60_000L, 0L)]
+    [InlineData(-1L, 12_582_912L)]
+    [InlineData(60_000L, -5L)]
+    public void TheLimitsAreBothOrNothing(long? ms, long? bytes)
+    {
+        var family = new FamilyResponse(new FamilyDto(3, "The Smiths"), MaxRoundVideoMs: ms, MaxRoundVideoBytes: bytes);
+        Assert.Null(RoundVideoLimits.Of(family));
     }
 
     // ---- transcripts on request (#62) -------------------------------------------------------------

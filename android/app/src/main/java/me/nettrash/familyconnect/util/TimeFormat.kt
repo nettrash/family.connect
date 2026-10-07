@@ -41,6 +41,17 @@ fun interface Clock {
     fun now(): Long
 }
 
+/**
+ * Injectable MONOTONIC clock — milliseconds that never jump, the time base
+ * of pointer events and of `delay` on the main thread (`SystemClock
+ * .uptimeMillis` in the app). What the voice-message reducer times the
+ * activation guard by (#79): a wall clock set forward between two taps must
+ * not decide anything.
+ */
+fun interface Uptime {
+    fun now(): Long
+}
+
 object TimeFormat {
 
     /** RFC 3339 → epoch millis; null when the string doesn't parse. */

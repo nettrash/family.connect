@@ -161,11 +161,8 @@
     <string name="s_request_declined_explanation">Владелец семьи отклонил заявку. Можешь попробовать другой код приглашения или создать свою семью.</string>
     <string name="s_waiting_explanation">Отсюда отменять нечего — владелец либо впустит тебя, либо отклонит заявку.</string>
     <string name="s_take_photo">Сделать фото</string>
-    <string name="s_record_video">Записать видео</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Добавь подпись или отправь так.</string>
     <string name="s_remove_attachment">Убрать вложение</string>
-    <string name="s_record_audio">Записать аудио</string>
-    <string name="s_stop">Стоп</string>
     <string name="s_audio">Аудио</string>
     <string name="s_play">Воспроизвести</string>
     <string name="s_pause">Пауза</string>
@@ -691,4 +688,72 @@
     <string name="s_greeting_weather_remove_place">Убрать место</string>
     <string name="s_greeting_weather_limit">Не больше 3 мест.</string>
     <string name="s_greeting_weather_footer">Ежедневное приветствие будет упоминать и сегодняшнюю погоду в этих местах. В Open-Meteo отправляются только названия мест, чтобы получить прогноз. Больше ничего не отправляется.</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">Голосовое сообщение не отправлено · %1$s</string>
+    <string name="s_send_voice_message">Отправить голосовое сообщение</string>
+    <string name="s_delete_recording">Удалить запись</string>
+    <string name="s_keep">Оставить</string>
+    <string name="s_delete_this_recording">Удалить эту запись?</string>
+    <string name="e_record_after_the_call">Записать сообщение можно будет после звонка.</string>
+    <string name="e_send_or_delete_the_unsent_first">Сначала отправь или удали неотправленное голосовое сообщение.</string>
+    <string name="s_recording_stopped_at_five_minutes">Запись остановлена: прошло пять минут.</string>
+    <string name="e_recording_stopped_unexpectedly">Запись неожиданно прервалась.</string>
+    <string name="s_voice_message_with_length">Голосовое сообщение · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">Записать голосовое сообщение</string>
+    <string name="s_take_video">Снять видео</string>
+    <string name="s_open_settings">Открыть Настройки</string>
+    <string name="s_stop_recording">Остановить запись</string>
+    <string name="s_stop_and_listen_first">Остановить и сначала прослушать</string>
+    <string name="s_start_recording_action">начать запись</string>
+    <string name="s_play_after_recording">Это можно будет воспроизвести после записи.</string>
+    <string name="s_thirty_seconds_left">Осталось 30 секунд</string>
+    <string name="s_cant_hear_microphone_muted">Ничего не слышно. Может, микрофон выключен?</string>
+    <string name="s_announce_recording">Идёт запись</string>
+    <string name="s_announce_recording_deleted">Запись удалена</string>
+    <string name="s_announce_voice_message_sent">Голосовое сообщение отправлено</string>
+    <string name="s_announce_ready_to_review">Готово к проверке, %1$s</string>
+    <string name="e_wait_for_the_attachment">Подожди, пока текущее вложение будет готово.</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">Видеосообщение</string>
+    <string name="s_video_message_a11y">Видеосообщение, %1$s</string>
+    <string name="s_not_played">Не просмотрено</string>
+    <string name="s_open_full_screen">Открыть на весь экран</string>
+    <string name="s_couldnt_load_video_tap">Не удалось загрузить видео. Нажми, чтобы повторить.</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">Записать видеосообщение</string>
+    <string name="s_send_video_message">Отправить видеосообщение</string>
+    <string name="s_retake">Переснять</string>
+    <string name="s_record">Записать</string>
+    <string name="s_switch_camera">Сменить камеру</string>
+    <string name="s_video_message_with_length">Видеосообщение · %1$s</string>
+    <string name="s_not_recording">Запись не идёт</string>
+    <string name="s_only_you_can_see_this">Пока ты не начнёшь запись, это видишь только ты.</string>
+    <string name="s_starting_camera">Камера включается…</string>
+    <string name="s_cant_see_anything">Ничего не видно. Может, камера выключена или закрыта?</string>
+    <string name="s_ten_seconds_left">Осталось 10 секунд</string>
+    <string name="s_recording_stopped_at_one_minute">Запись остановлена: прошла минута.</string>
+    <string name="s_video_too_short">Видео слишком короткое.</string>
+    <string name="s_delete_video_message">Удалить видеосообщение?</string>
+    <string name="s_video_messages_need_camera_and_microphone">Для видеосообщений нужны камера и микрофон.</string>
+    <string name="e_camera_permission_settings">Family нужно разрешение на доступ к камере. Включи его в Настройках.</string>
+    <string name="s_camera_in_use_by_another_app">Камера занята другим приложением.</string>
+    <string name="s_couldnt_make_it_round">Не удалось сделать видео круглым. Оно будет отправлено как обычное видео.</string>
+    <string name="s_too_big_for_video_message">Слишком большое для видеосообщения. Будет отправлено как обычное видео.</string>
+    <string name="s_announce_camera_ready">Камера готова</string>
+    <string name="s_announce_recording_video">Идёт видеозапись</string>
+    <string name="s_announce_video_message_sent">Видеосообщение отправлено</string>
+    <string name="s_announce_camera_turned_off">Камера выключена</string>
+    <string name="s_record_voice_message_instead">Записать голосовое сообщение вместо видео</string>
+    <!-- Voice and video message polish (#79): the approved design, long-press menu, speed chip, accessibility -->
+    <string name="s_voice_message_a11y">Голосовое сообщение, %1$s</string>
+    <string name="s_played">Воспроизведено</string>
+    <string name="s_playback_speed">Скорость воспроизведения</string>
+    <string name="s_playback_speed_a11y">Скорость воспроизведения, %1$s</string>
+    <string name="s_speed_1x">1×</string>
+    <string name="s_speed_1_5x">1,5×</string>
+    <string name="s_speed_2x">2×</string>
+    <string name="s_not_sent">Не отправлено</string>
+    <string name="s_switch">Сменить</string>
+    <string name="s_stop">Стоп</string>
 </resources>

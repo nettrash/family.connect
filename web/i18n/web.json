@@ -215,7 +215,6 @@
     "Finding your location…": {},
     "Give at least two options.": {},
     "Jump to the newest message": {},
-    "Keep": {},
     "Leave and Delete": {},
     "Loading": {},
     "Loading the board…": {},
@@ -306,9 +305,17 @@
     "Pick when it ends, or turn the end off.": {},
     "Pick when it starts.": {},
     "Pinning…": {},
-    "Position": {},
-    "Recording %@": {},
-    "Recording a voice note": {},
+    "Position": {
+      "de": "Wiedergabeposition",
+      "en": "Position",
+      "es": "Posición de reproducción",
+      "fr": "Position de lecture",
+      "ja": "再生位置",
+      "ru": "Позиция воспроизведения",
+      "sr": "Позиција репродукције",
+      "sr-Latn": "Pozicija reprodukcije",
+      "zh-Hans": "播放位置"
+    },
     "Remove %@": {},
     "Remove sticker": {
       "de": "Sticker entfernen",
@@ -439,8 +446,6 @@
     "Title": {},
     "Two options are the same.": {},
     "View the photo": {},
-    "Voice message": {},
-    "Voice note · %@": {},
     "What hasn't been sent yet is lost.": {},
     "While this tab is not in front, a notification says who wrote — never what they wrote, which stays on this page.": {},
     "Who reacted": {},
@@ -469,6 +474,15 @@
     "Food & Drink",
     "Activities",
     "Travel & Places",
-    "Objects & Symbols"
+    "Objects & Symbols",
+    "You can record a message after the call.",
+    "Send or delete the voice message that wasn't sent first.",
+    "Recording",
+    "Recording deleted",
+    "Voice message sent",
+    "Ready to review, %@",
+    "Recording stopped at five minutes.",
+    "We can't hear anything. Is the microphone muted?",
+    "You can play this after recording."
   ]
 }

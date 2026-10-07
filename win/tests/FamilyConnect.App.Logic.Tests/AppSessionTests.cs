@@ -95,6 +95,65 @@ public class AppSessionTests : IDisposable
         Assert.True(AssistantConsent.IsAvailable(session.State.Assistant!.Processor));
     }
 
+    /// <summary>
+    /// The video message's limits come with the family's own document, as the assistant does — and a `GET /me` refresh keeps
+    /// them, because only that document carries them (docs/protocol.md, "Video messages").
+    /// </summary>
+    [Fact]
+    public async Task ARefreshKeepsTheVideoMessagesLimits()
+    {
+        var server = new Server()
+            .On("/auth/login", Token)
+            .On("/me", Me(InFamily))
+            .On("/families/mine", """
+                {"family": {"id": 3, "name": "The Smiths"},
+                 "members": [{"user_id": 7, "username": "anna", "display_name": "Anna", "role": "owner"}],
+                 "max_round_video_ms": 60000, "max_round_video_bytes": 4194304}
+                """);
+        var (session, _, _) = Build(server);
+        Assert.Null(await session.SignInAsync("anna", "hunter2"));
+        Assert.Null(session.State.RoundVideo);
+        Assert.Null(await session.RefreshFamilyAsync());
+        Assert.Equal(new RoundVideoLimits(60_000, 4_194_304), session.State.RoundVideo);
+
+        Assert.Null(await session.RefreshAsync());
+
+        Assert.Equal(new RoundVideoLimits(60_000, 4_194_304), session.State.RoundVideo);
+        // Applied again unchanged: nothing is published.
+        var published = 0;
+        session.Changed += _ => published++;
+        session.ApplyRoundVideo(new RoundVideoLimits(60_000, 4_194_304));
+        Assert.Equal(0, published);
+        session.ApplyRoundVideo(null);
+        Assert.Equal(1, published);
+        Assert.Null(session.State.RoundVideo);
+    }
+
+    /// <summary>And they go with the family: a member with none can record for nobody.</summary>
+    [Fact]
+    public async Task TheVideoMessagesLimitsGoWithTheFamily()
+    {
+        var server = new Server()
+            .On("/auth/login", Token)
+            .Then("/me", (HttpStatusCode.OK, Me(InFamily)), (HttpStatusCode.OK, Me()))
+            .On("/families/mine", """
+                {"family": {"id": 3, "name": "The Smiths"},
+                 "members": [{"user_id": 7, "username": "anna", "display_name": "Anna", "role": "owner"}],
+                 "max_round_video_ms": 60000, "max_round_video_bytes": 4194304}
+                """);
+        var (session, _, _) = Build(server);
+        Assert.Null(await session.SignInAsync("anna", "hunter2"));
+        Assert.Null(await session.RefreshFamilyAsync());
+        Assert.NotNull(session.State.RoundVideo);
+
+        Assert.Null(await session.RefreshAsync());
+
+        Assert.Null(session.State.RoundVideo);
+        // And nothing applies them to a session with no family.
+        session.ApplyRoundVideo(new RoundVideoLimits(60_000, 1));
+        Assert.Null(session.State.RoundVideo);
+    }
+
     /// <summary>But it goes with the family: an assistant belongs to one.</summary>
     [Fact]
     public async Task TheAssistantGoesWhenTheFamilyDoes()
