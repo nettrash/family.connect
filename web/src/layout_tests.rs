@@ -275,11 +275,35 @@ fn type_into(field: &Element, value: &str) {
     field.dispatch_event(&event).expect("dispatching the input");
 }
 
+/// An element's text without what is `aria-hidden` — a menu line's label
+/// without its decorative icon (the paperclip's menu, #78).
+pub(crate) fn visible_text(element: &Element) -> String {
+    let children = element.child_nodes();
+    let mut text = String::new();
+    for index in 0..children.length() {
+        let Some(node) = children.item(index) else {
+            continue;
+        };
+        match node.dyn_ref::<Element>() {
+            Some(child) if child.get_attribute("aria-hidden").as_deref() == Some("true") => {}
+            Some(child) => text.push_str(&visible_text(child)),
+            None => text.push_str(&node.text_content().unwrap_or_default()),
+        }
+    }
+    text
+}
+
 pub(crate) fn click_labelled(root: &Element, selector: &str, label: &str) {
     let found = root.query_selector_all(selector).expect("a valid selector");
     for index in 0..found.length() {
         let element = found.item(index).expect("an element");
-        if element.text_content().unwrap_or_default().trim() == label {
+        // Either reading: a label with a decorative, aria-hidden icon
+        // (the paperclip's menu) or one whose every character counts.
+        if element
+            .dyn_ref::<Element>()
+            .is_some_and(|element| visible_text(element).trim() == label)
+            || element.text_content().unwrap_or_default().trim() == label
+        {
             element
                 .dyn_into::<HtmlElement>()
                 .expect("an HTML element")
@@ -819,11 +843,7 @@ async fn the_assistant_photo_door_is_there_only_when_all_three_allow_it() {
                 .unwrap();
             let labels: Vec<String> = (0..found.length())
                 .map(|index| {
-                    found
-                        .item(index)
-                        .unwrap()
-                        .text_content()
-                        .unwrap_or_default()
+                    visible_text(&found.item(index).unwrap().dyn_into::<Element>().unwrap())
                 })
                 .collect();
             handle.destroy();

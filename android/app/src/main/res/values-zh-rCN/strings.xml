@@ -161,6 +161,7 @@
     <string name="s_request_declined_explanation">家庭拥有者拒绝了你的申请。你可以试试其他邀请码，或者创建自己的家庭。</string>
     <string name="s_waiting_explanation">这里没有什么可取消的——拥有者会让你加入或拒绝申请。</string>
     <string name="s_take_photo">拍照</string>
+    <string name="s_camera">相机</string>
     <string name="s_add_a_message_or_send_it_on_its_own">可以加一句话，也可以直接发送。</string>
     <string name="s_remove_attachment">移除附件</string>
     <string name="s_audio">音频</string>
@@ -404,7 +405,6 @@
     <string name="s_safety_for">%1$s的安全选项</string>
     <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
     <string name="s_show_the_assistant_a_picture">给助手看一张照片</string>
-    <string name="s_show_the_assistant_a_picture_note">照片会离开此服务器，发送给服务器所用的模型</string>
     <string name="s_ask_for_a_picture">请它画一张图</string>
     <string name="s_assistant_sees_this_picture">助手将看到这张照片。它会离开此服务器，发送给服务器所用的模型。</string>
     <string name="s_assistant_sees_these_pictures">助手将看到这些照片。它们会离开此服务器，发送给服务器所用的模型。</string>
