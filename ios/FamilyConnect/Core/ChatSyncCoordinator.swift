@@ -619,8 +619,9 @@ final class ChatSyncCoordinator {
             announce(message)
 
         case .boardNote(let note):
-            applyNote(note)
+            let applied = applyNote(note)
             saveContext()
+            if applied { announce(note) }
 
         case .packItem(let item):
             applyPackItem(item)
@@ -2283,10 +2284,30 @@ final class ChatSyncCoordinator {
     /// member": the two "cannot drift").
     var liveMentionedMessageIDs: [Int64: Set<Int64>] = [:]
 
+    /// Whether the Mac's board window is the one in front of somebody — a
+    /// note landing on a wall they are looking at is not news to tell them
+    /// about (#84). Set by MacBoardView, the way a conversation window
+    /// publishes ChatPresence.
+    var boardInFront = false
+
     private func announce(_ dto: MessageDTO) {
         #if os(macOS)
-        guard dto.senderID != currentUserID, !isReading(dto.chatID) else { return }
-        guard let chat = fetchChat(dto.chatID) else { return }
+        let chat = fetchChat(dto.chatID)
+        let verdict = DesktopNotificationRules.message(
+            senderID: dto.senderID,
+            me: currentUserID,
+            blocked: blockedUserIDs,
+            assistantID: AppSettings.assistantUserID,
+            repliesTo: dto.replyTo?.senderID,
+            isReading: isReading(dto.chatID),
+            chatKnown: chat != nil,
+            wanted: AppSettings.desktopNotificationsEnabled)
+        // Ids and the decision only — never a name or a word: this is what
+        // says why a Mac stayed silent (`log stream` on the push category).
+        AppLog.push.info("Message \(dto.id, privacy: .public) in chat \(dto.chatID, privacy: .public): \(String(describing: verdict), privacy: .public)")
+        guard verdict == .announce, let chat else { return }
+        // Who wrote, never what (DesktopNotificationRules): the body is the
+        // one a server withholding message bodies would send.
         ChatNotifier.announce(
             chatID: dto.chatID,
             messageID: dto.id,
@@ -2295,7 +2316,31 @@ final class ChatSyncCoordinator {
                 chatTitle: chat.title,
                 senderName: displayName(of: dto.senderID),
                 namesMe: dto.mentions?.contains { $0.userID == currentUserID } == true),
-            body: ChatNotifier.body(text: dto.body, attachments: dto.attachmentList, call: dto.call))
+            body: String(localized: "New message"))
+        #endif
+    }
+
+    /// A board note's banner (#84): only a note the board badge counts as
+    /// new, from somebody this reader has not blocked, while the board is
+    /// not in front of them.
+    private func announce(_ note: NoteDTO) {
+        #if os(macOS)
+        guard !note.isTombstone, let authorID = note.authorID else { return }
+        let verdict = DesktopNotificationRules.note(
+            authorID: authorID,
+            me: currentUserID,
+            blocked: blockedUserIDs,
+            isNews: BoardBadge.isUnread(
+                noteID: note.id, contentSeq: note.contentSeq ?? 0, marks: AppSettings.boardMarks),
+            boardInFront: boardInFront,
+            wanted: AppSettings.desktopNotificationsEnabled)
+        AppLog.push.info("Note \(note.id, privacy: .public): \(String(describing: verdict), privacy: .public)")
+        guard verdict == .announce else { return }
+        let author = displayName(of: authorID)
+        let family = session?.family?.name
+        ChatNotifier.announceNote(
+            noteID: note.id,
+            title: family.map { "\($0) — \(author)" } ?? author)
         #endif
     }
 
