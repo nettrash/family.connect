@@ -168,12 +168,35 @@ final class MacMenuBar: NSObject {
     @objc private func settingsChosen() {
         become(.regular)
         comeForward(nil)
+        let before = Set(NSApp.windows.filter(\.isVisible).map(ObjectIdentifier.init))
         let settings = LaunchWindowBackstop.commandItem(key: ",", in: NSApp.mainMenu)
         if let settings, let action = settings.action {
             NSApp.sendAction(action, to: settings.target, from: settings)
         } else {
             AppLog.app.error("The menu bar icon found no Settings… item to open")
+            return
         }
+        // SwiftUI opens the Settings window a moment AFTER the action — behind
+        // the app in front, measured on the owner's Mac — so it is brought
+        // forward itself once it is there, and again when the policy change
+        // has landed (as showMainWindow does for the main window).
+        for delay in [0.05, 0.2] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                MainActor.assumeIsolated {
+                    let bar = MacMenuBar.shared
+                    bar.comeForward(bar.settingsWindow(notIn: before))
+                }
+            }
+        }
+    }
+
+    /// The Settings scene's window: SwiftUI names it
+    /// "com_apple_SwiftUI_Settings_window"; failing that, the one window that
+    /// came up since `before`.
+    private func settingsWindow(notIn before: Set<ObjectIdentifier>) -> NSWindow? {
+        let visible = NSApp.windows.filter { $0.isVisible && $0.canBecomeKey }
+        return visible.first { $0.identifier?.rawValue.contains("Settings") == true }
+            ?? visible.first { !before.contains(ObjectIdentifier($0)) && !Self.isMain($0) }
     }
 
     @objc private func quitChosen() {

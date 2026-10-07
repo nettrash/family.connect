@@ -181,16 +181,33 @@ public class CacheConcurrencyTests : IDisposable
     {
         var operation = Operations()[name];
         using var started = new ManualResetEventSlim();
-        Task running;
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task running = finished.Task;
         // Entered and left on THIS thread with no await in between: the cache's lock belongs to the
         // thread that took it.
         using (cache.Hold())
         {
-            running = Task.Run(() =>
+            // A thread of its own, not the pool's: on a busy CI runner (windows-2025, 2026-10-07) a
+            // Task.Run waited more than five seconds for a pool thread while other test classes held
+            // theirs, and "never started" was the pool's answer, not the cache's.
+            var worker = new Thread(() =>
             {
                 started.Set();
-                operation();
-            });
+                try
+                {
+                    operation();
+                    finished.SetResult();
+                }
+                catch (Exception e)
+                {
+                    finished.SetException(e);
+                }
+            })
+            {
+                IsBackground = true,
+                Name = $"cache-concurrency {name}",
+            };
+            worker.Start();
             Assert.True(started.Wait(TimeSpan.FromSeconds(5)), $"{name} never started");
             Thread.Sleep(150);
             Assert.False(running.IsCompleted, $"{name} used the cache while another operation held it");
