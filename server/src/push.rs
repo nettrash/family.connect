@@ -39,6 +39,9 @@ pub struct DevicePush {
     pub user_id: i64,
     pub platform: String,
     pub push_token: String,
+    /// The language the device registered (docs/protocol.md, "The words of a push"): what its
+    /// alerts are written in. `None` — English — for a row from an app that never said.
+    pub language: Option<String>,
 }
 
 /// Sink for push notifications. `async_trait` keeps the trait object-safe so
@@ -294,10 +297,17 @@ impl ApnsSender {
                 return Vec::new();
             }
         };
-        let payload = apns_payload(note);
+        // One payload per LANGUAGE, not per device: a family's devices speak two or three at
+        // most, and the words are the only thing that differs between them.
+        let mut payloads: std::collections::HashMap<Option<&str>, Value> =
+            std::collections::HashMap::new();
         let mut dead = Vec::new();
         for device in devices {
-            if self.send_one(&jwt, &payload, device).await {
+            let language = device.language.as_deref();
+            let payload = payloads
+                .entry(language)
+                .or_insert_with(|| apns_payload(note, language));
+            if self.send_one(&jwt, payload, device).await {
                 dead.push(device.device_id);
             }
         }
@@ -585,7 +595,11 @@ impl FcmSender {
             .client
             .post(url)
             .bearer_auth(token)
-            .json(&fcm_message(note, &device.push_token))
+            .json(&fcm_message(
+                note,
+                &device.push_token,
+                device.language.as_deref(),
+            ))
             .send()
             .await;
         let response = match response {
@@ -856,6 +870,7 @@ mod tests {
             user_id: 2,
             platform: "ios".to_string(),
             push_token: "tok".to_string(),
+            language: None,
         }];
         let note = crate::push_payload::joined_notification("The Smiths", 7, 0);
         assert!(LogPushSender.notify(&devices, &note).await.is_empty());

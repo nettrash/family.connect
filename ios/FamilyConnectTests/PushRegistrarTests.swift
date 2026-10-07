@@ -54,6 +54,9 @@ struct PushRegistrarTests {
     private final class StoredBox {
         var token: String?
         var deviceID: Int64?
+        var language: String?
+        /// What the app is shown in, for the test — never the host's own.
+        var shown = "en"
     }
 
     private func makeRegistrar(
@@ -68,6 +71,9 @@ struct PushRegistrarTests {
         let box = StoredBox()
         registrar.loadStored = { (box.token, box.deviceID) }
         registrar.saveStored = { box.token = $0; box.deviceID = $1 }
+        registrar.loadStoredLanguage = { box.language }
+        registrar.saveStoredLanguage = { box.language = $0 }
+        registrar.shownLanguage = { box.shown }
         return (registrar, box)
     }
 
@@ -107,8 +113,48 @@ struct PushRegistrarTests {
         // Mac, which is exactly what it should have done.
         #expect(body?["platform"] as? String == PushRegistrar.platform)
         #expect(body?["push_token"] as? String == "0a1b2c")
+        // And the language its pushes are written in (#82).
+        #expect(body?["language"] as? String == "en")
         #expect(box.token == "0a1b2c")
         #expect(box.deviceID == 17)
+        #expect(box.language == "en")
+    }
+
+    @Test("the language the app is shown in rides along, and a new one re-POSTs the same token (#82)")
+    func languageChange() async throws {
+        let host = "push-language.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        let (registrar, box) = makeRegistrar(host: host, handler: Self.deviceHandler(counter: Counter()))
+
+        box.shown = "ru"
+        await registrar.register(tokenHex: "abcd")
+        await registrar.register(tokenHex: "abcd")
+        var requests = StubURLProtocol.requests(host: host)
+        #expect(requests.count == 1, "the same token in the same language is not news")
+        #expect(requests[0].bodyJSON()?["language"] as? String == "ru")
+
+        // Switched to Serbian in Latin script in Settings: the next launch tells the server.
+        box.shown = "sr-Latn"
+        await registrar.register(tokenHex: "abcd")
+        requests = StubURLProtocol.requests(host: host)
+        #expect(requests.count == 2)
+        #expect(requests[1].bodyJSON()?["language"] as? String == "sr-Latn")
+        #expect(box.language == "sr-Latn")
+
+        // Signing out forgets it, so the next account's first POST says it again.
+        await registrar.deregister()
+        #expect(box.language == nil)
+    }
+
+    @Test("the shown language is one of the nine, and anything else is English")
+    func pushLanguageMapping() {
+        for language in PushRegistrationLogic.pushLanguages {
+            #expect(PushRegistrationLogic.pushLanguage(shown: language) == language)
+        }
+        #expect(PushRegistrationLogic.pushLanguage(shown: "zh-hans") == "zh-Hans")
+        #expect(PushRegistrationLogic.pushLanguage(shown: "Base") == "en")
+        #expect(PushRegistrationLogic.pushLanguage(shown: "pt-BR") == "en")
+        #expect(PushRegistrationLogic.pushLanguage(shown: nil) == "en")
     }
 
     @Test("the VoIP token rides along when known, is absent when not, and re-POSTs when it changes")

@@ -184,6 +184,10 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(pushDeviceId = deviceId)
     }
 
+    override suspend fun setPushLanguage(language: String?) {
+        _state.value = _state.value.copy(pushLanguage = language)
+    }
+
     override suspend fun setLinkPreviewsEnabled(enabled: Boolean) {
         _state.value = _state.value.copy(linkPreviewsEnabled = enabled)
     }
@@ -410,6 +414,8 @@ class FakeAuthApi : AuthApi {
 
     /** Every push_token handed to POST /devices, in call order. */
     val deviceRegistrations = mutableListOf<String?>()
+    /** The `language` each POST /devices carried, in order (#82). */
+    val deviceLanguages = mutableListOf<String?>()
 
     /** Every id handed to DELETE /devices/{id}, in call order. */
     val deletedDeviceIds = mutableListOf<Long>()
@@ -509,9 +515,10 @@ class FakeAuthApi : AuthApi {
 
     override suspend fun probe(candidateServerUrl: String): ApiResult<MeResponse> = probeResult
 
-    override suspend fun registerDevice(pushToken: String?): ApiResult<DeviceResponse> {
+    override suspend fun registerDevice(pushToken: String?, language: String?): ApiResult<DeviceResponse> {
         deviceCalls += 1
         deviceRegistrations += pushToken
+        deviceLanguages += language
         return deviceResult
     }
 

@@ -1567,10 +1567,14 @@ actor APIClient {
         /// two tokens arrive from the OS at different moments, and a
         /// launch that has only one of them must not wipe the other.
         let voipToken: String??
+        /// The language this device's pushes are written in
+        /// (docs/protocol.md, "Devices"); left out when nil.
+        let language: String?
         enum CodingKeys: String, CodingKey {
             case platform
             case pushToken = "push_token"
             case voipToken = "voip_token"
+            case language
         }
         // push_token must be an explicit JSON null, not an absent key.
         func encode(to encoder: Encoder) throws {
@@ -1580,13 +1584,16 @@ actor APIClient {
             if let voipToken {
                 try container.encode(voipToken, forKey: .voipToken)
             }
+            try container.encodeIfPresent(language, forKey: .language)
         }
     }
 
-    func registerDevice(platform: String, pushToken: String?, voipToken: String?? = nil) async throws -> Int64 {
+    func registerDevice(
+        platform: String, pushToken: String?, voipToken: String?? = nil, language: String? = nil
+    ) async throws -> Int64 {
         let response: DeviceResponse = try await request(
             "POST", "/devices",
-            body: DeviceRequest(platform: platform, pushToken: pushToken, voipToken: voipToken))
+            body: DeviceRequest(platform: platform, pushToken: pushToken, voipToken: voipToken, language: language))
         return response.deviceID
     }
 

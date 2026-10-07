@@ -97,7 +97,9 @@ import me.nettrash.familyconnect.data.repo.PosterCache
 import me.nettrash.familyconnect.data.repo.ShareImporter
 import me.nettrash.familyconnect.data.repo.WorkManagerUploads
 import me.nettrash.familyconnect.data.push.FirebasePushTokenProvider
+import me.nettrash.familyconnect.data.push.PushLanguageProvider
 import me.nettrash.familyconnect.data.push.PushTokenProvider
+import me.nettrash.familyconnect.data.push.ResourcePushLanguageProvider
 import me.nettrash.familyconnect.data.settings.DataStoreSettingsRepository
 import me.nettrash.familyconnect.data.settings.DefaultServerUrl
 import me.nettrash.familyconnect.data.settings.KeystoreTokenStore
@@ -203,6 +205,10 @@ abstract class AppModule {
     // build has no google-services.json — see PushTokenProvider.kt.
     @Binds
     abstract fun bindPushTokenProvider(impl: FirebasePushTokenProvider): PushTokenProvider
+
+    // The language POST /devices sends, read off the locale folder the app is shown in (#82).
+    @Binds
+    abstract fun bindPushLanguageProvider(impl: ResourcePushLanguageProvider): PushLanguageProvider
 
     companion object {
 
