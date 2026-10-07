@@ -45,12 +45,20 @@ final class MacHotKey {
 
     private func register() {
         guard hotKey == nil else { return }
-        installHandler()
+        // No handler, no shortcut: registered without one, the chord would be
+        // taken from every other app and do nothing here. The next apply tries
+        // again (PR #83 review).
+        guard installHandler() else {
+            isTaken = false
+            return
+        }
         var ref: EventHotKeyRef?
         let status = RegisterEventHotKey(
             Self.keyCode, Self.modifiers, EventHotKeyID(signature: Self.signature, id: 1),
             GetEventDispatcherTarget(), 0, &ref)
-        isTaken = status != noErr
+        // Only eventHotKeyExistsErr says another app holds it — what Settings
+        // tells the person; any other failure is the log's (PR #83 review).
+        isTaken = status == OSStatus(eventHotKeyExistsErr)
         if status == noErr {
             hotKey = ref
             AppLog.app.info("The \(Self.shortcut, privacy: .public) shortcut is registered")
@@ -65,17 +73,21 @@ final class MacHotKey {
         isTaken = false
     }
 
-    private func installHandler() {
-        guard handler == nil else { return }
+    /// Whether the press handler is installed — now, or already.
+    private func installHandler() -> Bool {
+        guard handler == nil else { return true }
         var pressed = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         // The event DISPATCHER's target, not the application's: a Cocoa app's
         // run loop hands a hot key press to the dispatcher. With the application
         // target, pressing it did nothing on the owner's Mac (#80); this is the
         // target the established hot-key libraries register with.
         let status = InstallEventHandler(GetEventDispatcherTarget(), macHotKeyPressed, 1, &pressed, nil, &handler)
-        if status != noErr {
+        guard status == noErr else {
+            handler = nil
             AppLog.app.error("The shortcut's handler could not be installed: \(status)")
+            return false
         }
+        return true
     }
 }
 

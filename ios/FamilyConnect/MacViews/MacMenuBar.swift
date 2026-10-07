@@ -253,9 +253,18 @@ final class MacMenuBar: NSObject {
         recompute()
     }
 
+    /// A launch at login into the menu bar: ONE main window hidden — the one
+    /// to come back to — and any other main window the launch restored closed,
+    /// so the menu bar never holds two hidden copies (PR #83 review: `hide`
+    /// keeps one `hiddenMain`, and the rest were left unreachable). A window
+    /// restored after the first pass closes too, if one is hidden already.
     private func hideAllMain() {
         for window in NSApp.windows where Self.isMain(window) && window.isVisible {
-            hide(window)
+            if hiddenMain == nil {
+                hide(window)
+            } else {
+                window.close()
+            }
         }
     }
 
