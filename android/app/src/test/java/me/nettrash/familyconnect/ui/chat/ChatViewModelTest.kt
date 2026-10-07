@@ -2822,6 +2822,11 @@ class ChatViewModelTest {
         assertThat(viewModel.inputState.text.toString()).isEqualTo("hello")
         assertThat(viewModel.replyDraft.value).isEqualTo(anotherQuote)
         assertThat(viewModel.staged.value).containsExactly(photo)
+        // The list empties BEFORE the file goes: `remove` deletes it on the IO
+        // dispatcher, still holding the store's lock — so the bytes are checked
+        // once that lock is free, not the moment the list says so (a race CI's
+        // slower runner lost on 2026-10-07).
+        settledParks()
         assertThat(parked.file(entry).exists()).isFalse()
     }
 
@@ -2893,6 +2898,8 @@ class ChatViewModelTest {
         viewModel.notSent.first { it.isEmpty() }
 
         assertThat(viewModel.deleteAsk.value).isNull()
+        // The file goes after the list, under the store's lock (see above).
+        settledParks()
         assertThat(parked.file(entry).exists()).isFalse()
     }
 

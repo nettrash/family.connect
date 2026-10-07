@@ -167,7 +167,7 @@ final class MacMenuBar: NSObject {
 
     @objc private func settingsChosen() {
         become(.regular)
-        NSApp.activate()
+        comeForward(nil)
         let settings = LaunchWindowBackstop.commandItem(key: ",", in: NSApp.mainMenu)
         if let settings, let action = settings.action {
             NSApp.sendAction(action, to: settings.target, from: settings)
@@ -192,12 +192,32 @@ final class MacMenuBar: NSObject {
         become(.regular)
         if let window = visibleMain() ?? hiddenMain {
             if window.isMiniaturized { window.deminiaturize(nil) }
-            window.makeKeyAndOrderFront(nil)
             hiddenMain = nil
+            comeForward(window)
         } else {
             openNewMain()
+            comeForward(nil)
         }
-        NSApp.activate()
+        // An app that was an accessory a moment ago is not yet allowed in front:
+        // measured on the owner's Mac, the window came up BEHIND the app in
+        // front. So once more when the policy change has landed — the window
+        // SwiftUI just made included.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            MainActor.assumeIsolated { MacMenuBar.shared.comeForward(MacMenuBar.shared.visibleMain()) }
+        }
+    }
+
+    /// The app active and the window in front of every app's. Cooperative
+    /// activation (macOS 14) lets a request through only when the person just
+    /// interacted with this app — a click on its icon, its shortcut, its
+    /// notification are exactly that — and `ignoringOtherApps` is what still
+    /// asks for it outright on the systems that honour it. `orderFrontRegardless`
+    /// puts the window in front even in the moment before the app is active.
+    private func comeForward(_ window: NSWindow?) {
+        NSApp.activate(ignoringOtherApps: true)
+        guard let window else { return }
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
     /// The main window off the screen and into the menu bar: a window that
