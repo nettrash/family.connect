@@ -1,0 +1,14 @@
+-- 0054_device_language — the language a device's pushes are written in
+-- (docs/protocol.md, "Devices" and "The words of a push"; issue #82).
+--
+-- The language the app is SHOWN in on that device, as it registered it with
+-- POST /devices: one of the apps' nine localisations in practice, any
+-- well-formed tag in principle. Nullable, with no default: every row that
+-- existed before this was registered by an app that never said, and NULL —
+-- English, as every push was until now — is the truth about it.
+--
+-- No CHECK on the value: POST /devices stores a malformed tag as NULL rather
+-- than refusing the registration (a device that cannot register gets no push
+-- at all, which is a far worse failure than an English one), so nothing here
+-- has anything left to reject.
+ALTER TABLE devices ADD COLUMN language TEXT;

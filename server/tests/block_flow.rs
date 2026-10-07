@@ -1090,6 +1090,7 @@ async fn a_report_pushes_the_owner_and_never_the_owner_it_names() {
         report_pushes[0]
             .note
             .body
+            .render(None)
             .to_lowercase()
             .contains("new report"),
         "and it carries no reported text — the excerpt is the very content \

@@ -395,6 +395,31 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Every string in every language (issue #82). Cheap — Python and rustfmt, no build — and run on
+  # EVERY push, because a string can go missing from any client and the catalogue that feeds all of
+  # them is shared: the apps' Localizable.xcstrings is also Windows' and the web's source.
+  strings:
+    name: Every string in every language
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # Every literal the Apple apps show is in the catalogue, in all nine localisations.
+      - name: iOS and macOS
+        run: python3 ios/scripts/check-strings.py
+      # The Windows tables match the catalogue and win.json, and nothing is English-only that
+      # win.json does not name (CatalogueTests holds that list empty since #82).
+      - name: Windows
+        run: python3 win/i18n/generate.py . --check
+      # Nothing the web asks for is English-only or missing a language, no translation lost an
+      # argument, and the generated table is the one checked in.
+      - name: Web
+        run: python3 web/i18n/generate.py . --check
+      # The server's push sentences, in the language each device registered (docs/protocol.md, "The
+      # words of a push"): every one in all nine, from the apps' catalogue and server/i18n/push.json.
+      - name: Server push words
+        run: python3 server/i18n/generate.py . --check
+
   ios:
     name: iOS (unit tests)
     needs: changes
@@ -962,11 +987,6 @@ jobs:
 #     same test is 16 for 16 green on a signed local build, so it earns its
 #     keep on a developer's machine today and here only if a signing identity
 #     is ever imported into the runner keychain.
-#   * ios/scripts/check-strings.py, which is written to be a gate and would
-#     catch strings that never reach Localizable.xcstrings. It exits 1 today
-#     (one uncatalogued and four untranslated strings), and shipping a
-#     permanently-yellow job is how a gate gets ignored. Add it once those are
-#     fixed.
 #   * assembleStandardRelease. It would cover R8 and lintVital, but AGP does
 #     not fall back to debug signing without keystore.properties (the comment
 #     at app/build.gradle.kts:163 is stale) -- it emits an unverifiable
