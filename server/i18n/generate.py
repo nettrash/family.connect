@@ -11,9 +11,11 @@ localisations of every sentence a push shares with them ("Photo", "3 Photos",
     python3 server/i18n/generate.py <repo>           # writes src/push_words.rs
     python3 server/i18n/generate.py <repo> --check   # CI: writes nothing, exits 1 if owed
 
-A key the push code uses that is missing a language — in either source — is an
-error, not English for now: these are fifteen short sentences, and a lock
-screen is where a half-translated app looks most broken.
+The keys are FOUND, not listed: every `Text::say("…")` in server/src is one, so
+a sentence added to the push code cannot ship in English while this passes
+(PR #85 review). A key the push code uses that is missing a language — in
+either source — is an error, not English for now: these are short sentences,
+and a lock screen is where a half-translated app looks most broken.
 """
 import json
 import pathlib
@@ -23,17 +25,32 @@ import sys
 
 LANGS = ["de", "es", "fr", "ja", "ru", "sr", "sr-Latn", "zh-Hans"]
 
-# Every sentence push_payload.rs says through `Text::say` — and only those.
-KEYS = [
-    "Photo", "Sticker", "Video", "Video message", "Audio", "Location", "File",
-    "%lld Photos", "%lld Videos", "%lld Audio", "%lld Files", "%lld attachments",
-    "New message", "New note", "New report",
-    "%@ — %@ mentioned you", "%@ asked to join", "You're in — welcome to %@",
-]
+SAY = re.compile(r'Text::say\(\s*"((?:[^"\\]|\\.)*)"')
 
 
-def placeholders(text: str) -> list[str]:
-    return re.findall(r"%(?:\d+\$)?(?:lld|@)", text)
+def used_keys(repo: pathlib.Path) -> list[str]:
+    """Every sentence the server says through `Text::say`, from its own source."""
+    keys = set()
+    for path in sorted((repo / "server/src").rglob("*.rs")):
+        if path.name == "push_words.rs":
+            continue
+        for match in SAY.finditer(path.read_text()):
+            keys.add(json.loads(f'"{match.group(1)}"'))
+    return sorted(keys)
+
+
+def placeholders(text: str) -> list[tuple[int, str]]:
+    """The arguments a sentence takes, as (number, kind): `%@` and `%lld` count up from 1
+    in order, `%2$@` names its own — so a translation that turns the order round
+    (`%2$@ … %1$@`, which push_text::fill supports) takes the same arguments as its key."""
+    found, next_slot = [], 0
+    for number, kind in re.findall(r"%(?:(\d+)\$)?(lld|@)", text):
+        if number:
+            found.append((int(number), kind))
+        else:
+            next_slot += 1
+            found.append((next_slot, kind))
+    return sorted(found)
 
 
 def rust(text: str) -> str:
@@ -46,6 +63,10 @@ def main() -> int:
     repo = pathlib.Path(args[0] if args else ".").resolve()
     apple = json.load(open(repo / "ios/FamilyConnect/Localizable.xcstrings"))["strings"]
     own = json.load(open(repo / "server/i18n/push.json"))["strings"]
+    KEYS = used_keys(repo)
+    if not KEYS:
+        print("found no Text::say in server/src — the scan is broken, not the server")
+        return 1
 
     owed, rows = [], []
     for key in KEYS:
@@ -94,6 +115,9 @@ def main() -> int:
             target.write_text(before)
 
     print(f"push sentences: {len(KEYS)}, rows: {len(rows)} of {len(KEYS) * len(LANGS)}")
+    unused = sorted(set(own) - set(KEYS))
+    if unused:
+        owed.append(f"push.json names sentences no Text::say uses: {unused}")
     for line in owed:
         print("   ", line)
     if owed:

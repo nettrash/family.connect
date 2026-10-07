@@ -77,7 +77,11 @@ class PushTokenRepository @Inject constructor(
         // token needs no refresh. A missing device_id means the last POST
         // failed (or never happened) — always retry then.
         val language = pushLanguage.shownLanguage()
-        if (state.pushDeviceId != null && state.pushToken == token && state.pushLanguage == language) return
+        // A device with no push token is never pushed, so its language is
+        // not news — and a tokenless POST INSERTs a fresh row rather than
+        // updating this one, which a language change would orphan (PR #85).
+        val languageKnown = token == null || state.pushLanguage == language
+        if (state.pushDeviceId != null && state.pushToken == token && languageKnown) return
         when (val result = authApi.registerDevice(token, language)) {
             is ApiResult.Ok -> {
                 settings.setPushToken(token)

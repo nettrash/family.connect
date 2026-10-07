@@ -720,6 +720,14 @@ async fn a_devices_language_is_kept_cleared_and_never_refused() {
     // Malformed: stored as no language, not refused.
     register(json!({"platform": "ios", "push_token": "tok", "language": "ru; DROP TABLE"})).await;
     assert_eq!(language().await, None);
+    // Java's `_` is the tag it means.
+    register(json!({"platform": "ios", "push_token": "tok", "language": "fr_CA"})).await;
+    assert_eq!(language().await.as_deref(), Some("fr-CA"));
+    // Not even a string: still a registration, with no language (PR #85 review).
+    register(json!({"platform": "ios", "push_token": "tok", "language": 5})).await;
+    assert_eq!(language().await, None);
+    register(json!({"platform": "ios", "push_token": "tok", "language": {"tag": "de"}})).await;
+    assert_eq!(language().await, None);
     register(json!({"platform": "ios", "push_token": "tok", "language": "ja"})).await;
     assert_eq!(language().await.as_deref(), Some("ja"));
     // Null and "" clear it.
