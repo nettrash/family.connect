@@ -34,11 +34,23 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
     /// For the Answer / Decline buttons on an incoming-call notification.
     static weak var callManager: CallManager?
 
+    /// Whether macOS made this launch at login — read while the open event
+    /// is still the current one (#80).
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        MacLoginItem.noteLaunch()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A launch at login with the menu bar icon kept starts in the menu
+        // bar, its window hidden (#80, docs/mac-menu-bar-2026-10-07.md).
+        let hidden = MenuBarRules.startsHidden(
+            launchedAtLogin: MacLoginItem.launchedAtLogin, keepsMenuBar: AppSettings.keepsRunningInMenuBar)
+        MacMenuBar.shared.start(hidden: hidden)
         // "After any launch, at least one window exists" (#52). Cheap, once,
         // and a no-op on every launch that went normally — see
-        // LaunchWindowBackstop for why an app can get here with none.
-        LaunchWindowBackstop.start()
+        // LaunchWindowBackstop for why an app can get here with none. A
+        // launch that starts in the menu bar has its window, hidden on purpose.
+        LaunchWindowBackstop.start(startedInMenuBar: hidden)
 
         let center = UNUserNotificationCenter.current()
         center.delegate = self
@@ -66,6 +78,16 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
     /// A take still RECORDING stops into REVIEW first and asks then.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         VideoMessagePresenter.appShouldQuit() ? .terminateNow : .terminateCancel
+    }
+
+    // MARK: - The menu bar (#80)
+
+    /// A click on the Dock icon, or the app opened again from the Finder,
+    /// with its window hidden in the menu bar: the window comes back.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag else { return true }
+        MacMenuBar.shared.showMainWindow()
+        return false
     }
 
     // MARK: - APNs token
@@ -124,11 +146,15 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
             Task { @MainActor in
                 switch action {
                 case ChatNotifier.answerActionID:
+                    // An answered call always has its window: the main one
+                    // comes up — from the menu bar, or anew — and RootView
+                    // opens the call's window for a call in progress (#80).
+                    MacMenuBar.shared.showMainWindow()
                     MacAppDelegate.callManager?.acceptIncoming()
                 case ChatNotifier.declineActionID:
                     MacAppDelegate.callManager?.declineIncoming()
                 default:
-                    NSApp.activate()
+                    MacMenuBar.shared.showMainWindow()
                 }
                 completionHandler()
             }
@@ -136,6 +162,9 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
         }
         let route = PushRoute.parse(userInfo: content.userInfo)
         Task { @MainActor in
+            // The window first — hidden in the menu bar, or really closed —
+            // because only the main window's chat view applies a route (#80).
+            MacMenuBar.shared.showMainWindow()
             MacAppDelegate.session?.pendingPushRoute = route
             completionHandler()
         }

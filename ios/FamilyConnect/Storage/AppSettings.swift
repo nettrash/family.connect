@@ -34,6 +34,11 @@ nonisolated enum AppSettings {
         /// (or any 401) must not silently turn third-party traffic back on
         /// for somebody who opted out of it.
         static let mapPreviewsDisabled = "v1.mapPreviewsDisabled"
+        /// The Mac's menu bar icon and its global shortcut (#80): this
+        /// Mac's, on by default, so both store the DISABLED flag — and
+        /// neither is wiped with the session.
+        static let menuBarDisabled = "v1.mac.menuBarDisabled"
+        static let hotKeyDisabled = "v1.mac.hotKeyDisabled"
         /// The board catch-up cursor: the highest board_seq this device
         /// has APPLIED. Local-only and account-scoped, so it is wiped with
         /// the session — a different family's board must never be caught
@@ -195,6 +200,20 @@ nonisolated enum AppSettings {
     static var joinPending: Bool {
         get { defaults.bool(forKey: Key.joinPending) }
         set { defaults.set(newValue, forKey: Key.joinPending) }
+    }
+
+    /// Whether the Mac keeps running in the menu bar when its window is
+    /// closed (#80, docs/mac-menu-bar-2026-10-07.md). On by default, as
+    /// Windows' "Keep running when the window is closed" is.
+    static var keepsRunningInMenuBar: Bool {
+        get { !defaults.bool(forKey: Key.menuBarDisabled) }
+        set { defaults.set(!newValue, forKey: Key.menuBarDisabled) }
+    }
+
+    /// Whether ⌃⌥⌘F brings the Mac's window forward from any app (#80).
+    static var opensWithHotKey: Bool {
+        get { !defaults.bool(forKey: Key.hotKeyDisabled) }
+        set { defaults.set(!newValue, forKey: Key.hotKeyDisabled) }
     }
 
     /// Whether a message's first web link gets a preview card. On by

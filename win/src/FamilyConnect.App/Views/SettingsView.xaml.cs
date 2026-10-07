@@ -98,6 +98,7 @@ public sealed partial class SettingsView : UserControl
             (DeleteButton, DeleteText, say.Get("Delete Account…")),
             (NotifySwitch, NotifyTitle, NotifyTitle.Text),
             (KeepRunningSwitch, KeepRunningTitle, say.Get("Keep running when the window is closed")),
+            (HotKeySwitch, HotKeyTitle, say.Format("Open with %@", say.Get("Ctrl+Alt+Shift+F"))),
             (LinkPreviewSwitch, LinkPreviewTitle, LinkPreviewTitle.Text),
             (MapPreviewSwitch, MapPreviewTitle, say.Get("Map Previews")),
         })
@@ -136,6 +137,15 @@ public sealed partial class SettingsView : UserControl
             if (!drawingSwitch)
             {
                 KeepRunningSetting.Enabled = KeepRunningSwitch.IsOn;
+            }
+        };
+        HotKeySwitch.Toggled += (_, _) =>
+        {
+            if (!drawingSwitch)
+            {
+                HotKeySetting.Enabled = HotKeySwitch.IsOn;
+                GlobalHotKey.Current?.Apply(HotKeySwitch.IsOn);
+                DrawHotKey();
             }
         };
         StartupSwitch.Toggled += (_, _) =>
@@ -193,6 +203,7 @@ public sealed partial class SettingsView : UserControl
         NotifySwitch.IsOn = Toasts.Available && NotifySetting.Wanted;
         LinkPreviewSwitch.IsOn = LinkPreviewSetting.Enabled;
         KeepRunningSwitch.IsOn = KeepRunningSetting.Enabled;
+        HotKeySwitch.IsOn = HotKeySetting.Enabled;
         MapPreviewSwitch.IsOn = MapPreviewSetting.Enabled;
         drawingSwitch = false;
         NotifyFootnote.Text = Toasts.Available
@@ -202,6 +213,7 @@ public sealed partial class SettingsView : UserControl
         DrawAssistantConsent(state);
         DrawLookups(state);
         DrawStartup();
+        DrawHotKey();
 
         Picture.DisplayName = me.DisplayName;
         _ = ShowPictureAsync(me);
@@ -219,6 +231,16 @@ public sealed partial class SettingsView : UserControl
     /// tests). No startup task at all means an unpackaged run: the row is
     /// collapsed rather than drawn dead.
     /// </remarks>
+    /// <summary>The shortcut's note: what it does — or, when another app holds the combination, that it does nothing here.</summary>
+    private void DrawHotKey()
+    {
+        var say = services.Say;
+        var keys = say.Get("Ctrl+Alt+Shift+F");
+        HotKeyFootnote.Text = HotKeySwitch.IsOn && GlobalHotKey.Current is { IsTaken: true }
+            ? say.Format("Another app is using %@.", keys)
+            : say.Get("Brings Family Connect forward from any app. Press it again to put it back in the notification area.");
+    }
+
     private void DrawStartup()
     {
         if (startupState is not { } state || !StartupSetting.IsOffered(state))
