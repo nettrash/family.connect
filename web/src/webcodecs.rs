@@ -215,13 +215,41 @@ pub async fn aac_supported(sample_rate: u32, channels: u32, bitrate: u64) -> boo
     supported("AudioEncoder", &aac_config(sample_rate, channels, bitrate)).await
 }
 
+/// What an encoder is asked to put first: the picture, or keeping up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Latency {
+    /// Quality over speed: a transcode, which the send waits for.
+    Quality,
+    /// Keeping up with a camera, frame by frame: a video message being
+    /// recorded (the plan for #79, docs/audio-video-messages-2026-10-04.md,
+    /// "Where it plugs in → Web → Phase 3"). Asked as such, so that the
+    /// probe asks about the configuration actually used.
+    Realtime,
+}
+
+impl Latency {
+    /// WebCodecs' `latencyMode`.
+    pub fn mode(self) -> &'static str {
+        match self {
+            Latency::Quality => "quality",
+            Latency::Realtime => "realtime",
+        }
+    }
+}
+
 /// The H.264 encoder configuration for a `width × height` output at
-/// `frame_rate` and `bitrate`: High profile where this browser encodes it,
-/// Main where it offers nothing else — the protocol's order — and None when
-/// it encodes neither. (Baseline is not asked for: the profile names High
-/// and Main, and an encoder that offers only Baseline — Firefox's — leaves
-/// the file to rule C.)
-pub async fn h264_config(width: u32, height: u32, frame_rate: f64, bitrate: u64) -> Option<Object> {
+/// `frame_rate` and `bitrate`, put first as `latency` says: High profile
+/// where this browser encodes it, Main where it offers nothing else — the
+/// protocol's order — and None when it encodes neither. (Baseline is not
+/// asked for: the profile names High and Main, and an encoder that offers
+/// only Baseline — Firefox's — leaves the file to rule C.)
+pub async fn h264_config(
+    width: u32,
+    height: u32,
+    frame_rate: f64,
+    bitrate: u64,
+    latency: Latency,
+) -> Option<Object> {
     for profile in [H264Profile::High, H264Profile::Main] {
         let config = object(&[
             (
@@ -232,8 +260,7 @@ pub async fn h264_config(width: u32, height: u32, frame_rate: f64, bitrate: u64)
             ("height", JsValue::from(height)),
             ("bitrate", JsValue::from(bitrate as f64)),
             ("framerate", JsValue::from(frame_rate)),
-            // Quality over speed: the send waits for this, not a live call.
-            ("latencyMode", JsValue::from_str("quality")),
+            ("latencyMode", JsValue::from_str(latency.mode())),
             // Length-prefixed access units and an avcC record — what an
             // MP4 carries — not Annex B start codes.
             (
@@ -391,7 +418,9 @@ mod tests {
                 "VideoEncoder",
                 &fake_class("async () => ({supported: false})"),
             );
-            assert!(h264_config(1280, 720, 30.0, 2_000_000).await.is_none());
+            assert!(h264_config(1280, 720, 30.0, 2_000_000, Latency::Quality)
+                .await
+                .is_none());
         }
         {
             // Main only: High is refused, Main is taken.
@@ -399,7 +428,9 @@ mod tests {
                 "VideoEncoder",
                 &fake_class("async (c) => ({supported: c.codec.startsWith('avc1.4d')})"),
             );
-            let config = h264_config(1280, 720, 30.0, 2_000_000).await.unwrap();
+            let config = h264_config(1280, 720, 30.0, 2_000_000, Latency::Quality)
+                .await
+                .unwrap();
             let codec = Reflect::get(&config, &JsValue::from_str("codec")).unwrap();
             assert_eq!(codec.as_string().as_deref(), Some("avc1.4d401f"));
         }
@@ -413,9 +444,47 @@ mod tests {
         assert!(has("AudioEncoder") && has("VideoEncoder") && has("VideoDecoder"));
         assert!(aac_supported(48_000, 1, 64_000).await, "voice notes");
         assert!(aac_supported(44_100, 2, 128_000).await);
-        let config = h264_config(1280, 720, 30.0, 2_000_000).await.unwrap();
+        let config = h264_config(1280, 720, 30.0, 2_000_000, Latency::Quality)
+            .await
+            .unwrap();
         let codec = Reflect::get(&config, &JsValue::from_str("codec")).unwrap();
         assert_eq!(codec.as_string().as_deref(), Some("avc1.64001f"), "High");
+    }
+
+    /// The configuration ASKED about is the one used: a transcode asks for
+    /// quality, a video message being recorded for keeping up — and the
+    /// probe hears "no" for the one if the browser only says yes to the
+    /// other. In this browser the video message's own configuration —
+    /// 480 × 480 at 30 fps and 500 000 bit/s — is High at level 3.0.
+    #[wasm_bindgen_test]
+    async fn the_latency_asked_for_is_the_one_configured() {
+        let mode = |config: &Object| {
+            Reflect::get(config, &JsValue::from_str("latencyMode"))
+                .unwrap()
+                .as_string()
+        };
+        let quality = h264_config(1280, 720, 30.0, 2_000_000, Latency::Quality)
+            .await
+            .unwrap();
+        assert_eq!(mode(&quality).as_deref(), Some("quality"));
+        let live = h264_config(480, 480, 30.0, 500_000, Latency::Realtime)
+            .await
+            .expect("the test browser records video messages");
+        assert_eq!(mode(&live).as_deref(), Some("realtime"));
+        let codec = Reflect::get(&live, &JsValue::from_str("codec")).unwrap();
+        assert_eq!(codec.as_string().as_deref(), Some("avc1.64001e"));
+        {
+            let _picky = Stand::in_for(
+                "VideoEncoder",
+                &fake_class("async (c) => ({supported: c.latencyMode === 'quality'})"),
+            );
+            assert!(h264_config(480, 480, 30.0, 500_000, Latency::Realtime)
+                .await
+                .is_none());
+            assert!(h264_config(480, 480, 30.0, 500_000, Latency::Quality)
+                .await
+                .is_some());
+        }
     }
 
     #[wasm_bindgen_test]

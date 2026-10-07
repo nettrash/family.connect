@@ -68,6 +68,22 @@ struct MediaOutboxTests {
         #expect(FileManager.default.fileExists(atPath: young.fileURL.path))
     }
 
+    /// #79: a recording is a file in tmp only while it runs, or until its
+    /// upload copy is staged — so at launch every `fc-voice-*` is a dead
+    /// run's microphone, or a leftover from before staging deleted it.
+    @Test("the launch sweep takes a dead run's recording files too")
+    func sweepTakesLeftoverRecordings() throws {
+        let dir = scratch()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let leftover = dir.appendingPathComponent("\(AudioRecorder.filePrefix)\(UUID().uuidString).m4a")
+        try Data([0x00]).write(to: leftover)
+
+        let removed = MediaOutbox.sweepOrphans(in: dir)
+
+        #expect(removed == 1)
+        #expect(!FileManager.default.fileExists(atPath: leftover.path))
+    }
+
     @Test("the sweep touches nothing that is not ours")
     func sweepLeavesForeignFilesAlone() throws {
         let dir = scratch()

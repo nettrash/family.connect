@@ -137,6 +137,17 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(supportContact = contact)
     }
 
+    override suspend fun updateParkedRecordings(
+        transform: (List<me.nettrash.familyconnect.data.repo.ParkedRecording>) ->
+        List<me.nettrash.familyconnect.data.repo.ParkedRecording>,
+    ) {
+        _state.value = _state.value.copy(parkedRecordings = transform(_state.value.parkedRecordings))
+    }
+
+    override suspend fun setRoundPreviewTaught() {
+        _state.value = _state.value.copy(roundPreviewTaught = true)
+    }
+
     override suspend fun setBlockedUserIds(ids: Collection<Long>) {
         val next = ids.toSet()
         blockedWrites += next
@@ -202,6 +213,14 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(
             packMaxItems = maxItems ?: 0,
             packMaxItemBytes = maxItemBytes ?: 0L,
+        )
+    }
+
+    override suspend fun setRoundVideoLimits(maxMs: Long?, maxBytes: Long?) {
+        val limits = me.nettrash.familyconnect.data.repo.RoundVideoLimits.of(maxMs, maxBytes)
+        _state.value = _state.value.copy(
+            roundVideoMaxMs = limits?.maxMs ?: 0L,
+            roundVideoMaxBytes = limits?.maxBytes ?: 0L,
         )
     }
 
@@ -585,6 +604,9 @@ class FakeChatApi : ChatApi {
     /** Every `sticker` flag a REST send carried, in order (null = an ordinary message). */
     val postedStickerFlags = mutableListOf<Boolean?>()
 
+    /** Every send's `round` flag, in order — null when the key was omitted (#79). */
+    val postedRoundFlags = mutableListOf<Boolean?>()
+
     override suspend fun postMessage(
         chatId: Long,
         clientMsgId: String,
@@ -594,8 +616,10 @@ class FakeChatApi : ChatApi {
         poll: NewPollDto?,
         mentions: List<MentionDto>?,
         sticker: Boolean?,
+        round: Boolean?,
     ): ApiResult<MessageResponse> {
         postedStickerFlags += sticker
+        postedRoundFlags += round
         postedMessages += Triple(chatId, clientMsgId, body)
         postedReplyTargets += replyToMessageId
         postedAttachmentIds += attachmentIds
@@ -1458,6 +1482,8 @@ class FakeAttachmentApi : AttachmentApi {
     val uploadedMetadata = mutableListOf<Triple<String, Int?, Int?>>()
     /** Every name a file upload carried, in order. */
     val uploadedNames = mutableListOf<String?>()
+    /** Every waveform an upload carried, in order (#79). */
+    val uploadedWaveforms = mutableListOf<String?>()
     val uploadedPreviews = mutableListOf<Pair<Long, Int>>()
 
     override suspend fun upload(
@@ -1468,11 +1494,13 @@ class FakeAttachmentApi : AttachmentApi {
         height: Int?,
         durationMs: Int?,
         name: String?,
+        waveform: String?,
     ): ApiResult<AttachmentResponse> {
         calls += "upload"
         uploadedFiles += file
         uploadedMetadata += Triple(kind, width, height)
         uploadedNames += name
+        uploadedWaveforms += waveform
         return uploadHandler(file, mime, kind)
     }
 
@@ -1658,5 +1686,97 @@ class FakeTranscriptSound : me.nettrash.familyconnect.data.repo.TranscriptSoundS
     ): me.nettrash.familyconnect.data.repo.TranscriptSoundPlan.Result {
         asked += attachment.id to maxBytes
         return next
+    }
+}
+
+/**
+ * The microphone, scripted (#79). [elapsed] is the recorder's own clock —
+ * what the counter shows and what a stopped recording measures — and [end]
+ * is the recorder ending a recording by itself: the cap, a failure, another
+ * app, another chat starting one. Each kept recording is a real file in
+ * [dir] whose first bytes are an M4A header, so MediaPrep's magic check
+ * takes it for the voice note it is.
+ */
+class FakeVoiceRecorder(private val dir: java.io.File) :
+    me.nettrash.familyconnect.data.repo.VoiceRecorder {
+
+    var elapsed: Long = 0
+    var startResult = true
+
+    /** The peak [maxAmplitude] reports: loud enough to count as heard unless a test says otherwise. */
+    var amplitude: Int = 2_000
+    var starts = 0
+        private set
+    var stops = 0
+        private set
+    var cancels = 0
+        private set
+    var owner: me.nettrash.familyconnect.data.repo.VoiceRecorder.Listener? = null
+        private set
+
+    /** Every file a recording left, in order — so a test can see which survived. */
+    val files = mutableListOf<java.io.File>()
+
+    override var isRecording: Boolean = false
+        private set
+
+    override val elapsedMs: Long get() = if (isRecording) elapsed else 0
+
+    override fun start(owner: me.nettrash.familyconnect.data.repo.VoiceRecorder.Listener): Boolean {
+        if (!startResult) return false
+        starts++
+        this.owner = owner
+        isRecording = true
+        elapsed = 0
+        return true
+    }
+
+    /** A stop that keeps nothing — under the recorder's floor, a recording that never got audio. */
+    var keepsNothing = false
+
+    /** The waveform each kept recording carries (#79): what the real recorder makes of the meter's reads. */
+    var waveform: String? = null
+
+    override fun stop(): me.nettrash.familyconnect.data.repo.VoiceRecorder.Recording? {
+        if (!isRecording) return null
+        stops++
+        isRecording = false
+        owner = null
+        if (keepsNothing) return null
+        return me.nettrash.familyconnect.data.repo.VoiceRecorder.Recording(newFile(), elapsed, waveform)
+    }
+
+    override fun cancel() {
+        if (!isRecording) return
+        cancels++
+        isRecording = false
+        owner = null
+    }
+
+    override fun maxAmplitude(): Int = if (isRecording) amplitude else 0
+
+    /** The recorder ends it by itself; [keep] false is a recording that left nothing usable. */
+    fun end(ending: me.nettrash.familyconnect.data.repo.VoiceRecorder.Ending, keep: Boolean = true) {
+        val told = owner ?: return
+        val kept = if (keep) {
+            stop()
+        } else {
+            cancel()
+            null
+        }
+        told.onEnded(ending, kept)
+    }
+
+    private fun newFile(): java.io.File {
+        dir.mkdirs()
+        val file = java.io.File.createTempFile("voice-", ".m4a", dir)
+        file.writeBytes(M4A_HEAD + ByteArray(4096) { 5 })
+        files += file
+        return file
+    }
+
+    companion object {
+        /** `....ftypM4A ` — the ISO base media header the server's magic check reads. */
+        val M4A_HEAD: ByteArray = byteArrayOf(0, 0, 0, 0x20) + "ftypM4A ".toByteArray(Charsets.US_ASCII)
     }
 }

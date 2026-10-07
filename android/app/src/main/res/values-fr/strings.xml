@@ -160,11 +160,8 @@
     <string name="s_request_declined_explanation">Le propriétaire a refusé ta demande. Tu peux essayer un autre code d’invitation ou créer ta propre famille.</string>
     <string name="s_waiting_explanation">Il n’y a rien à annuler ici : le propriétaire t’accepte ou refuse la demande.</string>
     <string name="s_take_photo">Prendre une photo</string>
-    <string name="s_record_video">Filmer une vidéo</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Ajoute un message, ou envoie-le tel quel.</string>
     <string name="s_remove_attachment">Retirer la pièce jointe</string>
-    <string name="s_record_audio">Enregistrer un audio</string>
-    <string name="s_stop">Arrêter</string>
     <string name="s_audio">Audio</string>
     <string name="s_play">Lire</string>
     <string name="s_pause">Suspendre</string>
@@ -666,4 +663,72 @@
     <string name="s_greeting_weather_remove_place">Retirer le lieu</string>
     <string name="s_greeting_weather_limit">Jusqu’à 3 lieux.</string>
     <string name="s_greeting_weather_footer">La salutation quotidienne mentionnera aussi la météo du jour dans ces lieux. Seuls les noms des lieux sont envoyés à Open-Meteo pour obtenir les prévisions. Rien d’autre n’est envoyé.</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">Message vocal non envoyé · %1$s</string>
+    <string name="s_send_voice_message">Envoyer le message vocal</string>
+    <string name="s_delete_recording">Supprimer l’enregistrement</string>
+    <string name="s_keep">Garder</string>
+    <string name="s_delete_this_recording">Supprimer cet enregistrement ?</string>
+    <string name="e_record_after_the_call">Tu pourras enregistrer un message après l’appel.</string>
+    <string name="e_send_or_delete_the_unsent_first">Envoie ou supprime d’abord le message vocal qui n’a pas été envoyé.</string>
+    <string name="s_recording_stopped_at_five_minutes">L’enregistrement s’est arrêté au bout de cinq minutes.</string>
+    <string name="e_recording_stopped_unexpectedly">L’enregistrement s’est arrêté de façon inattendue.</string>
+    <string name="s_voice_message_with_length">Message vocal · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">Enregistrer un message vocal</string>
+    <string name="s_take_video">Filmer une vidéo</string>
+    <string name="s_open_settings">Ouvrir les paramètres</string>
+    <string name="s_stop_recording">Arrêter l’enregistrement</string>
+    <string name="s_stop_and_listen_first">Arrêter et écouter d’abord</string>
+    <string name="s_start_recording_action">démarrer l’enregistrement</string>
+    <string name="s_play_after_recording">Tu pourras le lire après l’enregistrement.</string>
+    <string name="s_thirty_seconds_left">Encore 30 secondes</string>
+    <string name="s_cant_hear_microphone_muted">On n’entend rien. Le micro est-il coupé ?</string>
+    <string name="s_announce_recording">Enregistrement en cours</string>
+    <string name="s_announce_recording_deleted">Enregistrement supprimé</string>
+    <string name="s_announce_voice_message_sent">Message vocal envoyé</string>
+    <string name="s_announce_ready_to_review">Prêt à vérifier, %1$s</string>
+    <string name="e_wait_for_the_attachment">Attends que la pièce jointe en cours soit terminée.</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">Message vidéo</string>
+    <string name="s_video_message_a11y">Message vidéo, %1$s</string>
+    <string name="s_not_played">Non lu</string>
+    <string name="s_open_full_screen">Ouvrir en plein écran</string>
+    <string name="s_couldnt_load_video_tap">Impossible de charger la vidéo. Touche pour réessayer.</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">Enregistrer un message vidéo</string>
+    <string name="s_send_video_message">Envoyer le message vidéo</string>
+    <string name="s_retake">Refaire</string>
+    <string name="s_record">Enregistrer</string>
+    <string name="s_switch_camera">Changer de caméra</string>
+    <string name="s_video_message_with_length">Message vidéo · %1$s</string>
+    <string name="s_not_recording">Pas d’enregistrement en cours</string>
+    <string name="s_only_you_can_see_this">Personne d’autre ne le voit tant que tu n’as pas commencé à enregistrer.</string>
+    <string name="s_starting_camera">Démarrage de la caméra…</string>
+    <string name="s_cant_see_anything">On ne voit rien. La caméra est-elle désactivée ou masquée ?</string>
+    <string name="s_ten_seconds_left">Encore 10 secondes</string>
+    <string name="s_recording_stopped_at_one_minute">L’enregistrement s’est arrêté au bout d’une minute.</string>
+    <string name="s_video_too_short">Cette vidéo est trop courte.</string>
+    <string name="s_delete_video_message">Supprimer le message vidéo ?</string>
+    <string name="s_video_messages_need_camera_and_microphone">Les messages vidéo ont besoin de la caméra et du micro.</string>
+    <string name="e_camera_permission_settings">Family a besoin de l’autorisation d’utiliser ta caméra. Active-la dans Réglages.</string>
+    <string name="s_camera_in_use_by_another_app">La caméra est utilisée par une autre app.</string>
+    <string name="s_couldnt_make_it_round">Impossible de rendre la vidéo ronde. Elle sera envoyée comme une vidéo ordinaire.</string>
+    <string name="s_too_big_for_video_message">Trop lourde pour un message vidéo. Elle sera envoyée comme une vidéo ordinaire.</string>
+    <string name="s_announce_camera_ready">Caméra prête</string>
+    <string name="s_announce_recording_video">Enregistrement vidéo en cours</string>
+    <string name="s_announce_video_message_sent">Message vidéo envoyé</string>
+    <string name="s_announce_camera_turned_off">Caméra éteinte</string>
+    <string name="s_record_voice_message_instead">Enregistrer plutôt un message vocal</string>
+    <!-- Voice and video message polish (#79): the approved design, long-press menu, speed chip, accessibility -->
+    <string name="s_voice_message_a11y">Message vocal, %1$s</string>
+    <string name="s_played">Lu</string>
+    <string name="s_playback_speed">Vitesse de lecture</string>
+    <string name="s_playback_speed_a11y">Vitesse de lecture, %1$s</string>
+    <string name="s_speed_1x">1×</string>
+    <string name="s_speed_1_5x">1,5×</string>
+    <string name="s_speed_2x">2×</string>
+    <string name="s_not_sent">Non envoyé</string>
+    <string name="s_switch">Changer</string>
+    <string name="s_stop">Arrêter</string>
 </resources>

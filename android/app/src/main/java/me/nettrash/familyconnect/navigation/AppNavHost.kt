@@ -167,6 +167,18 @@ fun startDestinationFor(status: FamilyStatus): String = when (status) {
 fun shareNavigatesToChat(status: FamilyStatus?): Boolean =
     status != null && startDestinationFor(status) == Routes.CHAT_LIST
 
+/**
+ * The share flow as the overlay draws it: NOTHING while the video recorder
+ * is open (#79, S4 — "a notification tap or shared item waits until it
+ * closes"). The sheets are windows of their own that would rise over the
+ * recorder's layer, and a pick would move the screen under a clip waiting
+ * in REVIEW for another chat. Only the drawing waits: the import goes on
+ * (the read grants on shared Uris are transient), and the sheet comes the
+ * moment the recorder closes.
+ */
+fun shownShareFlow(share: MainViewModel.ShareFlow?, recorderOpen: Boolean): MainViewModel.ShareFlow? =
+    share.takeUnless { recorderOpen }
+
 @Composable
 fun AppNavHost(
     startDestination: String,
@@ -186,6 +198,8 @@ fun AppNavHost(
     onShareCancelled: () -> Unit = {},
     /** LIVE session status — the share picker's navigation gate (see [shareNavigatesToChat]). */
     sessionStatus: StateFlow<FamilyStatus?>? = null,
+    /** The video recorder is open: the share sheets wait (see [shownShareFlow]). */
+    holdShare: Boolean = false,
 ) {
     val navController = rememberNavController()
 
@@ -277,7 +291,7 @@ fun AppNavHost(
     if (shareFlow != null) {
         val share by shareFlow.collectAsStateWithLifecycle()
         val currentStatus = sessionStatus?.collectAsStateWithLifecycle()
-        when (share) {
+        when (shownShareFlow(share, recorderOpen = holdShare)) {
             MainViewModel.ShareFlow.Preparing ->
                 SharePreparingSheet(onDismiss = onShareCancelled)
             is MainViewModel.ShareFlow.ChooseChat -> ShareTargetSheet(

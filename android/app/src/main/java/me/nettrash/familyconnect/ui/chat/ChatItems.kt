@@ -283,6 +283,13 @@ sealed interface ChatListItem {
         val isRunStart: Boolean = true,
         /** Visually-bottom bubble of a same-sender same-day run. */
         val isRunEnd: Boolean = true,
+        /**
+         * The QUOTED message is a video message this list holds (#79,
+         * S5.7), so the quote says "Video message" — the server's excerpt
+         * is its body, which a circle never has. False when the quoted
+         * message is not loaded: the quote then says what it always said.
+         */
+        val quotesRound: Boolean = false,
     ) : ChatListItem {
         override val key: String get() = entity.clientMsgId
 
@@ -347,6 +354,11 @@ fun buildChatItems(
     blockedUserIds: Set<Long> = emptySet(),
 ): List<ChatListItem> {
     val items = ArrayList<ChatListItem>(messagesNewestFirst.size + 8)
+    // The video messages this page holds, by server id, for the quotes that
+    // name one (#79, S5.7). Usually empty, so usually free.
+    val roundIds = messagesNewestFirst.mapNotNullTo(HashSet()) { message ->
+        message.serverId?.takeIf { roundOf(message) != null }
+    }
     messagesNewestFirst.forEachIndexed { index, message ->
         val newer = messagesNewestFirst.getOrNull(index - 1)
         val older = messagesNewestFirst.getOrNull(index + 1)
@@ -378,6 +390,7 @@ fun buildChatItems(
             isParentHidden = BlockedMessageRule.isQuoteHidden(
                 message.replyParentSenderId, myUserId, blockedUserIds,
             ),
+            quotesRound = message.replyToMessageId?.let { it in roundIds } == true,
             // A hidden row draws no name and no avatar. The flag above is
             // what the bubble reads; this keeps the two from disagreeing
             // if some other surface reads `showSenderName` alone.
@@ -477,18 +490,87 @@ fun stickerOf(entity: MessageEntity): AttachmentDto? =
     entity.attachmentList.singleOrNull()?.takeIf { it.isSticker }
 
 /**
+ * The video of a message sent as a VIDEO MESSAGE, drawn as a circle, or null
+ * when the message is not one (#79, S5.1; docs/protocol.md, "Video
+ * messages").
+ *
+ * THE TEST, the same on every client: exactly ONE attachment, `kind=video`,
+ * carrying `round: true`, and NO BODY — [ComposerSlot.isRound], which the
+ * shared vectors pin (fc_text::record::is_round; protocol.md, "How it is
+ * drawn": "a body (which the server refuses anyway)"). Anything else — two
+ * attachments, the flag on a photo, words beside it — draws as the ordinary
+ * message it otherwise is, and a row cached before the field existed is the
+ * square video it always was. Unlike the sticker's test, the body IS asked:
+ * the protocol says so for this one, and the body is compared exactly, so
+ * no port's idea of whitespace can make two clients disagree.
+ */
+fun roundOf(entity: MessageEntity): AttachmentDto? {
+    val only = entity.attachmentList.singleOrNull() ?: return null
+    val flags = ComposerSlot.AttachmentFlags(kind = only.kind, round = only.round == true)
+    return only.takeIf { ComposerSlot.isRound(entity.body, listOf(flags)) }
+}
+
+/**
  * Whether "Edit" is offered on a message: the reader's own, once the server
- * has it — and NEVER A STICKER.
+ * has it — and NEVER A STICKER OR A VIDEO MESSAGE.
  *
  * Said outright rather than left to follow from a sticker having no words:
  * `PATCH` on a sticker message is `validation` (docs/protocol.md, "Sending
  * one" — "a client offers no Edit on a sticker"), because the edit path
  * would let its author put words on a message drawn with no bubble to hold
- * them, and never take them off again.
+ * them, and never take them off again. A video message is refused the same
+ * way and for the same reason (#79, S5.4; protocol.md, "Video messages").
  */
 fun canEditMessage(entity: MessageEntity, myUserId: Long?): Boolean {
-    if (stickerOf(entity) != null) return false
+    if (stickerOf(entity) != null || roundOf(entity) != null) return false
+    // A voice message with no words has no text to edit (#79, the approved
+    // design's menu): Edit would only bolt a caption onto a recording.
+    if (voiceOf(entity) != null && entity.body.isEmpty()) return false
     return entity.serverId != null && entity.senderId == myUserId
+}
+
+/**
+ * The recording of a VOICE MESSAGE — a message whose one attachment is audio
+ * (a voice note, or a sound file sent the same way) — or null (#79).
+ */
+fun voiceOf(entity: MessageEntity): AttachmentDto? = entity.attachmentList.singleOrNull()?.takeIf { it.isAudio }
+
+/**
+ * What the long-press menu offers on a RECORDING — a voice message or a video
+ * message (#79, the approved design): only what does something for it. Its
+ * reactions, Reply, Show text, Playback speed (voice), Save, Open full screen
+ * (video), and Safety's Report — and NO Copy, Edit, Share or text selection,
+ * in the order iOS, Windows and the web draw them. A voice note that carries
+ * words is not a voice message here: it keeps the ordinary menu.
+ * Every other message's menu is as it was.
+ */
+object RecordingMenu {
+    enum class Kind { VOICE, VIDEO }
+
+    /**
+     * A voice message is ONE audio attachment and NO WORDS — the rule iOS,
+     * the Mac, Windows and the web share (`MessagePresentation.isVoiceMessage`,
+     * `MessageMenu.Recording`, `Message::voice_note`). A voice note sent with
+     * a caption is a message with words, and keeps the ordinary menu.
+     */
+    fun kindOf(entity: MessageEntity): Kind? = when {
+        roundOf(entity) != null -> Kind.VIDEO
+        entity.body.isEmpty() && voiceOf(entity) != null -> Kind.VOICE
+        else -> null
+    }
+
+    /** Copy is for words: a recording without any has none. */
+    fun offersCopy(entity: MessageEntity): Boolean = entity.body.isNotEmpty()
+
+    /** Playback speed is the voice message's alone. */
+    fun offersSpeed(kind: Kind?): Boolean = kind == Kind.VOICE
+
+    /**
+     * Share is not on a recording's menu (the approved design, and iOS's): Save
+     * puts the recording itself where the person wants it. Every other
+     * message keeps Share.
+     */
+    fun offersShare(kind: Kind?): Boolean = kind == null
 }
 
 /**
@@ -514,3 +596,12 @@ fun canEditMessage(entity: MessageEntity, myUserId: Long?): Boolean {
  * mirrored vectors.
  */
 fun drawsHairline(onBalloon: Boolean, hasImage: Boolean): Boolean = onBalloon || !hasImage
+
+/**
+ * Whether [messageId] names a video message in [items] — for the reply
+ * banner, which says "Video message" where a circle's empty excerpt would
+ * leave a blank line (#79, S5.7). False when the message is not loaded.
+ */
+fun quotesRound(items: List<ChatListItem>, messageId: Long): Boolean = items.any { item ->
+    item is ChatListItem.MessageItem && item.entity.serverId == messageId && roundOf(item.entity) != null
+}

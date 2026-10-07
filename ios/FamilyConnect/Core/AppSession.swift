@@ -317,6 +317,17 @@ final class AppSession {
     var clearAvatarCache: () -> Void = {}
     /// Set by the app: drops in-flight and failed media sends, files included.
     var clearMediaOutbox: (() -> Void)?
+    /// Set by the app: deletes every voice recording waiting as "not sent",
+    /// and throws away one still running — "everything recorded and not sent
+    /// is deleted" at sign-out (#79, S2.8, S4). A closure for the reason
+    /// `clearMediaOutbox` is one: a test of this phase machine must never
+    /// reach the real store in Application Support.
+    var clearParkedRecordings: (() -> Void)?
+    /// Set by the app: forgets which video messages this device has played,
+    /// and stops whatever plays (#79, S5.2: the unplayed dot is "kept per
+    /// account, never sent, wiped at sign-out"). A closure for the reason
+    /// the two above are.
+    var clearRoundVideoPlays: (() -> Void)?
     /// Best-effort push deregistration (PushRegistrar.deregister), also
     /// injected at wiring time so the phase machine stays UIKit-free.
     /// logout() awaits it BEFORE /auth/logout, because DELETE /devices
@@ -719,6 +730,11 @@ final class AppSession {
             // A media send still in the outbox belongs to the family that
             // just went — the same scope as the roster and the chat store.
             clearMediaOutbox?()
+            // So does a voice message that was never sent: its chat is the
+            // family's, and its reply quotes the family's messages.
+            clearParkedRecordings?()
+            // And what this device knows it has played among them.
+            clearRoundVideoPlays?()
             // Member ↔ contact links name members of the family that just
             // went — family-scoped like the roster, not defaults-scoped,
             // so they go with it on a kick or a leave as well.

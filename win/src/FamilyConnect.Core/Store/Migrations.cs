@@ -284,8 +284,58 @@ public static class Migrations
     ];
 
     /// <summary>
+    /// Step 6: VIDEO MESSAGES (docs/protocol.md, "Video messages"; docs/audio-video-messages-2026-10-04.md, S5). The one
+    /// bit a queued send needs to stay a circle across a relaunch — step 4's sticker column, one over — and which circles
+    /// THIS DEVICE has played, for the dot beside an unplayed one. Nothing held is read again: the outbox gains a column
+    /// whose default is what every row already in it means, and the other table is new.
+    /// </summary>
+    private static readonly string[] Six =
+    [
+        // A queued send that is a VIDEO MESSAGE: without it a circle recorded offline would land as a square video.
+        "ALTER TABLE outbox ADD COLUMN round INTEGER NOT NULL DEFAULT 0",
+        """
+        -- The video messages THIS DEVICE has played, by attachment: the dot's own knowledge (S5.2). Never on the wire —
+        -- whether somebody watched something is theirs — and wiped with the rest of the cache at sign-out, so it is
+        -- this account's. Only the newest few thousand are kept (PlayedRoundStore).
+        CREATE TABLE played_rounds (
+            attachment_id INTEGER PRIMARY KEY
+        )
+        """,
+    ];
+
+    /// <summary>
+    /// Step 7: which VOICE MESSAGES this device has played, for the dot beside an unplayed voice bubble (the approved design
+    /// of 2026-10-05) — step 6's table for circles, one over, so neither kind pushes the other out. New, so nothing held is
+    /// read again.
+    /// </summary>
+    private static readonly string[] Seven =
+    [
+        """
+        -- The voice messages THIS DEVICE has played, by attachment. Never on the wire, wiped at sign-out with the rest of
+        -- the cache, and only the newest few thousand are kept (PlayedVoiceStore).
+        CREATE TABLE played_voice (
+            attachment_id INTEGER PRIMARY KEY
+        )
+        """,
+    ];
+
+    /// <summary>
+    /// Step 8: WHICH CACHED ATTACHMENT SETS KNOW THE STICKER AND VIDEO-MESSAGE FLAGS (docs/audio-video-messages-2026-10-04.md,
+    /// S5.8; iOS <c>MessageEntity.attachmentsKnowRound</c>, Android MIGRATION_30_31). A build before #58 decoded every
+    /// attachment without <c>sticker</c>, and one before #79 without <c>round</c>, and wrote the set back into
+    /// <c>attachments_json</c> with only the fields it knew — so a sticker it cached reads as a photo and a circle as a
+    /// square video, FOR GOOD: a chat held in sequence is never paged again, and the catch-up only ever adds. 0 is the truth
+    /// for every row already here, because nothing says which build wrote it; every set this build writes is 1, and
+    /// <c>Resync</c> reads the 0s that could be either once more (<see cref="ChatStore.FlagRepairCandidates"/>).
+    /// </summary>
+    private static readonly string[] Eight =
+    [
+        "ALTER TABLE messages ADD COLUMN attachments_know_flags INTEGER NOT NULL DEFAULT 0",
+    ];
+
+    /// <summary>
     /// Every step, in order. The index is the version it upgrades FROM, so
     /// <c>All.Count</c> is the schema this build expects.
     /// </summary>
-    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five];
+    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five, Six, Seven, Eight];
 }

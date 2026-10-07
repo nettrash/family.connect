@@ -13,6 +13,8 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSCameraReactionEffectGesturesEnabledDefault</key>
+	<false/>
 	<key>FCDefaultServerURL</key>
 	<string>$(FC_DEFAULT_SERVER_URL)</string>
 	<key>NSAppTransportSecurity</key>

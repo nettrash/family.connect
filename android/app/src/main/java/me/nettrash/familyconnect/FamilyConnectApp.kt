@@ -22,6 +22,7 @@ import me.nettrash.familyconnect.calls.CallServiceLauncher
 import me.nettrash.familyconnect.calls.TelecomCalls
 import me.nettrash.familyconnect.data.net.ws.ChatSocketManager
 import me.nettrash.familyconnect.data.push.PushNotifications
+import me.nettrash.familyconnect.data.repo.ParkedRecordings
 import javax.inject.Inject
 
 @HiltAndroidApp
@@ -39,6 +40,14 @@ class FamilyConnectApp : Application(), Configuration.Provider {
     /** Family's calls, registered with the platform's Telecom (headsets, Wear, Auto, the call log). */
     @Inject
     lateinit var telecomCalls: TelecomCalls
+
+    /**
+     * The voice messages that were not sent (#79, S2.8). Injected here so the
+     * store exists from launch, and its sweep — the files no entry names —
+     * runs then rather than when somebody first opens a chat.
+     */
+    @Inject
+    lateinit var parkedRecordings: ParkedRecordings
 
     /** So `MediaUploadWorker` can be given the repository graph it needs. */
     @Inject

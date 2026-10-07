@@ -251,7 +251,8 @@ public static class ClientFrames
         IReadOnlyList<long>? attachmentIds = null,
         IReadOnlyList<string>? pollOptions = null,
         IReadOnlyList<MentionDto>? mentions = null,
-        bool sticker = false)
+        bool sticker = false,
+        bool round = false)
     {
         var frame = new JsonObject
         {
@@ -264,6 +265,11 @@ public static class ClientFrames
         {
             // Absent on an ordinary message, like every optional field on this wire — never false.
             frame["sticker"] = true;
+        }
+        if (round)
+        {
+            // A video message (docs/protocol.md, "Video messages"): the sticker's pattern — present only when true.
+            frame["round"] = true;
         }
         if (replyToMessageId is { } reply)
         {

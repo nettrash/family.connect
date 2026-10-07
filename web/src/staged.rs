@@ -41,9 +41,24 @@ pub struct Prepared {
     /// (docs/protocol.md, "Sending one"). Not sent anywhere — it is where a
     /// reload, which keeps no bytes, can fetch them from again.
     pub source_attachment_id: Option<i64>,
+    /// A voice note's shape, 48 hex levels the recorder measured
+    /// (docs/protocol.md, "A voice note's waveform"): sent with the upload,
+    /// and drawn by the chip and the pending bubble before anything has
+    /// gone. None for anything else, and for a note whose recorder heard
+    /// nothing it could measure.
+    pub waveform: Option<String>,
 }
 
 impl Prepared {
+    /// A voice note recorded here — audio with no name, since its length is
+    /// its identity (`prep::recording`) — as opposed to a sound file picked
+    /// from disk, which keeps its name. The one the chip calls a voice note
+    /// (views::attach::label), and the one a chat left with it in review
+    /// keeps as not sent (store::Store::park_review).
+    pub fn is_voice_note(&self) -> bool {
+        self.kind == "audio" && self.name.is_none()
+    }
+
     /// A place, decided now. No bytes: it IS its three numbers.
     pub fn location(latitude: f64, longitude: f64, accuracy_m: Option<f64>) -> Self {
         Prepared {
@@ -87,6 +102,10 @@ pub struct OutgoingItem {
     /// everything else, and on a row kept by a build from before stickers.
     #[serde(default)]
     pub source_attachment_id: Option<i64>,
+    /// A voice note's shape (`Prepared::waveform`), sent as `waveform=` on
+    /// the upload. Absent on a row kept by a build from before waveforms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waveform: Option<String>,
 }
 
 impl OutgoingItem {
@@ -106,6 +125,7 @@ impl OutgoingItem {
             has_preview: prepared.preview.is_some(),
             attachment_id: None,
             source_attachment_id: prepared.source_attachment_id,
+            waveform: prepared.waveform.clone(),
         }
     }
 
@@ -137,6 +157,8 @@ impl OutgoingItem {
             accuracy_m: self.accuracy_m,
             // The row's to say, not the item's: see `Store::enqueue`.
             sticker: false,
+            round: false,
+            waveform: self.waveform.clone(),
         }
     }
 }

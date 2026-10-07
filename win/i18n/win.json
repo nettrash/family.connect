@@ -107,7 +107,6 @@
     },
     "Finding your location…": {},
     "Jump to the newest message": {},
-    "Keep": {},
     "Keep running when the window is closed": {
       "de": "Nach dem Schließen des Fensters weiterlaufen",
       "es": "Seguir en ejecución al cerrar la ventana",
@@ -169,7 +168,6 @@
       "sr-Latn": "Zatvori Family Connect",
       "zh-Hans": "退出 Family Connect"
     },
-    "Recording %@": {},
     "Report sent.": {},
     "Safety for %@": {},
     "Shows a map on a shared location. Drawing one asks OpenStreetMap for the map around that place, so OpenStreetMap sees a request from this device. With maps off, a shared location still shows its pin and opens in a map when you click it.": {
@@ -222,7 +220,6 @@
     "The server is busy. Try again in a moment.": {},
     "Title": {},
     "View the photo": {},
-    "Voice message": {},
     "What hasn't been sent yet is lost.": {},
     "While this window is not in front, a notification says who wrote — never what they wrote.": {},
     "Windows is keeping this off. Turn it back on in Task Manager, under Startup apps.": {

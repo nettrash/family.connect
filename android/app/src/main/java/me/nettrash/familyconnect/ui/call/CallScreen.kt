@@ -30,11 +30,7 @@
 package me.nettrash.familyconnect.ui.call
 
 import android.Manifest
-import android.app.Activity
-import android.content.Context
-import android.content.ContextWrapper
 import android.content.pm.PackageManager
-import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -71,7 +67,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -101,6 +96,7 @@ import me.nettrash.familyconnect.calls.CallVideoLog
 import me.nettrash.familyconnect.ui.chat.CallRecordWording
 import me.nettrash.familyconnect.ui.components.isWideWindow
 import me.nettrash.familyconnect.ui.components.Avatar
+import me.nettrash.familyconnect.ui.components.KeepScreenAwake
 import me.nettrash.familyconnect.ui.theme.FamilyConnectTheme
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
@@ -225,15 +221,13 @@ fun CallScreen(
     FamilyConnectTheme(darkTheme = isVideoCall || isSystemInDarkTheme()) {
         // Only a VIDEO call holds the screen awake: the picture is the
         // point, and nobody touches the phone for minutes. A voice call
-        // held to the ear must still go dark as any phone call does —
-        // nothing else in the app holds this flag, so clearing it on the
-        // way out hands the screen back to the system untouched.
+        // held to the ear must still go dark as any phone call does. A
+        // voice RECORDING holds it too (#79), so the hold is counted
+        // (KeepScreenAwake): letting go here never switches off a hold
+        // the chat still has, and the last one out hands the screen back
+        // to the system untouched.
         val keepAwake = isVideoCall && live != null
-        DisposableEffect(keepAwake) {
-            val window = if (keepAwake) context.findActivity()?.window else null
-            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
-        }
+        KeepScreenAwake(keepAwake)
         Surface(
             modifier = Modifier.fillMaxSize(),
             // Black under the renderer, not the dark scheme's surface: the
@@ -352,21 +346,6 @@ fun CallScreen(
             }
         }
     }
-}
-
-/**
- * The Activity behind a Compose context. LocalContext is seldom the
- * Activity itself (a theme or configuration wrapper, usually), so this
- * walks the ContextWrapper chain until it finds one — or gives up, in
- * which case there is no window to keep awake and nothing to clean up.
- */
-private fun Context.findActivity(): Activity? {
-    var current: Context? = this
-    while (current is ContextWrapper) {
-        if (current is Activity) return current
-        current = current.baseContext
-    }
-    return null
 }
 
 /**

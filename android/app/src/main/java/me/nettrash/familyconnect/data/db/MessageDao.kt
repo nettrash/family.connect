@@ -114,6 +114,32 @@ interface MessageDao {
     )
     suspend fun locationsMissingCoordinates(limit: Int): List<MessageEntity>
 
+    /**
+     * Rows a build from before #79 cached that could be VIDEO MESSAGES:
+     * the set's first attachment a video, no body, on the server, and the
+     * set not yet known to carry the flag
+     * (docs/audio-video-messages-2026-10-04.md, S5.8). Newest first, so a
+     * bounded pass heals what is on screen before the deep history.
+     * "Exactly one attachment" is not SQL's to say — the set is JSON — so
+     * the caller checks it; see `MessageRepository.repairUnknownRoundFlags`.
+     */
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE attachmentsKnowRound = 0
+          AND attachmentKind = 'video'
+          AND body = ''
+          AND serverId IS NOT NULL
+        ORDER BY serverId DESC
+        LIMIT :limit
+        """,
+    )
+    suspend fun roundFlagUnknown(limit: Int): List<MessageEntity>
+
+    /** Settle a row [roundFlagUnknown] returned: it is never asked about again. */
+    @Query("UPDATE messages SET attachmentsKnowRound = 1 WHERE clientMsgId = :clientMsgId")
+    suspend fun markRoundFlagKnown(clientMsgId: String)
+
     @Query("SELECT * FROM messages WHERE serverId = :serverId")
     suspend fun findByServerId(serverId: Long): MessageEntity?
 
@@ -186,7 +212,8 @@ interface MessageDao {
             attachmentLatitude = :latitude,
             attachmentLongitude = :longitude,
             attachmentAccuracyM = :accuracyM,
-            attachmentsJson = :attachmentsJson
+            attachmentsJson = :attachmentsJson,
+            attachmentsKnowRound = 1
         WHERE clientMsgId = :clientMsgId
         """,
     )
@@ -249,7 +276,8 @@ interface MessageDao {
             attachmentLatitude = :latitude,
             attachmentLongitude = :longitude,
             attachmentAccuracyM = :accuracyM,
-            attachmentsJson = :attachmentsJson
+            attachmentsJson = :attachmentsJson,
+            attachmentsKnowRound = 1
         WHERE serverId = :serverId AND :editSeq >= editSeq
         """,
     )
@@ -341,8 +369,8 @@ interface MessageDao {
      * once every upload has landed.
      */
     @Query(
-        "UPDATE messages SET attachmentId = :attachmentId, attachmentsJson = :attachmentsJson " +
-            "WHERE clientMsgId = :clientMsgId AND serverId IS NULL",
+        "UPDATE messages SET attachmentId = :attachmentId, attachmentsJson = :attachmentsJson, " +
+            "attachmentsKnowRound = 1 WHERE clientMsgId = :clientMsgId AND serverId IS NULL",
     )
     suspend fun applyOwnAttachments(clientMsgId: String, attachmentId: Long, attachmentsJson: String)
 

@@ -456,6 +456,120 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         return cursors;
     }
 
+    // ---- sets an older build cached without the flags (schema step 8) -----------------------------
+
+    /// <summary>
+    /// Whether a set written by a build that did not know the flags COULD have lost one: a message with no body and exactly
+    /// one attachment, a photo (a sticker, <see cref="MessageDto.StickerPicture"/>) or a video (a circle,
+    /// <see cref="MessageDto.RoundVideo"/>), carrying neither flag. Anything else draws the same with or without them.
+    /// </summary>
+    public static bool CouldHaveLostAFlag(MessageDto message) =>
+        message.Body.Length == 0
+        && message.Media is [{ Kind: "photo" or "video", Sticker: false, Round: false }];
+
+    /// <summary>
+    /// The held messages an older build may have cached as a plain photo or video that is really a STICKER or a VIDEO
+    /// MESSAGE, newest first, at most <paramref name="limit"/> — what <c>Resync</c> reads once more (iOS
+    /// <c>repairUnknownRoundFlags</c>, Android <c>MessageDao.roundFlagUnknown</c>; Windows also asks about photos, because
+    /// it learned stickers in #58, after the 1.1 the Store has, and a set that build cached lost <c>sticker</c> too).
+    /// </summary>
+    /// <remarks>
+    /// Every unknown row that is NOT a candidate is settled on the way, with no request: a message with words, one with no
+    /// attachment, an album, a voice note, a set that already carries a flag. So the scan only ever shrinks, and a pass
+    /// that finds nothing to ask about costs one query next time.
+    /// </remarks>
+    public IReadOnlyList<MessageDto> FlagRepairCandidates(int limit)
+    {
+        using var serialised = database.Hold();
+        using (var settle = database.Connection.CreateCommand())
+        {
+            settle.CommandText =
+                """
+                UPDATE messages SET attachments_know_flags = 1
+                 WHERE attachments_know_flags = 0 AND (attachments_json IS NULL OR body <> '')
+                """;
+            settle.ExecuteNonQuery();
+        }
+        var found = new List<MessageDto>();
+        while (found.Count < limit)
+        {
+            var scanned = new List<MessageDto>();
+            using (var command = database.Connection.CreateCommand())
+            {
+                command.CommandText =
+                    """
+                    SELECT * FROM messages WHERE attachments_know_flags = 0
+                     ORDER BY message_id DESC LIMIT $limit OFFSET $skip
+                    """;
+                command.Parameters.AddWithValue("$limit", limit);
+                command.Parameters.AddWithValue("$skip", found.Count);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    scanned.Add(ReadMessage(reader));
+                }
+            }
+            if (scanned.Count == 0)
+            {
+                break;
+            }
+            foreach (var message in scanned)
+            {
+                if (!CouldHaveLostAFlag(message))
+                {
+                    SettleFlags(message.Id);
+                }
+                else if (found.Count < limit)
+                {
+                    found.Add(message);
+                }
+            }
+            if (scanned.Count < limit)
+            {
+                break;
+            }
+        }
+        return found;
+    }
+
+    /// <summary>A row the repair asked about, or need not ask about: never asked about again.</summary>
+    public void SettleFlags(long messageId)
+    {
+        using var serialised = database.Hold();
+        using var command = database.Connection.CreateCommand();
+        command.CommandText = "UPDATE messages SET attachments_know_flags = 1 WHERE message_id = $id";
+        command.Parameters.AddWithValue("$id", messageId);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// The server's copy of a held message's set, written over the one an older build cached — and nothing else about the
+    /// row: no cursor moves (the row may lie outside the run the catch-up has delivered, and a cursor dragged to it would
+    /// skip the gap for good), no count, no ordering. A copy with no set settles the row and changes nothing.
+    /// </summary>
+    /// <returns>Whether the held set changed.</returns>
+    public bool RepairMedia(MessageDto server)
+    {
+        using var serialised = database.Hold();
+        if (server.Attachments is null && server.Attachment is null)
+        {
+            SettleFlags(server.Id);
+            return false;
+        }
+        var encoded = Wire.Encode(server.Media);
+        using var command = database.Connection.CreateCommand();
+        command.CommandText =
+            """
+            UPDATE messages SET attachments_json = $attachments, attachments_know_flags = 1
+             WHERE message_id = $id AND attachments_json IS NOT $attachments
+            """;
+        command.Parameters.AddWithValue("$attachments", encoded);
+        command.Parameters.AddWithValue("$id", server.Id);
+        var changed = command.ExecuteNonQuery() > 0;
+        SettleFlags(server.Id);
+        return changed;
+    }
+
     // ---- who -------------------------------------------------------------
 
     /// <summary>
@@ -844,10 +958,10 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
             INSERT INTO messages (message_id, chat_id, sender_id, client_msg_id, body, created_at,
                                   edited_at, edit_seq, reply_to_id, reply_to_json, thread_root_id, reply_count,
                                   reaction_seq, reactions_json, attachments_json, mentions_json,
-                                  poll_json, call_json, sequenced)
+                                  poll_json, call_json, sequenced, attachments_know_flags)
             VALUES ($id, $chat, $sender, $client, $body, $created,
                     $edited, $editSeq, $reply, $quote, $root, $replies,
-                    $reactionSeq, $reactions, $attachments, $mentions, $poll, $call, $sequenced)
+                    $reactionSeq, $reactions, $attachments, $mentions, $poll, $call, $sequenced, 1)
             ON CONFLICT(message_id) DO UPDATE SET
                 body = excluded.body, edited_at = excluded.edited_at, edit_seq = excluded.edit_seq,
                 -- In sequence once a page or a frame has delivered it, and a later preview, answer or thread read cannot take
@@ -858,6 +972,10 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
                 -- page carry different amounts of one message, and absent is not empty.
                 reactions_json = COALESCE(excluded.reactions_json, messages.reactions_json),
                 attachments_json = COALESCE(excluded.attachments_json, messages.attachments_json),
+                -- A set THIS build decoded knows the sticker and video-message flags (schema step 8): a copy that carries
+                -- one settles a row an older build wrote, and a copy that carries none leaves the row as it was.
+                attachments_know_flags = CASE WHEN excluded.attachments_json IS NULL
+                                              THEN messages.attachments_know_flags ELSE 1 END,
                 poll_json = COALESCE(excluded.poll_json, messages.poll_json),
                 reaction_seq = MAX(COALESCE(excluded.reaction_seq, 0),
                                    COALESCE(messages.reaction_seq, 0)),

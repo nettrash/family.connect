@@ -54,6 +54,18 @@ public static class BubbleRules
     /// <c>not_same_family</c>; what a member needs here is to say that a MODEL got something wrong,
     /// which is the operator's business and not the family owner's.
     /// </summary>
+    /// <summary>
+    /// What a bubble's attachments look like, for a redraw key: which branch draws them (a sticker, a circle, or the tiles
+    /// and rows of everything else) and over which ids. The edit, reaction and poll sequences say nothing about a set, so
+    /// a key made of them alone kept a sticker an older build cached as a grey photo tile on screen after the repair had
+    /// put its flag back (schema step 8) — until something else about the chat changed.
+    /// </summary>
+    public static string MediaMark(MessageDto message) =>
+        message.StickerPicture is { } sticker ? $"s{sticker.Id}"
+        : message.RoundVideo is { } circle ? $"r{circle.Id}"
+        : message.Media.Count == 0 ? string.Empty
+        : "m" + string.Join('.', message.Media.Select(attachment => $"{attachment.Id}{attachment.Kind}{(attachment.HasPreview ? "+" : "-")}"));
+
     public static bool MayReportAssistant(MessageDto message, long me, bool assistantChat, long? assistantUserId) =>
         message.Id != 0 && IsAssistant(message, me, assistantChat, assistantUserId);
 }

@@ -1701,6 +1701,35 @@ final class ChatSyncCoordinator {
         return localID
     }
 
+    /// Send a recorded clip as a VIDEO MESSAGE (#79, docs/protocol.md,
+    /// "Video messages"): the ordinary media outbox with one flag, as a
+    /// sticker is — so it waits in the queue with no network, resumes after
+    /// a relaunch still round, and the pending bubble draws the circle at
+    /// once from the clip's own poster (S5.6).
+    ///
+    /// The clip goes up AS RECORDED: it was made to the profile, and the
+    /// planner's rules are for a picked file (protocol.md, "Preparing media
+    /// before upload"). No caption — a circle has no balloon to hold one.
+    ///
+    /// Whether the server takes video messages at all (`max_round_video_ms`
+    /// on `GET /families/mine`) is the CALLER's door: an old server would
+    /// ignore the flag and deliver a square video.
+    @discardableResult
+    func sendRoundVideo(
+        _ prepared: MediaPrep.Prepared, replyTo: ReplyToDTO? = nil, in chatID: Int64
+    ) -> String? {
+        guard prepared.kind == AttachmentDTO.Kind.video else { return nil }
+        guard let localID = sendMedia(
+            [prepared], caption: "", replyTo: replyTo, in: chatID, round: true)
+        else { return nil }
+        // `enqueue` wrote the empty body, which reads as a blank row.
+        if let chat = fetchChat(chatID) {
+            chat.lastMessagePreview = String(localized: "Video message")
+            saveContext()
+        }
+        return localID
+    }
+
     /// The members a note's text names (docs/protocol.md, "Board").
     ///
     /// Resolved HERE rather than in each board view, because both of them
@@ -2688,7 +2717,11 @@ final class ChatSyncCoordinator {
         /// The set is ONE picture going as a sticker (`sendSticker` is the
         /// only caller that says so). It rides on the item row, so a send
         /// resumed after a relaunch still says `sticker: true`.
-        sticker: Bool = false
+        sticker: Bool = false,
+        /// The set is ONE square video going as a VIDEO MESSAGE
+        /// (`sendRoundVideo` is the only caller that says so; #79). Held on
+        /// the item row for the sticker's reason.
+        round: Bool = false
     ) -> String? {
         guard !prepared.isEmpty else { return nil }
         guard let localID = enqueue(
@@ -2723,7 +2756,11 @@ final class ChatSyncCoordinator {
                 height: item.height,
                 durationMS: item.durationMS,
                 name: item.name,
-                sticker: sticker))
+                sticker: sticker,
+                isRound: round,
+                // Audio only: the server refuses a waveform on anything
+                // else (docs/protocol.md, "A voice note's waveform").
+                waveform: item.kind == AttachmentDTO.Kind.audio ? item.waveform : nil))
             staged += 1
         }
         guard staged > 0 else {
@@ -2911,7 +2948,8 @@ final class ChatSyncCoordinator {
                     width: item.width,
                     height: item.height,
                     durationMS: item.durationMS,
-                    name: item.name)
+                    name: item.name,
+                    waveform: item.waveform)
             }
         } catch APIError.unauthorized {
             session?.handleUnauthorized()
@@ -3019,6 +3057,7 @@ final class ChatSyncCoordinator {
             let height: Int?
             let durationMS: Int?
             let name: String?
+            let waveform: String?
         }
         let owed: [Owed] = items.compactMap { item in
             // A location has no bytes to upload and a missing file has none
@@ -3031,7 +3070,7 @@ final class ChatSyncCoordinator {
             return Owed(
                 itemID: item.itemID, fileURL: fileURL, mime: item.mime, kind: item.kind,
                 width: item.width, height: item.height, durationMS: item.durationMS,
-                name: item.name)
+                name: item.name, waveform: item.waveform)
         }
         var handovers: [BackgroundUploads.Handover] = []
         for item in owed {
@@ -3041,7 +3080,8 @@ final class ChatSyncCoordinator {
                 width: item.width,
                 height: item.height,
                 durationMS: item.durationMS,
-                name: item.name)
+                name: item.name,
+                waveform: item.waveform)
             else { continue }
             handovers.append(BackgroundUploads.Handover(
                 itemID: item.itemID, request: request, fileURL: item.fileURL))
@@ -3166,11 +3206,14 @@ final class ChatSyncCoordinator {
             .appendingPathComponent(cachedFileName(for: attachment))
     }
 
-    /// What to call a photo or video, which carry no name of their own.
+    /// What to call a photo, a video or a voice message, which carry no
+    /// name of their own.
     ///
     /// The EXTENSION is the part that matters: Photos refuses a video
     /// whose file does not look like one, and a share sheet decides what
-    /// it can offer from it.
+    /// it can offer from it. A voice message saved to Files or the Finder
+    /// is a sound file, named as one (#79) — not "photo-77.jpg" with sound
+    /// inside. Mirrors Android's `AttachmentDto.fallbackFileName`.
     nonisolated static func fallbackName(for attachment: AttachmentDTO) -> String {
         let ext = switch attachment.mime {
         case "image/jpeg": "jpg"
@@ -3179,9 +3222,15 @@ final class ChatSyncCoordinator {
         case "image/heif": "heif"
         case "video/mp4": "mp4"
         case "video/quicktime": "mov"
-        default: attachment.isVideo ? "mp4" : "jpg"
+        case "audio/mp4", "audio/m4a", "audio/x-m4a": "m4a"
+        case "audio/mpeg": "mp3"
+        case "audio/ogg": "ogg"
+        case "audio/aac": "aac"
+        case "audio/wav", "audio/x-wav": "wav"
+        default: attachment.isVideo ? "mp4" : attachment.isAudio ? "m4a" : "jpg"
         }
-        return "\(attachment.isVideo ? "video" : "photo")-\(attachment.id).\(ext)"
+        let stem = attachment.isVideo ? "video" : attachment.isAudio ? "voice" : "photo"
+        return "\(stem)-\(attachment.id).\(ext)"
     }
 
     /// A filename safe to create on this device. The server sanitises what
@@ -3259,6 +3308,11 @@ final class ChatSyncCoordinator {
         // one"). Before the video arm only for reading order: a sticker is
         // always a photo.
         if attachment.sticker { return String(localized: "Sticker") }
+        // A video message says so, BEFORE the plain video's word — the
+        // same word the server puts in its push (#79, S5.7). Only here,
+        // past the plural arm and the caption: S5.1's test is one
+        // attachment and no body, and both are already settled.
+        if attachment.isVideo, attachment.isRound { return String(localized: "Video message") }
         if attachment.isVideo { return String(localized: "Video") }
         if attachment.isAudio {
             return attachment.name.flatMap { $0.isEmpty ? nil : $0 }
@@ -3430,6 +3484,16 @@ final class ChatSyncCoordinator {
             guard list.count == 1, let only = list.first, only.sticker else { return nil }
             return only.id
         }()
+        // A video message, read off the row for the same reason (#79): a
+        // retry must still say `round: true`, or the clip arrives as a
+        // square video. One video and nothing else — the server's own test.
+        let roundID: Int64? = {
+            let list = row.attachmentList
+            guard stickerID == nil, list.count == 1, let only = list.first,
+                  only.isRound, only.isVideo
+            else { return nil }
+            return only.id
+        }()
         row.state = .pending
         saveContext()
 
@@ -3442,6 +3506,12 @@ final class ChatSyncCoordinator {
                     clientMsgID: clientMsgID,
                     replyToMessageID: replyToMessageID,
                     attachmentID: stickerID))
+            } else if let roundID {
+                try await socket.send(.sendRound(
+                    chatID: chatID,
+                    clientMsgID: clientMsgID,
+                    replyToMessageID: replyToMessageID,
+                    attachmentID: roundID))
             } else {
                 try await socket.send(.send(
                     chatID: chatID,
@@ -3471,7 +3541,8 @@ final class ChatSyncCoordinator {
                 attachmentIDs: attachmentIDs,
                 pollOptions: pollOptions,
                 mentions: mentions,
-                sticker: stickerID != nil)
+                sticker: stickerID != nil,
+                round: roundID != nil)
             _ = upsert(dto, bumpUnread: false, live: true)
         } catch APIError.unauthorized {
             session?.handleUnauthorized()
@@ -3598,6 +3669,98 @@ final class ChatSyncCoordinator {
 
     /// Most broken locations repaired per resync — see the note above.
     private static let repairBatch = 25
+
+    /// Read again, once, the stored messages that may be VIDEO MESSAGES but
+    /// were cached by a build that did not know the flag (#79, S5.8).
+    ///
+    /// A build before #79 wrote a received circle back as a plain video:
+    /// its encoder knew no `round`. Upgraded, this build would draw that
+    /// message square for good, because the catch-up only ever ADDS — the
+    /// person who tested a circle on an old phone, upgraded and looked
+    /// again would see the same square. So every row such a build wrote
+    /// (`attachmentsKnowRound` false) that could be a circle — one video,
+    /// no body, on the server — is read once more through the location
+    /// repair's `before_id = id + 1, limit = 1` and put back through
+    /// `upsert`, which rewrites its set and marks it known. Newest first,
+    /// at most `repairBatch` per resync; a message the server no longer
+    /// has, or one that is not a single video after all, is marked known
+    /// so it is never asked for again.
+    ///
+    /// One failed read is about ONE message, and the pass goes on past it,
+    /// as the location repair does: a refusal (403 for a chat this device
+    /// still caches but may no longer read, 404 for a message the server has
+    /// lost) is settled like a message that is gone, and a 5xx is left for
+    /// the next resync. Ending on either used to block every older
+    /// candidate for good — the pass goes newest first, so the same
+    /// unreadable message was asked FIRST on every resync. Only a failure
+    /// that says nothing about the one message ends the pass (no network,
+    /// a lost session, a server asking us to slow down): the rest wait for
+    /// the next resync.
+    func repairUnknownRoundFlags() async {
+        let video = AttachmentDTO.Kind.video
+        var descriptor = FetchDescriptor<MessageEntity>(
+            predicate: #Predicate { row in
+                !row.attachmentsKnowRound && row.attachmentKind == video && row.body == ""
+                    && row.serverID != nil
+            },
+            sortBy: [SortDescriptor(\.serverID, order: .reverse)])
+        descriptor.fetchLimit = Self.repairBatch
+        guard let unknown = try? modelContext.fetch(descriptor), !unknown.isEmpty else { return }
+        AppLog.sync.info("Reading \(unknown.count, privacy: .public) cached video(s) again for the video-message flag")
+        rows: for row in unknown {
+            guard let serverID = row.serverID, row.attachmentList.count == 1 else {
+                row.attachmentsKnowRound = true
+                continue
+            }
+            let page: [MessageDTO]
+            do {
+                page = try await api.messages(chatID: row.chatID, beforeID: serverID + 1, limit: 1)
+            } catch {
+                switch Self.roundRepairOutcome(of: error) {
+                case .settled:
+                    row.attachmentsKnowRound = true
+                    continue rows
+                case .askAgainLater:
+                    continue rows
+                case .endPass:
+                    break rows
+                }
+            }
+            if let dto = page.first(where: { $0.id == serverID }), !dto.attachmentList.isEmpty {
+                // No cursor moves on this one copy: the row may lie outside
+                // the contiguous window (a thread read put it there), and a
+                // cursor dragged to it would skip the gap for good.
+                upsert(dto, bumpUnread: false, movesCursors: false)
+            }
+            row.attachmentsKnowRound = true
+        }
+        saveContext()
+    }
+
+    /// What one failed read means to `repairUnknownRoundFlags`.
+    nonisolated enum RoundRepairOutcome: Equatable {
+        /// The server read the request and refused it — asking again would
+        /// only be refused again. Marked known, never asked again.
+        case settled
+        /// No answer about this message (a 5xx): asked again next resync,
+        /// and the pass goes on to the others.
+        case askAgainLater
+        /// Nothing about this message at all — the network, the session or
+        /// the server's patience: every other read would fail the same way.
+        case endPass
+    }
+
+    nonisolated static func roundRepairOutcome(of error: any Error) -> RoundRepairOutcome {
+        guard let apiError = error as? APIError else { return .endPass }  // cancelled
+        switch apiError {
+        case .forbidden, .notFound, .conflict, .payloadTooLarge, .decoding:
+            return .settled
+        case .server:
+            return .askAgainLater
+        case .transport, .throttled, .unauthorized, .notConfigured:
+            return .endPass
+        }
+    }
 
     /// Tap-to-retry on a failed bubble: same row, same client_msg_id.
     func retry(localID: String) {
@@ -3732,6 +3895,12 @@ final class ChatSyncCoordinator {
             // (protocol.md, "What old clients and old servers do").
             AppSettings.packMaxItems = mine.maxPackItems
             AppSettings.packMaxItemBytes = mine.maxPackItemBytes
+            // Video messages: the two discovery keys, which double as the
+            // capability check — nil takes the video button, the paperclip
+            // item and the menu items away (#79, S1.2, "Discovery and
+            // limits").
+            AppSettings.roundVideoMaxMS = mine.maxRoundVideoMS
+            AppSettings.roundVideoMaxBytes = mine.maxRoundVideoBytes
         }
 
         // 3. Chat list: server unread wins; direct chats the server
@@ -3827,6 +3996,9 @@ final class ChatSyncCoordinator {
 
         // 6a. Repair any location that was stored without its coordinates.
         await repairLocationsMissingCoordinates()
+        // 6b. And any possible video message an older build cached without
+        // its flag (#79, S5.8).
+        await repairUnknownRoundFlags()
 
         // 7. Push registration: the first pass asks for notification
         // permission (we're .active, so the user is in a family and the

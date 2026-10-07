@@ -21,7 +21,7 @@ use time::OffsetDateTime;
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
-use crate::models::{Birthday, Family, JoinRequest, Member, User, UserBrief};
+use crate::models::{Attachment, Birthday, Family, JoinRequest, Member, User, UserBrief};
 use crate::state::AppState;
 use crate::tokens;
 
@@ -899,6 +899,14 @@ pub async fn my_family(
     // (protocol.md, "Sticker pack").
     body["max_pack_items"] = json!(state.cfg.limits.max_pack_items);
     body["max_pack_item_bytes"] = json!(state.cfg.limits.max_pack_item_bytes);
+    // A video message's two limits, ALWAYS present on a server that has
+    // them, for the pack's reason: a server that predates them sends
+    // neither, and ignores `round` on a send — so their absence is how a
+    // client knows to offer no way of recording one (protocol.md, "Video
+    // messages"). The byte key is the ceiling IN FORCE, the same accessor
+    // the claim checks, so the client's refusal and the server's agree.
+    body["max_round_video_ms"] = json!(Attachment::ROUND_VIDEO_MAX_MS);
+    body["max_round_video_bytes"] = json!(state.cfg.limits.round_video_bytes());
     // The assistant rides along too, and for two reasons at once.
     //
     // NAMING: it sends under a reserved account that is in no roster (it

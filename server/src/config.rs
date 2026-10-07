@@ -1710,6 +1710,24 @@ pub struct LimitsConfig {
     #[serde(default = "default_max_pack_item_bytes")]
     pub max_pack_item_bytes: usize,
 
+    /// Largest VIDEO MESSAGE, in bytes (protocol.md, "Video messages").
+    /// Read it through `round_video_bytes()`, never directly: this is only
+    /// what the operator WROTE.
+    ///
+    /// An `Option` and not a number with a default, on purpose. Unset, the
+    /// ceiling is 12 MiB or `max_attachment_bytes`, whichever is lower —
+    /// CLAMPED, never refused, so a server whose attachment ceiling is
+    /// below 12 MiB starts exactly as it did before this key existed (the
+    /// sticker's bound, which refuses, made every server with an
+    /// attachment ceiling below 512 KiB fail to start). Set, it is bounded
+    /// like the pack's: 1 to `max_attachment_bytes`, because a video
+    /// message goes up as an attachment and a ceiling above that one is a
+    /// belief about the server that is not true. Checked when the video is
+    /// CLAIMED, like a sticker's size: the upload does not know what it
+    /// will become.
+    #[serde(default)]
+    pub max_round_video_bytes: Option<usize>,
+
     /// The CEILING on what a family owner may set as their own
     /// `max_members`, and the cap that binds at the join door for a family
     /// that has set none. It is an operator's runaway guard, in the sense
@@ -1987,6 +2005,7 @@ impl Default for LimitsConfig {
             max_task_items: default_max_task_items(),
             max_pack_items: default_max_pack_items(),
             max_pack_item_bytes: default_max_pack_item_bytes(),
+            max_round_video_bytes: None,
             max_family_members: default_max_family_members(),
             max_attachment_bytes: default_max_attachment_bytes(),
             max_attachments_per_message: default_max_attachments_per_message(),
@@ -2003,6 +2022,18 @@ impl Default for LimitsConfig {
             ws_ping_interval_secs: default_ws_ping_interval_secs(),
             ws_idle_timeout_secs: default_ws_idle_timeout_secs(),
         }
+    }
+}
+
+impl LimitsConfig {
+    /// The video-message byte ceiling IN FORCE (protocol.md, "Video
+    /// messages"): what the operator wrote, or else the default clamped to
+    /// the attachment ceiling. The one number the claim checks and
+    /// `GET /families/mine` reports as `max_round_video_bytes`, so the two
+    /// can never disagree.
+    pub fn round_video_bytes(&self) -> usize {
+        self.max_round_video_bytes
+            .unwrap_or_else(|| DEFAULT_MAX_ROUND_VIDEO_BYTES.min(self.max_attachment_bytes))
     }
 }
 
@@ -2292,6 +2323,22 @@ impl Config {
                 self.limits.max_attachment_bytes
             );
         }
+        // The video message's ceiling, held to the attachment ceiling for
+        // the pack's reason — but ONLY when the operator wrote one. Unset,
+        // `round_video_bytes()` clamps the default instead, because an
+        // operator who never wrote the key believes nothing about it, and a
+        // server that refused to start over a default nobody chose is the
+        // mistake the pack's bound once made.
+        if let Some(bytes) = self.limits.max_round_video_bytes
+            && (bytes < 1 || bytes > self.limits.max_attachment_bytes)
+        {
+            anyhow::bail!(
+                "limits.max_round_video_bytes ({}) must be between 1 and \
+                 limits.max_attachment_bytes ({}) — a video message is uploaded as an attachment",
+                bytes,
+                self.limits.max_attachment_bytes
+            );
+        }
         if self.limits.default_page_size < 1 {
             anyhow::bail!("limits.default_page_size must be at least 1");
         }
@@ -2491,6 +2538,12 @@ fn default_max_pack_item_bytes() -> usize {
     512 * 1024
 }
 
+/// protocol.md's Limits table: 12 MiB for one video message, before the
+/// clamp to `max_attachment_bytes` — room for a later client recording at
+/// the profile's 720 for a full minute, so the picture can grow without a
+/// server change.
+pub const DEFAULT_MAX_ROUND_VIDEO_BYTES: usize = 12 * 1024 * 1024;
+
 fn default_max_family_members() -> i64 {
     50
 }
@@ -2653,6 +2706,22 @@ mod tests {
         assert!(
             !cfg.ai.enabled,
             "the example must ship with the assistant off"
+        );
+        // The video-message ceiling is documented COMMENTED OUT, because
+        // unset is a different statement from any number: the clamped
+        // default (protocol.md, "Video messages").
+        assert_eq!(cfg.limits.max_round_video_bytes, None);
+        let documented = include_str!("../config.example.toml")
+            .lines()
+            .find_map(|line| line.strip_prefix("# max_round_video_bytes = "))
+            .expect("the example documents max_round_video_bytes");
+        let uncommented =
+            Config::from_toml_str(&format!("[limits]\nmax_round_video_bytes = {documented}\n"))
+                .expect("the documented value, uncommented, validates");
+        assert_eq!(
+            uncommented.limits.round_video_bytes(),
+            defaults.limits.round_video_bytes(),
+            "the documented value is the default"
         );
     }
 
@@ -3907,6 +3976,62 @@ height = 1024
             "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 65536\n",
         )
         .expect("the two ceilings may be equal");
+    }
+
+    /// The video message's byte ceiling (protocol.md, "Video messages"):
+    /// UNSET it is 12 MiB clamped to the attachment ceiling — never a
+    /// refusal, so the test servers' 64 KiB and every small production
+    /// ceiling still boot — and SET it is held to 1..=max_attachment_bytes.
+    #[test]
+    fn the_round_video_ceiling_clamps_its_default_and_bounds_a_written_value() {
+        // Unset, production attachment ceiling: the 12 MiB default.
+        let cfg = Config::from_toml_str("").expect("defaults validate");
+        assert_eq!(cfg.limits.max_round_video_bytes, None);
+        assert_eq!(cfg.limits.round_video_bytes(), 12 * 1024 * 1024);
+
+        // Unset under a SMALLER attachment ceiling: clamped, not refused.
+        // (The pack's own ceiling is lowered beside it in every 64 KiB case
+        // here, as the test servers do, because the pack's bound REFUSES a
+        // default above the attachment ceiling — which is exactly the
+        // mistake this key's clamp does not repeat.)
+        let cfg = Config::from_toml_str(
+            "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 8192\n",
+        )
+        .expect("an unset video ceiling never stops a server starting");
+        assert_eq!(cfg.limits.round_video_bytes(), 65536);
+        // …and under a LARGER one, still the 12 MiB default.
+        let cfg = Config::from_toml_str("[limits]\nmax_attachment_bytes = 209715200\n")
+            .expect("validates");
+        assert_eq!(cfg.limits.round_video_bytes(), 12 * 1024 * 1024);
+
+        // Set: what was written, even above the default…
+        let cfg = Config::from_toml_str("[limits]\nmax_round_video_bytes = 20971520\n")
+            .expect("an operator may raise it under the attachment ceiling");
+        assert_eq!(cfg.limits.round_video_bytes(), 20 * 1024 * 1024);
+        // …or below it.
+        let cfg = Config::from_toml_str("[limits]\nmax_round_video_bytes = 8192\n")
+            .expect("an operator may lower it");
+        assert_eq!(cfg.limits.round_video_bytes(), 8192);
+        // Exactly at the attachment ceiling is fine.
+        let cfg = Config::from_toml_str(
+            "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 8192\nmax_round_video_bytes = 65536\n",
+        )
+        .expect("the two ceilings may be equal");
+        assert_eq!(cfg.limits.round_video_bytes(), 65536);
+
+        // Refused: zero, and one byte over the attachment ceiling.
+        for body in [
+            "[limits]\nmax_round_video_bytes = 0\n",
+            "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 8192\nmax_round_video_bytes = 65537\n",
+            // The DEFAULT is above this attachment ceiling and clamps; a
+            // WRITTEN 12 MiB is a belief that is not true, and is told so.
+            "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 8192\nmax_round_video_bytes = 12582912\n",
+        ] {
+            assert!(
+                Config::from_toml_str(body).is_err(),
+                "expected rejection for {body:?}"
+            );
+        }
     }
 
     /// `[ai.lookups]` (protocol.md, "Looking things up"): off unless a

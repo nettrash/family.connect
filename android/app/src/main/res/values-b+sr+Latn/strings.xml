@@ -119,15 +119,12 @@
         <item quantity="few">%1$d snimka u tekst</item>
         <item quantity="other">%1$d snimaka u tekst</item>
     </plurals>
-    <string name="s_record_audio">Snimi audio</string>
-    <string name="s_stop">Zaustavi</string>
     <string name="s_audio">Audio</string>
     <string name="s_play">Pusti</string>
     <string name="s_pause">Pauza</string>
     <string name="e_record_failed">Snimanje nije moglo da počne.</string>
     <string name="e_recording_too_short">Snimak je prekratak.</string>
     <string name="e_microphone_permission">Family treba dozvolu za korišćenje mikrofona.</string>
-    <string name="s_record_video">Snimi video</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Dodaj poruku ili pošalji ovako.</string>
     <string name="s_remove_attachment">Ukloni prilog</string>
     <string name="s_photo_or_video">Fotografija ili video</string>
@@ -666,4 +663,72 @@
     <string name="s_greeting_weather_remove_place">Ukloni mesto</string>
     <string name="s_greeting_weather_limit">Najviše 3 mesta.</string>
     <string name="s_greeting_weather_footer">Dnevni pozdrav će pomenuti i današnju vremensku prognozu za ova mesta. Servisu Open-Meteo šalju se samo nazivi mesta da bi se preuzela prognoza. Ništa drugo se ne šalje.</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">Glasovna poruka nije poslata · %1$s</string>
+    <string name="s_send_voice_message">Pošalji glasovnu poruku</string>
+    <string name="s_delete_recording">Obriši snimak</string>
+    <string name="s_keep">Zadrži</string>
+    <string name="s_delete_this_recording">Obrisati ovaj snimak?</string>
+    <string name="e_record_after_the_call">Poruku možeš da snimiš posle poziva.</string>
+    <string name="e_send_or_delete_the_unsent_first">Prvo pošalji ili obriši glasovnu poruku koja nije poslata.</string>
+    <string name="s_recording_stopped_at_five_minutes">Snimanje je zaustavljeno posle pet minuta.</string>
+    <string name="e_recording_stopped_unexpectedly">Snimanje je neočekivano prekinuto.</string>
+    <string name="s_voice_message_with_length">Glasovna poruka · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">Snimi glasovnu poruku</string>
+    <string name="s_take_video">Napravi video</string>
+    <string name="s_open_settings">Otvori Podešavanja</string>
+    <string name="s_stop_recording">Zaustavi snimanje</string>
+    <string name="s_stop_and_listen_first">Zaustavi i prvo preslušaj</string>
+    <string name="s_start_recording_action">započni snimanje</string>
+    <string name="s_play_after_recording">Ovo možeš da pustiš posle snimanja.</string>
+    <string name="s_thirty_seconds_left">Još 30 sekundi</string>
+    <string name="s_cant_hear_microphone_muted">Ništa se ne čuje. Da li je mikrofon isključen?</string>
+    <string name="s_announce_recording">Snimanje u toku</string>
+    <string name="s_announce_recording_deleted">Snimak obrisan</string>
+    <string name="s_announce_voice_message_sent">Glasovna poruka poslata</string>
+    <string name="s_announce_ready_to_review">Spremno za proveru, %1$s</string>
+    <string name="e_wait_for_the_attachment">Sačekaj da se trenutni prilog završi.</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">Video-poruka</string>
+    <string name="s_video_message_a11y">Video-poruka, %1$s</string>
+    <string name="s_not_played">Nije pušteno</string>
+    <string name="s_open_full_screen">Otvori preko celog ekrana</string>
+    <string name="s_couldnt_load_video_tap">Video nije učitan. Dodirni da pokušaš ponovo.</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">Snimi video-poruku</string>
+    <string name="s_send_video_message">Pošalji video-poruku</string>
+    <string name="s_retake">Snimi ponovo</string>
+    <string name="s_record">Snimi</string>
+    <string name="s_switch_camera">Promeni kameru</string>
+    <string name="s_video_message_with_length">Video-poruka · %1$s</string>
+    <string name="s_not_recording">Snimanje nije u toku</string>
+    <string name="s_only_you_can_see_this">Dok ne počneš snimanje, ovo vidiš samo ti.</string>
+    <string name="s_starting_camera">Kamera se pokreće…</string>
+    <string name="s_cant_see_anything">Ništa se ne vidi. Da li je kamera isključena ili prekrivena?</string>
+    <string name="s_ten_seconds_left">Još 10 sekundi</string>
+    <string name="s_recording_stopped_at_one_minute">Snimanje je zaustavljeno posle jednog minuta.</string>
+    <string name="s_video_too_short">Video je prekratak.</string>
+    <string name="s_delete_video_message">Obrisati video-poruku?</string>
+    <string name="s_video_messages_need_camera_and_microphone">Za video-poruke su potrebni kamera i mikrofon.</string>
+    <string name="e_camera_permission_settings">Family treba dozvolu za pristup tvojoj kameri. Uključi je u Podešavanjima.</string>
+    <string name="s_camera_in_use_by_another_app">Kameru koristi druga aplikacija.</string>
+    <string name="s_couldnt_make_it_round">Video nije mogao da postane okrugao. Biće poslat kao običan video.</string>
+    <string name="s_too_big_for_video_message">Prevelik za video-poruku. Biće poslat kao običan video.</string>
+    <string name="s_announce_camera_ready">Kamera je spremna</string>
+    <string name="s_announce_recording_video">Snimanje videa u toku</string>
+    <string name="s_announce_video_message_sent">Video-poruka poslata</string>
+    <string name="s_announce_camera_turned_off">Kamera isključena</string>
+    <string name="s_record_voice_message_instead">Snimi glasovnu poruku umesto toga</string>
+    <!-- Voice and video message polish (#79): the approved design, long-press menu, speed chip, accessibility -->
+    <string name="s_voice_message_a11y">Glasovna poruka, %1$s</string>
+    <string name="s_played">Pušteno</string>
+    <string name="s_playback_speed">Brzina reprodukcije</string>
+    <string name="s_playback_speed_a11y">Brzina reprodukcije, %1$s</string>
+    <string name="s_speed_1x">1×</string>
+    <string name="s_speed_1_5x">1,5×</string>
+    <string name="s_speed_2x">2×</string>
+    <string name="s_not_sent">Nije poslato</string>
+    <string name="s_switch">Promeni</string>
+    <string name="s_stop">Zaustavi</string>
 </resources>

@@ -40,6 +40,10 @@ struct MacChatView: View {
     /// this app has, so the toolbar path people already use survives the
     /// move to a window without becoming a rival panel.
     @Environment(\.openSettings) private var openSettings
+    /// The window's video recorder (#79, S8.3): the toolbar cannot be
+    /// covered by anything the content draws, so while it is open every
+    /// item here is disabled and no sheet opens over it.
+    @Environment(VideoMessagePresenter.self) private var videoRecorder: VideoMessagePresenter?
     @State private var selectedChatID: Int64?
     @State private var showingFamily = false
     /// Files were shared into the app and are waiting for a chat: the
@@ -115,6 +119,7 @@ struct MacChatView: View {
                         Label("Return to Call", systemImage: "phone.badge.waveform")
                     }
                     .help("Return to Call")
+                    .disabled(recorderOpen)
                 }
             }
             ToolbarItem {
@@ -130,6 +135,7 @@ struct MacChatView: View {
                 if #available(macOS 26, *) {
                     boardButton
                         .badge(newNoteCount)
+                        .disabled(recorderOpen)
                 } else {
                     boardButton
                         .overlay(alignment: .topTrailing) {
@@ -145,6 +151,7 @@ struct MacChatView: View {
                                     .accessibilityHidden(true)
                             }
                         }
+                        .disabled(recorderOpen)
                 }
             }
             ToolbarItem {
@@ -154,6 +161,8 @@ struct MacChatView: View {
                     Label("Family", systemImage: "person.2")
                 }
                 .help("Members, invites and direct chats")
+                // Its sheet would change `selectedChatID` under the recorder.
+                .disabled(recorderOpen)
             }
             ToolbarItem {
                 Button {
@@ -162,6 +171,7 @@ struct MacChatView: View {
                     Label("Settings", systemImage: "gearshape")
                 }
                 .help("Settings")
+                .disabled(recorderOpen)
             }
         }
         .sheet(isPresented: $showingFamily) {
@@ -210,6 +220,16 @@ struct MacChatView: View {
         .onChange(of: session.pendingPushRoute) { _, _ in
             consumePendingRoute() // clicked while the window is up
         }
+        // What arrived while the recorder covered the window waited for it
+        // (#79, S4).
+        .onChange(of: recorderOpen) { _, open in
+            guard !open else { return }
+            consumePendingRoute()
+            if session.pendingShareImport != nil {
+                showingFamily = false
+                showsShareTarget = true
+            }
+        }
         .onChange(of: session.pendingShareImport) { _, pending in
             // A share arrived while the app is up: the Family sheet steps
             // aside so the picker is what the person sees. Settings is no
@@ -217,7 +237,7 @@ struct MacChatView: View {
             // something this view may close on somebody's behalf. It also
             // does not need to be: it is not covering this window, and the
             // share URL brings this one to the front.
-            guard pending != nil else { return }
+            guard pending != nil, !recorderOpen else { return }
             showingFamily = false
             showsShareTarget = true
         }
@@ -235,6 +255,8 @@ struct MacChatView: View {
     /// same routes as the phone (PushRoute), because the Mac now raises its
     /// own notifications too and two routing schemes would drift.
     private func consumePendingRoute() {
+        // Not under the video recorder: consumed when it closes.
+        guard !recorderOpen else { return }
         guard let route = session.pendingPushRoute else { return }
         session.pendingPushRoute = nil
         // Settings is not cleared here for the reason the share handler
@@ -263,6 +285,8 @@ struct MacChatView: View {
             break // Already here.
         }
     }
+
+    private var recorderOpen: Bool { videoRecorder?.isOpen ?? false }
 
     private var newNoteCount: Int {
         BoardBadge.unreadCount(notes: notes, marks: AppSettings.boardMarks)

@@ -71,6 +71,19 @@ final class PendingMediaItemEntity {
     /// a relaunch is still a sticker and not a photograph in a bubble.
     /// Defaulted, so a lightweight migration for an existing store.
     var sticker: Bool = false
+    /// This send is a VIDEO MESSAGE (docs/protocol.md, "Video messages",
+    /// #79): one square MP4 whose message says `round: true`. Held here for
+    /// the sticker's reason — a send resumed after a relaunch must still be
+    /// a circle, not a square video — and drawn round at once from the
+    /// local poster (S5.6). Defaulted, so a lightweight migration.
+    var isRound: Bool = false
+    /// A voice note's waveform, as the upload sends it (`waveform=`, #79,
+    /// docs/protocol.md, "A voice note's waveform"): held here so a send
+    /// resumed after a relaunch — or finished by the background session —
+    /// still carries it, and so the sender's own bubble draws its shape
+    /// before the server has answered. nil for everything else. Defaulted,
+    /// so a lightweight migration.
+    var waveform: String?
 
     // MARK: - Locations
 
@@ -119,6 +132,8 @@ final class PendingMediaItemEntity {
         longitude: Double? = nil,
         accuracyM: Int? = nil,
         sticker: Bool = false,
+        isRound: Bool = false,
+        waveform: String? = nil,
         createdAt: Date = Date()
     ) {
         self.itemID = itemID
@@ -137,6 +152,8 @@ final class PendingMediaItemEntity {
         self.longitude = longitude
         self.accuracyM = accuracyM
         self.sticker = sticker
+        self.isRound = isRound
+        self.waveform = waveform
         self.createdAt = createdAt
     }
 }
@@ -176,7 +193,9 @@ extension PendingMediaItemEntity {
             latitude: latitude,
             longitude: longitude,
             accuracyM: accuracyM,
-            sticker: sticker)
+            sticker: sticker,
+            isRound: isRound,
+            waveform: waveform)
     }
 
     /// This item as the wire shape, once its bytes are on the server.
@@ -199,6 +218,8 @@ extension PendingMediaItemEntity {
             latitude: latitude,
             longitude: longitude,
             accuracyM: accuracyM,
-            sticker: sticker)
+            sticker: sticker,
+            isRound: isRound,
+            waveform: waveform)
     }
 }

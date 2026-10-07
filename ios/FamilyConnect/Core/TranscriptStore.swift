@@ -141,6 +141,48 @@ final class TranscriptStore {
         activities[attachmentID] ?? .idle
     }
 
+    /// "Show text" chosen from a message's menu rather than under it (#79):
+    /// bumped per attachment, and the recording's TranscriptSection — the
+    /// one that owns the consent sheet — answers by asking, exactly as its
+    /// own button does. Never on disk.
+    private(set) var showRequests: [Int64: Int] = [:]
+
+    func requestShow(_ attachmentID: Int64) {
+        showRequests[attachmentID, default: 0] += 1
+    }
+
+    /// What a message's menu offers for a recording's text: Show text while
+    /// it can be asked for or is folded away, Hide text while it is shown,
+    /// nothing while a request is out or when the door is shut.
+    nonisolated enum MenuRow: Equatable, Sendable { case show, hide }
+
+    func menuRow(for attachmentID: Int64, door: TranscriptDoor) -> MenuRow? {
+        if let kept = kept(attachmentID) {
+            return kept.hidden ? .show : .hide
+        }
+        guard door.isOffered else { return nil }
+        switch activity(for: attachmentID) {
+        case .idle: return .show
+        case .asking: return nil
+        case .failed(let failure): return failure.offersRetry ? .show : nil
+        }
+    }
+
+    /// The menu's choice, done: unfolding kept text here, asking through the
+    /// section otherwise.
+    func performMenuRow(_ row: MenuRow, for attachmentID: Int64) {
+        switch row {
+        case .hide:
+            setHidden(true, for: attachmentID)
+        case .show:
+            if kept(attachmentID) != nil {
+                setHidden(false, for: attachmentID)
+            } else {
+                requestShow(attachmentID)
+            }
+        }
+    }
+
     // MARK: - Asking
 
     /// Ask the server for the text of one recording's STORED copy.

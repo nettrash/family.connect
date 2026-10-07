@@ -149,6 +149,10 @@ class SyncEngine @Inject constructor(
         // reason as edits above: `after_id` can never see an older row, so
         // nothing else would ever fix one.
         messageRepository.repairLocationsMissingCoordinates()
+        // 3f. And any possible video message a build from before #79 cached
+        // without its flag (docs/audio-video-messages-2026-10-04.md, S5.8):
+        // drawn square for good otherwise, for the same `after_id` reason.
+        messageRepository.repairUnknownRoundFlags()
     }
 
     companion object {

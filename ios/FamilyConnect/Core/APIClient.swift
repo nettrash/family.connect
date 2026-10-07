@@ -797,6 +797,10 @@ actor APIClient {
         /// `false` — on every ordinary message, which keeps an ordinary
         /// send byte-identical to what it has always been.
         let sticker: Bool?
+        /// `true` sends the message's one video as a VIDEO MESSAGE
+        /// (docs/protocol.md, "Video messages", #79). Absent, never
+        /// `false`, on everything else — the sticker's rule.
+        let round: Bool?
         enum CodingKeys: String, CodingKey {
             case clientMsgID = "client_msg_id"
             case body
@@ -805,6 +809,7 @@ actor APIClient {
             case poll
             case mentions
             case sticker
+            case round
         }
     }
 
@@ -829,7 +834,8 @@ actor APIClient {
         attachmentIDs: [Int64]? = nil,
         pollOptions: [String]? = nil,
         mentions: [MentionDTO]? = nil,
-        sticker: Bool = false
+        sticker: Bool = false,
+        round: Bool = false
     ) async throws -> MessageDTO {
         let response: MessageResponse = try await request(
             "POST", "/chats/\(chatID)/messages",
@@ -840,7 +846,8 @@ actor APIClient {
                 attachmentIDs: attachmentIDs,
                 poll: pollOptions.map { NewPollRequest(options: $0) },
                 mentions: mentions,
-                sticker: sticker ? true : nil))
+                sticker: sticker ? true : nil,
+                round: round ? true : nil))
         return response.message
     }
 
@@ -913,7 +920,8 @@ actor APIClient {
         width: Int?,
         height: Int?,
         durationMS: Int?,
-        name: String? = nil
+        name: String? = nil,
+        waveform: String? = nil
     ) throws -> URLRequest {
         guard let serverURL else { throw APIError.notConfigured }
         var query = [URLQueryItem(name: "kind", value: kind)]
@@ -925,6 +933,15 @@ actor APIClient {
         // Required for a file, ignored otherwise. URLComponents percent-
         // encodes it, so a name with spaces or umlauts survives the trip.
         if let name { query.append(URLQueryItem(name: "name", value: name)) }
+        // A voice note's shape (#79, docs/protocol.md, "A voice note's
+        // waveform"): audio only, and only a value the server will take —
+        // anything else is refused with `validation`, and a recording must
+        // never be refused for its drawing. An older server ignores the
+        // parameter (its query struct does not deny unknown fields) and
+        // simply echoes no waveform.
+        if let waveform, kind == AttachmentDTO.Kind.audio, Waveform.parse(waveform) != nil {
+            query.append(URLQueryItem(name: "waveform", value: waveform))
+        }
         guard let url = Self.endpointURL(base: serverURL, path: "/attachments", query: query) else {
             throw APIError.notConfigured
         }
@@ -946,11 +963,12 @@ actor APIClient {
         width: Int?,
         height: Int?,
         durationMS: Int?,
-        name: String? = nil
+        name: String? = nil,
+        waveform: String? = nil
     ) async throws -> AttachmentDTO {
         let request = try attachmentUploadRequest(
             mime: mime, kind: kind, width: width, height: height,
-            durationMS: durationMS, name: name)
+            durationMS: durationMS, name: name, waveform: waveform)
 
         let (data, response) = try await uploadFromFile(request, fileURL: fileURL)
         guard (200..<300).contains(response.statusCode) else {

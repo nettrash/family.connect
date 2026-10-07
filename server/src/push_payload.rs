@@ -122,6 +122,11 @@ fn attachment_summary(message: &Message) -> Option<String> {
             // somebody (protocol.md, "Sticker pack").
             "photo" if attachment.sticker => "Sticker".to_string(),
             "photo" => "Photo".to_string(),
+            // A video message is a video on the wire and its own word on a
+            // lock screen, the sticker's case again: "Video" promises a clip
+            // somebody chose, "Video message" says somebody is talking to
+            // you (protocol.md, "Video messages").
+            "video" if attachment.round => "Video message".to_string(),
             "video" => "Video".to_string(),
             // A voice note has no name worth showing, so the kind is the
             // summary; a track picked off a disk may carry one, and that
@@ -902,6 +907,8 @@ mod tests {
                     longitude: None,
                     accuracy_m: None,
                     sticker: false,
+                    round: false,
+                    waveform: None,
                 }),
                 ..protocol_message()
             }
@@ -1007,6 +1014,8 @@ mod tests {
                 longitude: None,
                 accuracy_m: None,
                 sticker: false,
+                round: false,
+                waveform: None,
             }
         }
         fn with_attachments(list: Vec<crate::models::Attachment>) -> Message {
@@ -1235,6 +1244,8 @@ mod tests {
                 longitude: None,
                 accuracy_m: None,
                 sticker,
+                round: false,
+                waveform: None,
             }
         }
         fn carrying(picture: crate::models::Attachment) -> Message {
@@ -1257,6 +1268,78 @@ mod tests {
         // And the operator's switch still withholds it.
         let hidden =
             message_notification(false, "direct", "", "Anna", &carrying(picture(true)), 1, 1);
+        assert_eq!(hidden.body, "New message");
+    }
+
+    /// A video message is a video on the wire and its own word on a lock
+    /// screen (protocol.md, "Video messages"): the flag changes what one
+    /// video is CALLED, nothing about how several are counted, and nothing
+    /// about the operator's switch.
+    #[test]
+    fn a_video_message_is_called_a_video_message() {
+        fn video(id: i64, round: bool) -> crate::models::Attachment {
+            crate::models::Attachment {
+                id,
+                kind: "video".to_string(),
+                mime: "video/mp4".to_string(),
+                size: 1_649_700,
+                width: Some(480),
+                height: Some(480),
+                duration_ms: Some(23_400),
+                has_preview: true,
+                name: None,
+                latitude: None,
+                longitude: None,
+                accuracy_m: None,
+                sticker: false,
+                round,
+                waveform: None,
+            }
+        }
+        fn carrying(videos: Vec<crate::models::Attachment>) -> Message {
+            Message {
+                body: String::new(),
+                attachment: videos.first().cloned(),
+                attachments: Some(videos),
+                ..protocol_message()
+            }
+        }
+        assert_eq!(
+            attachment_summary(&carrying(vec![video(91, true)])).as_deref(),
+            Some("Video message")
+        );
+        // The same square MP4 sent as an ordinary video is still a video.
+        assert_eq!(
+            attachment_summary(&carrying(vec![video(91, false)])).as_deref(),
+            Some("Video")
+        );
+        // Two videos are counted as videos, whatever either says — the
+        // server never sends that shape, and the word is for ONE.
+        assert_eq!(
+            attachment_summary(&carrying(vec![video(91, true), video(92, false)])).as_deref(),
+            Some("2 Videos")
+        );
+        // The word is what a body-less message pushes; the operator's
+        // switch still withholds it.
+        let shown = message_notification(
+            true,
+            "direct",
+            "",
+            "Anna",
+            &carrying(vec![video(91, true)]),
+            1,
+            1,
+        );
+        assert_eq!(shown.body, "Video message");
+        let hidden = message_notification(
+            false,
+            "direct",
+            "",
+            "Anna",
+            &carrying(vec![video(91, true)]),
+            1,
+            1,
+        );
         assert_eq!(hidden.body, "New message");
     }
 }

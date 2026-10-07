@@ -55,6 +55,15 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         clientMsgID: String,
         replyToMessageID: Int64?,
         attachmentID: Int64)
+    /// A VIDEO MESSAGE (docs/protocol.md, "Video messages", #79): the same
+    /// `send` frame with `"round": true`, exactly one attachment and an
+    /// empty body. Its own case for the sticker's reason — it cannot even
+    /// express a caption, a poll or a mention, which the server refuses.
+    case sendRound(
+        chatID: Int64,
+        clientMsgID: String,
+        replyToMessageID: Int64?,
+        attachmentID: Int64)
     case read(chatID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64)
     case ping
@@ -85,6 +94,7 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         case poll
         case mentions
         case sticker
+        case round
         case callID = "call_id"
         case sdp
         case candidate
@@ -127,6 +137,16 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
             try container.encodeIfPresent(replyToMessageID, forKey: .replyToMessageID)
             try container.encode([attachmentID], forKey: .attachmentIDs)
             try container.encode(true, forKey: .sticker)
+        case .sendRound(let chatID, let clientMsgID, let replyToMessageID, let attachmentID):
+            try container.encode("send", forKey: .type)
+            try container.encode(chatID, forKey: .chatID)
+            try container.encode(clientMsgID, forKey: .clientMsgID)
+            // Present and EMPTY: a video message beside a body is
+            // `validation`.
+            try container.encode("", forKey: .body)
+            try container.encodeIfPresent(replyToMessageID, forKey: .replyToMessageID)
+            try container.encode([attachmentID], forKey: .attachmentIDs)
+            try container.encode(true, forKey: .round)
         case .read(let chatID, let lastReadMessageID):
             try container.encode("read", forKey: .type)
             try container.encode(chatID, forKey: .chatID)

@@ -3,6 +3,7 @@ using FamilyConnect.App.Logic;
 using FamilyConnect.Core;
 using Windows.Graphics.Imaging;
 using Windows.Media.Editing;
+using Windows.Media.Effects;
 using Windows.Media.MediaProperties;
 using Windows.Media.Transcoding;
 using Windows.Storage;
@@ -62,6 +63,10 @@ internal static class MediaPreparing
     private static readonly Guid TransferFunction = new("5fb0fce9-be5c-4935-a811-ec838f8eed93");
     private static readonly Guid VideoPrimaries = new("dbfbe4d7-0740-4ee0-8192-850ab0e21935");
     private static readonly Guid YuvMatrix = new("3e23d450-2c75-4d25-a00e-b91670d12327");
+
+    // MF_MT_MAX_KEYFRAME_SPACING: the most frames from one keyframe to the next, which the H.264 encoder takes on its output
+    // type. Asked for by a video message only (RoundVideoRules.Encodes).
+    private static readonly Guid MaxKeyframeSpacing = new("c16eb52b-73a1-476f-8d62-839d6a020652");
 
     // …and their BT.709 values (mfobjects.h): MFVideoTransFunc_709, MFVideoPrimaries_BT709, MFVideoTransferMatrix_BT709.
     private const uint Bt709Transfer = 5;
@@ -342,6 +347,10 @@ internal static class MediaPreparing
         {
             // The turn rides along as the source's did — metadata, not pixels — so the frame is scaled, never squashed.
             video.Properties[VideoRotation] = encoding.Rotation;
+        }
+        if (encoding.KeyframeSpacing is { } spacing)
+        {
+            video.Properties[MaxKeyframeSpacing] = spacing;
         }
         if (encoding.ToSdr)
         {
@@ -712,6 +721,157 @@ internal static class MediaPreparing
         return ended;
     }
 
+    /// <summary>A video message's square, made: its bytes, <c>moov</c> first, how long it is, and its 480 × 480 poster.</summary>
+    internal sealed record RoundMade(byte[] Bytes, int? DurationMs, ReadOnlyMemory<byte>? Poster);
+
+    /// <summary>
+    /// A video message's square from the camera's own take (docs/audio-video-messages-2026-10-04.md, "Where it plugs in",
+    /// Windows Phase 3; "The recording profile for a round video"): this file's own transcoder path, asked for
+    /// <see cref="RoundVideoRules.Encodes"/> one after another, with a <see cref="VideoTransformEffectDefinition"/> that cuts
+    /// the centre square (<see cref="RoundVideoRules.CentreSquare"/>) and sizes it to 480 × 480 — required, so an encoder
+    /// that will not crop fails the attempt rather than squashing the frame. What comes out is read back
+    /// (<see cref="RoundVideoRules.CameOut"/>), checked to be MP4 by its bytes (<see cref="MediaPrep.MatchesMagic"/>) and
+    /// put <c>moov</c>-first (<see cref="Faststart.MoovFirst"/>) — the keep path above skips that, and a video message is
+    /// never re-planned. Null when no attempt made it: the take is then sent as a regular video (S3.6). Trial T3 is this,
+    /// on a real machine.
+    /// </summary>
+    /// <exception cref="OperationCanceledException"><paramref name="cancel"/> was cancelled: the take was thrown away.</exception>
+    internal static async Task<RoundMade?> RoundAsync(StorageFile take, CancellationToken cancel = default)
+    {
+        MediaEncodingProfile source;
+        int? durationMs = null;
+        try
+        {
+            source = await MediaEncodingProfile.CreateFromFileAsync(take);
+            durationMs = Milliseconds((await take.Properties.GetVideoPropertiesAsync()).Duration);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a video message's take: {e.GetType().Name} 0x{e.HResult:X8}");
+            return null;
+        }
+        if (source.Video is not { } video || RoundVideoRules.CentreSquare(video.Width, video.Height) is not { } crop)
+        {
+            Diagnostics.Write("a video message's take has no picture to cut a square from");
+            return null;
+        }
+        var attempts = RoundVideoRules.Encodes(video.FrameRate?.Numerator ?? 0, video.FrameRate?.Denominator ?? 0, source.Audio is not null);
+        Diagnostics.Write($"making a video message's square from {video.Width}x{video.Height} at ({crop.X},{crop.Y}) side {crop.Side}");
+        var made = await Task.Run(
+            () => TranscodeAsync(
+                take,
+                ".mp4",
+                "video/mp4",
+                attempts,
+                encoding => VideoProfile(encoding, null),
+                (output, asked, _) => RoundCameOutAsync(output, asked),
+                durationMs,
+                cancel,
+                (transcoder, _) =>
+                {
+                    var square = new VideoTransformEffectDefinition
+                    {
+                        CropRectangle = new Windows.Foundation.Rect(crop.X, crop.Y, crop.Side, crop.Side),
+                        OutputSize = new Windows.Foundation.Size(RoundVideoRules.Edge, RoundVideoRules.Edge),
+                        Mirror = MediaMirroringOptions.None,
+                        Rotation = MediaRotation.None,
+                    };
+                    transcoder.AddVideoEffect(square.ActivatableClassId, true, square.Properties);
+                }),
+            cancel);
+        if (made is not { Bytes: { } bytes })
+        {
+            return null;
+        }
+        if (!made.MoovFirst || !MediaPrep.MatchesMagic("video/mp4", bytes))
+        {
+            // The profile asks for the index in front of every video message (Faststart, above): one that could not be
+            // moved goes as the regular video it would otherwise have been.
+            Diagnostics.Write("a video message's square could not be put moov-first");
+            return null;
+        }
+        return new RoundMade(bytes, durationMs, await SquarePosterAsync(bytes, durationMs));
+    }
+
+    /// <summary>
+    /// The square's poster, as every client draws one: a frame at 0.5 s, else 0, else 2, JPEG, at most 600 — so 480 × 480.
+    /// Read from the square itself, so it is what will be seen; null when no frame could be read, and the clip goes without.
+    /// </summary>
+    private static async Task<ReadOnlyMemory<byte>?> SquarePosterAsync(byte[] square, int? durationMs)
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "FamilyConnect", "prepared");
+        var path = Path.Combine(folder, $"{Guid.NewGuid():N}.mp4");
+        try
+        {
+            Directory.CreateDirectory(folder);
+            await File.WriteAllBytesAsync(path, square);
+            var file = await StorageFile.GetFileFromPathAsync(path);
+            return await PosterAsync(file, TimeSpan.FromMilliseconds(durationMs ?? 0), RoundVideoRules.Edge, RoundVideoRules.Edge);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"a video message's poster: {e.GetType().Name}");
+            return null;
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch (Exception e)
+            {
+                Diagnostics.Write($"removing a poster's source: {e.GetType().Name}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether the square pass made what was asked: H.264, exactly 480 × 480 and upright, its sound AAC where sound was asked
+    /// for, no faster than asked — and its sound at the rate asked, or the next way of asking (96 000) is tried.
+    /// </summary>
+    private static async Task<AttemptEnd> RoundCameOutAsync(StorageFile output, VideoEncoding asked)
+    {
+        var profile = await MediaEncodingProfile.CreateFromFileAsync(output);
+        if (profile.Video is not { } video)
+        {
+            Diagnostics.Write("a video message's square came out with no picture");
+            return AttemptEnd.Wrong;
+        }
+        VideoProperties? shell = null;
+        try
+        {
+            shell = await output.Properties.GetVideoPropertiesAsync();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a video message's square back: {e.GetType().Name}");
+        }
+        var (width, height, rotation) = Geometry(video, shell);
+        var rate = MediaEncoding.FrameRate(video.FrameRate?.Numerator ?? 0, video.FrameRate?.Denominator ?? 0, 0);
+        var audioCodec = profile.Audio is { } track ? AudioCodec(track.Subtype) : null;
+        if (!RoundVideoRules.CameOut(
+                asked,
+                VideoCodec(video.Subtype),
+                (uint)Math.Clamp(width, 0, uint.MaxValue),
+                (uint)Math.Clamp(height, 0, uint.MaxValue),
+                rotation,
+                audioCodec,
+                rate))
+        {
+            Diagnostics.Write(
+                $"a video message's square came out {VideoCodec(video.Subtype)} {width}x{height} turned {rotation}, {rate:0.###} fps, audio {audioCodec ?? "none"}; asked {asked}");
+            return AttemptEnd.Wrong;
+        }
+        if (asked.Audio is { } aac && profile.Audio is { } audio
+            && (!MediaEncoding.AacCameOut(aac, AudioCodec(audio.Subtype), audio.ChannelCount) || !MediaEncoding.AudioRateCameOut(aac.Bitrate, audio.Bitrate)))
+        {
+            Diagnostics.Write($"a video message's sound came out {audio.ChannelCount} channel(s) at {audio.Bitrate} bit/s; asked {aac}");
+            return AttemptEnd.Refused;
+        }
+        return AttemptEnd.Taken;
+    }
+
     /// <summary>
     /// What goes once a transcode has come out as asked: <see cref="MediaEncoding.Choose"/> decides — rule D, and what
     /// faststart could not do — and this reads in whichever it named.
@@ -756,7 +916,8 @@ internal static class MediaPreparing
         Func<T, MediaEncodingProfile> profileFor,
         Func<StorageFile, T, CancellationToken, Task<AttemptEnd>> cameOut,
         long? durationMs,
-        CancellationToken cancel)
+        CancellationToken cancel,
+        Action<MediaTranscoder, T>? configure = null)
     {
         var folder = Path.Combine(Path.GetTempPath(), "FamilyConnect", "prepared");
         try
@@ -771,7 +932,8 @@ internal static class MediaPreparing
         }
         return await TranscodeAttempts.FirstTakenAsync(
             attempts,
-            (attempt, token) => AttemptAsync(source, Path.Combine(folder, $"{Guid.NewGuid():N}{extension}"), mime, attempt, profileFor, cameOut, token),
+            (attempt, token) => AttemptAsync(
+                source, Path.Combine(folder, $"{Guid.NewGuid():N}{extension}"), mime, attempt, profileFor, cameOut, token, configure),
             MediaEncoding.TranscodeCeiling(durationMs),
             Diagnostics.Write,
             cancel);
@@ -789,7 +951,8 @@ internal static class MediaPreparing
         T attempt,
         Func<T, MediaEncodingProfile> profileFor,
         Func<StorageFile, T, CancellationToken, Task<AttemptEnd>> cameOut,
-        CancellationToken cancel)
+        CancellationToken cancel,
+        Action<MediaTranscoder, T>? configure = null)
     {
         try
         {
@@ -800,6 +963,8 @@ internal static class MediaPreparing
                 HardwareAccelerationEnabled = true,
                 VideoProcessingAlgorithm = MediaVideoProcessingAlgorithm.Default,
             };
+            // An effect the attempt needs — the video message's centre crop — before the transcode is prepared.
+            configure?.Invoke(transcoder, attempt);
             var prepared = await transcoder.PrepareFileTranscodeAsync(source, output, profileFor(attempt)).AsTask(cancel);
             if (!prepared.CanTranscode)
             {
@@ -920,7 +1085,7 @@ internal static class MediaPreparing
     /// A frame worth drawing: past a fade-in first, then the very start, then a little later — the
     /// seek points every client uses.
     /// </summary>
-    private static async Task<ReadOnlyMemory<byte>?> PosterAsync(StorageFile file, TimeSpan duration, uint width, uint height)
+    internal static async Task<ReadOnlyMemory<byte>?> PosterAsync(StorageFile file, TimeSpan duration, uint width, uint height)
     {
         var clip = await MediaClip.CreateFromFileAsync(file);
         if (width == 0 || height == 0)

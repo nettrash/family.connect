@@ -236,6 +236,12 @@ pub struct Outgoing {
     /// reload — sends the same flag.
     #[serde(default)]
     pub sticker: bool,
+    /// This message is a VIDEO MESSAGE: its one video is sent with
+    /// `round: true` and drawn as a circle (docs/protocol.md, "Video
+    /// messages"). On the row, like `sticker`, so a retry sends the same
+    /// flag; a row kept by a build from before it reads as an ordinary one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub round: bool,
     /// Tries whose outcome was UNKNOWN. A refusal is not counted here: it
     /// ends the row outright.
     pub attempts: u32,
@@ -256,6 +262,8 @@ pub struct Draft {
     pub attachments: Vec<Prepared>,
     /// Sent as a sticker: one picture, no words, no bubble.
     pub sticker: bool,
+    /// Sent as a video message: one square video, no words, drawn round.
+    pub round: bool,
 }
 
 /// Why a queued message whose bytes a reload took fails at once — it has
@@ -326,6 +334,34 @@ pub struct OpenPolls {
     pub messages: Vec<Message>,
 }
 
+/// A voice message that was not sent (the plan for #79,
+/// docs/audio-video-messages-2026-10-04.md, S2.8): a recording stopped by
+/// something other than the person — a call, a hidden tab, the chat left,
+/// the microphone going away — or still in review when its chat was left.
+///
+/// It waits in a row of its own above the box, with the reply it was
+/// recorded under and the caption it was given, and leaves only by its own
+/// Send — never carried by another, so a recording nobody finished deciding
+/// about cannot ride out with the next message, and its caption never leaves
+/// without it. Kept for the life of the tab and written nowhere: this client
+/// keeps nothing a person said or wrote past the tab (docs/protocol.md, "A
+/// browser is a client too"), which asks before closing while one waits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NotSent {
+    /// This tab's own number for it — what its row is keyed by and its
+    /// buttons name. Never sent anywhere.
+    pub id: u64,
+    /// The recording, as it would have been staged.
+    pub note: Prepared,
+    /// How long it is, as the recorder measured it — said on its row
+    /// whatever the note turned out to be.
+    pub duration_ms: i64,
+    /// The message it was recorded in answer to.
+    pub reply_to_message_id: Option<i64>,
+    /// The words that go with it; empty for none.
+    pub caption: String,
+}
+
 /// Everything the signed-in app knows.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Store {
@@ -389,6 +425,11 @@ pub struct Store {
     pub last_provisional: i64,
     /// chat → what the composer has staged there and not sent yet.
     pub staged: HashMap<i64, Vec<Prepared>>,
+    /// chat → its voice messages that were not sent, oldest first. Memory
+    /// only, like the staged ones; see [`NotSent`].
+    pub not_sent: HashMap<i64, Vec<NotSent>>,
+    /// The last [`NotSent::id`] handed out.
+    pub last_not_sent: u64,
     /// The server's id → the provisional one its bubble drew under, so a
     /// bubble that has just been acked draws from the same bytes rather
     /// than fetching back what this device uploaded.
@@ -403,6 +444,10 @@ pub struct Store {
     pub board: crate::board::Board,
     /// The family's sticker pack (pack.rs).
     pub pack: crate::pack::Pack,
+    /// How long and how big a video message may be on this server — None on
+    /// a server from before video messages, which is offered none
+    /// (docs/protocol.md, "Video messages"; round_video.rs).
+    pub round: Option<crate::round_video::RoundLimits>,
     /// The whole of the last `GET /me` — the role, a join request still
     /// waiting, the server's switches — and None until it has answered.
     pub account: Option<Me>,
@@ -613,6 +658,7 @@ impl Store {
         self.open_polls = None;
         self.drafts.retain(|chat_id, _| theirs.contains(chat_id));
         self.staged.retain(|chat_id, _| theirs.contains(chat_id));
+        self.not_sent.retain(|chat_id, _| theirs.contains(chat_id));
         self.revealed.clear();
         self.revealed_quotes.clear();
         self.ai_failed.clear();
@@ -655,6 +701,11 @@ impl Store {
             .max_pack_items
             .zip(roster.max_pack_item_bytes)
             .map(|(items, bytes)| crate::pack::Limits { items, bytes });
+        // The same for video messages: both keys, or a server without them.
+        self.round = crate::round_video::RoundLimits::of(
+            roster.max_round_video_ms,
+            roster.max_round_video_bytes,
+        );
         self.blocked = roster.blocked_user_ids.iter().copied().collect();
         // The roster names every member's role, this account's too — and it
         // is fresher than the `/me` it may follow, and than a `family_owner`
@@ -1249,6 +1300,7 @@ impl Store {
             poll: draft.poll,
             items,
             sticker: draft.sticker,
+            round: draft.round,
             attempts: 0,
             failed: None,
         });
@@ -1258,6 +1310,88 @@ impl Store {
     fn next_provisional(&mut self) -> i64 {
         self.last_provisional = self.last_provisional.min(0) - 1;
         self.last_provisional
+    }
+
+    /// A voice message kept as not sent in `chat_id` (the plan's S2.8), at
+    /// the end of that chat's rows. Returns its number.
+    pub fn park(
+        &mut self,
+        chat_id: i64,
+        note: Prepared,
+        duration_ms: i64,
+        reply_to_message_id: Option<i64>,
+        caption: String,
+    ) -> u64 {
+        self.last_not_sent += 1;
+        let id = self.last_not_sent;
+        self.not_sent.entry(chat_id).or_default().push(NotSent {
+            id,
+            note,
+            duration_ms,
+            reply_to_message_id,
+            caption,
+        });
+        id
+    }
+
+    /// The not-sent voice message `id` of `chat_id`, taken out — to be sent
+    /// by its own Send, or deleted by its ✕.
+    pub fn take_not_sent(&mut self, chat_id: i64, id: u64) -> Option<NotSent> {
+        let rows = self.not_sent.get_mut(&chat_id)?;
+        let at = rows.iter().position(|row| row.id == id)?;
+        let taken = rows.remove(at);
+        if rows.is_empty() {
+            self.not_sent.remove(&chat_id);
+        }
+        Some(taken)
+    }
+
+    /// `chat_id` has been left with `draft` in its box and the composer
+    /// answering `reply_to_message_id`: every voice note still in review
+    /// there — staged, and not sent — becomes not sent (the plan's S2.8),
+    /// and the first takes the words along as its caption. Whatever else is
+    /// staged stays staged, as it always has in this tab. Returns whether
+    /// anything was kept so, which is whether the box's words went too.
+    pub fn park_review(
+        &mut self,
+        chat_id: i64,
+        draft: &str,
+        reply_to_message_id: Option<i64>,
+    ) -> bool {
+        let Some(staged) = self.staged.get_mut(&chat_id) else {
+            return false;
+        };
+        let (notes, rest): (Vec<Prepared>, Vec<Prepared>) =
+            staged.drain(..).partition(Prepared::is_voice_note);
+        *staged = rest;
+        if staged.is_empty() {
+            self.staged.remove(&chat_id);
+        }
+        let mut caption = fc_text::composer::trimmed_for_send(draft)
+            .unwrap_or("")
+            .to_string();
+        let parked = !notes.is_empty();
+        for note in notes {
+            let duration_ms = note.duration_ms.unwrap_or(0);
+            self.park(
+                chat_id,
+                note,
+                duration_ms,
+                reply_to_message_id,
+                std::mem::take(&mut caption),
+            );
+        }
+        parked
+    }
+
+    /// Whether this tab holds something nobody else has and the tab's end
+    /// would lose: a message not sent yet, something staged, a voice message
+    /// that was not sent. A recording in progress is the recorder's to say
+    /// (`recorder::in_progress`).
+    pub fn holds_unsent(&self) -> bool {
+        !self.outbox.is_empty()
+            || self.staged.values().any(|items| !items.is_empty())
+            || self.not_sent.values().any(|rows| !rows.is_empty())
     }
 
     /// A row into the outbox, and its bubble into the thread.
@@ -1275,12 +1409,15 @@ impl Store {
                 .unwrap_or(id)
         });
         // A sticker's pending bubble is already the sticker: drawn bare,
-        // from this tab's own bytes, before the server has said anything.
+        // from this tab's own bytes, before the server has said anything —
+        // and a video message's is already the circle (the plan for #79,
+        // S5.6).
         let attachments: Vec<crate::model::Attachment> = row
             .items
             .iter()
             .map(|item| crate::model::Attachment {
                 sticker: row.sticker,
+                round: row.round,
                 ..item.as_attachment()
             })
             .collect();
@@ -3349,6 +3486,13 @@ mod tests {
         store.queue_send(50, "ai".into(), text("to the assistant"));
         store.drafts.insert(42, "half a thought".into());
         store.drafts.insert(50, "a question".into());
+        let voice = || Prepared {
+            kind: "audio".into(),
+            duration_ms: Some(3_000),
+            ..Prepared::default()
+        };
+        store.park(42, voice(), 3_000, None, String::new());
+        store.park(50, voice(), 3_000, None, String::new());
         assert!(store.apply_me(&account(None, false)), "a change");
         let rows: Vec<&str> = store
             .outbox
@@ -3363,6 +3507,9 @@ mod tests {
             Some("a question")
         );
         assert!(!store.drafts.contains_key(&42));
+        // A voice message that was not sent goes with its chat too (#79).
+        assert!(!store.not_sent.contains_key(&42));
+        assert_eq!(store.not_sent.get(&50).map(Vec::len), Some(1));
     }
 
     /// The roster is fresher than `/me` about this account's own role — and
@@ -3479,10 +3626,98 @@ mod tests {
         assert_eq!(old.items[0].source_attachment_id, None);
     }
 
+    fn round_draft() -> Draft {
+        Draft {
+            attachments: vec![Prepared {
+                kind: "video".into(),
+                mime: "video/mp4".into(),
+                size: 1_649_700,
+                width: Some(480),
+                height: Some(480),
+                duration_ms: Some(23_400),
+                file: Some(web_sys::Blob::new().expect("a blob")),
+                preview: Some(web_sys::Blob::new().expect("a poster")),
+                ..Prepared::default()
+            }],
+            round: true,
+            ..Draft::default()
+        }
+    }
+
+    /// A VIDEO MESSAGE in the outbox is one row and one bubble, drawn at
+    /// once — and its bubble is already the circle, from this tab's own
+    /// poster (the plan for #79, S5.6). The flag rides on the row through a
+    /// reload, like a sticker's; unlike a sticker's, its bytes are this
+    /// tab's alone, so after a reload it fails as any video does.
+    #[wasm_bindgen_test]
+    fn a_queued_video_message_draws_round_at_once() {
+        let mut queued = store();
+        queued.queue_send(42, "v".into(), round_draft());
+        let row = &queued.outbox[0];
+        assert!(row.round && !row.sticker && row.body.is_empty());
+        let pending = &queued.threads[&42].messages[0];
+        let drawn = pending
+            .round_video()
+            .expect("the pending bubble is the circle");
+        assert_eq!(drawn.id, row.items[0].provisional_id);
+        assert!(drawn.has_preview, "drawn from the local poster");
+        assert!(!drawn.sticker);
+        // An ordinary video beside it is not one.
+        let mut plain = round_draft();
+        plain.round = false;
+        queued.queue_send(42, "p".into(), plain);
+        assert!(!queued.outbox[1].round);
+        assert!(queued.threads[&42].messages[1].round_video().is_none());
+        let kept = serde_json::to_value(&queued.outbox[1]).expect("encodes");
+        assert!(kept.get("round").is_none(), "written only when true");
+
+        let kept = serde_json::to_string(&queued.outbox).expect("the outbox is kept as JSON");
+        let rows: Vec<Outgoing> = serde_json::from_str(&kept).expect("and read back");
+        let mut after = store();
+        after.restore_outbox(rows);
+        assert!(after.outbox[0].round, "the flag rides on the row");
+        assert!(
+            after.threads[&42].messages[0].round_video().is_some(),
+            "and the bubble is still round"
+        );
+        assert_eq!(
+            after.failed_sends(42).len(),
+            2,
+            "a video's bytes do not survive a reload"
+        );
+    }
+
     /// The pack's limits ride on the roster, and are the capability: with
     /// them there are stickers, without them — a server from before packs —
     /// there are none. And the pack is the FAMILY's: leaving takes it, the
     /// way it takes the wall.
+    /// A server with video messages says both keys; the store keeps them
+    /// as one pair, and a server that sends neither — or only one — offers
+    /// none (docs/protocol.md, "Video messages").
+    #[wasm_bindgen_test]
+    fn the_roster_says_how_long_and_big_a_video_message_may_be() {
+        let mut store = Store::default();
+        store.apply_roster(&Roster {
+            max_round_video_ms: Some(60_000),
+            max_round_video_bytes: Some(12_582_912),
+            ..Roster::default()
+        });
+        assert_eq!(
+            store.round,
+            Some(crate::round_video::RoundLimits {
+                max_ms: 60_000,
+                max_bytes: 12_582_912
+            })
+        );
+        store.apply_roster(&Roster {
+            max_round_video_ms: Some(60_000),
+            ..Roster::default()
+        });
+        assert_eq!(store.round, None, "one key is not a server that has them");
+        store.apply_roster(&Roster::default());
+        assert_eq!(store.round, None, "an older server");
+    }
+
     #[wasm_bindgen_test]
     fn the_roster_offers_the_pack_and_leaving_takes_it() {
         let mut store = store();

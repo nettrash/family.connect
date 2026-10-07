@@ -158,11 +158,8 @@
     <string name="s_request_declined_explanation">家庭拥有者拒绝了你的申请。你可以试试其他邀请码，或者创建自己的家庭。</string>
     <string name="s_waiting_explanation">这里没有什么可取消的——拥有者会让你加入或拒绝申请。</string>
     <string name="s_take_photo">拍照</string>
-    <string name="s_record_video">录像</string>
     <string name="s_add_a_message_or_send_it_on_its_own">可以加一句话，也可以直接发送。</string>
     <string name="s_remove_attachment">移除附件</string>
-    <string name="s_record_audio">录制音频</string>
-    <string name="s_stop">停止</string>
     <string name="s_audio">音频</string>
     <string name="s_play">播放</string>
     <string name="s_pause">暂停</string>
@@ -637,4 +634,72 @@
     <string name="s_greeting_weather_remove_place">移除地点</string>
     <string name="s_greeting_weather_limit">最多 3 个地点。</string>
     <string name="s_greeting_weather_footer">每日问候还会提到这些地点今天的天气。为获取天气预报，只会把地名发送给 Open-Meteo，不会发送其他任何内容。</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">语音消息未发送 · %1$s</string>
+    <string name="s_send_voice_message">发送语音消息</string>
+    <string name="s_delete_recording">删除录音</string>
+    <string name="s_keep">保留</string>
+    <string name="s_delete_this_recording">要删除这段录音吗？</string>
+    <string name="e_record_after_the_call">通话结束后就可以录制消息了。</string>
+    <string name="e_send_or_delete_the_unsent_first">请先发送或删除未发送的语音消息。</string>
+    <string name="s_recording_stopped_at_five_minutes">录音已满五分钟，已停止。</string>
+    <string name="e_recording_stopped_unexpectedly">录音意外停止了。</string>
+    <string name="s_voice_message_with_length">语音消息 · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">录制语音消息</string>
+    <string name="s_take_video">拍视频</string>
+    <string name="s_open_settings">打开设置</string>
+    <string name="s_stop_recording">停止录音</string>
+    <string name="s_stop_and_listen_first">停止并先试听</string>
+    <string name="s_start_recording_action">开始录音</string>
+    <string name="s_play_after_recording">录音结束后才能播放。</string>
+    <string name="s_thirty_seconds_left">还剩30秒</string>
+    <string name="s_cant_hear_microphone_muted">什么也听不到。麦克风是不是静音了？</string>
+    <string name="s_announce_recording">正在录音</string>
+    <string name="s_announce_recording_deleted">录音已删除</string>
+    <string name="s_announce_voice_message_sent">语音消息已发送</string>
+    <string name="s_announce_ready_to_review">可以检查了，%1$s</string>
+    <string name="e_wait_for_the_attachment">请等当前附件处理完。</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">视频消息</string>
+    <string name="s_video_message_a11y">视频消息，%1$s</string>
+    <string name="s_not_played">未播放</string>
+    <string name="s_open_full_screen">全屏打开</string>
+    <string name="s_couldnt_load_video_tap">无法加载视频。轻点以重试。</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">录制视频消息</string>
+    <string name="s_send_video_message">发送视频消息</string>
+    <string name="s_retake">重拍</string>
+    <string name="s_record">录制</string>
+    <string name="s_switch_camera">切换相机</string>
+    <string name="s_video_message_with_length">视频消息 · %1$s</string>
+    <string name="s_not_recording">未在录制</string>
+    <string name="s_only_you_can_see_this">开始录制前，只有你能看到这个画面。</string>
+    <string name="s_starting_camera">正在启动相机…</string>
+    <string name="s_cant_see_anything">什么也看不到。相机是不是关了或被遮住了？</string>
+    <string name="s_ten_seconds_left">还剩10秒</string>
+    <string name="s_recording_stopped_at_one_minute">录制已满一分钟，已停止。</string>
+    <string name="s_video_too_short">这段视频太短了。</string>
+    <string name="s_delete_video_message">要删除视频消息吗？</string>
+    <string name="s_video_messages_need_camera_and_microphone">视频消息需要使用相机和麦克风。</string>
+    <string name="e_camera_permission_settings">Family 需要使用你的相机的权限。请在“设置”中开启。</string>
+    <string name="s_camera_in_use_by_another_app">相机正被其他应用使用。</string>
+    <string name="s_couldnt_make_it_round">无法做成圆形视频。将作为普通视频发送。</string>
+    <string name="s_too_big_for_video_message">太大，无法作为视频消息发送。将作为普通视频发送。</string>
+    <string name="s_announce_camera_ready">相机已就绪</string>
+    <string name="s_announce_recording_video">正在录制视频</string>
+    <string name="s_announce_video_message_sent">视频消息已发送</string>
+    <string name="s_announce_camera_turned_off">相机已关闭</string>
+    <string name="s_record_voice_message_instead">改为录制语音消息</string>
+    <!-- Voice and video message polish (#79): the approved design, long-press menu, speed chip, accessibility -->
+    <string name="s_voice_message_a11y">语音消息，%1$s</string>
+    <string name="s_played">已播放</string>
+    <string name="s_playback_speed">播放速度</string>
+    <string name="s_playback_speed_a11y">播放速度，%1$s</string>
+    <string name="s_speed_1x">1×</string>
+    <string name="s_speed_1_5x">1.5×</string>
+    <string name="s_speed_2x">2×</string>
+    <string name="s_not_sent">未发送</string>
+    <string name="s_switch">切换</string>
+    <string name="s_stop">停止</string>
 </resources>

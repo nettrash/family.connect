@@ -88,8 +88,11 @@ pub async fn ask() -> bool {
 /// one line per chat, not one per message.
 ///
 /// Clicking it brings the tab to the front — which is the whole point of
-/// it — and `chosen` is told which chat it was for.
+/// it — and `chosen` is told which chat it was for: at once, or, while a
+/// video message is being recorded or reviewed over the chat, once the
+/// recorder closes (the plan for #79, S4).
 pub fn tell(title: &str, body: &str, tag: &str, chosen: impl Fn() + 'static) {
+    let chosen = std::rc::Rc::new(chosen);
     if !wanted() || permission() != "granted" {
         return;
     }
@@ -103,7 +106,8 @@ pub fn tell(title: &str, body: &str, tag: &str, chosen: impl Fn() + 'static) {
         if let Some(window) = web_sys::window() {
             let _ = window.focus();
         }
-        chosen();
+        let chosen = chosen.clone();
+        crate::round_video::when_closed(move || chosen());
     });
     shown.set_onclick(Some(clicked.as_ref().unchecked_ref()));
     // The closure outlives this call by design: it belongs to a

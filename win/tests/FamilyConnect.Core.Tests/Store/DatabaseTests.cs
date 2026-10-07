@@ -38,10 +38,10 @@ public class DatabaseTests : IDisposable
     {
         using var database = Database.Open(Path_("fresh.db"));
         Assert.Equal(Database.SchemaVersion, database.UserVersion);
-        Assert.Equal(5, Database.SchemaVersion);
+        Assert.Equal(8, Database.SchemaVersion);
         Assert.Equal(
             ["blocked", "chats", "gone", "members", "messages", "meta", "notes", "outbox",
-             "pack_gone", "pack_items", "pack_recents", "transcripts"],
+             "pack_gone", "pack_items", "pack_recents", "played_rounds", "played_voice", "transcripts"],
             database.Tables());
     }
 
@@ -193,6 +193,126 @@ public class DatabaseTests : IDisposable
         Assert.Single(new PackStore(migrated).Items());
         Assert.True(Assert.Single(new OutboxStore(migrated).All()).Sticker);
         Assert.Null(new TranscriptStore(migrated).Find(34));
+    }
+
+    /// <summary>
+    /// STEP 6 ADDS VIDEO MESSAGES AND READS NOTHING AGAIN. A version-5 cache keeps its messages, its kept text and its
+    /// outbox — every send already queued in it is what it always was: not a circle, and a sticker still a sticker — and
+    /// no circle has been played on it yet.
+    /// </summary>
+    [Fact]
+    public void AVersionFiveCacheGainsVideoMessagesAndLosesNothing()
+    {
+        var path = Path_("five.db");
+        using (var five = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}"))
+        {
+            five.Open();
+            foreach (var statement in Migrations.All.Take(5).SelectMany(step => step)
+                         .Append("INSERT INTO chats (chat_id, kind, title) VALUES (42, 'family', 'The Smiths')")
+                         .Append("INSERT INTO messages (message_id, chat_id, sender_id, body, created_at, sequenced) VALUES (20, 42, 9, 'hi', 0, 1)")
+                         .Append("INSERT INTO transcripts (attachment_id, text) VALUES (34, 'Back at six')")
+                         .Append("INSERT INTO outbox (client_msg_id, chat_id, body, queued_at) VALUES ('k', 42, 'Dinner at 7?', 0)")
+                         .Append("INSERT INTO outbox (client_msg_id, chat_id, body, queued_at, sticker) VALUES ('s', 42, '', 1, 1)")
+                         .Append("PRAGMA user_version = 5"))
+            {
+                using var command = five.CreateCommand();
+                command.CommandText = statement;
+                command.ExecuteNonQuery();
+            }
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+        using var migrated = Database.Open(path);
+        Assert.Equal(Database.SchemaVersion, migrated.UserVersion);
+        Assert.Equal("hi", Assert.Single(new ChatStore(migrated).Messages(42)).Body);
+        Assert.Equal("Back at six", new TranscriptStore(migrated).Find(34)!.Text);
+        var queued = new OutboxStore(migrated).All();
+        Assert.Equal(2, queued.Count);
+        Assert.All(queued, row => Assert.False(row.Round));
+        Assert.False(queued[0].Sticker);
+        Assert.True(queued[1].Sticker);
+        var played = new PlayedRoundStore(migrated);
+        Assert.Equal(0, played.Count);
+        Assert.False(played.Played(91));
+    }
+
+    /// <summary>
+    /// Version 6 → 7 adds which voice messages this device has played: nothing held is touched — the circles already
+    /// played stay played — and no voice note is played yet, so every one that arrived before shows its dot.
+    /// </summary>
+    [Fact]
+    public void AVersionSixCacheGainsPlayedVoiceMessagesAndLosesNothing()
+    {
+        var path = Path_("six.db");
+        using (var six = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}"))
+        {
+            six.Open();
+            foreach (var statement in Migrations.All.Take(6).SelectMany(step => step)
+                         .Append("INSERT INTO chats (chat_id, kind, title) VALUES (42, 'family', 'The Smiths')")
+                         .Append("INSERT INTO messages (message_id, chat_id, sender_id, body, created_at, sequenced) VALUES (20, 42, 9, 'hi', 0, 1)")
+                         .Append("INSERT INTO played_rounds (attachment_id) VALUES (91)")
+                         .Append("PRAGMA user_version = 6"))
+            {
+                using var command = six.CreateCommand();
+                command.CommandText = statement;
+                command.ExecuteNonQuery();
+            }
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+        using var migrated = Database.Open(path);
+        Assert.Equal(Database.SchemaVersion, migrated.UserVersion);
+        Assert.Equal("hi", Assert.Single(new ChatStore(migrated).Messages(42)).Body);
+        Assert.True(new PlayedRoundStore(migrated).Played(91));
+        var voice = new PlayedVoiceStore(migrated);
+        Assert.Equal(0, voice.Count);
+        Assert.False(voice.Played(91));
+    }
+
+    /// <summary>
+    /// Version 7 → 8 says which cached sets know the sticker and video-message flags. Nothing held is lost and nothing is
+    /// read at upgrade time — but every row already there is UNKNOWN, because nothing says which build wrote it: a sticker
+    /// and a circle a build before #58/#79 cached come back as candidates for the pass to read again, and the rows that
+    /// could not have lost a flag are settled without a request.
+    /// </summary>
+    [Fact]
+    public void AVersionSevenCacheMarksEverySetUnknownAndLosesNothing()
+    {
+        var path = Path_("seven.db");
+        using (var seven = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}"))
+        {
+            seven.Open();
+            foreach (var statement in Migrations.All.Take(7).SelectMany(step => step)
+                         .Append("INSERT INTO chats (chat_id, kind, title) VALUES (42, 'family', 'The Smiths')")
+                         .Append("INSERT INTO messages (message_id, chat_id, sender_id, body, created_at, sequenced) VALUES (20, 42, 9, 'hi', 0, 1)")
+                         .Append("""
+                                 INSERT INTO messages (message_id, chat_id, sender_id, body, created_at, sequenced, attachments_json)
+                                 VALUES (21, 42, 9, '', 0, 1, '[{"id":90,"kind":"photo","mime":"image/webp","size":40960,"width":512,"height":512,"has_preview":false}]')
+                                 """)
+                         .Append("""
+                                 INSERT INTO messages (message_id, chat_id, sender_id, body, created_at, sequenced, attachments_json)
+                                 VALUES (22, 42, 9, '', 0, 1, '[{"id":91,"kind":"video","mime":"video/mp4","size":1,"width":480,"height":480,"has_preview":true}]')
+                                 """)
+                         .Append("INSERT INTO played_voice (attachment_id) VALUES (34)")
+                         .Append("INSERT INTO outbox (client_msg_id, chat_id, body, queued_at, round) VALUES ('r', 42, '', 1, 1)")
+                         .Append("PRAGMA user_version = 7"))
+            {
+                using var command = seven.CreateCommand();
+                command.CommandText = statement;
+                command.ExecuteNonQuery();
+            }
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+        using var migrated = Database.Open(path);
+        Assert.Equal(Database.SchemaVersion, migrated.UserVersion);
+        Assert.Contains(migrated.Columns("messages"), column => column.StartsWith("attachments_know_flags", StringComparison.Ordinal));
+        var chats = new ChatStore(migrated);
+        Assert.Equal(3, chats.Messages(42).Count);
+        Assert.Equal(22, chats.CatchUpCursor(42));
+        Assert.True(new PlayedVoiceStore(migrated).Played(34));
+        Assert.True(Assert.Single(new OutboxStore(migrated).All()).Round);
+        Assert.Equal([22, 21], chats.FlagRepairCandidates(25).Select(message => message.Id));
     }
 
     /// <summary>

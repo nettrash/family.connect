@@ -262,6 +262,11 @@ public sealed class LiveConnection : IAsyncDisposable
                     // is no consent card in Settings and no consent line over the composer.
                     session.ApplyAssistant(report.Assistant);
                 }
+                if (report.FamilyRead)
+                {
+                    // The video message's limits — or their absence, an older server — from the same read.
+                    session.ApplyRoundVideo(report.RoundVideo);
+                }
                 Resynced?.Invoke(report);
             }
             catch (OperationCanceledException)

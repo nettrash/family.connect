@@ -119,6 +119,10 @@ struct MacMessageRow: View {
     /// The environment's own openURL, captured BEFORE this row overrides
     /// it: the override defers into this, never into itself.
     @Environment(\.openURL) private var systemOpenURL
+    /// What a recording's "Show text" asks (#79). Optional, as the store's.
+    @Environment(AppSession.self) private var session: AppSession?
+    /// Why a recording's Save… could not finish, said rather than swallowed.
+    @State private var saveFailure: String?
     /// The in-flight deferred link open — non-nil exactly while a first
     /// click waits out the double-click window (see `handleLinkClick`).
     @State private var pendingLinkOpen: Task<Void, Never>?
@@ -335,6 +339,13 @@ struct MacMessageRow: View {
         }
         .onHover { hovering = $0 }
         .contextMenu { rowMenu }
+        .alert("Couldn't save that file",
+               isPresented: Binding(get: { saveFailure != nil },
+                                    set: { if !$0 { saveFailure = nil } })) {
+            Button("OK", role: .cancel) { saveFailure = nil }
+        } message: {
+            if let saveFailure { Text(verbatim: saveFailure) }
+        }
         .sheet(isPresented: $showsEmojiPicker) {
             VStack(spacing: 0) {
                 EmojiPickerView { emoji in
@@ -470,16 +481,27 @@ struct MacMessageRow: View {
             if canViewThread {
                 Button("View thread", action: onOpenThread)
             }
+            // A recording's own items (#79, the approved design): its text,
+            // its speed, Save… — and no Copy or Edit, which have no words to
+            // act on.
+            if isRecording, let attachment = message.attachments.first {
+                recordingItems(attachment)
+            }
+            // A click plays a circle in place; the viewer, with scrubbing,
+            // is here (#79, S5.4).
+            if isRoundVideo, let attachment = message.attachments.first {
+                Button("Open Full Screen") { onOpenAttachment(attachment) }
+            }
             // `!isSticker` says what the body test only implies: a
             // sticker has no body today, and "Edit" must stay off it on
             // the day something else about that changes
             // (`MessagePresentation.offersEdit`).
-            if canEdit, isMine, !isSticker, !message.body.isEmpty {
+            if canEdit, isMine, !isSticker, !isRecording, !message.body.isEmpty {
                 Button("Edit", action: onEdit)
             }
             Divider()
         }
-        if !message.body.isEmpty {
+        if !message.body.isEmpty, !isRecording {
             Button("Copy") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(message.body, forType: .string)
@@ -772,6 +794,8 @@ struct MacMessageRow: View {
     private func attachmentStack(_ attachments: [AttachmentDTO]) -> some View {
         if isSticker, let attachment = attachments.first {
             stickerTile(attachment)
+        } else if isRoundVideo, let attachment = attachments.first {
+            roundTile(attachment)
         } else if attachments.count == 1, let attachment = attachments.first {
             singleAttachment(attachment)
         } else {
@@ -901,6 +925,24 @@ struct MacMessageRow: View {
             .accessibilityAction { onOpenAttachment(attachment) }
     }
 
+    /// A video message: the circle alone, no balloon, and "Show text" under
+    /// it outside its clicks (#79, S5.2, S5.5, S8.3). A click plays it in
+    /// place with sound, a double click hearts, the row's context menu is
+    /// the menu — "Open Full Screen" among it. No drag-out: it is a message,
+    /// and the viewer's Save… is where its file is.
+    private func roundTile(_ attachment: AttachmentDTO) -> some View {
+        VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
+            RoundVideoTile(
+                attachment: attachment,
+                isMine: isMine,
+                upload: .of(message, isMine: isMine),
+                onDoubleTap: { quickHeart() },
+                onLongPress: nil,
+                onOpenFullScreen: { onOpenAttachment(attachment) })
+            TranscriptSection(attachment: attachment, subject: transcriptSubject, isMine: false)
+        }
+    }
+
     /// The file promise one tile offers the rest of the Mac.
     ///
     /// The coordinator and the callback are copied into local lets before
@@ -927,12 +969,75 @@ struct MacMessageRow: View {
     /// other bare treatment (MessagePresentation.isMediaOnly has the rule
     /// and why files, audio and places stay in a balloon).
     private var isMediaOnly: Bool {
-        // A sticker is bare on its own terms, quote or no quote.
-        isSticker || MessagePresentation.isMediaOnly(message, isStreaming: isStreaming)
+        // A sticker is bare on its own terms, quote or no quote — and so is
+        // a video message (#79, S5.2).
+        isSticker || isRoundVideo
+            || MessagePresentation.isMediaOnly(message, isStreaming: isStreaming)
     }
 
     /// True when the message is a sticker — one flagged picture, no words.
     private var isSticker: Bool { MessagePresentation.isSticker(message) }
+
+    /// True when the message is a video message, drawn as a circle.
+    private var isRoundVideo: Bool { MessagePresentation.isRoundVideo(message) }
+
+    /// A voice message or a video message — a recording, menu-wise (#79).
+    private var isRecording: Bool { MessagePresentation.isRecordingMessage(message) }
+
+    /// Show text / Hide text, Playback speed (voice) and Save… for a
+    /// recording's menu.
+    @ViewBuilder
+    private func recordingItems(_ attachment: AttachmentDTO) -> some View {
+        if let store = attachmentStore, let session,
+           let row = store.transcripts.menuRow(
+               for: attachment.id,
+               door: TranscriptSection.door(
+                   attachment: attachment, subject: transcriptSubject, session: session,
+                   coordinator: coordinator))
+        {
+            switch row {
+            case .show:
+                Button("Show text") { store.transcripts.performMenuRow(.show, for: attachment.id) }
+            case .hide:
+                Button("Hide text") { store.transcripts.performMenuRow(.hide, for: attachment.id) }
+            }
+        }
+        if MessagePresentation.isVoiceMessage(message) {
+            // A native submenu of the three speeds, the current one ticked.
+            Picker("Playback speed", selection: Binding(
+                get: { VoicePlaybackSpeed.shared.rate },
+                set: { VoicePlaybackSpeed.shared.set($0) }
+            )) {
+                ForEach(VoicePlaybackSpeed.rates, id: \.self) { rate in
+                    Text(verbatim: VoicePlaybackSpeed.label(rate)).tag(rate)
+                }
+            }
+        }
+        Button("Save…") { saveRecording(attachment) }
+    }
+
+    /// Save… for a recording: the file, downloaded if it has to be, written
+    /// where the person chooses — the attachment viewer's Save….
+    private func saveRecording(_ attachment: AttachmentDTO) {
+        Task {
+            guard let source = await coordinator.localFileURL(for: attachment) else {
+                saveFailure = String(localized: "The file could not be downloaded.")
+                return
+            }
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = attachment.name
+                ?? ChatSyncCoordinator.fallbackName(for: attachment)
+            guard panel.runModal() == .OK, let destination = panel.url else { return }
+            do {
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: source, to: destination)
+            } catch {
+                saveFailure = error.localizedDescription
+            }
+        }
+    }
 
     /// No fill behind the content — emoji-only or media-only. Everything
     /// that adapts to "nothing behind me" keys off this, never off one
@@ -1338,6 +1443,24 @@ private struct MacAttachmentBlock: View {
     /// For CONTRAST: an own balloon is filled with the tint, so anything
     /// drawn in the accent colour there would be invisible.
     let isMine: Bool
+
+    /// What a tile draws, and so what it FETCHES (#79, S8.3: "the
+    /// poster-only fetch fixed first").
+    ///
+    /// A VIDEO asks for its poster and nothing else — "a tile never
+    /// downloads a VIDEO to draw itself" (docs/protocol.md). This used to
+    /// ask for the preview and, in the same breath, the original: while the
+    /// poster was on its way, or once it had 404'd, every video tile on the
+    /// Mac downloaded the whole video only to fail to decode it as a
+    /// picture. The poster may land late (`mayArriveLate`), the phone's
+    /// rule. A PHOTO keeps its two asks: the full bytes ARE a picture.
+    static func bubbleImage(for attachment: AttachmentDTO, in store: AttachmentStore) -> Image? {
+        if attachment.isVideo {
+            return store.image(id: attachment.id, preview: true, mayArriveLate: true)
+        }
+        return store.image(id: attachment.id, preview: true)
+            ?? store.image(id: attachment.id, preview: false)
+    }
     /// False when this tile IS the message (a media-only row, no balloon).
     /// Only the hairline reads it — MessagePresentation.drawsHairline.
     var onBalloon: Bool = true
@@ -1379,8 +1502,7 @@ private struct MacAttachmentBlock: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(isMine ? Color.white.opacity(0.16) : Color.primary.opacity(0.06)))
             .hoverCursor(.pointingHand)
-        } else if let image = store.image(id: attachment.id, preview: true)
-            ?? store.image(id: attachment.id, preview: false) {
+        } else if let image = Self.bubbleImage(for: attachment, in: store) {
             // Sized from the attachment's METADATA, as the phone's tile is,
             // not from whatever width the row happened to be proposed: a
             // fit-inside-a-max-frame image answers a different size for
@@ -1546,8 +1668,8 @@ private struct MacAlbumStack: View {
                     ? [.white.opacity(0.22), .white.opacity(0.10)]
                     : [.primary.opacity(0.10), .primary.opacity(0.04)],
                 startPoint: .top, endPoint: .bottom)
-            if let image = store.image(id: item.id, preview: true)
-                ?? store.image(id: item.id, preview: false) {
+            // The poster only, for a video — the single tile's rule.
+            if let image = MacAttachmentBlock.bubbleImage(for: item, in: store) {
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)

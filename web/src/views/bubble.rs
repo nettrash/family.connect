@@ -15,7 +15,9 @@ use crate::views::attachments::{AttachmentStack, Transcribing};
 use crate::views::avatar::Avatar;
 use crate::views::body::Body;
 use crate::views::poll::PollView;
+use crate::views::quiet::LiveRegion;
 use crate::views::reactions::{chips, details, EmojiPicker, QUICK_REACTIONS};
+use crate::views::round_tile::RoundVideoTile;
 use crate::views::stickers::StickerTile;
 
 /// The page's body text size, in CSS pixels (styles.css `body`).
@@ -125,6 +127,11 @@ pub struct BubbleProps {
     pub quote_revealed: bool,
     #[prop_or_default]
     pub parent_revealed: bool,
+    /// The quoted message is a video message this client holds — its quote
+    /// has no words to show, and says "Video message" instead (the plan for
+    /// #79, S5.7). The quote itself carries only the server's excerpt.
+    #[prop_or_default]
+    pub quote_round: bool,
     pub shows_sender: bool,
     /// The sender's `avatar_version`, for the picture beside their name at
     /// the head of a run — 0, and initials, for anybody the roster does not
@@ -192,6 +199,11 @@ fn name_of(names: &HashMap<i64, String>, user: i64) -> String {
 #[function_component(Bubble)]
 pub fn bubble(props: &BubbleProps) -> Html {
     let menu_open = use_state(|| false);
+    // Only a redraw when the menu's own "Playback speed" changes it: the
+    // value drawn is the device's AS THE MENU DRAWS, read below — a chip on
+    // any bubble may have changed it since this one was first drawn.
+    let speed_redraw = use_state(|| 0u32);
+    let loader = use_context::<crate::media::MediaLoader>();
     let picker_open = use_state(|| false);
     let reactors_open = use_state(|| false);
 
@@ -277,7 +289,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
                     <div class="menu" role="menu" onmouseleave={close_menu}>
                         <div class="menu-section">{ t("Safety") }</div>
                         if can_report {
-                            <button role="menuitem" onclick={report}>{ t("Report…") }</button>
+                            <button role="menuitem" class="danger" onclick={report}>{ t("Report…") }</button>
                         }
                         <button role="menuitem"
                             onclick={act(Action::Block { user_id: message.sender_id, blocked: false })}>
@@ -352,7 +364,13 @@ pub fn bubble(props: &BubbleProps) -> Html {
                     <button class="link" onclick={reveal(0)}>{ t("Replying to a hidden message") }</button>
                 } else {
                     <span class="quote-name">{ name_of(&props.names, quote.sender_id) }</span>
-                    <span class="quote-text">{ &quote.excerpt }</span>
+                    <span class="quote-text">
+                        if quote.excerpt.is_empty() && props.quote_round {
+                            { t("Video message") }
+                        } else {
+                            { &quote.excerpt }
+                        }
+                    </span>
                 }
             </div>
         }
@@ -437,6 +455,10 @@ pub fn bubble(props: &BubbleProps) -> Html {
         && !message.body.is_empty()
         && message.call.is_none()
         && message.sticker().is_none();
+    // Nor on a video message (docs/protocol.md, "Video messages"; Decision
+    // 20) — by the drawing test itself: a message drawn round has no body,
+    // so the body rule above already says no, and one WITH words is not
+    // drawn round but as the ordinary video it then is.
     // Choosing the emoji that is already mine takes it off — the menu and
     // the picker TOGGLE, the Mac's `toggleReaction`; only the chips never
     // remove.
@@ -455,6 +477,156 @@ pub fn bubble(props: &BubbleProps) -> Html {
         }
     };
 
+    // "Show text" under a recording: offered by the server's rule as far as
+    // this client can know it, and whatever this device already holds
+    // drawn either way (docs/protocol.md, "Transcripts on request").
+    let transcribing = {
+        let chat_kind = if props.is_family_chat {
+            crate::model::Chat::FAMILY
+        } else if props.is_ai_chat {
+            crate::model::Chat::AI
+        } else {
+            crate::model::Chat::DIRECT
+        };
+        let offered = props
+            .transcription
+            .as_ref()
+            .map(|transcription| {
+                transcription.offered(message, chat_kind, me, props.assistant_user_id)
+            })
+            .unwrap_or_default();
+        (!offered.is_empty() || !props.transcripts.is_empty()).then(|| {
+            let on_action = props.on_action.clone();
+            let ask_consent = props
+                .transcription
+                .as_ref()
+                .map(|transcription| transcription.on_review_consent.clone())
+                .unwrap_or_default();
+            Transcribing {
+                offered,
+                held: props.transcripts.clone(),
+                on_show: {
+                    let attachments = message.attachments().to_vec();
+                    Callback::from(move |attachment_id: i64| {
+                        let Some(attachment) = attachments
+                            .iter()
+                            .find(|attachment| attachment.id == attachment_id)
+                        else {
+                            return;
+                        };
+                        on_action.emit(Action::ShowTranscript {
+                            chat_id,
+                            message_id: id,
+                            attachment: attachment.clone(),
+                            ask_consent: ask_consent.clone(),
+                        })
+                    })
+                },
+                on_hide: props
+                    .on_action
+                    .reform(|attachment_id| Action::HideTranscript { attachment_id }),
+            }
+        })
+    };
+    // A RECORDING'S MENU (the approved design for #79): a voice message or a
+    // video message has no words — no Copy, no Edit — and offers what a
+    // recording has instead: its text, its speed (voice), Save, and Open
+    // Full Screen (video). Every other message's menu is as it was.
+    let recording = message
+        .voice_note()
+        .map(|attachment| (attachment.clone(), false))
+        .or_else(|| {
+            message
+                .round_video()
+                .map(|attachment| (attachment.clone(), true))
+        });
+    let recording_items = recording
+        .as_ref()
+        .filter(|_| acked)
+        .map(|(attachment, round)| {
+            let attachment_id = attachment.id;
+            let text = transcribing.as_ref().and_then(|transcribing| {
+                let held = transcribing.held.get(&attachment_id);
+                let shown = matches!(held, Some(fc_text::transcript::State::Shown(_)));
+                let asking = matches!(held, Some(fc_text::transcript::State::Asking));
+                (shown || (!asking && transcribing.offered.contains(&attachment_id))).then(|| {
+                    let menu_open = menu_open.clone();
+                    let on_show = transcribing.on_show.clone();
+                    let on_hide = transcribing.on_hide.clone();
+                    let act = Callback::from(move |_: MouseEvent| {
+                        menu_open.set(false);
+                        if shown {
+                            on_hide.emit(attachment_id);
+                        } else {
+                            on_show.emit(attachment_id);
+                        }
+                    });
+                    html! {
+                        <button role="menuitem" onclick={act}>
+                            { if shown { t("Hide text") } else { t("Show text") } }
+                        </button>
+                    }
+                })
+            });
+            let speed_now = crate::views::attachments::speed_label(crate::session::voice_speed());
+            let cycle = {
+                let speed_redraw = speed_redraw.clone();
+                Callback::from(move |event: MouseEvent| {
+                    // The menu stays open on its new value: a speed is chosen by
+                    // going round, and seen as it goes.
+                    event.stop_propagation();
+                    crate::views::attachments::set_voice_speed(crate::session::next_voice_speed(
+                        crate::session::voice_speed(),
+                    ));
+                    speed_redraw.set(speed_redraw.wrapping_add(1));
+                })
+            };
+            let save = {
+                let menu_open = menu_open.clone();
+                let loader = loader.clone();
+                let on_action = props.on_action.clone();
+                let attachment = attachment.clone();
+                Callback::from(move |_: MouseEvent| {
+                    menu_open.set(false);
+                    let Some(loader) = loader.clone() else { return };
+                    let on_action = on_action.clone();
+                    let file = crate::views::attachments::file_name(&attachment);
+                    loader.load(
+                        attachment.id,
+                        crate::media::Variant::Original,
+                        Callback::from(move |url: Option<String>| match url {
+                            Some(url) => crate::media::download(&url, &file),
+                            None => on_action.emit(Action::Fail(
+                                t("The file could not be downloaded.").to_string(),
+                            )),
+                        }),
+                    );
+                })
+            };
+            let full_screen = round.then(|| {
+            html! {
+                // The viewer, with scrubbing (S5.4).
+                <button role="menuitem"
+                    onclick={act(Action::OpenViewer { items: vec![attachment.clone()], index: 0 })}>
+                    { t("Open Full Screen") }
+                </button>
+            }
+        });
+            html! {
+                <>
+                    { text.unwrap_or_default() }
+                    if !*round {
+                        <button role="menuitem" class="menu-value-row" onclick={cycle}
+                                aria-label={fc_text::i18n::t1("Playback speed, %@", &speed_now)}>
+                            <span>{ t("Playback speed") }</span>
+                            <span class="menu-value" aria-hidden="true">{ speed_now.clone() }</span>
+                        </button>
+                    }
+                    <button role="menuitem" onclick={save}>{ t("Save…") }</button>
+                    { full_screen.unwrap_or_default() }
+                </>
+            }
+        });
     let menu = (*menu_open).then(|| {
         let reply = {
             let on_reply = props.on_reply.clone();
@@ -528,6 +700,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
                     if can_edit {
                         <button role="menuitem" onclick={edit}>{ t("Edit") }</button>
                     }
+                    { recording_items.clone().unwrap_or_default() }
                 }
                 if !message.body.is_empty() {
                     <button role="menuitem" onclick={copy}>{ t("Copy") }</button>
@@ -547,7 +720,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
                 if is_other_member {
                     <div class="menu-section">{ t("Safety") }</div>
                     if can_report {
-                        <button role="menuitem" onclick={report.clone()}>{ t("Report…") }</button>
+                        <button role="menuitem" class="danger" onclick={report.clone()}>{ t("Report…") }</button>
                     }
                     if blocked_sender {
                         <button role="menuitem"
@@ -596,11 +769,12 @@ pub fn bubble(props: &BubbleProps) -> Html {
     let meta = if let Some(reason) = props.failed.clone() {
         let client_msg_id = message.client_msg_id.clone().unwrap_or_default();
         html! {
-            <span class="meta send-failed" role="alert">
+            // Quiet while a voice message is being recorded (S6).
+            <LiveRegion tag="span" class="meta send-failed" role="alert">
                 { reason }
                 <button class="link" onclick={emit(Action::Retry(client_msg_id.clone()))}>{ t("Retry") }</button>
                 <button class="link" onclick={emit(Action::Discard(client_msg_id))}>{ t("Discard") }</button>
-            </span>
+            </LiveRegion>
         }
     } else if !acked {
         html! { <span class="meta sending">{ t("Sending…") }</span> }
@@ -627,6 +801,10 @@ pub fn bubble(props: &BubbleProps) -> Html {
     // attachment; without it this is an ordinary photo and everything below
     // draws it as one, exactly as before there were stickers.
     let sticker = message.sticker().cloned();
+    // A VIDEO MESSAGE (docs/protocol.md, "Video messages"; the plan for #79,
+    // S5): a circle with no balloon, from the same kind of flag. Without it
+    // this is an ordinary video, drawn as a tile below.
+    let round = message.round_video().cloned();
 
     // Nothing but photos and videos, and nothing above them: the pictures
     // ARE the message, and draw without a balloon round them (the Mac's
@@ -644,57 +822,6 @@ pub fn bubble(props: &BubbleProps) -> Html {
     // this page's 15px the way the Mac scales it to 13, so the proportion
     // is the phone's.
     let emoji_size = fc_text::emoji::display_font_size_for_body(&message.body, BODY_PX);
-    // "Show text" under a recording: offered by the server's rule as far as
-    // this client can know it, and whatever this device already holds
-    // drawn either way (docs/protocol.md, "Transcripts on request").
-    let transcribing = {
-        let chat_kind = if props.is_family_chat {
-            crate::model::Chat::FAMILY
-        } else if props.is_ai_chat {
-            crate::model::Chat::AI
-        } else {
-            crate::model::Chat::DIRECT
-        };
-        let offered = props
-            .transcription
-            .as_ref()
-            .map(|transcription| {
-                transcription.offered(message, chat_kind, me, props.assistant_user_id)
-            })
-            .unwrap_or_default();
-        (!offered.is_empty() || !props.transcripts.is_empty()).then(|| {
-            let on_action = props.on_action.clone();
-            let ask_consent = props
-                .transcription
-                .as_ref()
-                .map(|transcription| transcription.on_review_consent.clone())
-                .unwrap_or_default();
-            Transcribing {
-                offered,
-                held: props.transcripts.clone(),
-                on_show: {
-                    let attachments = message.attachments().to_vec();
-                    Callback::from(move |attachment_id: i64| {
-                        let Some(attachment) = attachments
-                            .iter()
-                            .find(|attachment| attachment.id == attachment_id)
-                        else {
-                            return;
-                        };
-                        on_action.emit(Action::ShowTranscript {
-                            chat_id,
-                            message_id: id,
-                            attachment: attachment.clone(),
-                            ask_consent: ask_consent.clone(),
-                        })
-                    })
-                },
-                on_hide: props
-                    .on_action
-                    .reform(|attachment_id| Action::HideTranscript { attachment_id }),
-            }
-        })
-    };
     let body = if let Some(call) = &message.call {
         let missed_incoming = call.outcome == "missed" && !mine;
         // Calling back is what a call record is FOR, half the time — and a
@@ -759,6 +886,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
                 emoji_size.is_some().then_some("is-emoji-only"),
                 media_only.then_some("is-media-only"),
                 sticker.is_some().then_some("is-chat-sticker"),
+                round.is_some().then_some("is-round-video"),
             )}
             ondblclick={on_double}
         >
@@ -779,6 +907,15 @@ pub fn bubble(props: &BubbleProps) -> Html {
                     attachment={sticker}
                     on_open={props.on_action.reform(Action::OpenSticker)}
                 />
+            } else if let Some(round) = round {
+                <RoundVideoTile
+                    attachment={round}
+                    my_user_id={me}
+                    {mine}
+                    sending={!acked && props.failed.is_none()}
+                    on_open={props.on_action.reform(|attachment| Action::OpenViewer { items: vec![attachment], index: 0 })}
+                    transcribing={transcribing.clone()}
+                />
             } else if !message.attachments().is_empty() {
                 <AttachmentStack
                     attachments={message.attachments().to_vec()}
@@ -786,6 +923,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
                     on_open={props.on_action.reform(|(items, index)| Action::OpenViewer { items, index })}
                     on_notice={props.on_action.reform(Action::Fail)}
                     {transcribing}
+                    my_user_id={me}
                 />
             }
             { body }
@@ -883,6 +1021,7 @@ mod tests {
             hidden: false,
             quote_revealed: false,
             parent_revealed: false,
+            quote_round: false,
             shows_sender: true,
             run_end: true,
             seen: false,
@@ -1140,7 +1279,7 @@ mod tests {
                 .unwrap()
                 .click();
         };
-        for item in [".menu-emoji", ".menu .danger"] {
+        for item in [".menu-emoji", ".menu .danger:last-child"] {
             click(".more");
             gloo_timers::future::TimeoutFuture::new(20).await;
             click(item);
@@ -1895,6 +2034,170 @@ mod tests {
         root.remove();
     }
 
+    fn round_video(id: i64, round: bool) -> crate::model::Attachment {
+        crate::model::Attachment {
+            id,
+            kind: "video".into(),
+            mime: Some("video/mp4".into()),
+            size: Some(1_649_700),
+            width: Some(480),
+            height: Some(480),
+            duration_ms: Some(23_400),
+            has_preview: true,
+            round,
+            ..Default::default()
+        }
+    }
+
+    /// A VIDEO MESSAGE IS DRAWN AS A CIRCLE WITHOUT A BUBBLE (S5.1, S5.2):
+    /// the class `is-round-video`, the circle and nothing of a tile — and
+    /// the same video without the flag is the tile it always was, which is
+    /// what an older server leaves it as. "Show text" goes under the circle,
+    /// outside its gestures (S5.5).
+    #[wasm_bindgen_test]
+    async fn a_video_message_draws_round_and_a_plain_video_as_before() {
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let mut sent = message(1501, ANNA, "");
+        sent.attachments = Some(vec![round_video(91, true)]);
+        let mut with_text = props(sent, actions.clone());
+        with_text.transcription = Some(transcription(true));
+        let (root, handle) = render(with_text).await;
+        assert!(root
+            .query_selector(".bubble.is-round-video")
+            .unwrap()
+            .is_some());
+        assert!(root.query_selector(".round-face").unwrap().is_some());
+        assert!(
+            root.query_selector(".tile").unwrap().is_none(),
+            "not a tile"
+        );
+        assert!(
+            root.query_selector(".round-video .round-transcript .transcript")
+                .unwrap()
+                .is_some(),
+            "Show text under the circle"
+        );
+        let buttons = show_buttons(&root);
+        assert_eq!(buttons.len(), 1);
+        buttons[0].click();
+        assert!(actions.borrow().iter().any(|action| matches!(
+            action,
+            Action::ShowTranscript { attachment, .. } if attachment.id == 91
+        )));
+        handle.destroy();
+        root.remove();
+
+        let mut plain = message(1502, ANNA, "");
+        plain.attachments = Some(vec![round_video(92, false)]);
+        let (root, handle) = render(props(plain, actions.clone())).await;
+        assert!(root
+            .query_selector(".bubble.is-round-video")
+            .unwrap()
+            .is_none());
+        assert!(root.query_selector(".round-face").unwrap().is_none());
+        assert!(
+            root.query_selector(".tile").unwrap().is_some(),
+            "the tile it always was"
+        );
+        handle.destroy();
+        root.remove();
+
+        // Words beside it — which the server refuses — are not a circle.
+        let mut worded = message(1503, ANNA, "words");
+        worded.attachments = Some(vec![round_video(93, true)]);
+        let (root, handle) = render(props(worded, actions)).await;
+        assert!(root.query_selector(".round-face").unwrap().is_none());
+        handle.destroy();
+        root.remove();
+    }
+
+    /// A VIDEO MESSAGE'S MENU (S5.4): "Open Full Screen", which opens the
+    /// viewer on it, and NEVER "Edit" — mine included; an ordinary video of
+    /// mine with a caption is edited as ever, and offers no full screen of
+    /// its own (its tile opens the viewer).
+    #[wasm_bindgen_test]
+    async fn a_video_message_opens_full_screen_and_is_never_edited() {
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let mut mine = message(1504, ME, "");
+        mine.attachments = Some(vec![round_video(94, true)]);
+        let (root, handle) = render(props(mine, actions.clone())).await;
+        click(&root, ".more");
+        settle().await;
+        let rows = labels(&root, ".menu [role=menuitem]");
+        assert!(rows.contains(&"Open Full Screen".to_string()), "{rows:?}");
+        assert!(!rows.contains(&"Edit".to_string()), "{rows:?}");
+        assert!(rows.contains(&"Reply".to_string()), "{rows:?}");
+        click_text(&root, ".menu [role=menuitem]", "Open Full Screen");
+        settle().await;
+        assert!(actions.borrow().iter().any(|action| matches!(
+            action,
+            Action::OpenViewer { items, index: 0 } if items.len() == 1 && items[0].id == 94
+        )));
+        assert!(
+            root.query_selector(".menu").unwrap().is_none(),
+            "the menu closed"
+        );
+        handle.destroy();
+        root.remove();
+
+        let mut captioned = message(1505, ME, "a caption");
+        captioned.attachments = Some(vec![round_video(95, false)]);
+        let (root, handle) = render(props(captioned, actions)).await;
+        click(&root, ".more");
+        settle().await;
+        let rows = labels(&root, ".menu [role=menuitem]");
+        assert!(rows.contains(&"Edit".to_string()), "{rows:?}");
+        assert!(!rows.contains(&"Open Full Screen".to_string()), "{rows:?}");
+        handle.destroy();
+        root.remove();
+    }
+
+    /// A REPLY QUOTING A VIDEO MESSAGE SAYS "Video message" (S5.7): the
+    /// server's excerpt of a message with no words is empty. A quote with
+    /// words says them, whatever it quotes.
+    #[wasm_bindgen_test]
+    async fn a_quote_of_a_video_message_says_so() {
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let mut reply = message(1506, ANNA, "nice!");
+        reply.reply_to = Some(crate::model::ReplyTo {
+            message_id: 1501,
+            sender_id: ME,
+            excerpt: String::new(),
+            parent: None,
+        });
+        let mut quoting = props(reply.clone(), actions.clone());
+        quoting.quote_round = true;
+        let (root, handle) = render(quoting).await;
+        assert_eq!(
+            root.query_selector(".quote .quote-text")
+                .unwrap()
+                .and_then(|text| text.text_content())
+                .as_deref(),
+            Some("Video message")
+        );
+        handle.destroy();
+        root.remove();
+        let (root, handle) = render(props(reply.clone(), actions.clone())).await;
+        assert_eq!(
+            root.query_selector(".quote .quote-text")
+                .unwrap()
+                .and_then(|text| text.text_content())
+                .as_deref(),
+            Some(""),
+            "not a video message: what the server said"
+        );
+        handle.destroy();
+        root.remove();
+        // The rule the conversation decides it by.
+        let mut circle = message(1501, ME, "");
+        circle.attachments = Some(vec![round_video(91, true)]);
+        let mut held = vec![circle.clone()];
+        assert!(crate::views::conversation::quotes_round(&reply, &held));
+        held[0].attachments = Some(vec![round_video(91, false)]);
+        assert!(!crate::views::conversation::quotes_round(&reply, &held));
+        assert!(!crate::views::conversation::quotes_round(&reply, &[]));
+    }
+
     impl BubbleProps {
         fn clone_for_test(&self) -> BubbleProps {
             BubbleProps {
@@ -1907,6 +2210,7 @@ mod tests {
                 hidden: self.hidden,
                 quote_revealed: self.quote_revealed,
                 parent_revealed: self.parent_revealed,
+                quote_round: self.quote_round,
                 shows_sender: self.shows_sender,
                 run_end: self.run_end,
                 seen: self.seen,
@@ -1931,5 +2235,131 @@ mod tests {
                 sender_avatar_version: 0,
             }
         }
+    }
+
+    /// A RECORDING'S MENU (the approved design for #79): a voice message
+    /// offers the reactions, Reply, Show text, Playback speed, Save… and
+    /// Report… — and NO Copy or Edit, there being no words; its speed goes
+    /// 1× → 1.5× → 2× in place, the menu staying open on the new value, and
+    /// is the device's own. A video message offers Save… and Open Full
+    /// Screen and no speed. A message with words keeps the menu it had, and
+    /// a voice note WITH a caption is such a message.
+    #[wasm_bindgen_test]
+    async fn a_recordings_menu_offers_what_a_recording_has_and_nothing_a_text_has() {
+        let speed_was = crate::session::voice_speed();
+        crate::session::set_voice_speed(1.0);
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let mut voice = message(1601, ANNA, "");
+        voice.attachments = Some(vec![recording(96, "audio/mp4")]);
+        let mut asked = props(voice, actions.clone());
+        asked.is_family_chat = true;
+        asked.transcription = Some(transcription(true));
+        let (root, handle) = render(asked).await;
+        // The speed changed AFTER this bubble was drawn — by a chip on a
+        // playing note, this one's or another's: the menu says the device's
+        // speed as it is now, and goes on from it.
+        crate::views::attachments::set_voice_speed(1.5);
+        settle().await;
+        click(&root, ".more");
+        settle().await;
+        let rows = labels(&root, ".menu [role=menuitem]");
+        for wanted in ["Reply", "Show text", "Save…", "Report…"] {
+            assert!(rows.contains(&wanted.to_string()), "{wanted}: {rows:?}");
+        }
+        assert!(
+            QUICK_REACTIONS
+                .iter()
+                .all(|emoji| rows.contains(&emoji.to_string())),
+            "the reactions: {rows:?}"
+        );
+        for never in ["Copy", "Edit", "Open Full Screen"] {
+            assert!(!rows.contains(&never.to_string()), "{never}: {rows:?}");
+        }
+        let speed = crate::layout_tests::query(&root, ".menu .menu-value-row");
+        assert_eq!(
+            speed.get_attribute("aria-label").as_deref(),
+            Some("Playback speed, 1.5×")
+        );
+        assert_eq!(speed.text_content().as_deref(), Some("Playback speed1.5×"));
+        speed.clone().dyn_into::<HtmlElement>().unwrap().click();
+        settle().await;
+        assert!(
+            root.query_selector(".menu").unwrap().is_some(),
+            "still open"
+        );
+        assert_eq!(
+            crate::layout_tests::query(&root, ".menu .menu-value-row")
+                .get_attribute("aria-label")
+                .as_deref(),
+            Some("Playback speed, 2×")
+        );
+        assert_eq!(crate::session::voice_speed(), 2.0, "the device's now");
+        click(&root, ".menu .menu-value-row");
+        settle().await;
+        assert_eq!(crate::session::voice_speed(), 1.0, "and round again");
+        assert_eq!(
+            crate::layout_tests::query(&root, ".menu .menu-value-row")
+                .get_attribute("aria-label")
+                .as_deref(),
+            Some("Playback speed, 1×")
+        );
+        // Report… is drawn in the destructive red, as the design has it.
+        let report = crate::layout_tests::query(&root, ".menu [role=menuitem].danger");
+        assert_eq!(
+            report.text_content().as_deref(),
+            Some("Report…"),
+            "Report… is red"
+        );
+        // Show text asks for THAT recording, and closes the menu.
+        click_text(&root, ".menu [role=menuitem]", "Show text");
+        settle().await;
+        assert!(root.query_selector(".menu").unwrap().is_none());
+        assert!(actions.borrow().iter().any(|action| matches!(
+            action,
+            Action::ShowTranscript { attachment, .. } if attachment.id == 96
+        )));
+        handle.destroy();
+        root.remove();
+
+        // A video message: Save… and Open Full Screen, no speed.
+        let mut circle = message(1602, ANNA, "");
+        circle.attachments = Some(vec![round_video(97, true)]);
+        let (root, handle) = render(props(circle, actions.clone())).await;
+        click(&root, ".more");
+        settle().await;
+        let rows = labels(&root, ".menu [role=menuitem]");
+        for wanted in ["Reply", "Save…", "Open Full Screen", "Report…"] {
+            assert!(rows.contains(&wanted.to_string()), "{wanted}: {rows:?}");
+        }
+        assert!(root
+            .query_selector(".menu .menu-value-row")
+            .unwrap()
+            .is_none());
+        for never in ["Copy", "Edit"] {
+            assert!(!rows.contains(&never.to_string()), "{never}: {rows:?}");
+        }
+        handle.destroy();
+        root.remove();
+
+        // Words: the menu it always had — Copy, no recording items.
+        for (id, attachments) in [(1603, None), (1604, Some(vec![recording(98, "audio/mp4")]))] {
+            let mut words = message(id, ANNA, "Dinner?");
+            words.attachments = attachments;
+            let (root, handle) = render(props(words, actions.clone())).await;
+            click(&root, ".more");
+            settle().await;
+            let rows = labels(&root, ".menu [role=menuitem]");
+            assert!(rows.contains(&"Copy".to_string()), "{rows:?}");
+            for never in ["Save…", "Show text"] {
+                assert!(!rows.contains(&never.to_string()), "{never}: {rows:?}");
+            }
+            assert!(root
+                .query_selector(".menu .menu-value-row")
+                .unwrap()
+                .is_none());
+            handle.destroy();
+            root.remove();
+        }
+        crate::session::set_voice_speed(speed_was);
     }
 }
