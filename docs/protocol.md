@@ -6363,7 +6363,9 @@ rule as everything above — that can present a call: an `ios` device with a `vo
 `android` device with a push token. An iOS device that never registered a VoIP token is not woken;
 a Mac is never woken, because a Mac that is not running is not a phone in a pocket — and neither is
 Windows, for the same reason and because it registers no device: a running window holds its socket
-and rings on it, and a closed one hears nothing. A browser is
+and rings on it, and a closed one hears nothing. (Both keep running when their window is closed — Windows in the
+notification area, a Mac in the menu bar since 2026-10-07, issue #80 — and a client kept running that
+way holds its socket with no window at all, so it rings; only one that was really quit hears nothing.) A browser is
 never woken either, for that reason and one more: it registers no device to wake (see "A browser is
 a client too"), so a closed tab hears nothing and the call is missed. What a woken
 device does next is connect its socket, and the server's registration-time replay ("Late arrivals")

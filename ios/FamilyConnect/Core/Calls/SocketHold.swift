@@ -26,8 +26,16 @@ nonisolated enum SocketHold {
     /// `isInBackground` is where the scene is going; `isCallInProgress`
     /// is whether the call machine is anywhere but idle — ringing counts,
     /// on both ends, because the answer has to arrive.
-    static func decide(isInBackground: Bool, isCallInProgress: Bool) -> Decision {
-        guard isInBackground else { return .keep }
+    ///
+    /// `listensInBackground` is a Mac kept running in the menu bar (#80,
+    /// docs/mac-menu-bar-2026-10-07.md): its window closed, hidden or
+    /// minimised is still a running app, and protocol.md wakes no Mac for a
+    /// call — so it holds the socket the way Windows' notification-area icon
+    /// does, or it could never ring.
+    static func decide(
+        isInBackground: Bool, isCallInProgress: Bool, listensInBackground: Bool = false
+    ) -> Decision {
+        guard isInBackground, !listensInBackground else { return .keep }
         return isCallInProgress ? .keep : .suspend
     }
 }

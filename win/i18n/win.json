@@ -77,11 +77,31 @@
       "sr-Latn": "Animirani stikeri moraju da budu WebP.",
       "zh-Hans": "动态贴纸必须是 WebP。"
     },
+    "Brings Family Connect forward from any app. Press it again to put it back in the notification area.": {
+      "de": "Holt Family Connect aus jeder App nach vorne. Drücke es erneut, um es wieder in den Infobereich zu legen.",
+      "es": "Trae Family Connect al frente desde cualquier app. Púlsalo otra vez para devolverlo al área de notificación.",
+      "fr": "Ramène Family Connect au premier plan depuis n’importe quelle app. Appuyez de nouveau pour le remettre dans la zone de notification.",
+      "ja": "どのアプリからでも Family Connect を前面に表示します。もう一度押すと通知領域に戻ります。",
+      "ru": "Выводит Family Connect на передний план из любого приложения. Нажмите ещё раз, чтобы вернуть его в область уведомлений.",
+      "sr": "Доводи Family Connect у први план из било које апликације. Притисни поново да га вратиш у поље за обавештења.",
+      "sr-Latn": "Dovodi Family Connect u prvi plan iz bilo koje aplikacije. Pritisni ponovo da ga vratiš u polje za obaveštenja.",
+      "zh-Hans": "从任何应用将 Family Connect 调到前面。再按一次可将其放回通知区域。"
+    },
     "Call with %@": {},
     "Caption": {},
     "Chat": {},
     "Couldn't move the note.": {},
     "Couldn't send your answer.": {},
+    "Ctrl+Alt+Shift+F": {
+      "de": "Strg+Alt+Umschalt+F",
+      "es": "Ctrl+Alt+Mayús+F",
+      "fr": "Ctrl+Alt+Maj+F",
+      "ja": "Ctrl+Alt+Shift+F",
+      "ru": "Ctrl+Alt+Shift+F",
+      "sr": "Ctrl+Alt+Shift+F",
+      "sr-Latn": "Ctrl+Alt+Shift+F",
+      "zh-Hans": "Ctrl+Alt+Shift+F"
+    },
     "Delete the family?": {},
     "Event": {},
     "Family Connect for Windows %@": {},
